@@ -199,7 +199,7 @@ else
 fi
 
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
-banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/settings(\.local)?\.json$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
+banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/settings(\.local)?\.json$|^\.planning/(\.gsd-beads|milestone)\.lock$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
 if tracked=$(git ls-files); then
   hits=$(printf '%s\n' "$tracked" | grep -E "$banned" | tr '\n' ' ' || true)
   if [ -z "$hits" ]; then ok hygiene-tracked; else bad hygiene-tracked "tracked: $hits"; fi
