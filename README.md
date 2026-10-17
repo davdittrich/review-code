@@ -21,7 +21,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 - Claude Code 2.1.246 or later. This floor is provisional; the plugin is tested on 2.1.302.
 - `git`.
-- `gh`, for PR targets in later versions.
+- `gh`, for PR reading and posting in later versions. PR targets route to the skill now, but the PR is not fetched yet; review a local diff or branch.
 
 ## What ships
 

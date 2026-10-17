@@ -6,7 +6,7 @@ description: >
   review, critique, audit or check code, or asks what is wrong with a change. Not for writing,
   explaining or debugging code.
 license: MIT
-compatibility: Claude Code >= 2.1.246 (provisional); git; gh for pull request targets
+compatibility: Claude Code >= 2.1.246 (provisional); git; gh for pull request reading and posting, which arrives in a later version
 argument-hint: "[target]"
 metadata:
   upstream: "critical-code-reviewer 1.3 (Garrick Aden-Buie, Ziad Hassan)"
@@ -48,8 +48,10 @@ Keep the tone direct and constructive: state the problem, the trigger and a fix.
 ## Status
 
 This is the v0.1.0 stub. Reviewer lanes, the context ledger, the independent verifier, JSON or SARIF
-output, PR posting and fix mode do not exist yet. When invoked, say so to the user, then do a
-single-pass review in the main thread under the iron law and the verification gate.
+output, PR reading and posting, and fix mode do not exist yet. Pull request targets route to this
+skill, but the PR is not fetched: ask for a local diff or branch instead. When invoked, say so to
+the user, then do a single-pass review in the main thread under the iron law and the verification
+gate.
 
 - Label each finding's evidence class honestly. A single read-only pass reaches `traced` at most.
 - Never claim independent verification.

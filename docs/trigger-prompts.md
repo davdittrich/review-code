@@ -17,9 +17,13 @@ differently.
 
 ## Description under test
 
-SKILL.md git blob id: `26ec11336001dc9e9ed5aaf2f3e4a234f52e94ff`
+SKILL.md git blob id: `9f902cbb68d5c858659afe690cfa35e9d9c03c10`
 (`git rev-parse HEAD:skills/review-code/SKILL.md`). A later description change invalidates the
 results below.
+
+The trials ran against blob `26ec11336001dc9e9ed5aaf2f3e4a234f52e94ff`. SKILL.md body text changed
+after the trials (verification gate, iron law and Status wording) but the `description` is unchanged
+byte for byte, so the trial results stand. Routing depends on the description, not the body.
 
 ```text
 Reviews code changes (diffs, commits, branches, pull requests) or repository files and reports
