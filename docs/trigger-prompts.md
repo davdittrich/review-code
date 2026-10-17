@@ -17,19 +17,21 @@ differently.
 
 ## Description under test
 
-SKILL.md git blob id: `9f902cbb68d5c858659afe690cfa35e9d9c03c10`
+SKILL.md git blob id: `3700f2cca4617802e2cdd7529e3c87a61a72dc33`
 (`git rev-parse HEAD:skills/review-code/SKILL.md`). A later description change invalidates the
 results below.
 
-The trials ran against blob `26ec11336001dc9e9ed5aaf2f3e4a234f52e94ff`. SKILL.md body text changed
-after the trials (verification gate, iron law and Status wording) but the `description` is unchanged
-byte for byte, so the trial results stand. Routing depends on the description, not the body.
+The trials ran against this blob (commit `039d0e0`). It replaces the first description (blob
+`9f902cbb68d5c858659afe690cfa35e9d9c03c10`), under which T10 lost to `critical-code-reviewer`
+(9 WIN, 1 LOSE; review-code-qz4.16). The wording change added "the working tree", "a critical or
+adversarial review" and "a code review"; the exclusion sentence is unchanged. All 20 prompts were
+re-run on the new description.
 
 ```text
-Reviews code changes (diffs, commits, branches, pull requests) or repository files and reports
-defects, each with file:line evidence, an evidence class and a severity. Use when a user asks to
-review, critique, audit or check code, or asks what is wrong with a change. Not for writing,
-explaining or debugging code.
+Reviews code changes (diffs, commits, branches, pull requests, the working tree) or repository
+files and reports defects, each with file:line evidence, an evidence class and a severity. Use
+when a user asks for a code review, a critical or adversarial review, a critique, an audit or a
+check of code, or asks what is wrong with a change. Not for writing, explaining or debugging code.
 ```
 
 ## Collision surface
@@ -55,8 +57,9 @@ The 20 trials were run headlessly by the orchestrator, not in a hand-driven inte
 because the user asked for no human interaction. The hand check that D-06 prescribes was not
 performed (see "Planned hand check" below).
 
-- Each prompt: `claude -p` v2.1.302, `--plugin-dir` on a throwaway clone of HEAD `e00bbe3`,
-  `--model sonnet --max-turns 8`, one run per prompt, no repeats.
+- Each prompt: `claude -p` v2.1.302, `--plugin-dir` on a throwaway clone of HEAD `039d0e0`,
+  `--model sonnet --max-turns 8`, two runs per prompt (4 in parallel), stdin from `/dev/null`. A prompt
+  passes only if both runs pass. Verdict uses the first non-task-observer Skill call of a run.
 - Added `--append-system-prompt "Routing test. Your first action must be the Skill tool call for
   the single best-matching listed skill, if any matches the request. Do not call task-observer. Do
   nothing else."`. Without it the user's task-observer hook derailed the run and all 20 prompts and
@@ -105,29 +108,33 @@ session hooks (headless runs without a routing-forcing prompt are derailed by th
 | T07 | check this code for problems: the staged changes | review-code | review-code:review-code | WIN | - |
 | T08 | do a code review of the files I changed today | review-code | review-code:review-code | WIN | - |
 | T09 | is anything wrong with the error handling in src/api/client.ts | review-code | review-code:review-code | WIN | - |
-| T10 | give me a critical review of the current working tree | review-code | critical-code-reviewer | LOSE | FLAG |
+| T10 | give me a critical review of the current working tree | review-code | review-code:review-code | WIN | - |
 | N01 | write a function that parses ISO dates | not review-code | ponytail:ponytail | PASS | - |
 | N02 | explain how src/auth works | not review-code | describe-design | PASS | - |
 | N03 | write a commit message for the staged changes | not review-code | caveman:caveman-commit | PASS | - |
 | N04 | write a PR description for this branch | not review-code | mattpocock-skills:pr | PASS | - |
-| N05 | debug why the login test fails with a timeout | not review-code | gsd-debug | PASS | - |
+| N05 | debug why the login test fails with a timeout | not review-code | mattpocock-skills:diagnosing-bugs | PASS | - |
 | N06 | refactor the parser to use async | not review-code | caveman:safe-refactor | PASS | - |
-| N07 | add tests for the date parser | not review-code | gsd-add-tests | PASS | - |
+| N07 | add tests for the date parser | not review-code | mattpocock-skills:tdd | PASS | - |
 | N08 | rename the variable cfg to config everywhere | not review-code | caveman:safe-refactor | PASS | - |
 | N09 | summarise what README.md says | not review-code | none | PASS | - |
 | N10 | set up CI for this repository | not review-code | github-actions-r | PASS | - |
 
 ## Summary
 
-Trial date: 2026-10-18. Description blob `26ec11336001dc9e9ed5aaf2f3e4a234f52e94ff`.
+Trial date: 2026-10-18. Description blob `3700f2cca4617802e2cdd7529e3c87a61a72dc33`. Two runs per
+prompt; every run of every prompt returned the skill shown in the table (no run disagreed).
 
-- Should-trigger: 9 WIN, 1 LOSE, 0 NONE.
-- Should-not-trigger: 10 PASS, 0 FAIL.
-- Flagged: T10 ("give me a critical review of the current working tree"), won by the user's
-  installed `critical-code-reviewer`.
+- Should-trigger: 10 WIN (20 of 20 runs), 0 LOSE, 0 NONE.
+- Should-not-trigger: 10 PASS (20 of 20 runs), 0 FAIL.
+- Flagged: none.
 
-Caveat: these are forced-choice observations (see Method), not an unforced trigger rate.
+Caveat: these are forced-choice observations (see Method), not an unforced trigger rate. The
+interactive hand check (D-06) was not performed.
 
 ## Dispositions
 
-- T10: accepted by the orchestrator 2026-10-18 under the user's instruction to avoid human interaction; the user has not reviewed this disposition and should confirm it before it is relied on; reason: accepted for v0.1.0, collision with the user's installed critical-code-reviewer on the phrase "critical review"; description left unchanged so the other 19 results stay valid; follow-up ticket reconsiders the wording before public release.
+- T10: resolved by rewording the description (review-code-qz4.16). It won both runs on blob
+  `3700f2cc`. The earlier orchestrator-only acceptance of the loss no longer applies.
+- Not resolved: the D-06 interactive hand check in the user's real session (own hooks, no
+  routing-forcing system prompt). Headless forced-choice wins do not prove unforced routing.
