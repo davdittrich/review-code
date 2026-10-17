@@ -47,20 +47,9 @@ paraphrased from each skill's listed description.
 
 ## Method
 
-Hand check in the real interactive setup (D-06). Headless `claude -p` runs are not usable: the
-user's session hooks take the first action, so the routing decision is never observed.
-
-1. In a terminal at the repository root, run `claude --plugin-dir .` so the plugin loads beside the
-   installed skills.
-2. For each prompt below: run `/clear`, paste the prompt, note the first review-related Skill tool
-   call (ignore the task-observer load that the global instructions mandate), press Esc once the
-   choice is visible.
-3. Record the skill name, or `none`.
-
-### Method as run (deviation from the hand check above)
-
 The 20 trials were run headlessly by the orchestrator, not in a hand-driven interactive session,
-because the user asked for no human interaction.
+because the user asked for no human interaction. The hand check that D-06 prescribes was not
+performed (see "Planned hand check" below).
 
 - Each prompt: `claude -p` v2.1.302, `--plugin-dir` on a throwaway clone of HEAD `e00bbe3`,
   `--model sonnet --max-turns 8`, one run per prompt, no repeats.
@@ -75,6 +64,22 @@ because the user asked for no human interaction.
   session remains the stronger evidence.
 - Verdicts: should-trigger WIN only for `review-code:review-code`; should-not-trigger PASS for any
   other result.
+- Routing was forced: the appended system prompt tells the model its first action must be a Skill
+  call for the best-matching listed skill, so the trials are biased toward invoking a skill and
+  measure which skill wins, not whether any skill would trigger unprompted. The user's own session
+  hooks (the task-observer load) are not exercised.
+
+### Planned hand check (not performed)
+
+Hand check in the real interactive setup (D-06), which would observe routing under the user's own
+session hooks (headless runs without a routing-forcing prompt are derailed by those hooks).
+
+1. In a terminal at the repository root, run `claude --plugin-dir .` so the plugin loads beside the
+   installed skills.
+2. For each prompt below: run `/clear`, paste the prompt, note the first review-related Skill tool
+   call (ignore the task-observer load that the global instructions mandate), press Esc once the
+   choice is visible.
+3. Record the skill name, or `none`.
 
 ## Verdict rules
 
@@ -117,8 +122,8 @@ Trial date: 2026-10-18. Description blob `26ec11336001dc9e9ed5aaf2f3e4a234f52e94
 - Flagged: T10 ("give me a critical review of the current working tree"), won by the user's
   installed `critical-code-reviewer`.
 
-Caveat: these are forced-choice observations (see Method as run), not an unforced trigger rate.
+Caveat: these are forced-choice observations (see Method), not an unforced trigger rate.
 
 ## Dispositions
 
-- T10: accepted by user 2026-10-18, reason: delegated to the orchestrator under the user's instruction to avoid human interaction; accepted for v0.1.0, collision with the user's installed critical-code-reviewer on the phrase "critical review"; description left unchanged so the other 19 results stay valid; follow-up ticket reconsiders the wording before public release.
+- T10: accepted by the orchestrator 2026-10-18 under the user's instruction to avoid human interaction; the user has not reviewed this disposition and should confirm it before it is relied on; reason: accepted for v0.1.0, collision with the user's installed critical-code-reviewer on the phrase "critical review"; description left unchanged so the other 19 results stay valid; follow-up ticket reconsiders the wording before public release.
