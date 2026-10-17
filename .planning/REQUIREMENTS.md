@@ -9,9 +9,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Packaging and Legal
 
-- [ ] **PKG-01**: Plugin installs from `marketplace.json` and passes `claude plugin validate --strict`
+- [x] **PKG-01**: Plugin installs from `marketplace.json` and passes `claude plugin validate --strict`
 - [ ] **PKG-02**: LICENSE and NOTICE ship Posit's MIT notice for the upstream ccr skill, credit Garrick Aden-Buie and Ziad Hassan, and the skill frontmatter carries a `license:` field
-- [ ] **PKG-03**: `SKILL.md` stays under 500 lines with the iron law and verification gate inside the first 5,000 tokens; the description is short, third-person, and tested against the user's existing review skills for trigger collision
+- [x] **PKG-03**: `SKILL.md` stays under 500 lines with the iron law and verification gate inside the first 5,000 tokens; the description is short, third-person, and tested against the user's existing review skills for trigger collision
 - [ ] **PKG-04**: A keep-or-replace table covers every ccr.md rule (iron law, artifact-only, AI-authored scrutiny, cross-file and doc integrity, severity tiers); the user reviews it before the first lane is built
 
 ### Review Scope
@@ -98,9 +98,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PKG-01 | Phase 1 | Pending |
+| PKG-01 | Phase 1 | Complete |
 | PKG-02 | Phase 1 | Pending |
-| PKG-03 | Phase 1 | Pending |
+| PKG-03 | Phase 1 | Complete |
 | PKG-04 | Phase 1 | Pending |
 | SCOPE-01 | Phase 2 | Pending |
 | SCOPE-02 | Phase 2 | Pending |

@@ -33,11 +33,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. The short, third-person description triggers on recorded should-trigger review prompts and stays silent on should-not-trigger prompts, checked against the user's installed review skills.
   5. The user has reviewed and approved a keep-or-replace table that covers every ccr.md rule (iron law, artifact-only, AI-authored scrutiny, cross-file and doc integrity, severity tiers) before any lane is built.
 
-**Plans**: 5 plans
+**Plans**: 1/5 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 01-01-PLAN.md — Tracer: manifests, stub SKILL.md and check-package.sh gate (strict validate, fresh-config install, PKG-03 and hygiene checks)
+- [x] 01-01-PLAN.md — Tracer: manifests, stub SKILL.md and check-package.sh gate (strict validate, fresh-config install, PKG-03 and hygiene checks)
 - [ ] 01-05-PLAN.md — docs/ccr-contract.md: keep-or-replace row for every ccr.md line, user approval checkpoint
 
 **Wave 2** *(blocked on Wave 1 completion)*
@@ -124,7 +124,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Plugin Foundation and ccr Contract | 0/5 | Not started | - |
+| 1. Plugin Foundation and ccr Contract | 1/5 | In Progress | - |
 | 2. Review Target, Context Ledger and Trust Boundary | 0/TBD | Not started | - |
 | 3. Verified Review in the Terminal | 0/TBD | Not started | - |
 | 4. Full Lane Set, Domain Packs and Effort Tiers | 0/TBD | Not started | - |
