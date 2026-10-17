@@ -36,7 +36,8 @@ if [ "$#" -gt 0 ]; then
   fi
   tree=$(cd "$1" && pwd)
 else
-  root=$(git rev-parse --show-toplevel)
+  # Pin to the script's own checkout so the gate gives the same answer from any cwd.
+  root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
   mkdir "$scratch/tree"
   # Tracked state: a stash commit when the tree is dirty, else HEAD. The stash ref is not stored.
   ref=$(git -C "$root" stash create) || ref=""
@@ -200,11 +201,12 @@ fi
 
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
 banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/settings(\.local)?\.json$|^\.planning/(\.gsd-beads|milestone)\.lock$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
-if tracked=$(git ls-files); then
+# List the tree under test (the export, or the given directory), never the caller's repo.
+if tracked=$(cd "$tree" && find . -type f ! -path './.git/*' | sed 's|^\./||'); then
   hits=$(printf '%s\n' "$tracked" | grep -E "$banned" | tr '\n' ' ' || true)
   if [ -z "$hits" ]; then ok hygiene-tracked; else bad hygiene-tracked "tracked: $hits"; fi
 else
-  bad hygiene-tracked "git ls-files failed"
+  bad hygiene-tracked "listing $tree failed"
 fi
 
 finish
