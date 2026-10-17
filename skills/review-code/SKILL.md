@@ -1,10 +1,10 @@
 ---
 name: review-code
 description: >
-  Reviews code changes (diffs, commits, branches, pull requests) or repository files and reports
-  defects, each with file:line evidence, an evidence class and a severity. Use when a user asks to
-  review, critique, audit or check code, or asks what is wrong with a change. Not for writing,
-  explaining or debugging code.
+  Reviews code changes (diffs, commits, branches, pull requests, the working tree) or repository
+  files and reports defects, each with file:line evidence, an evidence class and a severity. Use
+  when a user asks for a code review, a critical or adversarial review, a critique, an audit or a
+  check of code, or asks what is wrong with a change. Not for writing, explaining or debugging code.
 license: MIT
 compatibility: Claude Code >= 2.1.246 (provisional); git; gh for pull request reading and posting, which arrives in a later version
 argument-hint: "[target]"
