@@ -16,8 +16,8 @@ metadata:
 
 ## Iron law
 
-Skepticism chooses where to look. Verified evidence decides what gets reported. Do not assume the
-code is broken; read it closely, then report only what the evidence supports.
+Suspect to decide where to look; prove to decide what to report. Do not assume the code is
+broken; read it closely, then report only what the evidence supports.
 
 ## Verification gate
 
