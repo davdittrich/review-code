@@ -26,10 +26,10 @@ A finding is reportable only with all four of:
 1. `file:line` of the defect.
 2. The quoted code at that location.
 3. A concrete trigger: the input or state that makes it fail.
-4. An evidence class (see below).
+4. An evidence class of `reproduced` or `traced` (see below).
 
-A Blocking finding needs evidence class `reproduced` or `traced`. A concern that cannot meet the
-gate is asked as a question and never stated as a finding.
+A concern that cannot meet the gate, including any at `inferred` or `speculative`, is asked as a
+question or listed as an unverified note and never stated as a finding.
 
 ## Severity and evidence
 
