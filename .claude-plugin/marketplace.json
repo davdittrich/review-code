@@ -1,0 +1,12 @@
+{
+  "name": "review-code",
+  "description": "Marketplace for the review-code code review plugin.",
+  "owner": { "name": "davdittrich" },
+  "plugins": [
+    {
+      "name": "review-code",
+      "source": "./",
+      "description": "Code review skill whose findings carry file:line evidence and an evidence class."
+    }
+  ]
+}
