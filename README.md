@@ -25,7 +25,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## What ships
 
-The plugin root is the repository root, so every tracked file ships to installers, including `.planning/`, `docs/` and `scripts/`. Tooling, agent pointer files and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
+The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the ccr contract and trigger-prompt record) and `scripts/`. It also includes the GSD planning record under `.planning/` (`PROJECT.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `STATE.md`, `config.json`, `research/` and `phases/`), which is shipped on purpose (decision D-03); it is project history, not loaded by the plugin. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
 
 ## Releasing
 
