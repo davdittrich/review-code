@@ -5,3 +5,28 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Dev tooling, agent pointers and third-party reference text. With plugin source "./" every
+# tracked file ships to installers, so none of these may be tracked (see scripts/check-package.sh).
+/CLAUDE.md
+/AGENTS.md
+/GEMINI.md
+.wolf/
+.serena/
+.codex/
+.cursor/
+.agents/
+.opencode/
+.beads/
+.claude/commands/
+.claude/rules/
+.claude/skills/
+.claude/settings.json
+.claude/settings.local.json
+/docs/ccr.md
+/docs/matt.md
+/docs/ponytail.md
+/docs/caveman.md
+/docs/cavecrew-reviewer.md
+/docs/gsd-code-reviewer.md
+/docs/code-review.md
