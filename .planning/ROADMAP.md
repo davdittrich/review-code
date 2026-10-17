@@ -7,6 +7,7 @@ The project starts from `docs/ccr.md` and ends with a portable Claude Code plugi
 ## Phases
 
 **Phase Numbering:**
+
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
@@ -27,24 +28,28 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Depends on**: Nothing (first phase)
 **Requirements**: PKG-01, PKG-02, PKG-03, PKG-04
 **Success Criteria** (what must be TRUE):
+
   1. `claude plugin validate --strict` passes, and the plugin installs from `marketplace.json` on a Claude Code setup that has never seen it.
   2. LICENSE and NOTICE carry Posit's MIT notice for the upstream ccr skill and credit Garrick Aden-Buie and Ziad Hassan; the skill frontmatter has a `license:` field.
   3. `SKILL.md` is under 500 lines, with the iron law and verification gate inside its first 5,000 tokens.
   4. The short, third-person description triggers on recorded should-trigger review prompts and stays silent on should-not-trigger prompts, checked against the user's installed review skills.
   5. The user has reviewed and approved a keep-or-replace table that covers every ccr.md rule (iron law, artifact-only, AI-authored scrutiny, cross-file and doc integrity, severity tiers) before any lane is built.
 
-**Plans**: 1/5 plans executed
+**Plans**: 2/5 plans executed
 
 Plans:
 **Wave 1**
+
 - [x] 01-01-PLAN.md — Tracer: manifests, stub SKILL.md and check-package.sh gate (strict validate, fresh-config install, PKG-03 and hygiene checks)
-- [ ] 01-05-PLAN.md — docs/ccr-contract.md: keep-or-replace row for every ccr.md line, user approval checkpoint
+- [x] 01-05-PLAN.md — docs/ccr-contract.md: keep-or-replace row for every ccr.md line, user approval checkpoint
 
 **Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 01-02-PLAN.md — LICENSE and NOTICE with Posit notice, credits and D-08 accepted risk; plugin author (copyright-holder decision)
 - [ ] 01-04-PLAN.md — docs/trigger-prompts.md: 20-prompt trigger and collision table, user-run trials, flagged losses
 
 **Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 01-03-PLAN.md — Shipped-file policy and publication-timing decisions; ignore rules and README
 
 ### Phase 2: Review Target, Context Ledger and Trust Boundary
@@ -53,6 +58,7 @@ Plans:
 **Depends on**: Phase 1
 **Requirements**: SCOPE-01, SCOPE-02, CTX-01, CTX-03, CTX-04, CTX-05, CTX-06, CTX-07, REPR-02
 **Success Criteria** (what must be TRUE):
+
   1. The user can invoke the skill with a PR or MR number or URL, a commit, a commit range, a branch diff, staged or unstaged changes, files or directories, or the whole repo. The skill states the resolved target kind and its pinned refs (`BASE...HEAD`, or `HEAD` plus working-tree state), and asks once only when the invocation is ambiguous. Closed, draft and empty changes are skipped with a stated reason; lockfiles, minified files and generated files are excluded from the target.
   2. Before any lane runs, ledger files on disk list callers, tests, fixtures, config, CI, docs, conventions (CLAUDE.md, AGENTS.md, CONTRIBUTING, base-ref `REVIEW.md`) and spec. An empty ledger refuses the review or labels it triage. A `REVIEW.md` that exists or differs only on the PR head is ignored.
   3. PR description and commit messages appear only in the Spec lane's input file, labelled untrusted. Hidden HTML, zero-width characters and image alt text are stripped from all reviewed text, and no other lane input file contains PR text.
@@ -67,6 +73,7 @@ Plans:
 **Depends on**: Phase 2 (Defects lane build also requires the Phase 1 keep-or-replace approval; reproduction requires the Phase 2 trust prompt)
 **Requirements**: LANE-01, VERI-01, VERI-02, VERI-03, VERI-04, VERI-05, VERI-06, OUT-01, OUT-02, OUT-05, CTX-02, SCOPE-03, REPR-01
 **Success Criteria** (what must be TRUE):
+
   1. Reviewing a change runs a Defects lane (correctness, security, tests, ported from ccr.md under the approved table). The terminal report shows Summary / Blocking / Required / Suggestions / Verdict, an advisory verdict, and the areas inspected. Reviewing a directory or the whole repo yields whole-file findings anchored at file:line, and the report states that the target is not a change.
   2. The terminal report, the JSON output and a SARIF 2.1.0 export all render from one versioned JSON document (schema v1, stable finding IDs, deterministic order). Each SARIF result carries the finding's evidence class, severity and origin as result properties.
   3. Each candidate finding is checked by a fresh-context, read-only verifier that receives only claim, file:line and trigger. A planted false finding comes back `refuted` and is dropped and counted; `unverifiable` findings appear in their own list.
@@ -81,6 +88,7 @@ Plans:
 **Depends on**: Phase 3
 **Requirements**: LANE-02, LANE-03, LANE-04, LANE-05, LANE-06, LANE-07, LANE-08, LANE-09, LANE-10, SCOPE-04
 **Success Criteria** (what must be TRUE):
+
   1. The report has separate Defects, Standards and Spec sections, deduplicated within each axis and never reranked against each other. The Spec section lists what it declined to judge, or says that no spec exists. Ponytail findings (needless code, reimplemented stdlib or helpers, over-engineering) are always produced, as their own lane or folded into another.
   2. A change touching, for example, a SQL migration or a Python file loads the matching domain pack and its do-not-flag list, and unrelated packs stay unloaded. The SOTA lane runs only when the tier or a flag enables it.
   3. The user picks `quick`, `standard` or `deep`. Per-lane model and effort follow the tier, the verifier runs on a different tier from the finders, and user overrides take effect.
@@ -95,6 +103,7 @@ Plans:
 **Depends on**: Phase 4
 **Requirements**: OUT-03, OUT-04, OUT-06, SCOPE-05
 **Success Criteria** (what must be TRUE):
+
   1. `--comment` on a GitHub PR target builds one pending review through `gh api`, rendered from the same JSON document as the terminal report, with `commit_id` pinned. Every inline anchor is valid against `gh pr diff`, and out-of-hunk findings go into the review body.
   2. The user sees the exact payload and its secret-scan result before anything is submitted. Submission happens as `COMMENT` only after confirmation; APPROVE and REQUEST_CHANGES are never sent.
   3. Posting is refused if the PR HEAD changed since the review. Posting the same review again does not duplicate comments (hidden idempotency markers).
@@ -109,6 +118,7 @@ Plans:
 **Depends on**: Phase 5
 **Requirements**: FIX-01, FIX-02, FIX-03, FIX-04, FIX-05
 **Success Criteria** (what must be TRUE):
+
   1. Fixes are applied only when the user passes the explicit fix flag; a default review never edits files.
   2. Fix mode refuses to start on a dirty working tree or on a run the trust prompt marked as an external PR, and the user confirms the exact test command before it runs.
   3. The fix plan is rendered from the same JSON document as the report. Only `confirmed` findings with a concrete fix are applied, one at a time, in a foreground subagent on a model matched to the fix's complexity, with every confirmation gate in the main thread.
@@ -124,7 +134,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Plugin Foundation and ccr Contract | 1/5 | In Progress | - |
+| 1. Plugin Foundation and ccr Contract | 2/5 | In Progress|  |
 | 2. Review Target, Context Ledger and Trust Boundary | 0/TBD | Not started | - |
 | 3. Verified Review in the Terminal | 0/TBD | Not started | - |
 | 4. Full Lane Set, Domain Packs and Effort Tiers | 0/TBD | Not started | - |
