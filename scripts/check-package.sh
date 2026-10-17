@@ -163,6 +163,41 @@ else
   fi
 fi
 
+# PKG-02: licence and upstream attribution (D-07, D-08).
+lic="$tree/LICENSE"
+notice="$tree/NOTICE"
+holder=$(sed -n 's/^Copyright (c) 20[0-9][0-9] //p' "$lic" 2>/dev/null | head -n 1)
+if [ -f "$lic" ] && [ "$(head -n 1 "$lic")" = "MIT License" ] && [ -n "$holder" ]; then
+  ok license-mit
+else
+  bad license-mit 'LICENSE line 1 must be "MIT License" with a "Copyright (c) YYYY holder" line'
+fi
+if grep -qF 'Copyright (c) 2025 Posit PBC' "$notice" 2>/dev/null; then
+  ok notice-posit-copyright
+else
+  bad notice-posit-copyright 'NOTICE lacks the Posit PBC copyright line'
+fi
+if grep -qF 'Permission is hereby granted, free of charge' "$notice" 2>/dev/null; then
+  ok notice-permission
+else
+  bad notice-permission 'NOTICE lacks the upstream MIT permission text'
+fi
+if grep -qF 'Garrick Aden-Buie' "$notice" 2>/dev/null && grep -qF 'Ziad Hassan' "$notice" 2>/dev/null; then
+  ok notice-credits
+else
+  bad notice-credits 'NOTICE must credit Garrick Aden-Buie and Ziad Hassan'
+fi
+if grep -qF 'has not been verified' "$notice" 2>/dev/null; then
+  ok notice-accepted-risk
+else
+  bad notice-accepted-risk 'NOTICE must record the unverified v1.3 licence (D-08)'
+fi
+if [ -n "$holder" ] && [ "$(jq -r '.author.name // empty' "$pj" 2>/dev/null)" = "$holder" ]; then
+  ok plugin-author
+else
+  bad plugin-author 'plugin.json .author.name must equal the LICENSE copyright holder'
+fi
+
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
 banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/settings(\.local)?\.json$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
 if tracked=$(git ls-files); then
