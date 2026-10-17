@@ -57,6 +57,25 @@ user's session hooks take the first action, so the routing decision is never obs
    choice is visible.
 3. Record the skill name, or `none`.
 
+### Method as run (deviation from the hand check above)
+
+The 20 trials were run headlessly by the orchestrator, not in a hand-driven interactive session,
+because the user asked for no human interaction.
+
+- Each prompt: `claude -p` v2.1.302, `--plugin-dir` on a throwaway clone of HEAD `e00bbe3`,
+  `--model sonnet --max-turns 8`, one run per prompt, no repeats.
+- Added `--append-system-prompt "Routing test. Your first action must be the Skill tool call for
+  the single best-matching listed skill, if any matches the request. Do not call task-observer. Do
+  nothing else."`. Without it the user's task-observer hook derailed the run and all 20 prompts and
+  3 positive controls returned no skill call.
+- Controls with that prompt worked: "extract all the text and tables from report.pdf" gave
+  `pdf-official`; "write a commit message for the staged changes" gave `caveman:caveman-commit`.
+- Bias: the forcing prompt pushes toward invoking a skill at all. Read the results as "which skill
+  wins when a skill is invoked", not as an unforced trigger rate. A hand run in an interactive
+  session remains the stronger evidence.
+- Verdicts: should-trigger WIN only for `review-code:review-code`; should-not-trigger PASS for any
+  other result.
+
 ## Verdict rules
 
 - Should-trigger rows (T): WIN (review-code invoked), LOSE (another skill invoked; name it), NONE
@@ -68,31 +87,38 @@ user's session hooks take the first action, so the routing decision is never obs
 
 | ID | Prompt | Expected | Skill invoked | Verdict | Flag |
 |----|--------|----------|---------------|---------|------|
-| T01 | review my latest diff | review-code | pending | pending | - |
-| T02 | what's wrong with this function in src/parser.py | review-code | pending | pending | - |
-| T03 | audit src/auth for bugs | review-code | pending | pending | - |
-| T04 | critique the changes on this branch before I open a PR | review-code | pending | pending | - |
-| T05 | review PR #123 | review-code | pending | pending | - |
-| T06 | find bugs in my last commit | review-code | pending | pending | - |
-| T07 | check this code for problems: the staged changes | review-code | pending | pending | - |
-| T08 | do a code review of the files I changed today | review-code | pending | pending | - |
-| T09 | is anything wrong with the error handling in src/api/client.ts | review-code | pending | pending | - |
-| T10 | give me a critical review of the current working tree | review-code | pending | pending | - |
-| N01 | write a function that parses ISO dates | not review-code | pending | pending | - |
-| N02 | explain how src/auth works | not review-code | pending | pending | - |
-| N03 | write a commit message for the staged changes | not review-code | pending | pending | - |
-| N04 | write a PR description for this branch | not review-code | pending | pending | - |
-| N05 | debug why the login test fails with a timeout | not review-code | pending | pending | - |
-| N06 | refactor the parser to use async | not review-code | pending | pending | - |
-| N07 | add tests for the date parser | not review-code | pending | pending | - |
-| N08 | rename the variable cfg to config everywhere | not review-code | pending | pending | - |
-| N09 | summarise what README.md says | not review-code | pending | pending | - |
-| N10 | set up CI for this repository | not review-code | pending | pending | - |
+| T01 | review my latest diff | review-code | review-code:review-code | WIN | - |
+| T02 | what's wrong with this function in src/parser.py | review-code | review-code:review-code | WIN | - |
+| T03 | audit src/auth for bugs | review-code | review-code:review-code | WIN | - |
+| T04 | critique the changes on this branch before I open a PR | review-code | review-code:review-code | WIN | - |
+| T05 | review PR #123 | review-code | review-code:review-code | WIN | - |
+| T06 | find bugs in my last commit | review-code | review-code:review-code | WIN | - |
+| T07 | check this code for problems: the staged changes | review-code | review-code:review-code | WIN | - |
+| T08 | do a code review of the files I changed today | review-code | review-code:review-code | WIN | - |
+| T09 | is anything wrong with the error handling in src/api/client.ts | review-code | review-code:review-code | WIN | - |
+| T10 | give me a critical review of the current working tree | review-code | critical-code-reviewer | LOSE | FLAG |
+| N01 | write a function that parses ISO dates | not review-code | ponytail:ponytail | PASS | - |
+| N02 | explain how src/auth works | not review-code | describe-design | PASS | - |
+| N03 | write a commit message for the staged changes | not review-code | caveman:caveman-commit | PASS | - |
+| N04 | write a PR description for this branch | not review-code | mattpocock-skills:pr | PASS | - |
+| N05 | debug why the login test fails with a timeout | not review-code | gsd-debug | PASS | - |
+| N06 | refactor the parser to use async | not review-code | caveman:safe-refactor | PASS | - |
+| N07 | add tests for the date parser | not review-code | gsd-add-tests | PASS | - |
+| N08 | rename the variable cfg to config everywhere | not review-code | caveman:safe-refactor | PASS | - |
+| N09 | summarise what README.md says | not review-code | none | PASS | - |
+| N10 | set up CI for this repository | not review-code | github-actions-r | PASS | - |
 
 ## Summary
 
-Pending the 20 user-run trials.
+Trial date: 2026-10-18. Description blob `26ec11336001dc9e9ed5aaf2f3e4a234f52e94ff`.
+
+- Should-trigger: 9 WIN, 1 LOSE, 0 NONE.
+- Should-not-trigger: 10 PASS, 0 FAIL.
+- Flagged: T10 ("give me a critical review of the current working tree"), won by the user's
+  installed `critical-code-reviewer`.
+
+Caveat: these are forced-choice observations (see Method as run), not an unforced trigger rate.
 
 ## Dispositions
 
-Pending: one entry per FLAG row, recorded after the trials.
+- T10: accepted by user 2026-10-18, reason: delegated to the orchestrator under the user's instruction to avoid human interaction; accepted for v0.1.0, collision with the user's installed critical-code-reviewer on the phrase "critical review"; description left unchanged so the other 19 results stay valid; follow-up ticket reconsiders the wording before public release.
