@@ -167,21 +167,27 @@ fi
 # PKG-02: licence and upstream attribution (D-07, D-08).
 lic="$tree/LICENSE"
 notice="$tree/NOTICE"
+# The full MIT text must travel with copies: grant, notice-inclusion clause and warranty disclaimer.
+has_mit_text() {
+  grep -qF 'Permission is hereby granted, free of charge' "$1" 2>/dev/null &&
+    grep -qF 'The above copyright notice and this permission notice shall be included' "$1" 2>/dev/null &&
+    grep -qF 'THE SOFTWARE IS PROVIDED "AS IS"' "$1" 2>/dev/null
+}
 holder=$(sed -n 's/^Copyright (c) 20[0-9][0-9] //p' "$lic" 2>/dev/null | head -n 1)
-if [ -f "$lic" ] && [ "$(head -n 1 "$lic")" = "MIT License" ] && [ -n "$holder" ]; then
+if [ -f "$lic" ] && [ "$(head -n 1 "$lic")" = "MIT License" ] && [ -n "$holder" ] && has_mit_text "$lic"; then
   ok license-mit
 else
-  bad license-mit 'LICENSE line 1 must be "MIT License" with a "Copyright (c) YYYY holder" line'
+  bad license-mit 'LICENSE line 1 must be "MIT License" with a "Copyright (c) YYYY holder" line and the full MIT permission, inclusion and disclaimer text'
 fi
 if grep -qF 'Copyright (c) 2025 Posit PBC' "$notice" 2>/dev/null; then
   ok notice-posit-copyright
 else
   bad notice-posit-copyright 'NOTICE lacks the Posit PBC copyright line'
 fi
-if grep -qF 'Permission is hereby granted, free of charge' "$notice" 2>/dev/null; then
+if has_mit_text "$notice"; then
   ok notice-permission
 else
-  bad notice-permission 'NOTICE lacks the upstream MIT permission text'
+  bad notice-permission 'NOTICE lacks the full upstream MIT text (grant, inclusion clause, disclaimer)'
 fi
 if grep -qF 'Garrick Aden-Buie' "$notice" 2>/dev/null && grep -qF 'Ziad Hassan' "$notice" 2>/dev/null; then
   ok notice-credits
