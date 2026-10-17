@@ -1,6 +1,8 @@
 # ccr.md Keep-or-Replace Contract
 
-**Status:** draft, awaiting user approval
+**Status:** approved 2026-10-18
+
+**Approval record:** "Approve with the 5 proposed defaults" (user answer to the Plan 01-05 approval prompt, 2026-10-18). The five defaults are resolved under "Resolved questions" below and applied in the L19, L24, L32, L47, L100 and L133 rows.
 
 **Source:** `docs/ccr.md`, an intentionally untracked reference copy (critical-code-reviewer v1.3), sha256 `0d4daffe93e1e65f0bbbb6ba623a5f585cdac996d72ad0eb5c1a69c0bdbf8556`, 137 lines. Every `L<n>` below is a line number in that exact file; citations are valid only for that hash. Upstream comparison base: `posit-dev/skills` critical-code-reviewer v1.2 (commit `e32ae38e7489d9ad271c7c505c9a2c54ff72ef91`, MIT).
 
@@ -18,14 +20,14 @@
 | L17 | Iron Law section heading | keep | The skill states one core principle near the top; PKG-03 requires the iron law inside the first 5,000 tokens. | SKILL.md | v1.3-only |
 | L19 | Iron law text: skepticism required, code presumed broken until shown excellent, terse, merciless | replace | D-11: keep skepticism as a guide to where to look; drop the presumption of guilt, which research ties to false positives (REQUIREMENTS Out of Scope). Verified evidence decides what is reported. "No mercy" is theatrical (D-14). | SKILL.md iron law | v1.3-only |
 | L21 | Mindset section heading | adapt | Section kept as the stance block, holding the three attitudes after their rewrite. | SKILL.md | Posit v1.2 |
-| L23 | Guilty-until-exceptional: treat all code as lazy or broken by default | replace | D-11: a default verdict of guilt generates findings without evidence. Replaced by "suspect to locate, prove to report". | SKILL.md iron law | Posit v1.2 |
-| L24 | Artifact only: ignore PR text, comments and TODOs; an unhandled case is a bug; flag stale or misleading comments | adapt | D-12 and CTX-03: Defects and Standards lanes never read PR description or commit messages; only the Spec lane sees them, labelled untrusted. The stale-comment flag stays. Upstream v1.2 takes the opposite view (use them as claims to verify); this reversal exists only in v1.3. | Defects + Standards (artifact only); Spec lane (untrusted PR text) | v1.3-only |
+| L23 | Guilty-until-exceptional: treat all code as lazy or broken by default | replace | D-11: a default verdict of guilt generates findings without evidence. Replaced by the wording "Suspect to decide where to look; prove to decide what to report." (approved). | SKILL.md iron law | Posit v1.2 |
+| L24 | Artifact only: ignore PR text, comments and TODOs; an unhandled case is a bug; flag stale or misleading comments | adapt | D-12 and CTX-03: Defects and Standards lanes never read PR description or commit messages; only the Spec lane sees them, labelled untrusted. The stale-comment flag stays. Upstream v1.2 takes the opposite view (use them as claims to verify); this reversal exists only in v1.3. | Standards (artifact only, owns the stale-comment flag; approved); Defects (artifact only); Spec lane (untrusted PR text) | v1.3-only |
 | L25 | Constructive brutality: direct, specific, actionable, no theatre, praise only for elite work | adapt | D-14: keep direct, specific, constructive; drop the praise-only-if-elite clause and brutality framing. | SKILL.md tone | Posit v1.2 |
 | L27 | Detection Patterns section heading | adapt | Groups are redistributed by lane ownership (Defects, Standards, Ponytail, domain packs) instead of one flat list. | lane prompts (Phase 3) | Posit v1.2 |
 | L29 | Slop and structure group heading | adapt | D-14: "slop" is an internal pejorative, never used in output; contents go to Standards and Ponytail, severity capped at Required. | Standards + Ponytail lanes | Posit v1.2 |
 | L30 | Comments that only restate the next line | adapt | D-14: demote to Suggestions; wording must not insult the reader of the finding. | Standards lane | Posit v1.2 |
 | L31 | Meaningless names (generic data, temp, single letters) | adapt | D-14: Suggestions by default, Required only when a name misleads or breaks the repo's own convention; linter-catchable cases excluded (VERI-05). | Standards lane | Posit v1.2 |
-| L32 | Repeated logic across branches should be hoisted | adapt | D-14: Ponytail input at Suggestions; reported only when the duplicate sits in changed lines. | Ponytail lane | Posit v1.2 |
+| L32 | Repeated logic across branches should be hoisted | adapt | D-14: Ponytail input at Suggestions; reported only when the duplicate sits in changed lines. Merged with L47 into one Ponytail check (approved). | Ponytail lane | Posit v1.2 |
 | L33 | Cargo-cult idioms: wrong effect dependencies, blocking work inside async wrappers, row-wise apply where a vector form exists | adapt | Behavioural misuse is a Defects finding when a failing path is traced; style-only cases go to Standards at Suggestions (D-14). Language examples are repeated in the packs. | Defects (behavioural) + Standards | Posit v1.2 |
 | L34 | Structural smells: junk-drawer files, very large components, import disorder, dependency sprawl | adapt | D-14: size thresholds are heuristics, not defects; sprawl and sizing flow to Ponytail, conventions to Standards. | Standards + Ponytail lanes | Posit v1.2 |
 | L35 | Dead code: unused imports and variables, unreachable branches, commented-out blocks | adapt | Unused symbols are linter-catchable and excluded (VERI-05) unless tooling is absent; unreachable and commented-out code stays as Ponytail input. | Ponytail lane | Posit v1.2 |
@@ -38,7 +40,7 @@
 | L44 | Extra scrutiny for AI-authored code (heading) | adapt | Authorship is not knowable from a diff; trigger the scrutiny from the change's claims and shape instead. | Defects lane + LLM-generated-code pack | v1.3-only |
 | L45 | Trace every path, not only the optimised one; regressions hide in unmentioned paths | keep | Produces `traced` evidence (VERI-03) and feeds the verifier. | Defects lane + verifier | v1.3-only |
 | L46 | Reject unproven claims such as zero overhead or no behaviour change | adapt | An unproven claim is at most `inferred` evidence until a path trace exists (VERI-03). | Defects lane + verifier | v1.3-only |
-| L47 | Calls duplicated across branches should be hoisted | adapt | Same idea as L32; Ponytail input at Suggestions. | Ponytail lane | v1.3-only |
+| L47 | Calls duplicated across branches should be hoisted | adapt | Same check as L32, merged into it (approved); Ponytail input at Suggestions. | Ponytail lane | v1.3-only |
 | L49 | Language red flags section heading | adapt | D-15: becomes content of the Phase 4 domain packs; no pack files are written in Phase 1. | Phase 4 packs (LANE-06) | v1.3-only |
 | L51 | Python sub-heading | adapt | D-15: one pack per language. | Python pack | v1.3-only |
 | L52 | Bare or over-broad exception handlers swallow errors | adapt | D-15; also a Defects silent-failure case. Linter-catchable, so excluded when a linter is configured (VERI-05). | Python pack | v1.3-only |
@@ -80,7 +82,7 @@
 | L96 | On repeat reviews focus on the delta and do not reopen settled items | keep | Fits change targeting (CTX-07) and origin tagging (VERI-06). | SKILL.md | Posit v1.2 |
 | L97 | When a pattern is unfamiliar, note it, defer to team convention and ask | keep | Aligns with honouring repo guidance files (CTX-06). | SKILL.md | Posit v1.2 |
 | L99 | Severity tiers sub-heading | adapt | D-13: tiers stay as severity; evidence class is a second, separate axis. | severity rubric (OUT-01) | Posit v1.2 |
-| L100 | Blocking tier: security, data loss, races, accessibility, doc/source mismatch, constructor divergence | adapt | D-13: category list kept, including constructor divergence; Blocking additionally requires `reproduced` or `traced` evidence (VERI-03). Tier core exists upstream; the two cross-file categories are v1.3. | severity rubric | v1.3-only |
+| L100 | Blocking tier: security, data loss, races, accessibility, doc/source mismatch, constructor divergence | adapt | D-13: category list kept, including constructor divergence; Blocking additionally requires `reproduced` or `traced` evidence (VERI-03). Accessibility is demoted to Required when its evidence is below `traced` (approved). Tier core exists upstream; the two cross-file categories are v1.3. | severity rubric | v1.3-only |
 | L101 | Required tier: style items, weak naming, missing edge-case handling, plan-mirroring diffs | adapt | D-14 demotes style items; plan transcription (L42) is a heuristic, not a tier trigger. | severity rubric | v1.3-only |
 | L102 | Suggestions tier: intent, performance, tests | keep | D-13; performance items need evidence. | severity rubric | Posit v1.2 |
 | L103 | Noted tier: minor style, mention once | keep | D-13 keeps Noted for style. | severity rubric | Posit v1.2 |
@@ -104,7 +106,7 @@
 | L129 | Suggestions section | keep | OUT-01. | OUT-01 terminal report | Posit v1.2 |
 | L130 | Placeholder for better patterns | keep | Suggestions carry alternatives. | OUT-01 terminal report | Posit v1.2 |
 | L132 | Verdict section | adapt | Advisory only; never maps to a GitHub review event (OUT-04). | OUT-01 terminal report | Posit v1.2 |
-| L133 | Three verdict labels, including an approval label | replace | OUT-04: the skill never approves or requests changes on GitHub; labels are renamed so none reads as an approval. | OUT-01 terminal report | Posit v1.2 |
+| L133 | Three verdict labels, including an approval label | replace | OUT-04: the skill never approves or requests changes on GitHub; labels are renamed to Needs changes / Needs discussion / No blocking findings (approved) so none reads as an approval. | OUT-01 terminal report | Posit v1.2 |
 | L135 | Next steps section | adapt | Shown only in interactive main-thread runs. | OUT-01 terminal report | Posit v1.2 |
 | L136 | Offer follow-up options; skip when run as a subagent | adapt | Lane subagents return findings only and never offer options. | SKILL.md + lane prompts | Posit v1.2 |
 
@@ -112,10 +114,10 @@
 
 The licence of the v1.3 additions credited to Ziad Hassan has not been verified. The project assumes MIT and credits him in NOTICE and SKILL.md. Every row marked `v1.3-only` rests on that assumption. Wording is rewritten in our own words (D-09), which lowers but does not remove the risk. Revisit before any public release; verification (comparison with the posit-dev text or asking the author) was declined for now.
 
-## Open questions for the approval checkpoint
+## Resolved questions (approved 2026-10-18)
 
-1. **L24, stale-comment flag.** Proposed: the Standards lane owns it (artifact-only lane that checks documented conventions). Alternative: Defects, if the comment contradicts source (already covered by L88).
-2. **L100, accessibility as Blocking.** Accessibility barriers are often only `inferred` without a rendered page. Proposed: stay in the Blocking category list but demote to Required when evidence is below `traced`.
-3. **L19, iron law wording.** Proposed: "Suspect to decide where to look; prove to decide what to report." Alternative: keep ccr's terse imperative style with the presumption removed.
-4. **L133, verdict labels.** Proposed: Needs changes / Needs discussion / No blocking findings, advisory text only. Alternative: keep the ccr labels.
-5. **L47 and L32 merge.** Proposed: one Ponytail check for repeated expressions. Alternative: keep as two rows in the lane prompt.
+1. **L24, stale-comment flag:** owned by the Standards lane.
+2. **L100, accessibility as Blocking:** stays a Blocking category, demoted to Required when evidence is below `traced`.
+3. **L19, iron law wording:** "Suspect to decide where to look; prove to decide what to report."
+4. **L133, verdict labels:** Needs changes / Needs discussion / No blocking findings, advisory only.
+5. **L32 and L47:** merged into one Ponytail check.
