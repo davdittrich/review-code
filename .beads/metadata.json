@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "review_code",
+  "project_id": "8cc0c2ca-9f94-4a2d-9f7a-4ecefb189fe4"
+}
