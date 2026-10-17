@@ -24,23 +24,33 @@ for dep in git jq claude tar; do
 done
 ok deps
 
-root=$(git rev-parse --show-toplevel)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-mkdir "$scratch/tree" "$scratch/cfg"
+mkdir "$scratch/cfg"
 
-# Tracked state: a stash commit when the tree is dirty, else HEAD. The stash ref is not stored.
-ref=$(git -C "$root" stash create) || ref=""
-if ! git -C "$root" archive --format=tar -o "$scratch/tree.tar" "${ref:-HEAD}"; then
-  bad export "git archive failed"
-  finish
+if [ "$#" -gt 0 ]; then
+  # Check the given directory as-is (used by the mutation probes).
+  if [ ! -f "$1/.claude-plugin/plugin.json" ]; then
+    printf 'not a plugin root: %s\n' "$1"
+    exit 2
+  fi
+  tree=$(cd "$1" && pwd)
+else
+  root=$(git rev-parse --show-toplevel)
+  mkdir "$scratch/tree"
+  # Tracked state: a stash commit when the tree is dirty, else HEAD. The stash ref is not stored.
+  ref=$(git -C "$root" stash create) || ref=""
+  if ! git -C "$root" archive --format=tar -o "$scratch/tree.tar" "${ref:-HEAD}"; then
+    bad export "git archive failed"
+    finish
+  fi
+  if ! tar -x -C "$scratch/tree" -f "$scratch/tree.tar"; then
+    bad export "tar extract failed"
+    finish
+  fi
+  ok export
+  tree="$scratch/tree"
 fi
-if ! tar -x -C "$scratch/tree" -f "$scratch/tree.tar"; then
-  bad export "tar extract failed"
-  finish
-fi
-ok export
-tree="$scratch/tree"
 
 if (cd "$tree" && claude plugin validate --strict . >"$scratch/validate.log" 2>&1); then
   ok validate-strict
@@ -90,6 +100,76 @@ if CLAUDE_CONFIG_DIR="$cfg" claude plugin details review-code >"$scratch/details
   fi
 else
   bad details-skill "$(tail -n 2 "$scratch/details.log" | tr '\n' ';')"
+fi
+
+# PKG-03: properties claude plugin validate does not check.
+skill="$tree/skills/review-code/SKILL.md"
+if [ ! -f "$skill" ]; then
+  bad skill-file "missing $skill"
+else
+  fm="$scratch/frontmatter"
+  if awk 'NR == 1 { if ($0 != "---") exit 1; next }
+    /^---[ \t]*$/ { found = 1; exit }
+    { print }
+    END { if (!found) exit 1 }' "$skill" >"$fm"; then
+    ok skill-frontmatter-start
+    name=$(sed -n 's/^name:[ \t]*//p' "$fm" | head -n 1)
+    dir=$(basename "$(dirname "$skill")")
+    if [ "$name" = "$dir" ] && [ "$name" = "review-code" ]; then
+      ok skill-name-dir
+    else
+      bad skill-name-dir "name '$name' must equal directory '$dir' and review-code"
+    fi
+    desc=$(awk '/^description:/ { sub(/^description:[ \t]*/, ""); if ($0 !~ /^[>|][-+]?$/) d = $0; inb = 1; next }
+      inb && /^[ \t]+/ { gsub(/^[ \t]+|[ \t]+$/, ""); d = (d == "" ? $0 : d " " $0); next }
+      { inb = 0 }
+      END { print d }' "$fm")
+    if [ "${#desc}" -ge 40 ] && [ "${#desc}" -le 1024 ]; then
+      ok skill-description-length
+    else
+      bad skill-description-length "${#desc} characters, need 40 to 1024"
+    fi
+    if printf '%s\n' "$desc" | grep -qiwE 'i|you|your|my|we'; then
+      bad skill-description-person "description uses a first or second person word"
+    else
+      ok skill-description-person
+    fi
+    if grep -q '^license: MIT$' "$fm"; then ok skill-license; else bad skill-license 'need "license: MIT"'; fi
+    if grep -q '^compatibility:' "$fm"; then ok skill-compatibility; else bad skill-compatibility 'need a compatibility line'; fi
+    if grep -Eq '^(disable-model-invocation|user-invocable):' "$fm"; then
+      bad skill-invocation-keys 'auto-trigger and slash invocation must both stay enabled (D-02)'
+    else
+      ok skill-invocation-keys
+    fi
+  else
+    bad skill-frontmatter-start 'line 1 must be --- with a closing ---'
+  fi
+  lines=$(wc -l <"$skill")
+  if [ "$lines" -lt 500 ]; then ok skill-lines; else bad skill-lines "$lines lines, need below 500"; fi
+  if head -c 15000 "$skill" | grep -qi 'iron law'; then
+    ok skill-iron-law-window
+  else
+    bad skill-iron-law-window '"iron law" not in the first 15000 bytes'
+  fi
+  if head -c 15000 "$skill" | grep -qi 'verification gate'; then
+    ok skill-gate-window
+  else
+    bad skill-gate-window '"verification gate" not in the first 15000 bytes'
+  fi
+  if grep -q '!`' "$skill"; then
+    bad skill-no-injection 'dynamic shell injection sequence found'
+  else
+    ok skill-no-injection
+  fi
+fi
+
+# Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
+banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/settings(\.local)?\.json$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
+if tracked=$(git ls-files); then
+  hits=$(printf '%s\n' "$tracked" | grep -E "$banned" | tr '\n' ' ' || true)
+  if [ -z "$hits" ]; then ok hygiene-tracked; else bad hygiene-tracked "tracked: $hits"; fi
+else
+  bad hygiene-tracked "git ls-files failed"
 fi
 
 finish
