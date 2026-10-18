@@ -138,3 +138,6 @@ interactive hand check (D-06) was not performed.
   `3700f2cc`. The earlier orchestrator-only acceptance of the loss no longer applies.
 - Not resolved: the D-06 interactive hand check in the user's real session (own hooks, no
   routing-forcing system prompt). Headless forced-choice wins do not prove unforced routing.
+- Accepted 2026-10-18 by davdittrich: the headless forced-choice trials (2 samples per prompt,
+  blob `3700f2cc`) stand as the SC4 evidence in place of the D-06 hand check. Unforced routing in a
+  full-skill environment remains untested (review-code-qz4.27).
