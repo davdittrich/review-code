@@ -1,7 +1,7 @@
 """Untrusted-text helpers: stdlib only, Python 3.9 grammar.
 
-Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
-escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
+Prose from the change author is stripped (sanitize_prose); code and file names are escaped, never
+deleted (escape_for_code), so hidden characters become findings (branch names not yet: review-code-6xl.52). Both use one
 `_invisible` predicate: Default_Ignorable_Code_Point (embedded Unicode 18.0 table) plus general categories
 Cf, Cc, Zl, Zp of the running interpreter's unicodedata, no NFKC folding.
 Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
