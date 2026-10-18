@@ -391,7 +391,7 @@ def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
     raw = git_bytes([sub] + _NAME_FLAGS + revs + ["--"], top).decode("utf-8", "surrogateescape").split("\0")
     names, renames, i = [], {}, 0
     while i < len(raw):
-        f = raw[i].split("\t")
+        f = raw[i].split("\t", 2)  # "added<TAB>deleted<TAB>path": a TAB inside the path stays in it (6xl.72)
         if len(f) == 3 and f[2] == "" and i + 2 < len(raw):  # a rename: "added<TAB>deleted<TAB>" NUL old NUL new
             names.append(raw[i + 2])
             renames[raw[i + 2]] = raw[i + 1]

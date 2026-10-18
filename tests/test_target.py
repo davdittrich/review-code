@@ -801,6 +801,27 @@ class TestBlobMemory(Local):
         self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
+class TestOddNames(Local):
+    def test_tab_and_newline_names_listed_in_every_diff_kind(self):
+        # 6xl.72: a TAB (or LF, quote) in a changed name must not drop it from the numstat -z listing
+        names = ["t\tb.py", "l\nf.py", 'q"t.py']
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {n: "x = 1\n" for n in names}, "odd")
+        self.git("checkout", "-q", "-b", "chg")
+        gitfix.commit(self.repo, dict({n: "x = 2\n" for n in names}, **{"package-lock.json": "{}\n"}), "edit")
+        rc, out = self.pin("main")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(n for n in load(out["run"])["included"] if n in names), sorted(names))
+        for n in names:
+            self.write(n, "x = 3\n")
+        for words in (["--unstaged"], ["--staged"]):
+            if words == ["--staged"]:
+                self.git("add", "--", *names)
+            rc, out = self.pin(*words)
+            self.assertEqual(rc, 0, (words, out))
+            self.assertEqual(sorted(load(out["run"])["included"]), sorted(names), words)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
