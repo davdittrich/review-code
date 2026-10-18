@@ -421,7 +421,6 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
         label = target._shown(raw)
         ext = re.search(r"\.[A-Za-z0-9]{1,10}\Z", label)
         rel = "%d%s" % (k, ext.group(0) if ext else "")
-        skipped.append({"path": label, "reason": "hidden-name", "copy": "hidden-names/" + rel})
         jobs.append((raw, label, stand, rel))
     for d in (tree, stand):
         shutil.rmtree(d, ignore_errors=True)
@@ -439,6 +438,8 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(root, rel, esc.encode("utf-8")):
             skipped.append({"path": label, "reason": "unsafe-path"})
+        elif root == stand:  # 6xl.57: the copy is listed only once it exists
+            skipped.append({"path": label, "reason": "hidden-name", "copy": "hidden-names/" + rel})
 
     if listing is None:
         top = os.path.realpath(repo) + os.sep

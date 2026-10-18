@@ -278,6 +278,27 @@ class Tracer(Fixture):
                         bodies.add(fh.read())
                 self.assertEqual(bodies, {"HIDDENNAMED body\n", "LITERALNAMED body\n"})
 
+    def test_hidden_named_link_and_submodule_name_no_copy(self):
+        # 6xl.57: a skipped hidden-named symlink or submodule never lists a hidden-names/ copy
+        os.symlink("src/cfg.py", os.path.join(self.repo, "lnk\u200b.py"))
+        self.git("add", "lnk\u200b.py")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,sub\u200bmod" % self.base)
+        self.feature({"src/cfg.py": "def load():\n    return 2\n"})
+        rc, t = self.pin("main")
+        self.assertEqual((rc, t["status"]), (0, "ok"), t)
+        rc, _ = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        run = t["run"]
+        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+            skipped = json.load(fh)["tree"]["skipped"]
+        self.assertIn({"path": "lnk<U+200B>.py", "reason": "symlink"}, skipped)
+        self.assertIn({"path": "sub<U+200B>mod", "reason": "submodule"}, skipped)
+        for k in skipped:
+            if "copy" in k:
+                self.assertTrue(os.path.isfile(os.path.join(run, k["copy"])), k)
+        with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
+            self.assertNotIn("hidden-names", fh.read())
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")
