@@ -3,7 +3,8 @@
 Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
 escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
 `_invisible` predicate on code points of the running interpreter's unicodedata, no NFKC folding.
-Not detected: homoglyphs, base64 or plain-language injection. The defence is structural: PR text
+Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
+Not detected: homoglyphs, base64, plain-language injection, valueless attribute words of unlisted tags. The defence is structural: PR text
 reaches only the Spec input (02-07) and lanes run without execution tools (02-01, 02-08).
 """
 import re
@@ -29,8 +30,13 @@ _REFCOMMENT = re.compile(r"^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"
 _BRACKET = r"\[(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])*\]"  # one nesting level
 _ALT = re.compile("!" + _BRACKET)
 _TITLE = r"(?:\"[^\"]*\"|'[^']*')"
-_INLINE_TITLE = re.compile(r"(\]\([ \t]*[^()\s]*)\s+" + _TITLE + r"\s*\)")
-_REFDEF_TITLE = re.compile(r"(^ {0,3}\[[^\]\n]+\]:[ \t]*\S+)\s+(?:" + _TITLE + r"|\([^()\n]*\))[ \t]*$", re.MULTILINE)
+# A link or image destination (and its title) renders as a hover target or not at all, yet the Spec lane reads
+# it; the link text stays and the destination becomes an ellipsis.
+_DEST = r"(?:<[^<>\n]*>|(?:\\.|[^()\s\\]|\([^()\s]*\))+)"
+_INLINE_DEST = re.compile(r"\]\([ \t]*(?:" + _DEST + r")?(?:\s+" + _TITLE + r")?\s*\)")
+_REFDEF_DEST = re.compile(r"(^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<[^<>\n]*>|\S+)(?:\s+(?:" + _TITLE + r"|\([^()\n]*\)))?[ \t]*$",
+                          re.MULTILINE)
+_DOTS = "\u2026"
 _HIDING_STYLE = re.compile(r"display:none|visibility:hidden|font-size:0|opacity:0")
 _OPAQUE = frozenset("script style template noscript".split())
 _VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
@@ -118,7 +124,7 @@ def _round(s: str) -> str:
         s = t
     s = _REFCOMMENT.sub("", s)
     s = _ALT.sub("![]", s)
-    s = _REFDEF_TITLE.sub(r"\1", _INLINE_TITLE.sub(r"\1)", s))
+    s = _REFDEF_DEST.sub(lambda m: m.group(1) + _DOTS, _INLINE_DEST.sub(lambda m: "](" + _DOTS + ")" if m.group(0).strip("]() \t\r\n") else m.group(0), s))
     p = _TextOnly()
     p.feed(s)
     p.close()

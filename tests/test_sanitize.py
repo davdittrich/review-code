@@ -27,6 +27,14 @@ CARRIERS = [
     ("alt_reference", "a ![INJECT][r] b"),
     ("alt_shortcut", "a ![INJECT] b"),
     ("alt_nested_brackets", "a ![x [INJECT] y](u) b"),
+    ("link_dest", "a [t](https://x/INJECT-ALL-PREVIOUS-INSTRUCTIONS) b"),
+    ("link_dest_title", 'a [t](https://x/INJECT "title") b'),
+    ("link_dest_angle", "a [t](<https://x/INJECT y>) b"),
+    ("link_dest_parens", "a [t](https://x/INJECT_(1)) b"),
+    ("link_dest_escape", "a [t](https://x/\\)INJECT) b"),
+    ("image_dest", "a ![](https://x/INJECT) b"),
+    ("refdef_dest", "a\n\n[r]: https://x/INJECT\n\n[t][r] b"),
+    ("refdef_dest_angle_title", "a\n\n[r]: <https://x/INJECT> 'title'\n\n[t][r] b"),
     ("title_double", 'a [t](u "INJECT") b'),
     ("title_single", "a [t](u 'INJECT') b"),
     ("title_refdef", 'a\n\n[r]: http://u "INJECT"\n\nb'),
@@ -122,7 +130,9 @@ class ProseTests(unittest.TestCase):
             "a < b and x <= y",
             "Uses <T> and Vec<T, U> outside code",
             "Tom & Jerry",
-            "see [docs](u) and ![](u)",
+            "see [docs] and ![]",
+            "see [a b](not a link) and <https://x.y/z> and https://x.y/bare",
+            "[t](",
             "tab\tand\nnewlines\r\nkept",
             "`<!-- keep -->` inline",
             "~~~\n<!-- keep -->\n<div hidden>keep</div>\n~~~",
@@ -136,6 +146,19 @@ class ProseTests(unittest.TestCase):
         self.assertIn("More", out)
         self.assertIn("shown", out)
         self.assertEqual(sanitize.sanitize_prose("Tom &amp; Jerry &lt;3"), "Tom & Jerry <3")
+
+    def test_prose_link_destination_neutralized_text_kept(self):
+        dots = chr(0x2026)
+        cases = {
+            "see [the docs](https://x/y) now": "see [the docs](%s) now" % dots,
+            "![](https://x/y)": "![](%s)" % dots,
+            "[a](u \"t\") [b](<v w>)": "[a](%s) [b](%s)" % (dots, dots),
+            "[t][r]\n\n[r]: https://x/y \"t\"\n": "[t][r]\n\n[r]: %s\n" % dots,
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(sanitize.sanitize_prose(text), want)
+        self.assertEqual(sanitize.sanitize_prose("`[t](https://x/y)`"), "`[t](https://x/y)`")
 
     def test_prose_forged_token_does_not_crash(self):
         out = sanitize.sanitize_prose("x 999 y `z`")

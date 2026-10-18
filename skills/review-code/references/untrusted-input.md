@@ -26,7 +26,7 @@ The main thread never opens `inputs/spec.md`. Only the Spec lane reads it, in a 
 
 ## Sanitizer contract
 
-Prose is sanitized before it reaches `inputs/spec.md`. Removed: invisible and tag characters, HTML comments, hidden elements and styles, image alt text, link titles, markdown comment lines and entity-encoded variants of all of these. The nonce is also removed from the content, so text cannot close its own fence.
+Prose is sanitized before it reaches `inputs/spec.md`. Removed: invisible and tag characters, HTML comments, hidden elements and styles, image alt text, link titles, markdown link and image destinations (the link text stays; the destination becomes an ellipsis, in `[t](url)` and in `[r]: url` definitions), markdown comment lines and entity-encoded variants of all of these. The nonce is also removed from the content, so text cannot close its own fence.
 
 Code is never altered. Hidden characters are shown as `<U+XXXX>` and listed in `hidden_chars`, so a reviewer sees them (they can be the defect).
 
@@ -34,7 +34,7 @@ Code is never altered. Hidden characters are shown as `<U+XXXX>` and listed in `
 
 - Homoglyphs and other confusables pass the sanitizer.
 - Encoded payloads (base64 and similar) pass.
-- Markdown link and image destinations (`[text](url)`) pass: the URL is data a Spec reader may need, and a renderer shows it only on hover. Valueless attribute words of unlisted tags (`<foo WORD>`) pass too; attribute values are removed.
+- Valueless attribute words of unlisted tags (`<foo WORD>`) pass; attribute values are removed. Bare URLs and `<https://...>` autolinks pass: a renderer shows them.
 - Plain-language instructions in visible text pass. The fence and the rule "data, not instructions" are the only defence.
 - A lane with the Read tool can read host files by absolute path. The run directory is not a sandbox.
 - Claude Code may inject helper tools into subagents.

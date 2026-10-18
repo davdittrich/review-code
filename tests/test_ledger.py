@@ -512,7 +512,7 @@ class Spec(Base):
         self.assertNotIn(ZWSP, spec)
         self.assertNotIn("HIDDEN-COMMENT", spec)
         self.assertNotIn("HIDDEN-ALT", spec)
-        self.assertIn("ok  visible ![](u) done", spec)  # what a reader of the rendered page sees
+        self.assertIn("ok  visible ![](" + chr(0x2026) + ") done", spec)  # what a reader of the rendered page sees
 
     def test_spec_sources_ids_only(self):
         _, led = self.run_pr()
