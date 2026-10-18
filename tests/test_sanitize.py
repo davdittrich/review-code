@@ -179,12 +179,12 @@ class EscapeTests(unittest.TestCase):
         lines = out.split("\r\n")
         self.assertEqual(lines[0], "if x:\t# safe <U+202E>")
         self.assertEqual(lines[1], "    y = '<U+2066><U+2067><U+2068><U+2069>'")
-        self.assertEqual(lines[2], "z = 1<U+200B><U+FEFF><U+E0041><U+FE0F><U+2028>end")
+        self.assertEqual(lines[2], "z = 1<U+200B><U+FEFF><TAGS:1><U+FE0F><U+2028>end")
         self.assertEqual(lines[3], "<U+001B>q")
         self.assertEqual(hits, [
             {"line": 1, "codepoints": ["U+202E"]},
             {"line": 2, "codepoints": ["U+2066", "U+2067", "U+2068", "U+2069"]},
-            {"line": 3, "codepoints": ["U+200B", "U+FEFF", "U+E0041", "U+FE0F", "U+2028"]},
+            {"line": 3, "codepoints": ["U+200B", "U+FEFF", "TAGS:1", "U+FE0F", "U+2028"]},
             {"line": 4, "codepoints": ["U+001B"]},
         ])
         self.assertEqual(sanitize.strip_invisible(out), out)
@@ -226,6 +226,199 @@ class EdgeTests(unittest.TestCase):
         self.assertFalse(any(c in out for c in "<>&"))
         self.assertTrue(out.endswith(" [sanitizer: markup removed]"))
         self.assertEqual(sanitize.sanitize_prose(out), out)
+
+
+class TagRunTests(unittest.TestCase):
+    def test_tag_run_collapsed(self):
+        # a Tags-block run spells ASCII: the escaped form must not carry the payload, only its length
+        out, hits = sanitize.escape_for_code("a " + tagged("INJECT") + " b\nx")
+        self.assertEqual(out, "a <TAGS:6> b\nx")
+        self.assertEqual(hits, [{"line": 1, "codepoints": ["TAGS:6"]}])
+        self.assertEqual(sanitize.escape_for_code(tagged("AB") + "\u200b" + tagged("C"))[0], "<TAGS:2><U+200B><TAGS:1>")
+
+
+# Each carrier hides INJECT in a prose or markup file; strip_hidden must remove it and keep the line count.
+HIDDEN = [
+    ("comment", "a <!-- INJECT --> b", "comment"),
+    ("comment_multiline", "a <!--\nINJECT\nINJECT\n--> b", "comment"),
+    ("comment_unterminated", "a <!-- INJECT\nmore", "comment"),
+    ("bogus_comment", "a <!INJECT> b", "comment"),
+    ("cdata", "a <![CDATA[ INJECT ]]> b", "comment"),
+    ("ref_comment", "a\n[//]: # (INJECT)\nb", "comment"),
+    ("ref_comment_angle", "a\n[//]: <> (INJECT)\nb", "comment"),
+    ("alt_inline", "a ![INJECT](u.png) b", "alt-text"),
+    ("alt_reference", "a ![INJECT][r] b", "alt-text"),
+    ("alt_multiline", "a ![x\nINJECT](u.png) b", "alt-text"),
+    ("alt_html", 'a <img src="u.png" alt="INJECT"> b', "alt-text"),
+    ("hidden_attr", "a <div hidden>INJECT</div> b", "element"),
+    ("hidden_style", '<p>a</p><span style="display: none">INJECT</span> b', "element"),
+    ("hidden_nested", "a <div hidden><p>x</p>INJECT</div> b", "element"),
+    ("hidden_void", 'a <input hidden value="INJECT"> b', "element"),
+    ("hidden_unclosed", "a <div hidden>INJECT\nmore", "element"),
+]
+
+
+class HiddenTextTests(unittest.TestCase):
+    def test_hidden_each_carrier_removed(self):
+        for name, text, kind in HIDDEN:
+            with self.subTest(carrier=name):
+                out, hits = sanitize.strip_hidden(text)
+                self.assertNotIn("INJECT", out)
+                self.assertEqual(out.count("\n"), text.count("\n"))
+                self.assertIn("[hidden-%s removed: " % kind, out)
+                self.assertTrue(out.startswith("a") or out.startswith("<p>a"), repr(out))
+                self.assertEqual([h["kind"] for h in hits], [kind])
+                self.assertNotIn("INJECT", repr(hits))
+                self.assertTrue(all(h["length"] > 0 and h["line"] >= 1 for h in hits))
+
+    def test_hidden_marker_text_and_length(self):
+        out, hits = sanitize.strip_hidden("x\na <!-- 12345 --> b\n")
+        self.assertEqual(out, "x\na [hidden-comment removed: 14 chars] b\n")
+        self.assertEqual(hits, [{"line": 2, "kind": "comment", "length": 14}])
+
+    def test_hidden_multiline_comment_keeps_lines(self):
+        out, hits = sanitize.strip_hidden("a <!--\nINJECT\n--> b\nc")
+        self.assertEqual(len(out.split("\n")), 4)
+        self.assertTrue(out.endswith("b\nc"))
+        self.assertEqual([(h["line"], h["kind"]) for h in hits], [(1, "comment")])
+
+    def test_hidden_keeps_visible(self):
+        keep = [
+            "plain text, Vec<T> and a < b",
+            "<!doctype html>\n<html><body><p>hi</p></body></html>",
+            "![](u.png) and [t](u) and [r]: ref",
+            "<script>var INJECT = 1;</script>",  # code in a markup file is reviewed, not hidden
+            "<style>.INJECT { color: red }</style>",
+            "<img src=x alt=''>",
+            "[t](https://x/y \"title\") and ![](u.png)",  # destinations and titles are reviewable content
+            "x &lt;!-- INJECT --&gt; y",  # entity-encoded: rendered as visible text
+            "<img src=x alt='  '>",
+        ]
+        for text in keep:
+            with self.subTest(text=text):
+                self.assertEqual(sanitize.strip_hidden(text), (text, []))
+
+    def test_hidden_two_carriers_two_entries(self):
+        out, hits = sanitize.strip_hidden("<!-- INJECT -->\n![INJECT](u)\n<!-- INJECT -->")
+        self.assertNotIn("INJECT", out)
+        self.assertEqual([(h["line"], h["kind"]) for h in hits], [(1, "comment"), (2, "alt-text"), (3, "comment")])
+
+    def test_hidden_alt_inside_comment_is_one_entry(self):
+        out, hits = sanitize.strip_hidden("<!-- ![INJECT](u) -->")
+        self.assertEqual([h["kind"] for h in hits], ["comment"])
+
+    def test_hidden_inside_fence_is_still_stripped(self):
+        # a fence can sit inside an HTML block or a comment, so a fence protects nothing
+        for text in ("```\n<!-- INJECT -->\n```", "<div>\n```\n<!-- INJECT -->\n", "<!--\n```\n-->\n<!-- INJECT -->"):
+            with self.subTest(text=text):
+                self.assertNotIn("INJECT", sanitize.strip_hidden(text)[0])
+
+    def test_hidden_img_alt_attribute_tricks(self):
+        for text in ('<img title=">" alt="INJECT">', "<img alt=INJECT>", "<IMG ALT='INJECT' src=x>",
+                     '<img title=" alt=\'x\' " alt="INJECT">'):
+            with self.subTest(text=text):
+                out, hits = sanitize.strip_hidden(text)
+                self.assertNotIn("INJECT", out)
+                self.assertTrue(hits)
+
+    def test_hidden_idempotent(self):
+        for _, text, _ in HIDDEN:
+            once = sanitize.strip_hidden(text)[0]
+            self.assertEqual(sanitize.strip_hidden(once), (once, []), text)
+
+    def test_hidden_crlf(self):
+        out, hits = sanitize.strip_hidden("a\r\n[//]: # (INJECT)\r\nb\r\n")
+        self.assertEqual(out, "a\r\n[hidden-comment removed: 16 chars]\r\nb\r\n")
+        self.assertEqual(hits, [{"line": 2, "kind": "comment", "length": 16}])
+
+    def test_hidden_no_fence_in_html_file_or_md(self):
+        self.assertNotIn("INJECT", sanitize.strip_hidden_diff(
+            "diff --git a/x.html b/x.html\n--- a/x.html\n+++ b/x.html\n@@ -0,0 +1,3 @@\n+```\n+<!-- INJECT -->\n+```\n")[0])
+
+    def test_hidden_empty(self):
+        self.assertEqual(sanitize.strip_hidden(""), ("", []))
+
+    def test_hidden_is_prose_file(self):
+        for p in ("a.md", "A.MD", "d/x.markdown", "x.html", "x.htm", "n.txt", "r.rst"):
+            self.assertTrue(sanitize.is_prose_file(p), p)
+        for p in ("a.py", "x.js", "x.json", "README", "a.md.bak", "x.mdx"):
+            self.assertFalse(sanitize.is_prose_file(p), p)
+
+
+def hunk(old_start, new_start, body):
+    """A one-file diff of a markdown file; `body` is the hunk lines with their prefixes."""
+    lines = body.split("\n")
+    o = sum(1 for ln in lines if ln[:1] in (" ", "-"))
+    n = sum(1 for ln in lines if ln[:1] in (" ", "+"))
+    return ("diff --git a/n.md b/n.md\nindex 1..2 100644\n--- a/n.md\n+++ b/n.md\n@@ -%d,%d +%d,%d @@\n%s\n"
+            % (old_start, o, new_start, n, body))
+
+
+class HiddenDiffTests(unittest.TestCase):
+    def test_diff_added_comment_removed(self):
+        d = hunk(1, 1, " keep\n+a <!-- INJECT --> b\n+![INJECT](u.png)\n tail")
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("INJECT", out)
+        self.assertEqual(out.count("\n"), d.count("\n"))
+        self.assertIn("\n+a [hidden-comment removed: 15 chars] b\n", out)
+        self.assertEqual(hits, [{"file": "n.md", "line": 7, "kind": "comment", "length": 15},
+                                {"file": "n.md", "line": 8, "kind": "alt-text", "length": 6}])
+
+    def test_diff_multiline_comment_keeps_prefixes(self):
+        d = hunk(1, 1, " keep\n+<!--\n+INJECT\n+-->\n+after")
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("INJECT", out)
+        lines = out.split("\n")
+        self.assertEqual(len(lines), len(d.split("\n")))
+        self.assertTrue(all(ln[:1] in " +" for ln in lines[5:-1]), lines)
+        self.assertEqual(lines[-2], "+after")
+        self.assertEqual([h["kind"] for h in hits], ["comment"])
+
+    def test_diff_removed_line_also_stripped(self):
+        out, hits = sanitize.strip_hidden_diff(hunk(1, 1, "-old <!-- INJECT -->\n+new"))
+        self.assertNotIn("INJECT", out)
+        self.assertEqual([h["kind"] for h in hits], ["comment"])
+
+    def test_diff_context_tail_of_comment_removed(self):
+        # the opener lies above the hunk; the closer ends a line, so the payload before it goes
+        full = hunk(1, 1, " intro\n <!--\n INJECT\n INJECT -->\n+added\n tail")
+        part = hunk(3, 3, " INJECT\n INJECT -->\n+added\n tail")
+        out, hits = sanitize.strip_hidden_diff(part, full)
+        self.assertNotIn("INJECT", out)
+        self.assertIn("+added\n tail", out)
+        self.assertEqual([(h["line"], h["kind"]) for h in hits], [(6, "comment")])
+
+    def test_diff_arrow_inside_visible_text_kept(self):
+        d = hunk(1, 1, " graph\n+A --> B\n+C --> D text")
+        self.assertEqual(sanitize.strip_hidden_diff(d), (d, []))
+
+    def test_diff_plus_plus_plus_content_line_is_not_a_header(self):
+        d = hunk(1, 1, "+++ INJECT-looking line\n+<!-- INJECT -->")
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("<!--", out)
+        self.assertEqual(len(hits), 1)
+
+    def test_diff_code_files_untouched(self):
+        d = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n x = 1\n"
+             "+y = '<!-- keep --> ![keep](u)'  # <div hidden>keep</div>\n")
+        self.assertEqual(sanitize.strip_hidden_diff(d), (d, []))
+
+    def test_diff_two_files_only_prose_stripped(self):
+        d = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -0,0 +1 @@\n+# <!-- keep -->\n"
+             + hunk(0, 1, "+<!-- INJECT -->"))
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertIn("# <!-- keep -->", out)
+        self.assertNotIn("INJECT", out)
+        self.assertEqual([h["file"] for h in hits], ["n.md"])
+
+    def test_diff_no_newline_marker_and_binary(self):
+        d = hunk(1, 1, "-a\n\\ No newline at end of file\n+<!-- INJECT -->\n\\ No newline at end of file")
+        out, _ = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("INJECT", out)
+        self.assertIn("\\ No newline at end of file", out)
+        b = "diff --git a/i.md b/i.md\nBinary files a/i.md and b/i.md differ\n"
+        self.assertEqual(sanitize.strip_hidden_diff(b), (b, []))
+        self.assertEqual(sanitize.strip_hidden_diff(""), ("", []))
 
 
 if __name__ == "__main__":

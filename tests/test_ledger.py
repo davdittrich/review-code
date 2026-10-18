@@ -424,7 +424,7 @@ class Tree(Base):
         self.assertIn(b"<U+202E>", raw)
         self.assertNotIn(chr(0x202E).encode("utf-8"), raw)
         self.assertEqual([h["codepoints"] for h in led["hidden_chars"] if h["file"] == "src/d.py"],
-                         [["U+202E", "U+E0041"]])
+                         [["U+202E", "TAGS:1"]])
 
     def test_tree_in_place_non_utf8_is_scanned(self):
         self.base({"a.txt": "x\n"})
