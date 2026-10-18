@@ -552,3 +552,25 @@ class HostileUserConfig(unittest.TestCase):
                     if words == ["main"]:
                         self.assertIn("sm", got["included"])
                         self.assertIn("top.py", got["included"])
+
+    def test_output_independent_of_user_config(self):
+        # 6xl.61: diff.submodule=log, external diff, textconv, colour, prefixes, context and algorithm settings
+        # never reach a run-dir file; the whole change.diff, target and ledger lists equal a clean-config run
+        for cwd in (self.repo, os.path.join(self.repo, "src", "deep")):
+            for words, clean, bad in self.pairs(cwd):
+                with self.subTest(words=words, cwd=os.path.relpath(cwd, self.repo)):
+                    run = bad["target"]["run"]
+                    self.assertEqual(self.leaks(run, bad["target_raw"] + bad["ledger_raw"]), [])
+                    self.assertEqual(self.snapshot(run), self.snapshot(clean["target"]["run"]))
+
+    def test_submodule_log_subjects_never_leak(self):
+        # 6xl.61: diff.submodule=log alone (no ignoreSubmodules masking it) would print submodule commit subjects
+        with open(self.hostile, "w") as fh:
+            fh.write("[diff]\n\tsubmodule = log\n[user]\n\tname = U\n\temail = u@example.invalid\n")
+        for words in (["main"], ["HEAD^!"]):
+            with self.subTest(words=words):
+                bad = self.run_kind(words, self.repo, True)
+                self.assertEqual(bad["target"]["status"], "ok", bad["target"])
+                with open(os.path.join(bad["target"]["run"], "change.diff"), "rb") as fh:
+                    self.assertIn(b"Subproject commit", fh.read())
+                self.assertEqual(self.leaks(bad["target"]["run"], bad["target_raw"]), [])

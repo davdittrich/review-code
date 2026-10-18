@@ -27,9 +27,18 @@ STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "me
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
 # core.quotePath=false: diff headers carry names as text, so escape_for_code covers them like content.
 _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
-        "-c", "core.attributesFile=/dev/null"]  # a user's global `* -diff` must not make files "binary" (6xl.62)
+        "-c", "core.attributesFile=/dev/null",  # a user's global `* -diff` must not make files "binary" (6xl.62)
+        # config-only knobs that would change parsed output (6xl.61); flags pin the rest
+        "-c", "color.ui=never", "-c", "diff.suppressBlankEmpty=false", "-c", "diff.noprefix=false",
+        "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false", "-c", "grep.column=false",
+        "-c", "grep.lineNumber=false", "-c", "log.showSignature=false"]
+# Environment that would inject options or config past the pins above.
+_ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 _WIDE = "--unified=999999"
-_DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"]
+# Every option a user's diff.* or color.* setting could change, pinned (6xl.61); the diffs run as plumbing.
+_DIFF_FLAGS = ["-p", "-M", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
+               "--dst-prefix=b/", "--submodule=short", "--ignore-submodules=none", "--diff-algorithm=myers",
+               "--inter-hunk-context=0", "--indent-heuristic", "-O/dev/null"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
 _LOCKFILES = frozenset((
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "npm-shrinkwrap.json", "Cargo.lock",
@@ -52,7 +61,8 @@ class Refuse(Exception):
 
 
 def _env() -> dict:
-    e = {k: v for k, v in os.environ.items() if k != "GIT_EXTERNAL_DIFF"}
+    e = {k: v for k, v in os.environ.items()
+         if k not in _ENV_DROP and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
     e.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
     return e
 
@@ -395,7 +405,7 @@ def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
 def _plan_revs(base: str, head: str, mb: str, top: str) -> dict:
     names, renames = _changed("diff-tree", [mb, head], top)
     return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [],
-            "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + [mb, head, "--"],
+            "diff_cmd": ["git", "diff-tree", "-r"] + _DIFF_FLAGS + [mb, head, "--"],
             "commits": git(["rev-list", "--reverse", mb + ".." + head], top).split()}
 
 
@@ -429,7 +439,7 @@ def _head_plan(top: str, sub: str, extra: List[str], untracked: bool, diff_extra
     other = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
     return {"base": head, "head": head, "mb": head, "names": names, "renames": renames, "untracked": other,
             "dirty": True,
-            "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
+            "diff_cmd": ["git", sub] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
 
 
 def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
@@ -562,7 +572,7 @@ def _linguist(mb: str, names: List[str], top: str) -> dict:
 
 def _numstat_binary(plan: dict, top: str) -> set:
     """Tracked paths git counts as binary (`-` counts), judged with the base commit's attributes."""
-    cmd = plan["diff_cmd"][1:]
+    cmd = [a for a in plan["diff_cmd"][1:] if a not in ("-p", "-M")]  # numstat only, no rename records
     raw = git(_attr_source(plan["mb"], top) + cmd[:1] + ["--numstat", "-z", "--no-renames"] + cmd[1:], top, check=False)
     rows = (r.split("\t", 2) for r in raw.split("\0") if r)
     return {r[2] for r in rows if len(r) == 3 and r[0] == "-" and r[1] == "-"}
@@ -706,9 +716,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
         for u in sorted(set(plan["untracked"]) & set(names)):
             if not u.endswith("/"):
-                rc, out, _ = _run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
-                                   "--dst-prefix=b/", "--",
-                                   "/dev/null", u], top)
+                rc, out, _ = _run(["diff", "--no-index"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
                 if rc in (0, 1):
                     added += out.decode("utf-8", "replace")
     # CTX-04: the same diff with whole files as context tells strip_hidden_diff where each comment opens
