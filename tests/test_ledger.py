@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -164,6 +165,16 @@ class Categories(Base):
             with mock.patch.object(ledger, "build", side_effect=exc), redirect_stdout(buf):
                 rc = ledger.main(["build", "--run", "R"])
             self.assertEqual((rc, json.loads(buf.getvalue())["reason"]), (1, "internal-error"))
+
+    def test_run_files_are_private(self):
+        # IN-04: the layout is documented as 0700 directories and 0600 files
+        self.base({"notes.txt": "one\n"})
+        self.branch({"notes.txt": "one\ntwo\n"})
+        self.build()
+        modes = {rel: stat.S_IMODE(os.stat(os.path.join(self.run_dir, rel)).st_mode)
+                 for rel in ("inputs", "inputs/spec.md", "inputs/defects.md", "inputs/standards.md", "ledger.json")}
+        self.assertEqual(modes, {"inputs": 0o700, "inputs/spec.md": 0o600, "inputs/defects.md": 0o600,
+                                 "inputs/standards.md": 0o600, "ledger.json": 0o600})
 
     def test_ledger_caps(self):
         self.base({"README.md": "x\n"})

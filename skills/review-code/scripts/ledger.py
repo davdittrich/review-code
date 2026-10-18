@@ -53,9 +53,8 @@ _ESC = {"n": 10, "t": 9, '"': 34, "\\": 92, "a": 7, "b": 8, "f": 12, "r": 13, "v
 
 
 def _write(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    target.write_private(path, text)
 
 
 def _write_json(path: str, obj: dict) -> None:

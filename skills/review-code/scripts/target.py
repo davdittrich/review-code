@@ -90,6 +90,12 @@ def glab_json(args: List[str], cwd: str):
     return _cli_json("glab", args, cwd)
 
 
+def write_private(path: str, text: str) -> None:
+    """Create or truncate `path` with mode 0600 (the run-directory layout promises owner-only files)."""
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def new_run_dir(cwd: str) -> str:
     """Mode 0700 directory under the git dir: a read-only lane cannot read $TMPDIR (probe A3)."""
     base = git(["rev-parse", "--git-path", "review-code"], cwd).strip()
@@ -632,8 +638,7 @@ def pin(candidate: dict, cwd: str) -> dict:
                 if rc in (0, 1):
                     text += out.decode("utf-8", "replace")
     text, hidden = sanitize.escape_for_code(text)
-    with open(os.path.join(run, "change.diff"), "w", encoding="utf-8") as fh:
-        fh.write(text)
+    write_private(os.path.join(run, "change.diff"), text)
     rec = {
         "version": 1, "kind": kind, "repo": top, "run": run, "arg": candidate.get("arg", ""),
         "number": plan.get("number"), "url": plan.get("url"),
@@ -644,8 +649,7 @@ def pin(candidate: dict, cwd: str) -> dict:
         "hidden_chars": [{"file": "change.diff", **h} for h in hidden], "notes": plan.get("notes", []) + fnotes,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
-        json.dump(rec, fh, sort_keys=True, indent=2)
+    write_private(os.path.join(run, "target.json"), json.dumps(rec, sort_keys=True, indent=2))
     return rec
 
 

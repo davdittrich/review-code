@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -554,6 +555,12 @@ class TestFilter(Local):
             "a.min.js": ("minified", "name pattern"), "b.min.css": ("minified", "name pattern"),
             "c.map": ("minified", "name pattern"), "long.js": ("minified", "longest line 1001")})
         self.assertEqual(load(out["run"])["included"], ["edge.js"])
+
+    def test_run_files_are_private(self):
+        self.change({"src/a.py": "a = 1\n"})
+        rc, out = self.pin("main")
+        for name in ("change.diff", "target.json"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(out["run"], name)).st_mode), 0o600, name)
 
     def test_diff_prefixes_pinned_against_user_config(self):
         # WR-05: ledger.py strips two characters from ---/+++ paths, so a/ and b/ must not depend on config
