@@ -194,6 +194,31 @@ class Tracer(Fixture):
                 self.git("checkout", "--", "README.md")
                 os.remove(os.path.join(self.repo, "new.md"))
 
+    def test_staged_tree_is_index(self):
+        # gap 4: a staged review reads the staged bytes, not a further unstaged edit
+        gitfix.commit(self.repo, {"src/use.py": "from cfg import load\nload()\nparse_cfg('x')\n"}, "use")
+        with open(os.path.join(self.repo, "src", "cfg.py"), "a", encoding="utf-8") as fh:
+            fh.write("\ndef parse_cfg(s):\n    return 3  # STAGED\n")
+        self.git("add", "src/cfg.py")
+        staged = {n: self.raw(os.path.join(self.repo, n)) for n in ("src/cfg.py", "src/use.py")}
+        with open(os.path.join(self.repo, "src", "cfg.py"), "a", encoding="utf-8") as fh:
+            fh.write("x = 4  # UNSTAGEDONLY\n")
+        with open(os.path.join(self.repo, "src", "use.py"), "w", encoding="utf-8") as fh:
+            fh.write("# UNSTAGEDONLY\n# shift\n" + staged["src/use.py"].decode())
+        rc, t = self.pin("--staged")
+        self.assertEqual((rc, t["status"], t["kind"]), (0, "ok", "staged"), t)
+        rc, _ = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        run = t["run"]
+        self.assertEqual(self.raw(os.path.join(run, "tree", "src", "cfg.py")), staged["src/cfg.py"])
+        self.assertEqual(self.raw(os.path.join(run, "tree", "src", "use.py")), staged["src/use.py"])
+        self.assertEqual([os.path.relpath(p, run) for p in self.lane_files(run) if b"UNSTAGEDONLY" in self.raw(p)], [])
+        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+            led = json.load(fh)
+        self.assertEqual(led["tree"]["source"], "index")
+        # callers come from the index, so their lines match tree/ (the working copy has it on line 5)
+        self.assertIn({"symbol": "parse_cfg", "file": "src/use.py", "line": 3, "how": "git grep -w -F"}, led["callers"])
+
     def test_canary_hidden_text_in_changed_prose(self):
         # A4: neither the diff nor the tree copy of a changed .md carries the hidden payload to the main thread
         notes = "# notes\n<!-- HIDDENCMT -->\n![ALTINJECT](x.png)\nmentions parse_cfg\n"

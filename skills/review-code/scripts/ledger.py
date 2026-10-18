@@ -34,6 +34,7 @@ STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "cou
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
+INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
@@ -103,6 +104,18 @@ def _listing(repo: str, rev: str) -> Dict[str, Tuple[str, str]]:
     return out
 
 
+def _index_listing(repo: str) -> Dict[str, Tuple[str, str]]:
+    """path -> (mode, oid) of each stage-0 index entry: the bytes a staged review pins."""
+    out = {}
+    for rec in target.git_bytes(["ls-files", "-s", "-z"], repo).split(b"\0"):
+        meta, tab, path = rec.partition(b"\t")
+        if tab:
+            mode, oid, stage = meta.decode().split(" ")
+            if stage == "0":
+                out[_dec(path)] = (mode, oid)
+    return out
+
+
 def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     tracked = [_dec(n) for n in target.git_bytes(["ls-files", "-z"], repo).split(b"\0") if n]
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
@@ -132,7 +145,7 @@ def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool =
         args += ["-e", p]
     raw = target.git_bytes(args + ([rev] if rev else []) + ["--"] + ([pathspec] if pathspec else []), repo,
                            check=False)
-    pre = len(rev) + 1 if rev else 0
+    pre = len(rev) + 1 if rev and rev != INDEX else 0  # `--cached` prints bare paths, a rev prefixes "rev:"
     if names_only:
         return [(_dec(r[pre:]), 0) for r in raw.split(b"\0") if r]
     hits, i, n = [], 0, len(raw)
@@ -532,7 +545,11 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     included = tj["included"]
     inplace = tj["kind"] in INPLACE
     head_ls = None if inplace else _listing(repo, head)
-    files, rev = (_worktree_names(repo, tj["untracked"]), None) if inplace else (sorted(head_ls), head)
+    idx = _index_listing(repo) if tj["kind"] == "staged" else None
+    if idx is not None:
+        files, rev = sorted(idx), INDEX
+    else:
+        files, rev = (_worktree_names(repo, tj["untracked"]), None) if inplace else (sorted(head_ls), head)
     diff = None
     if tj["diff_cmd"]:
         try:
@@ -560,8 +577,9 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    led["tree"], more, more_text = _materialize(run, repo, head_ls, included, led,
-                                                "working copy" if inplace else "head commit")
+    led["tree"], more, more_text = _materialize(
+        run, repo, idx if idx is not None else head_ls, included, led,
+        "index" if idx is not None else "working copy" if inplace else "head commit")
     led["hidden_chars"] += more
     led["hidden_text"] += more_text
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
