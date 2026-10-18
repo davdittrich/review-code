@@ -26,7 +26,8 @@ STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "me
                "included_count", "excluded_count", "untracked_count", "candidates"}
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
 # core.quotePath=false: diff headers carry names as text, so escape_for_code covers them like content.
-_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
+_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
+        "-c", "core.attributesFile=/dev/null"]  # a user's global `* -diff` must not make files "binary" (6xl.62)
 _WIDE = "--unified=999999"
 _DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
@@ -368,11 +369,34 @@ def _have(oid: str, cwd: str) -> bool:
     return _run(["cat-file", "-e", oid + "^{commit}"], cwd)[0] == 0
 
 
-def _plan_revs(base: str, head: str, mb: str, cwd: str) -> dict:
-    names = _split(git_bytes(["diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", mb, head, "--"], cwd))
-    return {"base": base, "head": head, "mb": mb, "names": names, "untracked": [],
+# Changed-file listing: plumbing at the top level, so no diff.* setting (relative, ignoreSubmodules, renames)
+# and no subdirectory cwd can narrow it; --numstat is content-based, so a stat-only touch is no change (6xl.62).
+_NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv", "--submodule=short",
+               "--ignore-submodules=none"]
+
+
+def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
+    """(changed names, {new name: old name} for renames) from `git <sub> --numstat -z`."""
+    raw = git_bytes([sub] + _NAME_FLAGS + revs + ["--"], top).decode("utf-8", "surrogateescape").split("\0")
+    names, renames, i = [], {}, 0
+    while i < len(raw):
+        f = raw[i].split("\t")
+        if len(f) == 3 and f[2] == "" and i + 2 < len(raw):  # a rename: "added<TAB>deleted<TAB>" NUL old NUL new
+            names.append(raw[i + 2])
+            renames[raw[i + 2]] = raw[i + 1]
+            i += 3
+            continue
+        if len(f) == 3:
+            names.append(f[2])
+        i += 1
+    return names, renames
+
+
+def _plan_revs(base: str, head: str, mb: str, top: str) -> dict:
+    names, renames = _changed("diff-tree", [mb, head], top)
+    return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [],
             "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + [mb, head, "--"],
-            "commits": git(["rev-list", "--reverse", mb + ".." + head], cwd).split()}
+            "commits": git(["rev-list", "--reverse", mb + ".." + head], top).split()}
 
 
 def _plan_forge(cand: dict, cwd: str) -> dict:
@@ -398,15 +422,13 @@ def _plan_forge(cand: dict, cwd: str) -> dict:
     return plan
 
 
-_EMPTY_NAMES = ("--name-only", "-z", "--no-ext-diff", "--no-textconv")
-
-
-def _head_plan(top: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
+def _head_plan(top: str, sub: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
     """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
     head = _commit_id("HEAD", top)
-    names = _split(git_bytes(["diff"] + list(_EMPTY_NAMES) + extra + ["--"], top))
+    names, renames = _changed(sub, extra, top)
     other = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
-    return {"base": head, "head": head, "mb": head, "names": names, "untracked": other, "dirty": True,
+    return {"base": head, "head": head, "mb": head, "names": names, "renames": renames, "untracked": other,
+            "dirty": True,
             "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
 
 
@@ -659,15 +681,15 @@ def pin(candidate: dict, cwd: str) -> dict:
         mb = git(["merge-base", base, head], cwd, check=False).strip()
         if not mb:
             raise Refuse("bad-ref", "no common ancestor")
-        plan = _plan_revs(base, head, mb, cwd)
+        plan = _plan_revs(base, head, mb, top)
     elif kind == "staged":
         head = _commit_id("HEAD", top)
-        plan = _head_plan(top, ["--cached", head], False, ["--cached", head])
+        plan = _head_plan(top, "diff-index", ["--cached", head], False, ["--cached", head])
     elif kind == "unstaged":
-        plan = _head_plan(top, [], True, [])
+        plan = _head_plan(top, "diff-files", [], True, [])
     elif kind == "worktree":
         head = _commit_id("HEAD", top)
-        plan = _head_plan(top, [head], True, [head])
+        plan = _head_plan(top, "diff-index", [head], True, [head])
     elif kind in ("path", "repo"):
         plan = _plan_files(candidate.get("paths", []), cwd, top)
     else:
