@@ -20,7 +20,8 @@ differently.
 SKILL.md git blob id: `3700f2cca4617802e2cdd7529e3c87a61a72dc33`
 (`git rev-parse HEAD:skills/review-code/SKILL.md`).
 A later edit to the gate wording in the SKILL.md body (review-code-qz4.26) moved the file blob to
-`4828f0c74dae805534260c9c224395416dfd3089`. The description text is byte-identical, so the trial
+`4828f0c74dae805534260c9c224395416dfd3089`; the matt.md re-base (review-code-qz4.30) added a
+"Two axes" body section and moved it to `06db443ddc06238bfd679efee95fb306c301dbb2`. The description text is byte-identical, so the trial
 results below still apply. A later description change invalidates the
 results below.
 

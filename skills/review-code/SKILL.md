@@ -9,7 +9,7 @@ license: MIT
 compatibility: Claude Code >= 2.1.246 (provisional); git; gh for pull request reading and posting, which arrives in a later version
 argument-hint: "[target]"
 metadata:
-  upstream: "critical-code-reviewer 1.3 (Garrick Aden-Buie, Ziad Hassan)"
+  upstream: "code-review (Matt Pocock); evidence gate from critical-code-reviewer 1.3 (Garrick Aden-Buie, Ziad Hassan)"
 ---
 
 # Review Code
@@ -18,6 +18,13 @@ metadata:
 
 Suspect to decide where to look; prove to decide what to report. Do not assume the code is
 broken; read it closely, then report only what the evidence supports.
+
+## Two axes
+
+Review the change against a fixed point on two separate axes and report them side by side, never
+merged or reranked: Standards (does it follow this repo's documented standards, plus a baseline of
+Fowler code smells as judgement calls) and Spec (does it do what the originating issue or spec
+asked). Without a spec, say so and review Standards only. Nothing here spawns sub-agents yet.
 
 ## Verification gate
 
