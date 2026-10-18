@@ -1,0 +1,12 @@
+name: check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install -g @anthropic-ai/claude-code@2.1.302
+      - run: shellcheck scripts/check-package.sh
+      - run: sh scripts/check-package.sh
