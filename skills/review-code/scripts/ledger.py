@@ -337,12 +337,8 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
 
 
 def _text(data: bytes) -> Optional[str]:
-    if b"\0" in data:
-        return None
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    """None only for binary (NUL) data. Invalid UTF-8 decodes lossily so it is still scanned and escaped."""
+    return None if b"\0" in data else data.decode("utf-8", "replace")
 
 
 def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[str], led: dict) -> Tuple[dict, list]:

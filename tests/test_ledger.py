@@ -372,6 +372,28 @@ class Tree(Base):
         with open(os.path.join(self.run_dir, "tree", "img.bin"), "rb") as fh:
             self.assertEqual(fh.read(), blob)
 
+    def test_tree_non_utf8_is_escaped(self):
+        # CR-03: one stray invalid byte must not carry hidden characters past the escaper
+        blob = b"# \xff " + chr(0x202E).encode("utf-8") + chr(0xE0041).encode("utf-8") + b"\n"
+        self.base({"a.txt": "x\n"})
+        self.branch({"src/d.py": blob})
+        _, led = self.build()
+        with open(os.path.join(self.run_dir, "tree", "src", "d.py"), "rb") as fh:
+            raw = fh.read()
+        self.assertIn(b"<U+202E>", raw)
+        self.assertNotIn(chr(0x202E).encode("utf-8"), raw)
+        self.assertEqual([h["codepoints"] for h in led["hidden_chars"] if h["file"] == "src/d.py"],
+                         [["U+202E", "U+E0041"]])
+
+    def test_tree_in_place_non_utf8_is_scanned(self):
+        self.base({"a.txt": "x\n"})
+        with open(os.path.join(self.repo, "a.txt"), "wb") as fh:
+            fh.write(b"\xff " + chr(0x202E).encode("utf-8") + b"\n")
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.txt"])
+        ledger.build(self.run_dir)
+        self.assertIn({"file": "a.txt", "line": 1, "codepoints": ["U+202E"]}, self.load()["hidden_chars"])
+
     def test_tree_in_place(self):
         rlo = chr(0x202E)
         self.base({"a.txt": "x\n"})
