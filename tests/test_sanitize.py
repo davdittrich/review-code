@@ -1,5 +1,6 @@
 """Fixture tests for scripts/sanitize.py. Hidden characters are spelled as escapes, never raw."""
 import os
+import re
 import sys
 import time
 import unittest
@@ -134,7 +135,6 @@ class ProseTests(unittest.TestCase):
             "see [docs] and ![]",
             "see [a b](not a link) and <https://x.y/z> and https://x.y/bare",
             "[t](",
-            "tab\tand\nnewlines\r\nkept",
             "`<!-- keep -->` inline",
             "~~~\n<!-- keep -->\n<div hidden>keep</div>\n~~~",
             "``a ` b <!-- keep -->``",
@@ -143,6 +143,8 @@ class ProseTests(unittest.TestCase):
         for text in keep:
             with self.subTest(text=text):
                 self.assertEqual(sanitize.sanitize_prose(text), text)
+        # 6xl.71: line breaks survive, written as LF (spec.md has no line-number contract)
+        self.assertEqual(sanitize.sanitize_prose("tab\tand\nnewlines\r\nkept\rhere"), "tab\tand\nnewlines\nkept\nhere")
         out = sanitize.sanitize_prose("<details><summary>More</summary>shown</details>")
         self.assertIn("More", out)
         self.assertIn("shown", out)
@@ -473,6 +475,39 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(out, "caf<BYTES:2>.txt")
         self.assertEqual(hits, [{"line": 1, "codepoints": ["BYTES:2"]}])
         self.assertEqual(sanitize.sanitize_prose("a\ud800b"), "ab")
+
+
+class LineBreakTests(unittest.TestCase):
+    """6xl.71: CR, LF and CRLF all end a line (CommonMark); NEL, LS, PS, VT and FF do not, and are escaped."""
+    CASES = {"cr": "a\r\r[//]: # (BRKCANARY)\r\rb\r", "crlf": "a\r\n\r\n[//]: # (BRKCANARY)\r\n\r\nb\r\n",
+             "mixed": "a\n\r[//]: # (BRKCANARY)\r\n\nb", "cr_html": "a\r<!-- BRKCANARY -->\rb"}
+
+    def test_strip_hidden_every_break(self):
+        for k, text in self.CASES.items():
+            with self.subTest(k):
+                out, hits = sanitize.strip_hidden(text)
+                self.assertNotIn("BRKCANARY", out)
+                self.assertEqual(len(hits), 1)
+                self.assertEqual([m for m in re.findall(r"\r\n|\r|\n", out)], re.findall(r"\r\n|\r|\n", text))
+
+    def test_sanitize_prose_every_break(self):
+        for k, text in self.CASES.items():
+            with self.subTest(k):
+                self.assertNotIn("BRKCANARY", sanitize.sanitize_prose(text))
+
+    def test_strip_hidden_diff_cr_only_line(self):
+        body = self.CASES["cr"]
+        d = "diff --git a/n.md b/n.md\n--- a/n.md\n+++ b/n.md\n@@ -0,0 +1 @@\n+%s\n" % body
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("BRKCANARY", out)
+        self.assertEqual(out.count("\n"), d.count("\n"))
+
+    def test_other_separators_are_not_breaks(self):
+        for sep in ("\x85", "\u2028", "\u2029", "\x0b", "\x0c"):
+            with self.subTest(sep=hex(ord(sep))):
+                out, _ = sanitize.strip_hidden("a%s[//]: # (KEEPS)%sb" % (sep, sep))
+                self.assertIn("KEEPS", out)  # not on a line of its own, so not a comment line
+                self.assertNotIn(sep, sanitize.escape_for_code(out)[0])
 
 
 class RenameSideTests(unittest.TestCase):

@@ -192,7 +192,7 @@ def sanitize_prose(text: Optional[str]) -> str:
     """Reduce change-author prose to what a reader of the rendered page sees. Each round can expose
     work for the next (entity decoding rebuilds comments, removed tags rejoin `<!` and `--`), so rounds
     repeat to a fixpoint. Past the cap, all `<`, `>` and `&` go: no markup left to reassemble."""
-    s = text or ""
+    s = _BREAK.sub("\n", text or "")  # 6xl.71: CR and CRLF end lines too; spec.md keeps LF only
     for _ in range(_ROUNDS + 1):
         t = _round(s)
         if t == s:
@@ -335,20 +335,31 @@ class _Spans(HTMLParser):
         return self.spans
 
 
+# One line-break definition (6xl.71): CRLF, a lone CR and LF each end a line, as in CommonMark. NEL, LS, PS,
+# VT and FF do not; they are invisible characters, escaped or removed like the others.
+_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def _line_view(text: str) -> str:
+    """Same-length copy in which every CR reads as LF (CRLF as an empty line, which no hidden-text pattern
+    minds), so `^` and `$` anchor after any line break."""
+    return text.replace("\r", "\n")
+
+
 def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
     """(text, [(first line, last line, kind, length)]) with each hidden span replaced by a marker plus the
-    span's newlines."""
-    spans, blank, pos = [], [], 0
-    for m in _HIDDEN.finditer(text):
+    span's line breaks, kept as written. Matching runs on _line_view, so a CR-only file is anchored too."""
+    spans, blank, pos, view = [], [], 0, _line_view(text)
+    for m in _HIDDEN.finditer(view):
         g = m.lastgroup
         a, b = m.span(g)
         if g == "alt" and (not m.group(g).strip() or _MARKER.match(m.group(g).rstrip("\n"))):
             continue
         spans.append((a, b, "alt-text" if g == "alt" else "comment"))
-        blank += [text[pos:a], re.sub(r"[^\n]", " ", text[a:b])]
+        blank += [view[pos:a], re.sub(r"[^\n]", " ", view[a:b])]
         pos = b
-    p = _Spans("".join(blank) + text[pos:])
-    p.feed("".join(blank) + text[pos:])
+    p = _Spans("".join(blank) + view[pos:])
+    p.feed("".join(blank) + view[pos:])
     spans += p.finish()
     out, info, pos, line, last = [], [], 0, 1, 0
     for a, b, kind in sorted(spans, key=lambda s: (s[0], -s[1])):
@@ -356,7 +367,7 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
             continue  # inside a span already removed
         line += text.count("\n", pos, a)
         nl = text.count("\n", a, b)
-        out.append(text[pos:a] + "[hidden-%s removed: %d chars]" % (kind, b - a) + "\n" * nl)
+        out.append(text[pos:a] + "[hidden-%s removed: %d chars]" % (kind, b - a) + "".join(_BREAK.findall(text[a:b])))
         info.append((line, line + nl, kind, b - a))
         pos, last, line = b, b, line + nl
     return "".join(out) + text[pos:], info

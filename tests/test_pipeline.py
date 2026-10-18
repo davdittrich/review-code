@@ -321,6 +321,17 @@ class Tracer(Fixture):
                 with open(os.path.join(t["run"], copy[0]), encoding="utf-8") as fh:
                     self.assertEqual(fh.read(), "latin_body = 1\n")
 
+    def test_cr_only_comment_lines_stripped_everywhere(self):
+        # 6xl.71: a lone CR ends a line, so a [//]: # comment between CR-only blank lines is hidden on GitHub
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", "notes.md": "a\r\r[//]: # (BRKCANARY)\r\rb\r",
+                      "mix.md": "a\n\r[//]: # (BRKCANARY)\r\n\nb"},
+                     message="feat: x\r\r[//]: # (BRKCANARY)\r\rend")
+        rc, t = self.pin("main")
+        self.assertEqual((rc, t["status"]), (0, "ok"), t)
+        rc, _ = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"BRKCANARY" in self.raw(p)], [])
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")
