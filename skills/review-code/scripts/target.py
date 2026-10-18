@@ -37,7 +37,7 @@ _ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFI
 _WIDE = "--unified=999999"
 # Every option a user's diff.* or color.* setting could change, pinned (6xl.61); the diffs run as plumbing.
 # --text: binary files are already excluded by the base-only rule, so no attribute may hide a kept file (6xl.69).
-_DIFF_FLAGS = ["-p", "-M", "--text", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
+_DIFF_FLAGS = ["-p", "-M", "-l1000", "--full-index", "--text", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
                "--dst-prefix=b/", "--submodule=short", "--ignore-submodules=none", "--diff-algorithm=myers",
                "--inter-hunk-context=0", "--indent-heuristic", "-O/dev/null"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
@@ -382,7 +382,7 @@ def _have(oid: str, cwd: str) -> bool:
 
 # Changed-file listing: plumbing at the top level, so no diff.* setting (relative, ignoreSubmodules, renames)
 # and no subdirectory cwd can narrow it; --numstat is content-based, so a stat-only touch is no change (6xl.62).
-_NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv", "--submodule=short",
+_NAME_FLAGS = ["-r", "-z", "-M", "-l1000", "--numstat", "--no-ext-diff", "--no-textconv", "--submodule=short",
                "--ignore-submodules=none"]
 
 

@@ -450,9 +450,10 @@ class HostileUserConfig(unittest.TestCase):
         s1 = gitfix.run(["git", "rev-parse", "HEAD"], sub).strip()
         gitfix.commit(sub, {"f": "2\n"}, "SUBJ_TWO_CANARY")
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, {"src/cfg.py": "def load():\n    return 1\n", "src/deep/d.py": "d = 1\n",
-                                  "top.py": "t = 1\n", "data.txt": "one\n", "docs/old.md": "".join(
-                                      "line %d\n" % i for i in range(30)), "notes.md": "n\n"}, "base")
+        gitfix.commit(self.repo, {"src/cfg.py": "def load_cfg():\n    return 1\n", "src/deep/d.py": "d = 1\n",
+                                  "top.py": "t = 1\n", "src/use.py": "u = load_cfg()\n", "data.txt": "one\n", "docs/old.md": "".join(
+                                      "line %d\n" % i for i in range(30)), "docs/old2.md": "".join(
+                                      "row %d\n" % i for i in range(30)), "notes.md": "n\n"}, "base")
         self.git("-c", "protocol.file.allow=always", "submodule", "-q", "add", sub, "sm")
         self.git("-C", "sm", "checkout", "-q", s1)
         self.git("add", "sm")
@@ -461,7 +462,8 @@ class HostileUserConfig(unittest.TestCase):
         self.git("-C", "sm", "checkout", "-q", "main")
         self.git("add", "sm")
         self.git("mv", "docs/old.md", "docs/new.md")
-        gitfix.commit(self.repo, {"src/cfg.py": "def load():\n    return 2\n", "src/deep/d.py": "d = 2\n",
+        self.git("mv", "docs/old2.md", "docs/new2.md")
+        gitfix.commit(self.repo, {"src/cfg.py": "def load_cfg():\n    return 2\n", "src/deep/d.py": "d = 2\n",
                                   "top.py": "t = 2\n", "data.txt": "two\n", "docs/new.md": "".join(
                                       "line %d\n" % i for i in range(30)).replace("line 20", "line 20 edited"),
                                   "notes.md": "n\n<!-- HTCMT -->\n"}, "feat")
@@ -488,10 +490,10 @@ class HostileUserConfig(unittest.TestCase):
             fh.write("[diff]\n\tsubmodule = log\n\trelative = true\n\tignoreSubmodules = all\n"
                      "\texternal = %s\n\tnoprefix = true\n\trenames = false\n\tmnemonicPrefix = true\n"
                      "\talgorithm = patience\n\tcontext = 0\n\tinterHunkContext = 10\n\tindentHeuristic = false\n"
-                     "\tsuppressBlankEmpty = true\n\torderFile = %s\n\twordRegex = .\n"
+                     "\tsuppressBlankEmpty = true\n\torderFile = %s\n\twordRegex = .\n\trenameLimit = 1\n"
                      "[diff \"hostile\"]\n\ttextconv = %s\n"
                      "[color]\n\tui = always\n\tdiff = always\n\tgrep = always\n"
-                     "[core]\n\tquotePath = true\n\tattributesFile = %s\n\tpager = cat\n"
+                     "[core]\n\tquotePath = true\n\tattributesFile = %s\n\tpager = cat\n\tabbrev = 4\n"
                      "[grep]\n\tcolumn = true\n\tlineNumber = true\n\tpatternType = perl\n"
                      "[log]\n\tshowSignature = true\n[user]\n\tname = U\n\temail = u@example.invalid\n"
                      % (os.path.join(bin_, "ext.sh"), os.path.join(self.tmp, "order"),
@@ -576,6 +578,8 @@ class HostileUserConfig(unittest.TestCase):
                     if words == ["main"]:
                         self.assertIn("sm", got["included"])
                         self.assertIn("top.py", got["included"])
+                        with open(os.path.join(bad["ledger"]["run"], "ledger.json"), encoding="utf-8") as fh:
+                            self.assertIn("src/use.py", [e["file"] for e in json.load(fh)["callers"]])  # 6xl.73: grep -a
 
     def test_output_independent_of_user_config(self):
         # 6xl.61: diff.submodule=log, external diff, textconv, colour, prefixes, context and algorithm settings
