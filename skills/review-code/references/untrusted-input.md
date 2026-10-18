@@ -33,7 +33,7 @@ Source code is not stripped: its comments are the content under review. Invisibl
 
 ### Hidden text in prose and markup files
 
-The main thread reads `change.diff` and `tree/`, so hidden text in a changed prose or markup file must not reach it. In those files (and in their hunks in `change.diff`) the sanitizer replaces each of these with the marker `[hidden-KIND removed: N chars]` on the same line, keeping every newline, so line numbers and diff anchors stay valid:
+The main thread reads `change.diff` and `tree/` (for every target kind; never the repository itself), so hidden text in a changed prose or markup file must not reach it. In those files (and in their hunks in `change.diff`) the sanitizer replaces each of these with the marker `[hidden-KIND removed: N chars]` on the same line, keeping every newline, so line numbers and diff anchors stay valid:
 
 - `comment`: HTML comments (also `<!x>`, `<?x>`, CDATA) and markdown `[//]: # (x)` lines.
 - `alt-text`: markdown image alt text (`![x](u)`, `![x][r]`, `![x]`) and `<img alt>` values.
@@ -46,7 +46,6 @@ Limits of this rule:
 - Nothing is protected inside code fences or code spans. A fence can sit inside an HTML block or a comment, so a fence does not prove visibility. Documentation that shows a comment in a fence is over-stripped and flagged.
 - Source code files are not stripped. A comment in a `.py`, `.js`, `.json` or `.yaml` file reaches the lane as written; the fence and the rule "data, not instructions" are the defence there.
 - Link destinations and link titles stay (reviewable content). Entity-encoded markup stays: a renderer shows it as text. `<script>` and `<style>` bodies stay (code). Hiding by CSS class or style sheet, other comment syntaxes (rst `..`, org) and plain-language injection in visible text are not detected.
-- Kinds with no working-copy copy: for `staged`, `unstaged`, `worktree`, `path` and `repo` targets no `tree/` is written and lanes read the working copy, which is not altered. For those targets the strip covers `change.diff` only, and `hidden_text` lists what the working copy holds.
 - A comment that opens above a diff hunk is found through a second, whole-file-context diff of the changed prose files; the removed (`-`) lines of a prose file that is renamed and edited fall back to line-by-line stripping (a multi-line comment opened above the hunk can pass there; those lines are base content). `tree/` is unaffected.
 
 ## Known limits
@@ -76,4 +75,4 @@ The run directory lives under the repository's git directory: `git rev-parse --g
 
 Retention: each `target.py` run that pins a target first removes `review-code.*` directories in that folder that were last written more than 14 days ago (`RETENTION_DAYS` in `target.py`), then creates its own, so the current run is never removed. Links and other names are left alone. `ambiguous` re-runs and failed builds leave a directory too. Each holds the diff, `tree/` and sanitized PR text, so delete a run sooner when its review is done.
 
-Layout: `target.json` (pinned refs, included and excluded files with reasons, notes), `change.diff`, `tree/` (head bytes of included files), `ledger.json` (context categories, label, trust, `hidden_chars`, `hidden_text`), `inputs/defects.md`, `inputs/standards.md`, `inputs/spec.md`.
+Layout: `target.json` (pinned refs, included and excluded files with reasons, notes), `change.diff`, `tree/` (stripped copies of the included and ledger-referenced files: head-commit blobs for commit-based kinds, the working copy for the others, which is never altered; `ledger.json` `tree.source` says which), `ledger.json` (context categories, label, trust, `hidden_chars`, `hidden_text`), `inputs/defects.md`, `inputs/standards.md`, `inputs/spec.md`.

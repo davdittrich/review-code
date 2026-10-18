@@ -359,7 +359,7 @@ class Tree(Base):
                               env=gitfix.env(), check=True).stdout
         with open(os.path.join(self.run_dir, "tree", "src", "cfg.py"), "rb") as fh:
             self.assertEqual(fh.read(), want)
-        self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "in_place": False, "skipped": []})
+        self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "source": "head commit", "skipped": []})
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
 
     def test_tree_symlink_never_created(self):
@@ -430,6 +430,7 @@ class Tree(Base):
         led = self.load()
         self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18}])
         self.assertNotIn("HIDDENCMT", json.dumps(led))
+        self.assertNotIn("HIDDENCMT", self.read("tree/a.md"))
 
     def test_tree_hidden_text_carries_target_entries(self):
         self.base({"a.txt": "x\n"})
@@ -481,13 +482,20 @@ class Tree(Base):
         with open(os.path.join(self.repo, "a.txt"), "w", encoding="utf-8") as fh:
             fh.write("x\nbad %s\n" % rlo)
         head = self.g("rev-parse", "HEAD")
-        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.txt"])
+        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.txt", "leak"])
+        secret = os.path.join(self.tmp, "secret.txt")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("TOPSECRET-VALUE\n")
+        os.symlink(secret, os.path.join(self.repo, "leak"))
         ledger.build(self.run_dir)
         led = self.load()
-        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree")))
-        self.assertEqual(led["tree"]["in_place"], self.repo)
+        self.assertEqual(self.read("tree/a.txt"), "x\nbad <U+202E>\n")
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
+        self.assertEqual((led["tree"]["source"], led["tree"]["skipped"]), ("working copy", [{"path": "leak", "reason": "symlink"}]))
         self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
-        self.assertIn(json.dumps(self.repo), self.read("inputs/defects.md"))
+        self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
+        with open(os.path.join(self.repo, "a.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "x\nbad %s\n" % rlo)
 
     def test_tree_put_rejects_unsafe_paths(self):
         root = os.path.join(self.tmp, "t")

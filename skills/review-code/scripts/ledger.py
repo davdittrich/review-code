@@ -351,49 +351,49 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
     return text, [{"file": p, **h} for h in chars], [{"file": p, **h} for h in stripped]
 
 
-def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[str], led: dict) -> Tuple[dict, list, list]:
-    """tree/ holds head-commit bytes of the included and ledger-referenced files; in-place kinds only scan."""
+def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
+                 source: str) -> Tuple[dict, list, list]:
+    """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
+    blobs or, with no listing, from the working copy (never altered); lanes read only tree/."""
     refs = sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                    for e in led[c]})
-    skipped, hidden, hidden_text = [], [], []
-    if head_ls is None:  # staged, unstaged, worktree, path, repo: lanes read the working copy; scan, never copy
-        for p in included:
-            try:
-                st = os.lstat(os.path.join(repo, p))
-                if stat.S_ISLNK(st.st_mode):
-                    skipped.append({"path": p, "reason": "symlink"})
-                if not stat.S_ISREG(st.st_mode):
-                    continue
-                with open(os.path.join(repo, p), "rb") as fh:
-                    text = _text(fh.read())
-            except OSError:
-                continue
-            if text is not None:
-                _, c, t = _scan(p, text)
-                hidden, hidden_text = hidden + c, hidden_text + t
-        return {"path": None, "in_place": repo, "skipped": skipped}, hidden, hidden_text
+    skipped, hidden, hidden_text, data_of = [], [], [], {}
     tree = os.path.join(run, "tree")
     shutil.rmtree(tree, ignore_errors=True)
     os.makedirs(tree, mode=0o700)
-    want = {}
-    for p in refs:
-        mode, oid = head_ls.get(p, (None, None))
-        if mode == "120000":  # a link into the host never enters the run dir
-            skipped.append({"path": p, "reason": "symlink"})
-        elif mode == "160000":
-            skipped.append({"path": p, "reason": "submodule"})
-        elif mode is not None:
-            want[p] = oid
-    blobs = _blobs(repo, want.values())
-    for p, oid in sorted(want.items()):
-        data = blobs.get(oid)
-        text = None if data is None else _text(data)
+    if listing is None:
+        root = os.path.realpath(repo) + os.sep
+        for p in refs:
+            fp = os.path.join(repo, p)
+            try:
+                st = os.lstat(fp)
+                if stat.S_ISLNK(st.st_mode):  # a link into the host never enters the run dir
+                    skipped.append({"path": p, "reason": "symlink"})
+                elif stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(root):
+                    with open(fp, "rb") as fh:
+                        data_of[p] = fh.read()
+            except OSError:
+                continue
+    else:
+        want = {}
+        for p in refs:
+            mode, oid = listing.get(p, (None, None))
+            if mode == "120000":
+                skipped.append({"path": p, "reason": "symlink"})
+            elif mode == "160000":
+                skipped.append({"path": p, "reason": "submodule"})
+            elif mode is not None:
+                want[p] = oid
+        blobs = _blobs(repo, want.values())
+        data_of = {p: blobs[oid] for p, oid in want.items() if oid in blobs}
+    for p, data in sorted(data_of.items()):
+        text = _text(data)
         if text is not None:
             esc, c, t = _scan(p, text)
             data, hidden, hidden_text = esc.encode("utf-8"), hidden + c, hidden_text + t
-        if data is not None and not _put(tree, p, data):
+        if not _put(tree, p, data):
             skipped.append({"path": p, "reason": "unsafe-path"})
-    return {"path": tree, "in_place": False, "skipped": skipped}, hidden, hidden_text
+    return {"path": tree, "source": source, "skipped": skipped}, hidden, hidden_text
 
 
 def _clean(v: object) -> str:
@@ -557,11 +557,11 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"],
         "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
         "spec": {"status": spec_status, "sources": sources},
-        "tree": {"path": None, "in_place": False, "skipped": []},
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    led["tree"], more, more_text = _materialize(run, repo, head_ls, included, led)
+    led["tree"], more, more_text = _materialize(run, repo, head_ls, included, led,
+                                                "working copy" if inplace else "head commit")
     led["hidden_chars"] += more
     led["hidden_text"] += more_text
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
@@ -585,10 +585,9 @@ def build(run: str, spec: Optional[str] = None) -> dict:
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
                "\n".join("- " + json.dumps(p) for p in tj["included"])) +
-           "\n## Head files\n\n%s\n\n## Skipped\n\n%s\n" % (
-               ("tree: %s\nLanes read head files only from tree/; the user's working copy is never read for this target."
-                % json.dumps(led["tree"]["path"])) if led["tree"]["path"] else
-               ("in_place: %s\nLanes read these files in place from the working copy." % json.dumps(repo)),
+           "\n## Files\n\ntree: %s\nsource: %s\nLanes read the files only from tree/ (hidden text stripped), never "
+           "from the repository.\n\n## Skipped\n\n%s\n" % (
+               json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
                "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES))
