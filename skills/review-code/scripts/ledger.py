@@ -457,11 +457,12 @@ def _forge(tj: dict) -> Optional[dict]:
     if not isinstance(j, dict):
         return None
     mr = tj["kind"] == "mr"
-    closing = [c.get("number") for c in (j.get("closingIssuesReferences") or []) if isinstance(c, dict)]
+    refs = j.get("closingIssuesReferences")  # 6xl.85: forge JSON is untrusted shape too
+    closing = [c.get("number") for c in (refs if isinstance(refs, list) else []) if isinstance(c, dict)]
     br = j.get("source_branch" if mr else "headRefName")
     return {"title": _clean(j.get("title")), "body": _clean(j.get("description" if mr else "body")),
             "branch": br if isinstance(br, str) else "",
-            "closing": {n for n in closing if isinstance(n, int) and 0 < n < 10 ** 9}}
+            "closing": {n for n in closing if isinstance(n, int) and not isinstance(n, bool) and 0 < n < 10 ** 9}}
 
 
 def _repo_args(tj: dict) -> List[str]:
@@ -754,7 +755,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = build(argv[2], spec)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
-    except (OSError, KeyError, ValueError) as e:  # the skill reads one JSON line; never a traceback
+    except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:
         rc = 0

@@ -412,10 +412,50 @@ _NAME_FLAGS = ["-r", "-z", "-M", "-l1000", "--numstat", "--no-ext-diff", "--no-t
                "--ignore-submodules=none"]
 
 
+def _oversized(sub: str, revs: List[str], top: str) -> List[str]:
+    """Names with a side over _MAX_FILE, from a `--raw -z` listing and blob sizes (6xl.85): git never has to
+    diff them, since its own numstat of a huge file can take far more memory than the file."""
+    raw = git_bytes([sub, "-r", "-z", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none"] + revs + ["--"],
+                    top).split(b"\0")
+    rows, oids = [], set()
+    for meta, path in zip(raw[0::2], raw[1::2]):
+        f = meta.split()
+        if len(f) == 5 and f[0].startswith(b":"):
+            sides = [(m, o.decode()) for m, o in ((f[0][1:], f[2]), (f[1], f[3])) if m != b"160000"]
+            rows.append((path.decode("utf-8", "surrogateescape"), sides))
+            oids |= {o for _, o in sides if o.strip("0")}
+    sizes = {}
+    if oids:
+        out = git_bytes(["cat-file", "--batch-check"], top, stdin="".join(o + "\n" for o in sorted(oids)).encode())
+        for ln in out.split(b"\n"):
+            f = ln.split()
+            if len(f) == 3 and f[2].isdigit():
+                sizes[f[0].decode()] = int(f[2])
+    big = []
+    for name, sides in rows:
+        size = max([sizes.get(o, 0) for _, o in sides if o.strip("0")] or [0])
+        work = any(m != b"000000" and not o.strip("0") for m, o in sides)  # the working-tree side has no object yet
+        if work:
+            try:
+                size = max(size, os.lstat(os.path.join(top, name)).st_size)
+            except OSError:
+                pass
+        if size > _MAX_FILE and work:  # a touched but unchanged file is no change: git hashes it streaming
+            old = [o for _, o in sides if o.strip("0")]
+            if old and git(["hash-object", "--no-filters", "--", name], top, check=False).strip() == old[0]:
+                continue
+        if size > _MAX_FILE:
+            big.append(name)
+    return big
+
+
 def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
-    """(changed names, {new name: old name} for renames) from `git <sub> --numstat -z`."""
-    raw = git_bytes([sub] + _NAME_FLAGS + revs + ["--"], top).decode("utf-8", "surrogateescape").split("\0")
-    names, renames, i = [], {}, 0
+    """(changed names, {new name: old name} for renames) from `git <sub> --numstat -z`, with files over the
+    size cap listed without git diffing them (they leave review as too-large)."""
+    big = _oversized(sub, revs, top)
+    keep_out = ["."] + [":(exclude,literal)" + n for n in big] if big else []
+    raw = git_bytes([sub] + _NAME_FLAGS + revs + ["--"] + keep_out, top).decode("utf-8", "surrogateescape").split("\0")
+    names, renames, i = list(big), {}, 0
     while i < len(raw):
         f = raw[i].split("\t", 2)  # "added<TAB>deleted<TAB>path": a TAB inside the path stays in it (6xl.72)
         if len(f) == 3 and f[2] == "" and i + 2 < len(raw):  # a rename: "added<TAB>deleted<TAB>" NUL old NUL new
@@ -876,7 +916,7 @@ def pin(candidate: dict, cwd: str) -> dict:
              for (esc, hits), _ in marks if hits]
     rec = {
         "version": 1, "kind": kind, "repo": top, "run": run, "arg": _shown(candidate.get("arg", "")),
-        "number": plan.get("number"), "url": plan.get("url"),
+        "number": plan.get("number"), "url": _shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
@@ -930,7 +970,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
     except Refuse as r:
         emit({"status": "skip" if r.reason in SKIP_REASONS else "refuse", "reason": r.reason, "detail": r.detail})
         return 1
-    except (OSError, KeyError, ValueError) as e:  # the skill reads one JSON line; never a traceback
+    except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
         emit({"status": "refuse", "reason": "internal-error", "detail": type(e).__name__})
         return 1
     emit({"status": "ok", "kind": rec["kind"], "base_sha": rec["base_sha"], "head_sha": rec["head_sha"],

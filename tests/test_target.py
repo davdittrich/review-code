@@ -115,6 +115,17 @@ class TestPR(PRWorld):
         self.assertEqual(t["url"], "https://github.com/o/r/pull/7")
         self.assertEqual(t["commits"], [self.pr])
 
+    def test_pr_url_from_forge_is_escaped(self):
+        # 6xl.85: the forge's url field is untrusted text; target.json must not carry a hidden payload in it
+        url = "https://github.com/o/r/pull/7#" + "".join(chr(0xE0000 + ord(c)) for c in "PAY")  # matches _PR_URL
+        rc, out = call(["7"], self.repo, self.tmp, gh=self.gh(url=url))
+        self.assertIn(out.get("reason"), (None, "gh-failed"), out)  # the url must match the PR URL pattern
+        if out.get("status") == "ok":
+            with open(os.path.join(out["run"], "target.json"), "rb") as fh:
+                raw = fh.read()
+            self.assertNotIn(b"\\udb40", raw)
+            self.assertIn(b"<TAGS:3>", raw)
+
     def test_pr_stdout_has_no_head_names(self):
         buf = io.StringIO()
         with gitfix.isolated(self.tmp), redirect_stdout(buf), \
@@ -865,6 +876,31 @@ class TestTooLarge(Local):
     def change(self, files):
         self.git("checkout", "-q", "-b", "chg", "main")
         return gitfix.commit(self.repo, files, "change")
+
+    def test_numstat_never_diffs_an_oversized_file(self):
+        # 6xl.85: git's own numstat of a huge file can take ~1 GB; sizes are checked first and the file kept out
+        line = "v = '" + "a" * 90 + "'\n"
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"big.py": line * (target._MAX_FILE * 2 // len(line))}, "big")
+        self.git("checkout", "-q", "-b", "chg")
+        gitfix.commit(self.repo, {"big.py": "w\n" + line * (target._MAX_FILE * 2 // len(line)), "s.py": "s\n"}, "edit")
+        calls, real = [], target.git_bytes
+
+        def spy(args, cwd, *a, **k):
+            calls.append(list(args))
+            return real(args, cwd, *a, **k)
+
+        with mock.patch.object(target, "git_bytes", spy):
+            rc, out = self.pin("main")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.excluded(out)["big.py"][0], "too-large")
+        numstat = [c for c in calls if "--numstat" in c]
+        self.assertTrue(numstat)
+        self.assertTrue(all(":(exclude,literal)big.py" in c for c in numstat), numstat)
+        os.utime(os.path.join(self.repo, "big.py"), (1, 1))  # touched, same content: no change, no false exclusion
+        self.write("s.py", "s2\n")
+        rc, out = self.pin("--unstaged")
+        self.assertEqual((rc, self.excluded(out)), (0, {}), out)
 
     def test_file_over_cap_excluded_with_reason_and_bounded_memory(self):
         # 6xl.75: one huge file must not blow memory; it leaves review with a recorded reason, unread

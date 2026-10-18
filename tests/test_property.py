@@ -22,21 +22,33 @@ import gitfix  # noqa: E402
 import target  # noqa: E402
 
 SEEDS = (11, 23, 47)
-ALPHABET = ["a", "b", "c", " ", "\t", "\n", "\r", '"', "\\", "\x1b", "ü", "​", chr(0xE0041)]
+# 6xl.85: a non-UTF-8 byte (as surrogateescape decodes it) joins the nasty characters
+ALPHABET = ["a", "b", "c", " ", "\t", "\n", "\r", '"', "\\", "\x1b", "\u00fc", "\u200b", chr(0xE0041), "\udce9"]
 CANARY = "PROPCANARY"
-RAW = [b"\x1b", "​".encode(), chr(0xE0041).encode(), CANARY.encode(), b"\\udb40", b"\\u200b"]
+RAW = [b"\x1b", "\u200b".encode(), chr(0xE0041).encode(), CANARY.encode(), b"\\udb40", b"\\u200b", b"\\u001b",
+       b"\\udc"]
+PROSE_EXT = (".md", ".markdown", ".html")
 
 
 def hidden(rng):
-    """A hidden construct carrying the canary, as a list of lines."""
-    k = rng.randrange(4)
-    if k == 0:
-        return ["<!-- %s -->" % CANARY]
-    if k == 1:
-        return ["<!--", "%s %d" % (CANARY, rng.randrange(99)), "more", "-->"]
-    if k == 2:
-        return ["", "[//]: # (%s)" % CANARY, ""]
-    return ['<div hidden>%s</div>' % CANARY]
+    """A hidden construct carrying the canary, as a list of lines (each renders as nothing on GitHub)."""
+    k = rng.randrange(11)
+    return [["<!-- %s -->" % CANARY],
+            ["<!--", "%s %d" % (CANARY, rng.randrange(99)), "more", "-->"],
+            ["", "[//]: # (%s)" % CANARY, ""],
+            ['<div hidden>%s</div>' % CANARY],
+            ["", "<!DOCTYPE html %s>" % CANARY, ""],
+            ["", "[^fn%d]: %s" % (rng.randrange(9), CANARY), ""],
+            ["", "[def%d]: http://x.y/%s \"%s\"" % (rng.randrange(9), CANARY, CANARY), ""],
+            ['a <input value="%s"> b' % CANARY],
+            ['a <span title=%s data-x="%s">t</span> b' % (CANARY, CANARY)],
+            ["", "<![CDATA[%s]]>" % CANARY, ""],
+            ["", "<?pi %s ?>" % CANARY, ""]][k]
+
+
+def long_comment(n):
+    """A comment opened on the first line that runs past `n` lines: a partial edit shows it without the opener."""
+    return ["<!--"] + ["%s %d" % (CANARY, i) for i in range(n)] + ["-->"]
 
 
 def prose(rng, n_lines):
@@ -80,10 +92,15 @@ class SeededNames(unittest.TestCase):
         rng = random.Random(seed)
         repo = gitfix.make_repo(os.path.join(self.tmp, "r%d" % seed))
         used, files = set(), {}
+        partial = set()
         for i in range(8):
-            ext = ".md" if i % 2 == 0 else ".py"
+            ext = rng.choice(PROSE_EXT) if i % 2 == 0 else ".py"
             n = name(rng, used, ext)
-            files[n] = prose(rng, 30) if ext == ".md" else "v%d = %d\n" % (i, i)
+            if i % 4 == 0:  # a long comment on line 1, edited deep inside later
+                partial.add(n)
+                files[n] = "\n".join(long_comment(30) + ["* tail"]) + "\n"
+            else:
+                files[n] = prose(rng, 30) if ext != ".py" else "v%d = %d\n" % (i, i)
         files["d/keep.py"] = "k = 1\n"
         self.commit(repo, files, "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
@@ -91,13 +108,16 @@ class SeededNames(unittest.TestCase):
         changed = set()
         for n in rng.sample(names, 4):
             changed.add(n)
-            files[n] = prose(rng, 31) if n.endswith(".md") else files[n] + "w = 2\n"  # 31 lines: never the base
+            if n in partial:
+                files[n] = "\n".join(long_comment(30) + ["* tail"]).replace("%s 20" % CANARY, "%s 20 x" % CANARY) + "\n"
+            else:
+                files[n] = prose(rng, 31) if not n.endswith(".py") else files[n] + "w = 2\n"  # 31 lines: never the base
         added = name(rng, used, ".md")
         files[added] = prose(rng, 12)
         changed.add(added)
         self.commit(repo, {n: files[n] for n in changed}, "feat")
         old = rng.choice(sorted(set(names) - changed))
-        new = name(rng, used, old[-3:])
+        new = name(rng, used, old[old.rindex("."):])  # keep the type: a prose file renamed to code is code
         gitfix.run(["git", "mv", "--", old, new], repo)
         gitfix.run(["git", "commit", "-q", "-m", "rename"], repo)
         committed = changed | {new}
@@ -105,7 +125,7 @@ class SeededNames(unittest.TestCase):
         self.write(repo, staged, prose(rng, 10))
         gitfix.run(["git", "--literal-pathspecs", "add", "--", staged], repo)
         unstaged = rng.choice(sorted(committed - {new}))
-        self.write(repo, unstaged, prose(rng, 25) if unstaged.endswith(".md") else "u = 3\n")
+        self.write(repo, unstaged, prose(rng, 25) if not unstaged.endswith(".py") else "u = 3\n")
         untracked = name(rng, used, ".md")
         self.write(repo, untracked, prose(rng, 8))
         tracked = sorted(set(files) - {old} | {new, staged})

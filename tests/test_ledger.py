@@ -918,6 +918,16 @@ class Spec(Base):
                          [("#12", False), ("#13", True)])
         self.assertFalse(led["capped"]["issues"])
 
+    def test_spec_forge_wrong_types_build_cleanly(self):
+        # 6xl.85: forge JSON with wrong-typed fields never raises a traceback
+        commits = self.pr_repo()
+        for bad in ({"title": 1, "body": ["x"], "closingIssuesReferences": 5, "headRefName": 7},
+                    {"closingIssuesReferences": [{"number": "7"}, {"number": True}, 3, None], "body": None},
+                    {"closingIssuesReferences": {"number": 4}}):
+            with self.subTest(bad=bad), mock.patch.object(target, "gh_json", return_value=bad):
+                _, led = self.build(kind="pr", commits=commits, number=7)
+                self.assertEqual(led["spec"]["sources"][0]["ref"], "#7")
+
     def test_spec_forge_fetch_failure_still_builds(self):
         commits = self.pr_repo()
         with mock.patch.object(target, "gh_json", side_effect=target.Refuse("gh-missing", "x")):
