@@ -36,7 +36,7 @@ _PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S
 _MR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/-/merge_requests/([0-9]+)(?:[/?#].*)?", re.S)
 _DIGITS = re.compile(r"[0-9]+")
 _REMOTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::[0-9]+)?[:/](.+?)/?", re.I | re.S)
-_PR_FIELDS = "state,isDraft,baseRefOid,headRefOid,baseRefName,isCrossRepository,url,number"
+_PR_FIELDS = "state,isDraft,baseRefOid,headRefOid,baseRefName,url,number"
 
 
 class Refuse(Exception):
@@ -104,8 +104,9 @@ def new_run_dir(cwd: str) -> str:
     return tempfile.mkdtemp(prefix="review-code.", dir=base)
 
 
-def _split(text: str) -> List[str]:
-    return [n for n in text.split("\0") if n]
+def _split(raw: bytes) -> List[str]:
+    """NUL-separated names, decoded as ledger.py does so a non-UTF-8 name round-trips instead of becoming U+FFFD."""
+    return [n for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
 
 
 def _commit_id(rev: str, cwd: str) -> str:
@@ -136,6 +137,11 @@ def _repo_key(url: str) -> Optional[str]:
     if path.lower().endswith(".git"):
         path = path[:-4]
     return (m.group(1) + "/" + path).lower()
+
+
+def _forge_key(host: str, path: str) -> str:
+    """Lowercase host/path without the web port, the form `_repo_key` gives a remote (an ssh port is not the web port)."""
+    return (re.sub(r":[0-9]+\Z", "", host) + "/" + path).lower()
 
 
 def _remotes(cwd: str) -> List[tuple]:
@@ -201,7 +207,7 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
 def _forge_candidate(kind: str, m: "re.Match") -> dict:
     n = _num(m.group(3))
     sep = "/pull/" if kind == "pr" else "/-/merge_requests/"
-    return {"kind": kind, "number": n, "repo_key": (m.group(1) + "/" + m.group(2)).lower(),
+    return {"kind": kind, "number": n, "repo_key": _forge_key(m.group(1), m.group(2)),
             "url": "https://%s/%s%s%d" % (m.group(1), m.group(2), sep, n),
             "reading": ("pull request #%d" if kind == "pr" else "merge request !%d") % n}
 
@@ -297,7 +303,7 @@ def _view_pr(cand: dict, cwd: str) -> dict:
             or not _oid_ok(j.get("headRefOid")) or not _branch_ok(j.get("baseRefName"), cwd)):
         raise Refuse("gh-failed", "gh reported invalid pull request fields")
     return {"base": j["baseRefOid"], "head": j["headRefOid"], "branch": j["baseRefName"], "url": j["url"],
-            "key": (m.group(1) + "/" + m.group(2)).lower(), "ref": "refs/pull/%d/head" % cand["number"],
+            "key": _forge_key(m.group(1), m.group(2)), "ref": "refs/pull/%d/head" % cand["number"],
             "notes": []}
 
 
@@ -318,7 +324,7 @@ def _view_mr(cand: dict, cwd: str) -> dict:
             or not _oid_ok(refs.get("head_sha")) or not _branch_ok(j.get("target_branch"), cwd)):
         raise Refuse("glab-failed", "glab reported invalid merge request fields")
     return {"base": refs["base_sha"], "head": refs["head_sha"], "branch": j["target_branch"], "url": j["web_url"],
-            "key": (m.group(1) + "/" + m.group(2)).lower(), "ref": "refs/merge-requests/%d/head" % cand["number"],
+            "key": _forge_key(m.group(1), m.group(2)), "ref": "refs/merge-requests/%d/head" % cand["number"],
             "notes": ["merge request reading is untested against a live glab"]}
 
 
@@ -336,7 +342,7 @@ def _have(oid: str, cwd: str) -> bool:
 
 
 def _plan_revs(base: str, head: str, mb: str, cwd: str) -> dict:
-    names = _split(git(["diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", mb, head, "--"], cwd))
+    names = _split(git_bytes(["diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", mb, head, "--"], cwd))
     return {"base": base, "head": head, "mb": mb, "names": names, "untracked": [],
             "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + [mb, head, "--"],
             "commits": git(["rev-list", "--reverse", mb + ".." + head], cwd).split()}
@@ -371,8 +377,8 @@ _EMPTY_NAMES = ("--name-only", "-z", "--no-ext-diff", "--no-textconv")
 def _head_plan(top: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
     """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
     head = _commit_id("HEAD", top)
-    names = _split(git(["diff"] + list(_EMPTY_NAMES) + extra + ["--"], top))
-    other = _split(git(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
+    names = _split(git_bytes(["diff"] + list(_EMPTY_NAMES) + extra + ["--"], top))
+    other = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": other, "dirty": True,
             "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
 
@@ -387,8 +393,8 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
         if rp != root and not rp.startswith(root + os.sep):
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
-    tracked = _split(git(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    other = _split(git(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
+    tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
+    other = _split(git_bytes(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
     present = set(names)
     explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule

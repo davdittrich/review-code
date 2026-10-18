@@ -556,6 +556,22 @@ class TestFilter(Local):
             "c.map": ("minified", "name pattern"), "long.js": ("minified", "longest line 1001")})
         self.assertEqual(load(out["run"])["included"], ["edge.js"])
 
+    def test_non_utf8_file_name_round_trips(self):
+        # IN-05: one decoding policy for names, so the listed name matches what git holds
+        name = os.fsdecode(b"bad\xff.txt")
+        try:
+            self.change({name: "x\n"})
+        except OSError:
+            self.skipTest("file system refuses non-UTF-8 names")
+        rc, out = self.pin("main")
+        self.assertEqual((rc, load(out["run"])["included"]), (0, [name]))
+
+    def test_forge_key_ignores_web_port(self):
+        self.assertEqual(target._forge_key("ghe.example:8443", "O/R"),
+                         target._repo_key("git@ghe.example:O/R.git"))
+        self.assertEqual(target._forge_key("ghe.example:8443", "O/R"),
+                         target._repo_key("ssh://git@ghe.example:22/O/R"))
+
     def test_run_files_are_private(self):
         self.change({"src/a.py": "a = 1\n"})
         rc, out = self.pin("main")
