@@ -321,7 +321,7 @@ def _put(root: str, rel: str, data: bytes) -> bool:
 
 def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
                  included: List[str]) -> Tuple[list, list, list]:
-    """Copy review rules from the pinned merge base only; a rule file that exists only on head is ignored."""
+    """Copy review rules from the pinned merge base only, hidden text stripped; a head-only rule file is ignored."""
     base_ls = _listing(repo, mb)
     want = sorted(_conv_paths(base_ls, included))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
@@ -329,6 +329,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
     conv, ignored = [], []
     for p in want:
         data = blobs.get(regular.get(p, ""))
+        text = None if data is None else _text(data)
+        if text is not None:  # stripped like tree/; base rules are not part of the change, so hits go unlisted
+            data = _scan(p, text)[0].encode("utf-8")
         if data is None or not _put(os.path.join(run, "conventions"), p, data):
             ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
             continue
