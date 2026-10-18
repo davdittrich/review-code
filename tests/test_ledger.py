@@ -405,6 +405,46 @@ class Tree(Base):
         self.assertNotIn(rlo, text)
         self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
 
+    def test_tree_hidden_text_stripped_in_prose_only(self):
+        notes = "intro\n<!-- HIDDENCMT -->\n![ALTINJECT](x.png)\n<div hidden>HIDDENEL</div>\ntail\n"
+        code = "x = 1  # <!-- CODECMT --> ![CODEALT](u)\n"
+        self.base({"a.txt": "x\n"})
+        self.branch({"notes.md": notes, "src/c.py": code})
+        _, led = self.build()
+        text = self.read("tree/notes.md")
+        for payload in ("HIDDENCMT", "ALTINJECT", "HIDDENEL"):
+            self.assertNotIn(payload, text)
+        self.assertEqual(text.count("\n"), notes.count("\n"))
+        self.assertEqual(self.read("tree/src/c.py"), code)
+        self.assertEqual([(h["file"], h["line"], h["kind"]) for h in led["hidden_text"]],
+                         [("notes.md", 2, "comment"), ("notes.md", 3, "alt-text"), ("notes.md", 4, "element")])
+        self.assertNotIn("HIDDEN", json.dumps(led))
+
+    def test_tree_hidden_text_in_place_is_scanned(self):
+        self.base({"a.md": "x\n"})
+        with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:
+            fh.write("x\n<!-- HIDDENCMT -->\n")
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.md"])
+        ledger.build(self.run_dir)
+        led = self.load()
+        self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18}])
+        self.assertNotIn("HIDDENCMT", json.dumps(led))
+
+    def test_tree_hidden_text_carries_target_entries(self):
+        self.base({"a.txt": "x\n"})
+        self.branch({"a.txt": "y\n"})
+        head = self.g("rev-parse", "HEAD")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["a.txt"])
+        with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["hidden_text"] = [{"file": "change.diff", "path": "n.md", "line": 6, "kind": "comment", "length": 9}]
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        ledger.build(self.run_dir)
+        self.assertIn(tj["hidden_text"][0], self.load()["hidden_text"])
+
     def test_tree_binary_is_raw(self):
         blob = b"\x00\x01\xff" + chr(0x202E).encode("utf-8")
         self.base({"a.txt": "x\n"})

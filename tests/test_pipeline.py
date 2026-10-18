@@ -153,6 +153,28 @@ class Tracer(Fixture):
         self.assertEqual((hc[0]["file"], hc[0]["codepoints"]), ("change.diff", ["U+202E"]))
         self.assertIn("<U+202E>", lines[hc[0]["line"] - 1])
 
+    def test_canary_hidden_text_in_changed_prose(self):
+        # A4: neither the diff nor the tree copy of a changed .md carries the hidden payload to the main thread
+        notes = "# notes\n<!-- HIDDENCMT -->\n![ALTINJECT](x.png)\nmentions parse_cfg\n"
+        self.feature({"notes.md": notes, "src/cfg.py": "def load():\n    return 1\n\ndef parse_cfg(s):\n    return s  # <!-- CODECMT -->\n"})
+        rc, t = self.pin()
+        rc, out = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        seen = {}
+        for d, _, names in os.walk(t["run"]):
+            for n in names:
+                with open(os.path.join(d, n), encoding="utf-8", errors="replace") as fh:
+                    seen[os.path.relpath(os.path.join(d, n), t["run"])] = fh.read()
+        for rel, text in seen.items():
+            self.assertNotIn("HIDDENCMT", text, rel)
+            self.assertNotIn("ALTINJECT", text, rel)
+        self.assertIn("CODECMT", seen["change.diff"])
+        with open(os.path.join(t["run"], "ledger.json"), encoding="utf-8") as fh:
+            led = json.load(fh)
+        self.assertEqual(sorted((h["file"], h["kind"]) for h in led["hidden_text"]),
+                         [("change.diff", "alt-text"), ("change.diff", "comment"), ("notes.md", "alt-text"), ("notes.md", "comment")])
+        self.assertLessEqual(set(json.loads(out)), LEDGER_KEYS)
+
     def test_tracer_stdout_minimal(self):
         self.feature()
         rc, t = self.pin()

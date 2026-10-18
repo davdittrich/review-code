@@ -341,11 +341,21 @@ def _text(data: bytes) -> Optional[str]:
     return None if b"\0" in data else data.decode("utf-8", "replace")
 
 
-def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[str], led: dict) -> Tuple[dict, list]:
+def _scan(p: str, text: str) -> Tuple[str, list, list]:
+    """CTX-04: prose and markup files lose hidden comments, alt text and hidden elements (markers keep the
+    line count); every file has invisible characters escaped. Returns the text and both hit lists, never a payload."""
+    stripped = []
+    if sanitize.is_prose_file(p):
+        text, stripped = sanitize.strip_hidden(text)
+    text, chars = sanitize.escape_for_code(text)
+    return text, [{"file": p, **h} for h in chars], [{"file": p, **h} for h in stripped]
+
+
+def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[str], led: dict) -> Tuple[dict, list, list]:
     """tree/ holds head-commit bytes of the included and ledger-referenced files; in-place kinds only scan."""
     refs = sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                    for e in led[c]})
-    skipped, hidden = [], []
+    skipped, hidden, hidden_text = [], [], []
     if head_ls is None:  # staged, unstaged, worktree, path, repo: lanes read the working copy; scan, never copy
         for p in included:
             try:
@@ -359,8 +369,9 @@ def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[st
             except OSError:
                 continue
             if text is not None:
-                hidden += [{"file": p, **h} for h in sanitize.escape_for_code(text)[1]]
-        return {"path": None, "in_place": repo, "skipped": skipped}, hidden
+                _, c, t = _scan(p, text)
+                hidden, hidden_text = hidden + c, hidden_text + t
+        return {"path": None, "in_place": repo, "skipped": skipped}, hidden, hidden_text
     tree = os.path.join(run, "tree")
     shutil.rmtree(tree, ignore_errors=True)
     os.makedirs(tree, mode=0o700)
@@ -378,11 +389,11 @@ def _materialize(run: str, repo: str, head_ls: Optional[dict], included: List[st
         data = blobs.get(oid)
         text = None if data is None else _text(data)
         if text is not None:
-            esc, hits = sanitize.escape_for_code(text)
-            data, hidden = esc.encode("utf-8"), hidden + [{"file": p, **h} for h in hits]
+            esc, c, t = _scan(p, text)
+            data, hidden, hidden_text = esc.encode("utf-8"), hidden + c, hidden_text + t
         if data is not None and not _put(tree, p, data):
             skipped.append({"path": p, "reason": "unsafe-path"})
-    return {"path": tree, "in_place": False, "skipped": skipped}, hidden
+    return {"path": tree, "in_place": False, "skipped": skipped}, hidden, hidden_text
 
 
 def _clean(v: object) -> str:
@@ -547,11 +558,12 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
         "spec": {"status": spec_status, "sources": sources},
         "tree": {"path": None, "in_place": False, "skipped": []},
-        "hidden_chars": list(tj["hidden_chars"]), "capped": capped,
+        "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    led["tree"], more = _materialize(run, repo, head_ls, included, led)
+    led["tree"], more, more_text = _materialize(run, repo, head_ls, included, led)
     led["hidden_chars"] += more
+    led["hidden_text"] += more_text
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
     _keep_trust(run, led)
     _write_json(os.path.join(run, "ledger.json"), led)
