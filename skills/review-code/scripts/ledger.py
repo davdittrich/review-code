@@ -22,7 +22,10 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import sanitize
 import target
 
-CONVENTIONS = ["CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md", "CODING_STANDARDS.md", "REVIEW.md"]
+_ANCESTOR = ("CLAUDE.md", "AGENTS.md", "REVIEW.md")  # also read from every directory above a changed file
+_CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md",
+                         ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
+_REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 STDOUT_KEYS = {"status", "reason", "run", "label", "spec_status", "counts"}
 _ISSUE = re.compile(r"(?<![\w/&])#(\d+)\b")
@@ -259,6 +262,74 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     return found, capped
 
 
+def _conv_paths(names, included: List[str]) -> set:
+    """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory."""
+    dirs = {""}
+    for p in included:
+        while "/" in p:
+            p = p.rsplit("/", 1)[0]
+            dirs.add(p)
+    out = set()
+    for n in names:
+        d, _, b = n.rpartition("/")
+        if (b in _ANCESTOR and d in dirs) or n in _CONV_FIXED or (d == "" and b.startswith("CONTRIBUTING")) \
+                or (d == ".github/instructions" and b.endswith(".instructions.md")):
+            out.add(n)
+    return out
+
+
+def _put(root: str, rel: str, data: bytes) -> bool:
+    """Write data at root/rel, mode 0600 in 0700 directories; refuse anything that could leave root."""
+    parts = rel.split("/")
+    if rel.startswith("/") or any(x in ("", "..", ".git") for x in parts):
+        return False
+    try:
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        cur = root
+        for x in parts[:-1]:
+            cur = os.path.join(cur, x)
+            os.makedirs(cur, mode=0o700, exist_ok=True)
+        dest = os.path.join(cur, parts[-1])
+        if not os.path.realpath(dest).startswith(os.path.realpath(root) + os.sep):
+            return False
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return False
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    return True
+
+
+def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
+                 included: List[str]) -> Tuple[list, list, list]:
+    """Copy review rules from the pinned merge base only; a rule file that exists only on head is ignored."""
+    base_ls = _listing(repo, mb)
+    want = sorted(_conv_paths(base_ls, included))
+    regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
+    blobs = _blobs(repo, regular.values())
+    conv, ignored = [], []
+    for p in want:
+        data = blobs.get(regular.get(p, ""))
+        if data is None or not _put(os.path.join(run, "conventions"), p, data):
+            ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
+            continue
+        if head_ls is not None:
+            diff = head_ls.get(p, (None, None))[1] != base_ls[p][1]
+        else:
+            fp = os.path.join(repo, p)
+            ok = os.path.lexists(fp) and stat.S_ISREG(os.lstat(fp).st_mode)
+            diff = not ok or target.git(["hash-object", "--no-filters", "--", p], repo).strip() != base_ls[p][1]
+        conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
+                     "how": "base-ref"})
+    for p in sorted(_conv_paths(files, included) - set(want)):
+        ignored.append({"file": p, "reason": "head-only", "how": "present on head, absent at the merge base"})
+    notes = []
+    if any(c["differs_on_head"] for c in conv) and target.git(["rev-parse", "HEAD"], repo, check=False).strip() == head:
+        notes = ["Claude Code loads the head copy of %s into the session; lanes use the base copy" % json.dumps(c["file"])
+                 for c in conv if c["differs_on_head"]]
+    return conv, ignored, notes
+
+
 def build(run: str, spec: Optional[str] = None) -> dict:
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
@@ -268,10 +339,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
     inplace = tj["kind"] in INPLACE
-    if inplace:
-        files, rev = _worktree_names(repo, tj["untracked"]), None
-    else:
-        files, rev = sorted(_listing(repo, head)), head
+    head_ls = None if inplace else _listing(repo, head)
+    files, rev = (_worktree_names(repo, tj["untracked"]), None) if inplace else (sorted(head_ls), head)
     diff = None
     if tj["diff_cmd"]:
         try:
@@ -281,18 +350,7 @@ def build(run: str, spec: Optional[str] = None) -> dict:
             diff = ""
     found, capped = _discover(repo, files, included, rev, diff)
 
-    conventions = []
-    for name in CONVENTIONS:  # base ref only: the change under review cannot steer the reviewer
-        base_id = target.git(["rev-parse", "--verify", "--quiet", mb + ":" + name], repo, check=False).strip()
-        if not base_id:
-            continue
-        dest = os.path.join(run, "conventions", name)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as fh:
-            fh.write(target.git_bytes(["show", mb + ":" + name], repo))
-        head_id = target.git(["rev-parse", "--verify", "--quiet", head + ":" + name], repo, check=False).strip()
-        conventions.append({"file": name, "source": "base", "copy": "conventions/" + name,
-                            "differs_on_head": head_id != base_id, "how": "base-ref"})
+    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included)
 
     messages = [sanitize.sanitize_prose(target.git(["log", "-1", "--format=%B", c], repo)) for c in tj["commits"]]
     sources = [{"kind": "issue", "ref": "#" + n}
@@ -316,7 +374,7 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "trust": old.get("trust", "unset"), "trust_asked": old.get("trust_asked", False),
         "symbols": found["symbols"], "callers": found["callers"], "tests": found["tests"],
         "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"],
-        "notes": list(tj.get("notes", [])), "conventions": conventions, "ignored": [],
+        "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
         "spec": {"status": spec_status, "sources": sources},
         "tree": {"path": None, "in_place": False, "skipped": []},
         "hidden_chars": tj["hidden_chars"], "capped": capped,
@@ -344,10 +402,16 @@ def build(run: str, spec: Optional[str] = None) -> dict:
                "\n".join("- " + json.dumps(p) for p in tj["included"])) +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
                "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES))
+    copies = {c["file"]: json.dumps(os.path.join(run, c["copy"])) for c in conventions}
+    contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
+                    if n in copies), None) or next((v for k, v in sorted(copies.items())
+                                                    if k.startswith("CONTRIBUTING")), "absent at base")
     _write(os.path.join(run, "inputs", "standards.md"),
-           "# Standards input\n\n" + pin + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n" % (
-               led["label"], diff,
-               "\n".join("- " + json.dumps(os.path.join(run, c["copy"])) for c in conventions) or "none"))
+           "# Standards input\n\n" + pin + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
+           "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n" % (
+               led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
+               copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none"))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES}}
 
