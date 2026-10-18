@@ -664,14 +664,15 @@ def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
     pre = _attr_source(plan["mb"], top)  # an attributes file the change adds must not turn its files into "binary"
     if not narrow:
         return git(pre + cmd[1:], top)
-    skip = set(plan["untracked"])
+    skip, ren = set(plan["untracked"]), plan.get("renames", {})
     chunks, cur, size = [], [], 0
     for n in (n for n in kept if n not in skip):
-        w = len(n.encode("utf-8", "surrogateescape")) + 1
+        group = [n] + ([ren[n]] if n in ren else [])  # 6xl.67: both sides of a rename, or -M sees an add
+        w = sum(len(g.encode("utf-8", "surrogateescape")) + 1 for g in group)
         if cur and size + w > _ARGV_BUDGET:
             chunks.append(cur)
             cur, size = [], 0
-        cur.append(n)
+        cur += group
         size += w
     if cur:
         chunks.append(cur)

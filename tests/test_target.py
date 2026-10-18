@@ -886,6 +886,23 @@ class TestHiddenText(Local):
         self.assertEqual((rc, out["kind"]), (0, "worktree"), out)
         self.assertIn("+UNTRACKEDBODY = 1", self.diff(out))
 
+    def test_rename_kept_when_other_files_are_excluded(self):
+        # 6xl.67: an exclusion narrows the diff to kept paths; the old side of a kept rename must stay in it
+        body = "".join("line %d\n" % i for i in range(20))
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"docs/a.py": body, "package-lock.json": "{}\n"}, "pre")
+        self.git("checkout", "-q", "-b", "chg", "main")
+        self.git("mv", "docs/a.py", "docs/b.py")
+        gitfix.commit(self.repo, {"docs/b.py": body.replace("line 9", "line 9 edited"), "package-lock.json": "{1}\n"},
+                      "rename")
+        rc, out = self.pin("main")
+        self.assertEqual(rc, 0, out)
+        t = load(out["run"])
+        self.assertIn("package-lock.json", [e["path"] for e in t["excluded"]])
+        text = self.diff(out)
+        self.assertIn("rename from docs/a.py", text)
+        self.assertNotIn("package-lock", text)
+
     def test_hunk_header_context_kept_for_code(self):
         self.change({"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i) for i in range(20))})
         gitfix.commit(self.repo, {"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i if i != 15 else 99)
