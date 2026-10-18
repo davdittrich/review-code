@@ -35,7 +35,7 @@ Source code is not stripped: its comments are the content under review. Invisibl
 
 ### Hidden text in prose and markup files
 
-The main thread reads `change.diff` and `tree/` (for every target kind; never the repository itself), so hidden text in a changed prose or markup file must not reach it. In those files (and in their hunks in `change.diff`) the sanitizer replaces each of these with the marker `[hidden-KIND removed: N chars]` on the same line, keeping every newline, so line numbers and diff anchors stay valid:
+The main thread reads `change.diff` and `tree/` (for every target kind; never the repository itself), so hidden text in a changed prose or markup file must not reach it. In those files (and in their hunks in `change.diff`) the sanitizer replaces each of these with the marker `[hidden-KIND removed: N chars]` on the same line, keeping every newline, so line numbers and diff anchors stay valid. The function-context text git appends to a hunk header (after the second `@@`) is dropped for these files, since it is a lone line of the old file that can sit inside a comment. Removed:
 
 - `comment`: HTML comments (also `<!x>`, `<?x>`, CDATA) and markdown `[//]: # (x)` lines.
 - `alt-text`: markdown image alt text (`![x](u)`, `![x][r]`, `![x]`) and `<img alt>` values.

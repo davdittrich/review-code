@@ -343,8 +343,8 @@ def strip_hidden(text: str) -> Tuple[str, List[dict]]:
 
 def _walk(diff: str):
     """(index, path, tag, old line, new line, content) for every hunk line of a unified diff; tag is
-    ' ', '+', '-' or '\\'. path is None before the first file header. A `+++ ` line inside a hunk is
-    content: hunk line counts decide."""
+    ' ', '+', '-', '\\' or '@' (a hunk header: content is the function-context text after its second @@).
+    path is None before the first file header. A `+++ ` line inside a hunk is content: hunk line counts decide."""
     path, old_left, new_left, o, n = None, 0, 0, 0, 0
     for i, ln in enumerate(diff.split("\n")):
         if old_left > 0 or new_left > 0:
@@ -370,6 +370,7 @@ def _walk(diff: str):
         else:
             m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", ln)
             if m:
+                yield i, path, "@", 0, 0, ln[m.end():]  # the function-context trailer git appends
                 o, old_left = int(m.group(1)), int(m.group(2) or 1)
                 n, new_left = int(m.group(3)), int(m.group(4) or 1)
                 o, n = max(o, 1), max(n, 1)
@@ -391,7 +392,7 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
     "length"}]`, one per removed span, at the first diff line that shows it."""
     sides = {}  # (path, side) -> {line number: content}
     for _, path, tag, o, n, body in _walk(diff if full is None else full):
-        if path and tag != "\\" and is_prose_file(path):
+        if path and tag not in "\\@" and is_prose_file(path):
             if tag != "+":
                 sides.setdefault((path, "-"), {})[o] = body
             if tag != "-":
@@ -408,6 +409,9 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
     res, hits, seen = diff.split("\n"), [], set()
     for i, path, tag, o, n, body in _walk(diff):
         if not (path and tag != "\\" and is_prose_file(path)):
+            continue
+        if tag == "@":  # 6xl.55: the trailer is a lone old-side line, maybe inside a comment: drop it
+            res[i] = res[i][:len(res[i]) - len(body)]
             continue
         side, num = ("-", o) if tag == "-" else ("+", n)
         got = done.get((path, side))

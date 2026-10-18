@@ -808,6 +808,41 @@ class TestHiddenText(Local):
         self.assertEqual(hits, [("comment", "notes.md"), ("alt-text", "notes.md"), ("comment", "notes.md")])
         self.assertNotIn("HIDDENCMT", json.dumps(load(out["run"])))
 
+    @staticmethod
+    def funcctx(name):
+        """A multi-line comment whose second line git picks as the @@ function context of a later edit."""
+        top = "<!--\nHTFUNCCTX payload line\n-->\n" if name.endswith(".md") else "<html>\n<!--\nHTFUNCCTX payload line\n-->\n"
+        return top + "".join("* item %d\n" % i for i in range(20))
+
+    def test_hunk_header_context_never_carries_hidden_text(self):
+        # 6xl.55: git writes the nearest preceding "function" line into each @@ header
+        for name in ("guide.md", "page.html"):
+            with self.subTest(name=name):
+                self.git("checkout", "-q", "-f", "main")
+                self.git("branch", "-q", "-D", "chg") if "chg" in self.git("branch") else None
+                self.change({name: self.funcctx(name)})
+                gitfix.commit(self.repo, {name: self.funcctx(name).replace("* item 15", "* item 15 edited")}, "edit")
+                raw = gitfix.run(["git", "diff", "HEAD^", "HEAD"], self.repo)
+                self.assertIn("HTFUNCCTX", raw)  # the fixture really triggers git's function context
+                for words in (["HEAD^!"], ["main"], ["main..chg"]):
+                    rc, out = self.pin(*words)
+                    self.assertEqual(rc, 0, out)
+                    self.assertNotIn("HTFUNCCTX", self.diff(out), words)
+                    self.assertNotIn("HTFUNCCTX", json.dumps(load(out["run"])), words)
+                self.write(name, self.funcctx(name).replace("* item 16", "* item 16 dirty"))
+                rc, out = self.pin()
+                self.assertEqual((rc, out["kind"]), (0, "worktree"), out)
+                self.assertNotIn("HTFUNCCTX", self.diff(out))
+                self.git("checkout", "-q", "--", name)
+
+    def test_hunk_header_context_kept_for_code(self):
+        self.change({"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i) for i in range(20))})
+        gitfix.commit(self.repo, {"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i if i != 15 else 99)
+                                                                         for i in range(20))}, "edit")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(self.diff(out), r"@@ -\d+,\d+ \+\d+,\d+ @@ def handler\(\):")
+
     def diff_lines_without_stripping(self, out):
         t = load(out["run"])
         raw = gitfix.run(["git", "diff"] + target._DIFF_FLAGS + [t["merge_base"], t["head_sha"], "--"] + t["included"],
