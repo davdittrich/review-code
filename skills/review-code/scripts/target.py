@@ -31,7 +31,8 @@ _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "
         # config-only knobs that would change parsed output (6xl.61); flags pin the rest
         "-c", "color.ui=never", "-c", "diff.suppressBlankEmpty=false", "-c", "diff.noprefix=false",
         "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false", "-c", "grep.column=false",
-        "-c", "grep.lineNumber=false", "-c", "log.showSignature=false"]
+        "-c", "grep.lineNumber=false", "-c", "log.showSignature=false",
+        "-c", "i18n.logOutputEncoding=UTF-8"]  # 6xl.81: commit text always arrives as UTF-8
 # Environment that would inject options or config past the pins above.
 _ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
              "GIT_ICASE_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_LITERAL_PATHSPECS")  # 6xl.74

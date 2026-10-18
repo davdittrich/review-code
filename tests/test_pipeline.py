@@ -3,6 +3,7 @@ import ast
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -466,7 +467,8 @@ class HostileUserConfig(unittest.TestCase):
         gitfix.commit(self.repo, {"src/cfg.py": "def load_cfg():\n    return 2\n", "src/deep/d.py": "d = 2\n",
                                   "top.py": "t = 2\n", "data.txt": "two\n", "docs/new.md": "".join(
                                       "line %d\n" % i for i in range(30)).replace("line 20", "line 20 edited"),
-                                  "notes.md": "n\n<!-- HTCMT -->\n"}, "feat")
+                                  "notes.md": "n\n<!-- HTCMT -->\n"},
+                      "feat: ok " + "".join(chr(0xE0000 + ord(c)) for c in "PAYLOADTAGS"))  # 6xl.81
         # dirty state for the in-place kinds
         with open(os.path.join(self.repo, "src", "cfg.py"), "a") as fh:
             fh.write("# staged\n")
@@ -495,7 +497,8 @@ class HostileUserConfig(unittest.TestCase):
                      "[color]\n\tui = always\n\tdiff = always\n\tgrep = always\n"
                      "[core]\n\tquotePath = true\n\tattributesFile = %s\n\tpager = cat\n\tabbrev = 4\n"
                      "[grep]\n\tcolumn = true\n\tlineNumber = true\n\tpatternType = perl\n"
-                     "[log]\n\tshowSignature = true\n[user]\n\tname = U\n\temail = u@example.invalid\n"
+                     "[log]\n\tshowSignature = true\n[i18n]\n\tlogOutputEncoding = UTF-16\n"
+                     "[user]\n\tname = U\n\temail = u@example.invalid\n"
                      "[filter \"evil\"]\n\tclean = %s\n\tsmudge = %s\n\trequired = true\n"
                      % (os.path.join(bin_, "ext.sh"), os.path.join(self.tmp, "order"),
                         os.path.join(bin_, "conv.sh"), os.path.join(self.tmp, "attrs"),
@@ -545,7 +548,9 @@ class HostileUserConfig(unittest.TestCase):
             with open(os.path.join(run, rel), "rb") as fh:
                 return fh.read()
         tj, led = json.loads(rd("target.json")), json.loads(rd("ledger.json"))
-        return {"diff": rd("change.diff"),
+        spec = re.sub(rb"[0-9a-f]{16}>>>", b"nonce>>>", re.sub(rb"UNTRUSTED-[0-9a-f]+", b"UNTRUSTED-nonce", rd(
+            os.path.join("inputs", "spec.md")))).replace(run.encode(), b"RUN")
+        return {"diff": rd("change.diff"), "spec": spec,
                 "target": {k: tj[k] for k in ("kind", "base_sha", "head_sha", "merge_base", "included", "excluded",
                                               "untracked", "hidden_chars", "hidden_text")},
                 "ledger": {k: led[k] for k in ("symbols", "callers", "tests", "docs", "hidden_text", "hidden_chars")}}

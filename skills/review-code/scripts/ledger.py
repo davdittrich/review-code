@@ -589,7 +589,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
 
     conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included)
 
-    messages = [sanitize.sanitize_prose(target.git(["log", "-1", "--no-show-signature", "--format=%B", c], repo)) for c in tj["commits"]]
+    messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
+        "utf-8", "surrogateescape")) for c in tj["commits"]]
     sources, capped["issues"], sections, found_spec = _gather_spec(
         tj, spec, head_ls if head_ls is not None else _listing(repo, head), messages)
     spec_status = "found" if found_spec else "none"
