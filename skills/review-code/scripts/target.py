@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Iterator, List, Optional, Tuple
 
 import sanitize
 
@@ -470,26 +470,45 @@ def _scan(data: bytes) -> tuple:
     return (b"\0" in data[:8000], longest, [l.decode("utf-8", "replace") for l in lines[:10]])
 
 
+def cat_batch(lines: List[bytes], cwd: str, check: bool) -> Iterator[Tuple[List[bytes], bytes]]:
+    """(header fields, content) per input line of one `git cat-file --batch` run, read one object at a
+    time so memory holds one object. Lines go in through a temporary file, so neither pipe can fill and
+    deadlock. With `check`, a failing run refuses; a consumer that stops early is no failure (SIGPIPE)."""
+    if not lines:
+        return
+    with tempfile.TemporaryFile() as fh:
+        fh.write(b"".join(ln + b"\n" for ln in lines))
+        fh.seek(0)
+        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(), stdin=fh,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        finished = False
+        try:
+            for _ in lines:
+                head = p.stdout.readline()
+                if not head:
+                    break
+                f = head.split()
+                data = b""
+                if len(f) >= 3 and f[-1].isdigit():  # "<oid> <type> <size>"; "<spec> missing" has no body
+                    data = p.stdout.read(int(f[-1]))
+                    p.stdout.read(1)
+                yield f, data
+            finished = True
+        finally:
+            p.stdout.close()
+            rc = p.wait()
+    if check and finished and rc != 0:
+        raise Refuse("bad-ref", "a git command failed")
+
+
 def _blobs(specs: List[tuple], top: str) -> dict:
     """{key: _scan(content)} for each (key, object-spec) that names a blob; absent objects are left out."""
+    part = [(k, sp) for k, sp in specs if "\n" not in sp]  # a name with LF cannot go on a line
     out = {}
-    for i in range(0, len(specs), 256):
-        part = [(k, sp) for k, sp in specs[i:i + 256] if "\n" not in sp]  # a name with LF cannot go on a line
-        data = git_bytes(["cat-file", "--batch"], top, stdin="".join(sp + "\n" for _, sp in part).encode(
-            "utf-8", "surrogateescape"), check=False)
-        pos = 0
-        for k, _ in part:
-            nl = data.find(b"\n", pos)
-            if nl < 0:
-                break
-            head = data[pos:nl].split(b" ")
-            pos = nl + 1
-            if not head[-1].isdigit():
-                continue  # "<spec> missing" or "ambiguous"
-            size = int(head[-1])
-            if len(head) >= 3 and head[-2] == b"blob":
-                out[k] = _scan(data[pos:pos + size])
-            pos += size + 1
+    for (k, _), (f, data) in zip(part, cat_batch([sp.encode("utf-8", "surrogateescape") for _, sp in part], top,
+                                                 False)):
+        if len(f) >= 3 and f[-2] == b"blob":
+            out[k] = _scan(data)
     return out
 
 

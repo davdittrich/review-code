@@ -17,7 +17,6 @@ import secrets
 import shlex
 import shutil
 import stat
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -123,34 +122,12 @@ def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
 
 
 def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, bytes]]:
-    """(oid, raw bytes) per blob from one `git cat-file --batch` run, read one object at a time: no filters,
-    no textconv, no archive attributes. Ids go in through a temporary file, so neither pipe can fill and
-    deadlock; a missing id is skipped."""
+    """(oid, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
+    attributes; a missing id is skipped and a failing git run refuses."""
     uniq = sorted(set(oids))
-    if not uniq:
-        return
-    with tempfile.TemporaryFile() as ids:
-        ids.write(("\n".join(uniq) + "\n").encode())
-        ids.seek(0)
-        p = subprocess.Popen(target._GIT + ["cat-file", "--batch"], cwd=repo, env=target._env(), stdin=ids,
-                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        finished = False
-        try:
-            for _ in uniq:
-                head = p.stdout.readline().split()
-                if not head:
-                    break
-                if len(head) == 3:
-                    data = p.stdout.read(int(head[2]))
-                    p.stdout.read(1)
-                    if head[1] == b"blob":
-                        yield head[0].decode(), data
-            finished = True
-        finally:
-            p.stdout.close()
-            rc = p.wait()
-        if finished and rc != 0:  # a consumer that stops early makes git exit on SIGPIPE: not a failure
-            raise target.Refuse("bad-ref", "a git command failed")
+    for f, data in target.cat_batch([o.encode() for o in uniq], repo, True):
+        if len(f) == 3 and f[1] == b"blob":
+            yield f[0].decode(), data
 
 
 def _blobs(repo: str, oids) -> Dict[str, bytes]:

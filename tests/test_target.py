@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -758,6 +759,31 @@ class TestFilter(Local):
             rc, out = self.pin("main")
         self.assertEqual((rc, self.excluded(out)), (0, {}))
         self.assertIn("git older than 2.40: linguist attributes not checked", self.notes(out))
+
+
+class TestBlobMemory(Local):
+    def peak(self, n):
+        line = ("v = '" + "a" * 990 + "'\n").encode()
+        specs = []
+        for i in range(n):
+            data = b"# %d\n" % i + line * 1000  # about 1 MB, distinct per file
+            oid = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.repo, env=gitfix.env(), input=data,
+                                 stdout=subprocess.PIPE, check=True).stdout.decode().strip()
+            specs.append(("f%d" % i, oid))
+        tracemalloc.start()
+        try:
+            got = target._blobs(specs, self.repo)
+            return tracemalloc.get_traced_memory()[1], got
+        finally:
+            tracemalloc.stop()
+
+    def test_blobs_memory_flat_in_file_count(self):
+        # 6xl.59: --repo sniffs every base blob; peak memory must not grow with the number of files
+        small, got4 = self.peak(4)
+        big, got16 = self.peak(16)
+        self.assertEqual((len(got4), len(got16)), (4, 16))
+        self.assertEqual(got16["f3"][2][0], "# 3")
+        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
 class TestHiddenRefNames(Local):
