@@ -148,6 +148,20 @@ class Categories(Base):
         self.assertEqual(files_of(crlf, "callers"), files_of(led, "callers"))
         self.assertNotIn("src/cfg.py", files_of(crlf, "callers"))
 
+    def test_symbol_names_escaped(self):
+        # 6xl.64: \w matches Hangul fillers (U+3164, U+115F, U+1160, U+FFA0), so a name can hide them
+        name = "load\u3164x"
+        body = "".join("    x = %d\n" % i for i in range(12))
+        self.base({"src/cfg.py": "def %s(s):\n" % name + body, "src/use.py": "%s('x')\n" % name})
+        self.branch({"src/cfg.py": "def %s(s):\n" % name + body.replace("x = 11", "x = 99")})
+        _, led = self.build()
+        self.assertEqual([e["name"] for e in led["symbols"]], ["load<U+3164>x"])
+        self.assertEqual({e["symbol"] for e in led["callers"]}, {"load<U+3164>x"})
+        with open(os.path.join(self.run_dir, "ledger.json"), "rb") as fh:
+            raw = fh.read()
+        self.assertNotIn(b"\\u3164", raw)
+        self.assertNotIn("\u3164".encode(), raw)
+
     def test_ledger_empty_is_triage(self):
         self.base({"notes.txt": "one\n"})
         self.branch({"notes.txt": "one\ntwo\n"})

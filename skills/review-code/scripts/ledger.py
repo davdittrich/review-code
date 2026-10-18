@@ -634,8 +634,10 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "index" if idx is not None else "working copy" if inplace else "head commit",
         {h["file"] for h in tj["hidden_chars"] if h.get("name")}, universe)
     for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
-        for e in led[c]:  # 6xl.51: discovered names reach ledger.json escaped
-            e["file"] = target._shown(e["file"])
+        for e in led[c]:  # 6xl.51/.64: file and symbol names (also inside "how") reach ledger.json escaped
+            for k, v in e.items():
+                if isinstance(v, str):
+                    e[k] = target._shown(v)
     led["hidden_chars"] += more
     led["hidden_text"] += more_text
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
