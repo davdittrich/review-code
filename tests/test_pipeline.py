@@ -257,6 +257,27 @@ class Tracer(Fixture):
                     self.assertIn("diff --git a/%s b/%s" % (shown, shown), diff)
                     self.assertIn("+y = 1", diff)
 
+    def test_escaped_name_collision_keeps_both_files(self):
+        # 6xl.56: a file literally named a<U+200B>.md next to a\u200b.md: both contents stay reachable
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", "a\u200b.md": "HIDDENNAMED body\n",
+                      "a<U+200B>.md": "LITERALNAMED body\n"})
+        for arg in ("main", "--repo"):
+            with self.subTest(arg=arg):
+                rc, t = self.pin(arg)
+                self.assertEqual((rc, t["status"]), (0, "ok"), t)
+                rc, _ = self.build(t["run"])
+                self.assertEqual(rc, 0)
+                run = t["run"]
+                with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+                    skipped = json.load(fh)["tree"]["skipped"]
+                copies = [k["copy"] for k in skipped if k["path"] == "a<U+200B>.md"]
+                self.assertEqual(len(set(copies)), 2, skipped)
+                bodies = set()
+                for c in copies:
+                    with open(os.path.join(run, c), encoding="utf-8") as fh:
+                        bodies.add(fh.read())
+                self.assertEqual(bodies, {"HIDDENNAMED body\n", "LITERALNAMED body\n"})
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")

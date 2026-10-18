@@ -406,12 +406,14 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     for n in universe:
         if target._shown(n) in named and target._shown(n) != n:
             raw_of.setdefault(target._shown(n), set()).add(n)
-    odd = set()
+    odd, known = set(), set(universe)
     for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                      for e in led[c]}):
         if p in named or target._shown(p) != p:
-            odd |= raw_of.get(p, set()) if p in named else {p}
-            if not raw_of.get(p) and p in named:  # flagged but gone (a deleted file): nothing to copy
+            # 6xl.56: a file literally named like an escaped hidden name gets its own stand-in too
+            mine = raw_of.get(p, set()) | ({p} if p in known else set()) if p in named else {p}
+            odd |= mine
+            if not mine:  # flagged but gone (a deleted file): nothing to copy
                 skipped.append({"path": p, "reason": "hidden-name"})
         else:
             jobs.append((p, p, tree, p))
