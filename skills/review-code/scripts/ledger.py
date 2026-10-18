@@ -672,10 +672,10 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
     try:
         if argv[:1] == ["trust"] and len(argv) >= 2:
             out = _trust_cli(argv[1:])
-        elif len(argv) < 3 or argv[0] != "build" or argv[1] != "--run":
-            raise target.Refuse("no-target", "usage: ledger.py build --run DIR [--spec PATH]")
+        elif argv[:2] != ["build", "--run"] or len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--spec"):
+            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH]")
         else:
-            out = build(argv[2], argv[4] if len(argv) == 5 and argv[3] == "--spec" else None)
+            out = build(argv[2], argv[4] if len(argv) == 5 else None)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     else:

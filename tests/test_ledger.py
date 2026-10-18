@@ -149,6 +149,15 @@ class Categories(Base):
             rc = ledger.main(["build", "--run", self.run_dir])
         self.assertEqual((rc, json.loads(buf.getvalue())["label"]), (0, "triage"))
 
+    def test_ledger_cli_rejects_extra_or_malformed_args(self):
+        # WR-02: anything but `build --run DIR [--spec PATH]` is a usage refusal
+        for argv in (["build", "--run", "R", "--spec", "x", "extra"], ["build", "--run", "R", "--spec"],
+                     ["build", "--run", "R", "extra"], ["build", "--run", "R", "--bogus", "x"]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ledger.main(argv)
+            self.assertEqual((rc, json.loads(buf.getvalue())["reason"]), (1, "usage"), argv)
+
     def test_ledger_caps(self):
         self.base({"README.md": "x\n"})
         self.branch({"src/many.py": "".join("def fn_%02d():\n    pass\n" % i for i in range(41))})
