@@ -478,3 +478,32 @@ class TestMR(PRWorld):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFilter(Local):
+    """CTX-07: noise files leave the review with a stated reason; the change cannot hide new code."""
+
+    def change(self, files, message="change"):
+        self.git("checkout", "-q", "-b", "chg", "main")
+        return gitfix.commit(self.repo, files, message)
+
+    def excluded(self, out):
+        return {e["path"]: (e["reason"], e["detail"]) for e in load(out["run"])["excluded"]}
+
+    def test_filter_lockfile(self):
+        self.change({"package-lock.json": "{}\n", "src/app.js": "x = 1\n"})
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["included_count"], out["excluded_count"]), (0, 1, 1))
+        t = load(out["run"])
+        self.assertEqual(t["included"], ["src/app.js"])
+        self.assertEqual(t["excluded"], [{"path": "package-lock.json", "reason": "lockfile", "detail": "basename"}])
+        text = self.diff(out)
+        self.assertIn("src/app.js", text)
+        self.assertNotIn("package-lock.json", text)
+
+    def test_filter_only_excluded(self):
+        self.change({"yarn.lock": "y\n", "Cargo.lock": "c\n"})
+        before = self.run_dirs()
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "only-excluded"))
+        self.assertEqual(self.run_dirs(), before)
