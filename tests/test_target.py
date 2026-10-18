@@ -789,6 +789,28 @@ class TestBlobMemory(Local):
         self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
+class TestDiffMemory(Local):
+    def peak(self, n):
+        self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "-B", "big%d" % n)
+        line = "v = '" + "a" * 990 + "'\n"
+        gitfix.commit(self.repo, {"f%02d.py" % i: "# %d\n" % i + line * 256 for i in range(n)}, "big")
+        tracemalloc.start()
+        try:
+            rc, out = call(["main"], self.repo, self.tmp)
+            self.assertEqual(rc, 0, out)
+            return tracemalloc.get_traced_memory()[1], out
+        finally:
+            tracemalloc.stop()
+
+    def test_change_diff_streamed(self):
+        # 6xl.66: pin writes change.diff file section by file section; peak memory does not follow the diff size
+        small, _ = self.peak(4)
+        big, out = self.peak(16)  # change.diff about 1 MB vs 4 MB
+        self.assertGreater(os.path.getsize(os.path.join(out["run"], "change.diff")), 4_000_000)
+        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
+
+
 class TestHiddenRefNames(Local):
     """6xl.52: branch names and the target words never carry a hidden payload to stdout or target.json."""
 

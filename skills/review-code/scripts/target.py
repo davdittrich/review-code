@@ -572,8 +572,11 @@ def _linguist(mb: str, names: List[str], top: str) -> dict:
 
 def _numstat_binary(plan: dict, top: str) -> set:
     """Tracked paths git counts as binary (`-` counts), judged with the base commit's attributes."""
-    cmd = [a for a in plan["diff_cmd"][1:] if a not in ("-p", "-M")]  # numstat only, no rename records
-    raw = git(_attr_source(plan["mb"], top) + cmd[:1] + ["--numstat", "-z", "--no-renames"] + cmd[1:], top, check=False)
+    # numstat only: no patch flags (-U and friends imply --patch, 6xl.66), no rename records
+    cmd = [a for a in plan["diff_cmd"][1:] if a not in _DIFF_FLAGS]
+    raw = git(_attr_source(plan["mb"], top) + cmd[:1] + ["--numstat", "-z", "--no-renames", "--no-ext-diff",
+                                                      "--no-textconv", "--ignore-submodules=none"] + cmd[1:],
+              top, check=False)
     rows = (r.split("\t", 2) for r in raw.split("\0") if r)
     return {r[2] for r in rows if len(r) == 3 and r[0] == "-" and r[1] == "-"}
 
@@ -652,18 +655,18 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     return sorted(kept), sorted(excluded, key=lambda e: e["path"]), notes
 
 
-def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
-    """The change diff, limited to kept files when some were excluded.
+def _diff_calls(plan: dict, kept: List[str], narrow: bool, top: str) -> List[List[str]]:
+    """git argv lists whose outputs, in order, make the change diff, limited to kept files when some are excluded.
 
     shortcut: `git diff` has no --pathspec-from-file (git 2.56), so paths go in argv, in chunks under
-    _ARGV_BUDGET; each chunk is its own diff, so the sort order is per chunk. Fine until diffs span >60 kB of paths.
+    _ARGV_BUDGET; each chunk is its own diff, so sort order is per chunk. Fine until diffs span >60 kB of paths.
     """
     cmd = plan["diff_cmd"]
     if not cmd:
-        return ""
+        return []
     pre = _attr_source(plan["mb"], top)  # an attributes file the change adds must not turn its files into "binary"
     if not narrow:
-        return git(pre + cmd[1:], top)
+        return [pre + cmd[1:]]
     skip, ren = set(plan["untracked"]), plan.get("renames", {})
     chunks, cur, size = [], [], 0
     for n in (n for n in kept if n not in skip):
@@ -676,7 +679,72 @@ def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
         size += w
     if cur:
         chunks.append(cur)
-    return "".join(git(pre + ["--literal-pathspecs"] + cmd[1:] + c, top) for c in chunks)
+    return [pre + ["--literal-pathspecs"] + cmd[1:] + c for c in chunks]
+
+
+def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
+    """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
+    for args in calls:
+        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            for raw in p.stdout:
+                yield raw.rstrip(b"\n").decode("utf-8", "replace")  # LF is ASCII: per-line decoding equals whole
+        finally:
+            p.stdout.close()
+            rc = p.wait()
+        if rc != 0:
+            raise Refuse("bad-ref", "a git command failed")
+
+
+def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
+    return "".join(ln + "\n" for ln in _diff_lines(_diff_calls(plan, kept, narrow, top), top))
+
+
+def _sections(lines: Iterator[str]) -> Iterator[str]:
+    """One file's diff text at a time: a section starts at each top-level `diff --git ` line (hunk lines
+    always carry a ' ', '+', '-' or '\\' prefix, so no content line can start one)."""
+    cur: List[str] = []
+    for ln in lines:
+        if ln.startswith("diff --git ") and cur:
+            yield "".join(x + "\n" for x in cur)
+            cur = []
+        cur.append(ln)
+    if cur:
+        yield "".join(x + "\n" for x in cur)
+
+
+def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str) -> Tuple[list, list]:
+    """Strip and escape the change diff file by file into change.diff, so memory holds one file's diff and,
+    for a tracked prose file, its whole-file-context diff (6xl.66). Returns (hidden chars, hidden text) with
+    change.diff line numbers."""
+    def untracked() -> Iterator[str]:
+        if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
+            for u in sorted(set(plan["untracked"]) & set(names)):
+                if not u.endswith("/"):
+                    # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
+                    rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
+                    if rc in (0, 1):
+                        yield out.decode("utf-8", "replace")
+
+    tracked = _sections(_diff_lines(_diff_calls(plan, names, narrow, top), top))
+    wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]]) if plan["diff_cmd"] else None
+    hidden, stripped, offset = [], [], 0
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+        for is_tracked, sections in ((True, tracked), (False, untracked())):
+            for sec in sections:
+                full = None
+                if is_tracked and wide:  # CTX-04: whole-file context tells strip_hidden_diff where a comment opens
+                    paths = {p for _, p, tag, *_ in sanitize._walk(sec) if p and sanitize.is_prose_file(p)}
+                    paths |= {o for *_, o in sanitize._walk(sec) if o and sanitize.is_prose_file(o)}
+                    prose = [n for n in names if n in paths and n not in plan["untracked"]]
+                    full = _diff_text(wide, prose, True, top) if prose else None
+                text, st = sanitize.strip_hidden_diff(sec, full)
+                text, hc = sanitize.escape_for_code(text)
+                stripped += [dict(h, line=h["line"] + offset) for h in st]
+                hidden += [dict(h, line=h["line"] + offset) for h in hc]
+                offset += text.count("\n")
+                fh.write(text)
+    return hidden, stripped
 
 
 def pin(candidate: dict, cwd: str) -> dict:
@@ -713,23 +781,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     if not names:
         raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified or binary")
     run = new_run_dir(cwd)
-    text, added = _diff_text(plan, names, bool(excluded), top), ""
-    if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
-        for u in sorted(set(plan["untracked"]) & set(names)):
-            if not u.endswith("/"):
-                # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
-                rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
-                if rc in (0, 1):
-                    added += out.decode("utf-8", "replace")
-    # CTX-04: the same diff with whole files as context tells strip_hidden_diff where each comment opens
-    prose = [n for n in names if sanitize.is_prose_file(n) and n not in plan["untracked"]]
-    full = None
-    if prose and plan["diff_cmd"]:
-        wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]])
-        full = _diff_text(wide, prose, True, top) + added
-    text, stripped = sanitize.strip_hidden_diff(text + added, full)
-    text, hidden = sanitize.escape_for_code(text)
-    write_private(os.path.join(run, "change.diff"), text)
+    hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
