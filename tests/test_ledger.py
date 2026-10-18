@@ -224,5 +224,75 @@ class Categories(Base):
         self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".ledger.")])
 
 
+class Conventions(Base):
+    def test_conventions_base_only(self):
+        base = self.base({"CLAUDE.md": "base rule\n", "src/a.py": "pass\n"})
+        self.branch({"CLAUDE.md": "head rule INJECT-RULE\n", "REVIEW.md": "INJECT-RULE review\n"})
+        _, led = self.build()
+        with open(os.path.join(self.run_dir, "conventions", "CLAUDE.md"), "rb") as fh:
+            self.assertEqual(fh.read(), b"base rule\n")
+        conv = {e["file"]: e for e in led["conventions"]}
+        self.assertEqual(list(conv), ["CLAUDE.md"])
+        self.assertTrue(conv["CLAUDE.md"]["differs_on_head"])
+        self.assertEqual([(e["file"], e["reason"]) for e in led["ignored"]], [("REVIEW.md", "head-only")])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "conventions", "REVIEW.md")))
+        self.assertNotIn("INJECT-RULE", self.read("inputs/standards.md"))
+        for root, _, names in os.walk(os.path.join(self.run_dir, "conventions")):
+            for n in names:
+                with open(os.path.join(root, n), "rb") as fh:
+                    self.assertNotIn(b"INJECT-RULE", fh.read())
+        self.assertTrue(base)
+
+    def test_conventions_nested(self):
+        self.base({"src/AGENTS.md": "agents\n", "src/pkg/REVIEW.md": "review\n", "src/pkg/x.py": "a = 1\n",
+                   "other/AGENTS.md": "elsewhere\n"})
+        self.branch({"src/pkg/x.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(sorted(e["copy"] for e in led["conventions"]),
+                         ["conventions/src/AGENTS.md", "conventions/src/pkg/REVIEW.md"])
+        self.assertEqual(self.read("conventions/src/pkg/REVIEW.md"), "review\n")
+
+    def test_conventions_always_listed(self):
+        self.base({"a.txt": "x\n"})
+        self.branch({"a.txt": "y\n"})
+        self.build()
+        std = self.read("inputs/standards.md")
+        self.assertIn("CODING_STANDARDS.md: absent at base", std)
+        self.assertIn("CONTRIBUTING.md: absent at base", std)
+        self.g("checkout", "-q", "main")
+        self.g("branch", "-q", "-D", "feat")
+        self.base({".github/CONTRIBUTING.md": "contribute\n"})
+        self.branch({"a.txt": "z\n"})
+        self.build()
+        std = self.read("inputs/standards.md")
+        self.assertIn("CODING_STANDARDS.md: absent at base", std)
+        self.assertIn("CONTRIBUTING.md: " + json.dumps(os.path.join(self.run_dir, "conventions/.github/CONTRIBUTING.md")),
+                      std)
+
+    def test_conventions_pinned_base(self):
+        self.base({"CLAUDE.md": "pinned\n", "a.txt": "x\n"})
+        self.branch({"a.txt": "y\n"})
+        head = self.g("rev-parse", "HEAD")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["a.txt"])
+        self.g("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"CLAUDE.md": "moved on\n"}, "later")
+        ledger.build(self.run_dir)
+        self.assertEqual(self.read("conventions/CLAUDE.md"), "pinned\n")
+
+    def test_conventions_in_place(self):
+        self.base({"CLAUDE.md": "committed\n", "a.txt": "x\n"})
+        with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+            fh.write("uncommitted INJECT-RULE\n")
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["CLAUDE.md"])
+        ledger.build(self.run_dir)
+        led = self.load()
+        self.assertEqual(self.read("conventions/CLAUDE.md"), "committed\n")
+        self.assertTrue(led["conventions"][0]["differs_on_head"])
+        self.assertTrue(any("loads the head copy" in n for n in led["notes"]), led["notes"])
+        self.assertEqual(led["label"], "full")
+
+
 if __name__ == "__main__":
     unittest.main()
