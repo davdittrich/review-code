@@ -9,11 +9,13 @@ Status: v0.1.0 is a stub. It states its own limits: no reviewer lanes, no contex
 From a local checkout (works today):
 
 ```sh
-claude plugin marketplace add /path/to/review-code
+claude plugin marketplace add davdittrich/review-code
 claude plugin install review-code@review-code
 ```
 
-The repository is its own marketplace (`.claude-plugin/marketplace.json`, source `./`). A GitHub install form is not documented yet because the repository has not been published; it will be added at release time.
+To install from a local checkout instead, use `claude plugin marketplace add /path/to/review-code`.
+
+The repository is its own marketplace (`.claude-plugin/marketplace.json`, source `./`).
 
 Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`.
 
@@ -25,7 +27,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## What ships
 
-The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the ccr contract and trigger-prompt record) and `scripts/`. It also includes the GSD planning record under `.planning/` (`PROJECT.md`, `REQUIREMENTS.md`, `ROADMAP.md`, `STATE.md`, `config.json`, `research/` and `phases/`), which is shipped on purpose (decision D-03); it is project history, not loaded by the plugin. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
+The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the ccr contract and trigger-prompt record) and `scripts/`. The GSD planning record under `.planning/` is gitignored and never ships. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
 
 ## Releasing
 
