@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "review-code", "scripts"))
 import sanitize  # noqa: E402
 
-ZWSP = "​"
+ZWSP = chr(0x200B)
 
 
 def tagged(word):
@@ -57,9 +57,9 @@ CARRIERS = [
 INVISIBLE_ONLY = [
     ("zwsp", "ZW" + ZWSP + "SPLIT"),
     ("zwsp_entity", "ZW&#x200b;SPLIT"),
-    ("bom", "ZW﻿SPLIT"),
+    ("bom", "ZW" + chr(0xFEFF) + "SPLIT"),
     ("variation", "ZW️SPLIT"),
-    ("bidi", "ZW‮SPLIT"),
+    ("bidi", "ZW" + chr(0x202E) + "SPLIT"),
     ("esc", "ZW\x1b[31mSPLIT"),
 ]
 
