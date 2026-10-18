@@ -683,6 +683,8 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             git(["rev-parse", "--show-toplevel"], cwd)
         except Refuse:
             raise Refuse("not-a-git-repo", "run inside a git repository")
+        if "--stdin" in argv:  # WR-08: words as data, one per line, so no shell layer parses them
+            argv = [a for a in argv if a != "--stdin"] + [w for w in sys.stdin.read().split("\n") if w]
         args, choice = _parse_cli(argv)
         cands = resolve(args, cwd)
         if choice is None and len(cands) > 1:

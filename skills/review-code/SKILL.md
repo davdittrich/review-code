@@ -58,12 +58,20 @@ Keep the tone direct and constructive: state the problem, the trigger and a fix.
 
 Follow the steps in order. Ask each question at most once per run.
 
-1. Target. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/target.py <the user's target words>` (add
-   `--staged`, `--unstaged` or `--repo` when the user asked for that). Pass every user-supplied word
-   (target words, `--spec` path) as one single-quoted shell argument; if a word contains a single quote
-   or a newline, refuse and ask for a plain value. Read the one-line JSON `status`.
+1. Target. Never put the user's words on the command line: the shell would parse `&`, `;`, `$(...)`
+   and backticks. Pass them on stdin, one word per line, inside a quoted here-document:
+
+   ```
+   python3 ${CLAUDE_SKILL_DIR}/scripts/target.py --stdin <<'REVIEW_WORDS'
+   <the user's target words, one per line, verbatim>
+   REVIEW_WORDS
+   ```
+
+   Flags that are fixed literals (`--staged`, `--unstaged`, `--repo`, `--choice <index>`) stay arguments
+   before `<<`. The quoted delimiter makes the shell expand nothing. A word cannot hold a newline, and
+   no line may equal `REVIEW_WORDS`: if one does, refuse and ask for a plain value. Read the one-line JSON `status`.
    - `ambiguous`: ask once (AskUserQuestion), one option per `candidates[].reading`, then re-run with
-     the same words plus `--choice <index>`. If the question cannot be asked or gets no answer, stop and
+     the same here-document plus `--choice <index>`. If the question cannot be asked or gets no answer, stop and
      list the readings.
    - `refuse` with `no-target`: ask once (AskUserQuestion) what to review.
    - Any other `skip` or `refuse`: state `reason` and `detail` and stop (`skip` is not an error: closed,
@@ -88,8 +96,10 @@ Follow the steps in order. Ask each question at most once per run.
    "There is no spec"). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
    unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path re-runs the
-   build with `--spec <path>`; the script reads only files inside the repository (a path outside is refused
-   as `bad-spec`: ask the user to copy the file into the repository); no spec means the Spec axis is stated as skipped.
+   build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --spec -` with the path as
+   the single line of a quoted here-document on stdin (as in step 1); the script reads only files inside
+   the repository (any other path is refused as `bad-spec`: ask the user to copy the file into the
+   repository); no spec means the Spec axis is stated as skipped.
 4. Context report, after trust is recorded. Read `target.json` and `ledger.json`. State each excluded
    path with its reason, each `notes` line, the convention copies taken from the base, the ignored
    head-only files and the ledger notes, including the warning that Claude Code itself loads a

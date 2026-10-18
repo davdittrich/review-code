@@ -444,6 +444,46 @@ class TestAmbiguity(Local):
         self.assertEqual((rc, out["kind"]), (0, "worktree"))
 
 
+class TestWordsFromStdin(Local):
+    """WR-08: target words reach the script as data on stdin, so no shell layer ever parses them."""
+
+    HOSTILE = "dir/a;b $(touch PWNED) `touch PWNED` & 'q' \"d\".txt"
+
+    def stdin_pin(self, text, *flags):
+        with mock.patch.object(sys, "stdin", io.StringIO(text)):
+            rc, out = call(list(flags) + ["--stdin"], self.repo, self.tmp)
+        return rc, out
+
+    def test_stdin_words_equal_argv_words(self):
+        rc, out = self.stdin_pin("src/x.py\n")
+        self.assertEqual((rc, out["kind"]), (0, "path"))
+        self.assertEqual(load(out["run"])["included"], ["src/x.py"])
+        rc, out = self.stdin_pin("src/x.py\nsrc/y.py\n\n")  # blank lines are not words
+        self.assertEqual(load(out["run"])["included"], ["src/x.py", "src/y.py"])
+
+    def test_stdin_with_choice_and_flags(self):
+        gitfix.commit(self.repo, {"main/m.txt": "m\n"}, "dir named like a branch")
+        rc, out = self.stdin_pin("main\n")
+        self.assertEqual((rc, out["status"]), (2, "ambiguous"))
+        rc, out = self.stdin_pin("main\n", "--choice", "2")
+        self.assertEqual((rc, out["kind"]), (0, "path"))
+        rc, out = self.stdin_pin("", "--staged")
+        self.assertEqual(out["reason"], "empty-diff")
+
+    def test_shell_metacharacters_arrive_as_one_word(self):
+        # the exact shape SKILL.md prescribes: a quoted here-document, nothing expanded
+        gitfix.commit(self.repo, {self.HOSTILE: "h\n"}, "odd name")
+        script = "python3 %s --stdin <<'REVIEW_WORDS'\n%s\nREVIEW_WORDS\n" % (
+            os.path.join(SCRIPTS, "target.py"), self.HOSTILE)
+        e = gitfix.env()
+        e["TMPDIR"] = self.tmp
+        p = subprocess.run(["sh", "-c", script], cwd=self.repo, env=e, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = json.loads(p.stdout.decode())
+        self.assertEqual((p.returncode, out["status"], out["kind"]), (0, "ok", "path"), p.stdout + p.stderr)
+        self.assertEqual(load(out["run"])["included"], [self.HOSTILE])
+        self.assertEqual([n for n in os.listdir(self.repo) if "PWNED" in n], [])
+
+
 class TestMR(PRWorld):
     URL = "https://gitlab.com/g/s/r.git"
     MR = "https://gitlab.com/g/s/r/-/merge_requests/5"

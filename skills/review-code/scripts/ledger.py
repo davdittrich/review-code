@@ -679,7 +679,10 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
         elif argv[:2] != ["build", "--run"] or len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--spec"):
             raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH]")
         else:
-            out = build(argv[2], argv[4] if len(argv) == 5 else None)
+            spec = argv[4] if len(argv) == 5 else None
+            if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
+                spec = sys.stdin.readline().rstrip("\n")
+            out = build(argv[2], spec)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError) as e:  # the skill reads one JSON line; never a traceback

@@ -43,6 +43,10 @@ Code is never altered. Hidden characters are shown as `<U+XXXX>` and listed in `
 - `--spec` reads only files under the repository root (symbolic links resolved first); any other path is refused as `bad-spec`. A file inside the repository is still change-author content and is sanitized like PR text.
 - The Spec axis is not reviewed until the Spec lane exists.
 
+## Command line
+
+The user's words (target, `--spec` path) are untrusted too: a PR URL or branch name copied from a page can hold shell metacharacters. `target.py --stdin` and `ledger.py build --spec -` read them from stdin, passed in a quoted here-document, so no shell layer parses them. Words with a newline cannot be passed.
+
 ## Trust
 
 The skill asks once per run whether the code is the user's own. The first answer wins. Any other outcome records `external`: a dismissed question, no answer, no question tool, a headless run. Nothing of the target runs in this version. A future step that would run a target command must first get `{"status": "confirm"}` from `ledger.py trust gate`, which refuses unless `own` was stored, and then show the exact command to the user.

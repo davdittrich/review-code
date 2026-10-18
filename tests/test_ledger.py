@@ -159,6 +159,20 @@ class Categories(Base):
                 rc = ledger.main(argv)
             self.assertEqual((rc, json.loads(buf.getvalue())["reason"]), (1, "usage"), argv)
 
+    def test_spec_path_from_stdin(self):
+        # WR-08: `--spec -` reads the path from one stdin line, so the shell never parses it
+        odd = "docs/my spec;$(x) `y`.md"
+        self.base({"README.md": "r\n", odd: "ODD-SPEC-TEXT\n"})
+        self.branch({"a.txt": "a\n"})
+        head = self.g("rev-parse", "HEAD")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["a.txt"])
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch.object(sys, "stdin", io.StringIO(odd + "\n")):
+            rc = ledger.main(["build", "--run", self.run_dir, "--spec", "-"])
+        self.assertEqual((rc, json.loads(buf.getvalue())["status"]), (0, "ok"))
+        self.assertIn("ODD-SPEC-TEXT", self.read("inputs/spec.md"))
+
     def test_ledger_unexpected_error_keeps_one_line_json(self):
         for exc in (KeyError("k"), OSError("denied")):
             buf = io.StringIO()
