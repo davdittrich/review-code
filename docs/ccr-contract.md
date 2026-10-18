@@ -2,6 +2,8 @@
 
 **Status:** approved 2026-10-18
 
+**Role (2026-10-18):** `docs/matt.md` is the base skill (see `docs/matt-contract.md`). This contract now governs only what is taken from ccr.md as a secondary source: the evidence gate, severity tiers and detection patterns.
+
 **Approval record:** "Approve with the 5 proposed defaults" (user answer to the Plan 01-05 approval prompt, 2026-10-18). The five defaults are resolved under "Resolved questions" below and applied in the L19, L24, L32, L47, L100 and L133 rows.
 
 **Source:** `docs/ccr.md`, an intentionally untracked reference copy (critical-code-reviewer v1.3), sha256 `0d4daffe93e1e65f0bbbb6ba623a5f585cdac996d72ad0eb5c1a69c0bdbf8556`, 137 lines. Every `L<n>` below is a line number in that exact file; citations are valid only for that hash. Upstream comparison base: `posit-dev/skills` critical-code-reviewer v1.2 (commit `e32ae38e7489d9ad271c7c505c9a2c54ff72ef91`, MIT).
