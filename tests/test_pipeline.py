@@ -149,7 +149,7 @@ class Tracer(Fixture):
             lines = fh.read().split("\n")
         self.assertFalse([c for ln in lines for c in ln if ord(c) == 0x202E])
         with open(os.path.join(t["run"], "ledger.json"), encoding="utf-8") as fh:
-            hc = json.load(fh)["hidden_chars"]
+            hc = [h for h in json.load(fh)["hidden_chars"] if h["file"] == "change.diff"]  # tree/ files add their own
         self.assertEqual(len(hc), 1)
         self.assertEqual((hc[0]["file"], hc[0]["codepoints"]), ("change.diff", ["U+202E"]))
         self.assertIn("<U+202E>", lines[hc[0]["line"] - 1])
