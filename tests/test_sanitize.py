@@ -136,5 +136,68 @@ class ProseTests(unittest.TestCase):
         self.assertIn("`z`", out)
 
 
+class EscapeTests(unittest.TestCase):
+    def test_escape_trojan_source(self):
+        src = "\r\n".join([
+            "if x:\t# safe \u202e",
+            "    y = '\u2066\u2067\u2068\u2069'",
+            "z = 1\u200b\ufeff" + tagged("A") + "\ufe0f\u2028end",
+            "\x1bq",
+        ])
+        out, hits = sanitize.escape_for_code(src)
+        self.assertEqual(out.count("\n"), src.count("\n"))
+        self.assertEqual(len(out.split("\n")), 4)
+        lines = out.split("\r\n")
+        self.assertEqual(lines[0], "if x:\t# safe <U+202E>")
+        self.assertEqual(lines[1], "    y = '<U+2066><U+2067><U+2068><U+2069>'")
+        self.assertEqual(lines[2], "z = 1<U+200B><U+FEFF><U+E0041><U+FE0F><U+2028>end")
+        self.assertEqual(lines[3], "<U+001B>q")
+        self.assertEqual(hits, [
+            {"line": 1, "codepoints": ["U+202E"]},
+            {"line": 2, "codepoints": ["U+2066", "U+2067", "U+2068", "U+2069"]},
+            {"line": 3, "codepoints": ["U+200B", "U+FEFF", "U+E0041", "U+FE0F", "U+2028"]},
+            {"line": 4, "codepoints": ["U+001B"]},
+        ])
+        self.assertEqual(sanitize.strip_invisible(out), out)
+
+    def test_escape_clean_code(self):
+        src = "def f(a, b):\n\treturn a < b  # caf\u00e9 \u00e9\u0301\r\n"
+        self.assertEqual(sanitize.escape_for_code(src), (src, []))
+
+
+class EdgeTests(unittest.TestCase):
+    def test_edge_empty(self):
+        self.assertEqual(sanitize.sanitize_prose(None), "")
+        self.assertEqual(sanitize.sanitize_prose(""), "")
+        self.assertEqual(sanitize.escape_for_code(""), ("", []))
+        self.assertEqual(sanitize.strip_invisible(""), "")
+
+    def test_edge_encoding(self):
+        fullwidth = "\uff49\uff47\uff4e\uff4f\uff52\uff45"  # no NFKC: homoglyphs are a documented limit
+        self.assertEqual(sanitize.sanitize_prose(fullwidth), fullwidth)
+        family = "\U0001f468\u200d\U0001f469\u200d\U0001f467"
+        self.assertEqual(sanitize.sanitize_prose(family), "\U0001f468\U0001f469\U0001f467")
+        accent = "e\u0301 a\u0308"
+        self.assertEqual(sanitize.sanitize_prose(accent), accent)
+        self.assertEqual(sanitize.escape_for_code(accent), (accent, []))
+
+    def test_edge_idempotent(self):
+        deep = "&lt;!-- INJECT --&gt;"
+        for _ in range(40):
+            deep = deep.replace("&", "&amp;")
+        # removing "&" after the cap joins "!" and "[": a second pass must still settle on the same text
+        fixtures = [t for _, t in CARRIERS] + [t for _, t in INVISIBLE_ONLY] + [combined(), deep, deep + " !&[x](u)"]
+        for text in fixtures:
+            with self.subTest(text=text[:40]):
+                once = sanitize.sanitize_prose(text)
+                self.assertEqual(sanitize.sanitize_prose(once), once)
+        start = time.monotonic()
+        out = sanitize.sanitize_prose(deep)
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertFalse(any(c in out for c in "<>&"))
+        self.assertTrue(out.endswith(" [sanitizer: markup removed]"))
+        self.assertEqual(sanitize.sanitize_prose(out), out)
+
+
 if __name__ == "__main__":
     unittest.main()

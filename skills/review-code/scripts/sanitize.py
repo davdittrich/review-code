@@ -1,4 +1,11 @@
-"""Untrusted-text helpers: stdlib only, Python 3.9 grammar."""
+"""Untrusted-text helpers: stdlib only, Python 3.9 grammar.
+
+Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
+escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
+`_invisible` predicate on code points of the running interpreter's unicodedata, no NFKC folding.
+Not detected: homoglyphs, base64 or plain-language injection. The defence is structural: PR text
+reaches only the Spec input (02-07) and lanes run without execution tools (02-01, 02-08).
+"""
 import re
 import unicodedata
 from html.parser import HTMLParser
