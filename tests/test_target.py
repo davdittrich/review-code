@@ -858,6 +858,36 @@ class TestFetchPins(unittest.TestCase):
             self.assertIn(pin, args)
 
 
+class TestTooLarge(Local):
+    def excluded(self, out):
+        return {e["path"]: (e["reason"], e["detail"]) for e in load(out["run"])["excluded"]}
+
+    def change(self, files):
+        self.git("checkout", "-q", "-b", "chg", "main")
+        return gitfix.commit(self.repo, files, "change")
+
+    def test_file_over_cap_excluded_with_reason_and_bounded_memory(self):
+        # 6xl.75: one huge file must not blow memory; it leaves review with a recorded reason, unread
+        big = target._MAX_FILE * 3
+        line = "v = '" + "a" * 90 + "'\n"
+        self.change({"big.py": line * (big // len(line)), "small.py": "s = 1\n"})
+        tracemalloc.start()
+        try:
+            rc, out = self.pin("main")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.excluded(out)["big.py"][0], "too-large")
+        self.assertEqual(load(out["run"])["included"], ["small.py"])
+        self.assertLess(peak, target._MAX_FILE)
+        with open(os.path.join(self.repo, "huge.txt"), "w") as fh:
+            fh.write(line * (big // len(line)))
+        self.write("a.txt", "edited\n")
+        rc, out = self.pin("--unstaged")
+        self.assertEqual(self.excluded(out)["huge.txt"][0], "too-large")
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

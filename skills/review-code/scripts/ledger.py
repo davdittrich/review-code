@@ -101,11 +101,12 @@ def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
 
 
-def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, bytes]]:
+def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, Optional[bytes]]]:
     """(oid, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
-    attributes; a missing id is skipped and a failing git run refuses."""
+    attributes; a missing id is skipped, a failing git run refuses, and a blob over target._MAX_FILE comes
+    as None, unread (6xl.75)."""
     uniq = sorted(set(oids))
-    for f, data in target.cat_batch([o.encode() for o in uniq], repo, True):
+    for f, data in target.cat_batch([o.encode() for o in uniq], repo, True, target._MAX_FILE):
         if len(f) == 3 and f[1] == b"blob":
             yield f[0].decode(), data
 
@@ -319,6 +320,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         if target._shown(p) != p:  # 6xl.51: a hidden-character name never becomes a run-dir path
             ignored.append({"file": target._shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
             continue
+        if regular.get(p) in blobs and blobs[regular[p]] is None:
+            ignored.append({"file": p, "reason": "too-large", "how": "base entry over %d bytes" % target._MAX_FILE})
+            continue
         data = blobs.get(regular.get(p, ""))
         text = None if data is None else _text(data)
         if data is not None and text is None:  # NUL data is never copied raw (6xl.48)
@@ -420,6 +424,9 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
                     continue
                 if not (stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(top)):
                     continue
+                if st.st_size > target._MAX_FILE:  # 6xl.75: never read whole
+                    skipped.append({"path": label, "reason": "too-large"})
+                    continue
                 with open(fp, "rb") as fh:
                     data = fh.read()
             except OSError:
@@ -437,7 +444,10 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
                 want.setdefault(oid, []).append((label, root, rel))
         for oid, data in _blob_stream(repo, want):
             for job in want[oid]:
-                emit(job[0], data, *job[1:])
+                if data is None:
+                    skipped.append({"path": job[0], "reason": "too-large"})
+                else:
+                    emit(job[0], data, *job[1:])
     skipped.sort(key=lambda k: k["path"])  # blobs arrive in id order; keep the lists in path order
     hidden.sort(key=lambda h: h["file"])  # stable: per-file line order kept
     hidden_text.sort(key=lambda h: h["file"])
@@ -499,14 +509,18 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> D
     blobs = _blobs(repo, [reg[p] for p in want])
     out = {}
     for p in want:
-        text = _text(blobs.get(reg[p], b""))
+        data = blobs.get(reg[p])
+        text = _text(data) if data is not None else None  # an oversized spec file is left out
         if text is not None:
             out[p] = text
     if spec:
         rel = posixpath.normpath(spec)
         try:
             if not os.path.isabs(spec) and rel in reg:
-                out[rel] = _blobs(repo, [reg[rel]])[reg[rel]].decode("utf-8", "replace")
+                data = _blobs(repo, [reg[rel]]).get(reg[rel])
+                if data is None:
+                    raise target.Refuse("bad-spec", "the --spec file is over %d bytes" % target._MAX_FILE)
+                out[rel] = data.decode("utf-8", "replace")
             else:
                 # IN-03: only files under the repository root are read, links resolved first
                 root, fp = os.path.realpath(repo), os.path.realpath(os.path.join(repo, spec))

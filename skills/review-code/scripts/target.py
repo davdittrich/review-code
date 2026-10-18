@@ -46,6 +46,9 @@ _LOCKFILES = frozenset((
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "npm-shrinkwrap.json", "Cargo.lock",
     "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "go.sum", "renv.lock",
     "flake.lock", "pubspec.lock", "Podfile.lock", "packages.lock.json", "gradle.lockfile"))
+# shortcut: a changed or referenced file over this size leaves review unread ("too-large"); stripping holds a
+# file several times over in memory. Raise it when lanes can usefully read bigger files (6xl.75).
+_MAX_FILE = 4_000_000
 _ARGV_BUDGET = 60000  # bytes of path arguments per git call; far below the kernel limit
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256, lowercase only
 _PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S)
@@ -518,17 +521,19 @@ def _attr_source(mb: str, cwd: str) -> List[str]:
 
 
 def _scan(data: bytes) -> tuple:
-    """(has NUL in the first 8000 bytes, longest line in characters, first ten lines)."""
+    """(has NUL in the first 8000 bytes, longest line in characters, first ten lines, size in bytes)."""
     lines = data.split(b"\n")
     long_ = [l.rstrip(b"\r") for l in lines if len(l) > _LONG_LINE]
     longest = max((len(l.decode("utf-8", "replace")) for l in long_), default=0)
-    return (b"\0" in data[:8000], longest, [l.decode("utf-8", "replace") for l in lines[:10]])
+    return (b"\0" in data[:8000], longest, [l.decode("utf-8", "replace") for l in lines[:10]], len(data))
 
 
-def cat_batch(lines: List[bytes], cwd: str, check: bool) -> Iterator[Tuple[List[bytes], bytes]]:
+def cat_batch(lines: List[bytes], cwd: str, check: bool,
+              limit: Optional[int] = None) -> Iterator[Tuple[List[bytes], Optional[bytes]]]:
     """(header fields, content) per input line of one `git cat-file --batch` run, read one object at a
     time so memory holds one object. Lines go in through a temporary file, so neither pipe can fill and
-    deadlock. With `check`, a failing run refuses; a consumer that stops early is no failure (SIGPIPE)."""
+    deadlock. With `check`, a failing run refuses; a consumer that stops early is no failure (SIGPIPE). An
+    object over `limit` bytes is read past in chunks and yields None (6xl.75)."""
     if not lines:
         return
     with tempfile.TemporaryFile() as fh:
@@ -545,7 +550,13 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool) -> Iterator[Tuple[List[
                 f = head.split()
                 data = b""
                 if len(f) >= 3 and f[-1].isdigit():  # "<oid> <type> <size>"; "<spec> missing" has no body
-                    data = p.stdout.read(int(f[-1]))
+                    size = int(f[-1])
+                    if limit is not None and size > limit:
+                        while size > 0:
+                            size -= len(p.stdout.read(min(size, 1 << 20)) or b"\0" * size)
+                        data = None
+                    else:
+                        data = p.stdout.read(size)
                     p.stdout.read(1)
                 yield f, data
             finished = True
@@ -561,9 +572,9 @@ def _blobs(specs: List[tuple], top: str) -> dict:
     part = [(k, sp) for k, sp in specs if "\n" not in sp]  # a name with LF cannot go on a line
     out = {}
     for (k, _), (f, data) in zip(part, cat_batch([sp.encode("utf-8", "surrogateescape") for _, sp in part], top,
-                                                 False)):
+                                                 False, _MAX_FILE)):
         if len(f) >= 3 and f[-2] == b"blob":
-            out[k] = _scan(data)
+            out[k] = _scan(data) if data is not None else (False, 0, [], int(f[-1]))
     return out
 
 
@@ -573,7 +584,10 @@ def _files(names: List[str], top: str) -> dict:
     for n in names:
         path = os.path.join(top, n)
         try:
-            if stat.S_ISREG(os.lstat(path).st_mode):
+            st = os.lstat(path)
+            if stat.S_ISREG(st.st_mode) and st.st_size > _MAX_FILE:  # 6xl.75: never read whole
+                out[n] = (False, 0, [], st.st_size)
+            elif stat.S_ISREG(st.st_mode):
                 with open(path, "rb") as fh:
                     out[n] = _scan(fh.read())
         except OSError:
@@ -630,7 +644,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     for n in names:
         base = n.rsplit("/", 1)[-1]
         if n in explicit:
-            kept.append(n)
+            todo.append(n)  # only the size cap applies to a file the user named
         elif base in _LOCKFILES:
             drop(n, "lockfile", "basename")
         else:
@@ -649,9 +663,16 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
-            nul, longest, first = head.get(n, (False, 0, []))
+            nul, longest, first, size = head.get(n, (False, 0, [], 0))
+            size = max(size, base_ls.get(n, (False, 0, [], 0))[3])
             base = n.rsplit("/", 1)[-1]
             hit = None
+            if size > _MAX_FILE:  # 6xl.75: a resource limit, so it applies before every heuristic
+                drop(n, "too-large", "%d bytes, over %d" % (size, _MAX_FILE))
+                continue
+            if n in explicit:
+                kept.append(n)
+                continue
             if base.endswith(_MINIFIED):
                 hit = ("minified", "name pattern", "minified")
             elif n in head and not nul and longest > _LONG_LINE and base.endswith(_LONG_EXT):

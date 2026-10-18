@@ -608,6 +608,21 @@ class Tree(Base):
         with self.assertRaises(target.Refuse):
             list(ledger._blob_stream(bare, ["0" * 40]))
 
+    def test_tree_skips_huge_referenced_file(self):
+        # 6xl.75: a referenced-only file over the cap is skipped with a reason, never read whole
+        line = "x" * 99 + "\n"
+        self.base({"README.md": line * (target._MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        tracemalloc.start()
+        try:
+            _, led = self.build()
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertIn({"path": "README.md", "reason": "too-large"}, led["tree"]["skipped"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "README.md")))
+        self.assertLess(peak, target._MAX_FILE)
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:
