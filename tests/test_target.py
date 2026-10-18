@@ -822,6 +822,32 @@ class TestOddNames(Local):
             self.assertEqual(sorted(load(out["run"])["included"]), sorted(names), words)
 
 
+class TestQuotedProseNames(Local):
+    NAMES = ["b\\s.md", 'q"t.md', "e\x1bc.md", "l\nf.md", "t\tb.md", "\u00fc.md", "sp ace.md"]
+
+    @staticmethod
+    def doc(edit=None):
+        """A comment opened on line 1 that runs past line 20: an edit inside it shows its text without the opener."""
+        body = "".join("QUOTECANARY %d\n" % i for i in range(30))
+        return "<!--\n" + (body.replace("CANARY %d\n" % edit, "CANARY %d x\n" % edit) if edit else body) + "-->\nend\n"
+
+    def test_quoted_prose_names_get_whole_file_context(self):
+        # 6xl.70: git C-quotes these names in diff headers; the comment opened above the hunk must still go
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {n: self.doc() for n in self.NAMES}, "docs")
+        self.git("checkout", "-q", "-b", "chg")
+        gitfix.commit(self.repo, {n: self.doc(15) for n in self.NAMES}, "edit")
+        rc, out = self.pin("main")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("QUOTECANARY", self.diff(out))
+        for n in self.NAMES:
+            self.write(n, self.doc(16))
+        rc, out = self.pin("--unstaged")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("QUOTECANARY", self.diff(out))
+        self.assertEqual(len(load(out["run"])["included"]), len(self.NAMES))
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

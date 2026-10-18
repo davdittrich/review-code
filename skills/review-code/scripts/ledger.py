@@ -50,7 +50,6 @@ _CFG_ROOT = re.compile(r"(?:pyproject\.toml|setup\.cfg|package\.json|tsconfig.*\
                        r"DESCRIPTION|\.env\.example|[^/]*\.toml)\Z")
 _CFG_EXT = (".toml", ".yaml", ".yml", ".ini", ".cfg")
 _CI_FILES = frozenset((".gitlab-ci.yml", ".circleci/config.yml", "azure-pipelines.yml", "Jenkinsfile"))
-_ESC = {"n": 10, "t": 9, '"': 34, "\\": 92, "a": 7, "b": 8, "f": 12, "r": 13, "v": 11}
 
 
 def _write(path: str, text: str) -> None:
@@ -72,25 +71,6 @@ def _dec(raw: bytes) -> str:
 def _bytes(path: str) -> bytes:
     return path.encode("utf-8", "surrogateescape")
 
-
-def _unquote(s: str) -> str:
-    """Undo git's C-style quoting of a path in a diff header."""
-    if not (len(s) >= 2 and s[0] == '"' and s[-1] == '"'):
-        return s
-    s, out, i = s[1:-1], bytearray(), 0
-    while i < len(s):
-        c = s[i]
-        if c == "\\" and i + 1 < len(s):
-            if s[i + 1] in "01234567":
-                out.append(int(s[i + 1:i + 4], 8) & 255)
-                i += 4
-            else:
-                out.append(_ESC.get(s[i + 1], ord(s[i + 1]) & 255))
-                i += 2
-        else:
-            out += c.encode("utf-8", "surrogateescape")
-            i += 1
-    return _dec(bytes(out))
 
 
 def _listing(repo: str, rev: str) -> Dict[str, Tuple[str, str]]:
@@ -188,7 +168,7 @@ def _diff_symbols(diff: Iterable[str]) -> Iterator[Tuple[str, str, str]]:
                 yield from _def_names([("hunk header", parts[2])], cur)
         elif hdr:
             if line.startswith(("--- ", "+++ ")):
-                p = _unquote(line[4:])
+                p = sanitize.unquote_path(line[4:])
                 if p != "/dev/null":
                     cur = p[2:]
         elif line[:1] in ("+", "-"):

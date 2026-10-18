@@ -407,11 +407,35 @@ def _walk(diff: str):
                 o, n = max(o, 1), max(n, 1)
 
 
+_ESC = {"n": 10, "t": 9, '"': 34, "\\": 92, "a": 7, "b": 8, "f": 12, "r": 13, "v": 11}
+
+
+def unquote_path(s: str) -> str:
+    """Undo git's C-style quoting of a path in a diff header (the one place paths are unquoted, 6xl.70): octal
+    escapes are bytes, so the result decodes like every other name (UTF-8, surrogateescape)."""
+    if not (len(s) >= 2 and s[0] == '"' and s[-1] == '"'):
+        return s
+    s, out, i = s[1:-1], bytearray(), 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            if s[i + 1] in "01234567":
+                out.append(int(s[i + 1:i + 4], 8) & 255)
+                i += 4
+            else:
+                out.append(_ESC.get(s[i + 1], ord(s[i + 1]) & 255))
+                i += 2
+        else:
+            out += c.encode("utf-8", "surrogateescape")
+            i += 1
+    return bytes(out).decode("utf-8", "surrogateescape")
+
+
 def _hdr_path(s: str, prefix: str) -> Optional[str]:
-    s = s.split("\t")[0]
+    s = s.split("\t")[0]  # git ends a name holding a space with a TAB; a TAB inside a name is always quoted
     if s == "/dev/null":
         return None
-    s = s.strip('"')
+    s = unquote_path(s)
     return s[len(prefix):] if s.startswith(prefix) else s
 
 
