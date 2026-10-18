@@ -446,18 +446,15 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> D
     if spec:
         rel = posixpath.normpath(spec)
         try:
-            if os.path.isabs(spec):
-                fp = spec
-            elif rel in reg:
-                fp = None
+            if not os.path.isabs(spec) and rel in reg:
                 out[rel] = _blobs(repo, [reg[rel]])[reg[rel]].decode("utf-8", "replace")
             else:
+                # IN-03: only files under the repository root are read, links resolved first
                 root, fp = os.path.realpath(repo), os.path.realpath(os.path.join(repo, spec))
                 if not fp.startswith(root + os.sep):
-                    raise OSError("outside the repository")
-            if fp:
+                    raise target.Refuse("bad-spec", "the --spec path must be inside the repository")
                 with open(fp, "rb") as fh:
-                    out[spec if os.path.isabs(spec) else rel] = fh.read().decode("utf-8", "replace")
+                    out[os.path.relpath(fp, root).replace(os.sep, "/")] = fh.read().decode("utf-8", "replace")
         except (OSError, KeyError):
             raise target.Refuse("bad-spec", "the --spec file cannot be read")
     return out

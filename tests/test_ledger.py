@@ -547,20 +547,30 @@ class Spec(Base):
             fh.write("LOCAL-TEXT\n")  # not in head: read under the repo root
         self.build(spec="local.md")
         self.assertIn("LOCAL-TEXT", self.read("inputs/spec.md"))
-        outside = os.path.join(self.tmp, "abs.md")
-        with open(outside, "w", encoding="utf-8") as fh:
+        inside = os.path.join(self.repo, "abs.md")  # absolute, but under the repository root
+        with open(inside, "w", encoding="utf-8") as fh:
             fh.write("ABS-TEXT\n")
-        _, led = self.build(spec=outside)
-        self.assertIn(outside, [s["ref"] for s in led["spec"]["sources"]])
+        _, led = self.build(spec=inside)
+        self.assertIn("abs.md", [s["ref"] for s in led["spec"]["sources"]])
         self.assertIn("ABS-TEXT", self.read("inputs/spec.md"))
 
     def test_spec_flag_refuses_missing_and_escaping_paths(self):
         self.base({"README.md": "r\n"})
         self.branch({"a.txt": "a\n"})
-        for bad in ("nope.md", "../outside.md", os.path.join(self.tmp, "absent.md")):
+        outside = os.path.join(self.tmp, "abs.md")  # IN-03: an absolute path outside the repository is not read
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("OUTSIDE-TEXT\n")
+        link = os.path.join(self.repo, "link.md")
+        os.symlink(outside, link)  # a link under the root that points out is outside too
+        for bad in ("nope.md", "../outside.md", os.path.join(self.tmp, "absent.md"), outside, link, "link.md",
+                    os.path.join(self.repo, "..", "abs.md"), "/etc/passwd"):
             with self.assertRaises(target.Refuse, msg=bad) as cm:
                 self.build(spec=bad)
-            self.assertEqual(cm.exception.reason, "bad-spec")
+            self.assertEqual(cm.exception.reason, "bad-spec", bad)
+        with self.assertRaises(target.Refuse) as cm:
+            self.build(spec=outside)
+        self.assertIn("inside the repository", cm.exception.detail)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "inputs", "spec.md")))
 
     def test_spec_none(self):
         self.base({"README.md": "r\n"})

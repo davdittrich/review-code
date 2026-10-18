@@ -40,7 +40,7 @@ Code is never altered. Hidden characters are shown as `<U+XXXX>` and listed in `
 - Claude Code may inject helper tools into subagents.
 - Claude Code itself loads the CLAUDE.md of a checked-out PR head. The skill cannot prevent this; the ledger notes it.
 - The trust gate is a choke point the orchestrator must call, not a sandbox. It answers; it never runs anything.
-- `--spec` with an absolute path reads that file from anywhere on the host (relative paths stay in the repository). The skill states the path first and uses only one the user typed; the script does not confine it.
+- `--spec` reads only files under the repository root (symbolic links resolved first); any other path is refused as `bad-spec`. A file inside the repository is still change-author content and is sanitized like PR text.
 - The Spec axis is not reviewed until the Spec lane exists.
 
 ## Trust
