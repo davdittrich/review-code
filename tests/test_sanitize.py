@@ -51,6 +51,8 @@ CARRIERS = [
     ("doctype", "a <!DOCTYPE INJECT> b"),
     ("pi", "a <?php INJECT ?> b"),
     ("cdata", "a <![CDATA[ INJECT ]]> b"),
+    ("unlisted_tag_attr", "a <foo bar='INJECT'>text</foo> b"),
+    ("unlisted_tag_attr_unquoted", "a <Foo data-x=INJECT>text</Foo> b"),
     ("backtick_pairs_across_paragraphs", "a ` here\n\n<!-- INJECT -->\n\nb ` there"),
     ("backtick_fence_bad_info", "a\n\n```x`y\n<!-- INJECT -->\nvisible"),
     ("span_across_blank_line", "a `x\n\n<!-- INJECT -->\n\ny` b"),
@@ -125,6 +127,7 @@ class ProseTests(unittest.TestCase):
             "`<!-- keep -->` inline",
             "~~~\n<!-- keep -->\n<div hidden>keep</div>\n~~~",
             "``a ` b <!-- keep -->``",
+            "see <https://x.y/z?a=b&c=d> and <me@x.com>",
         ]
         for text in keep:
             with self.subTest(text=text):

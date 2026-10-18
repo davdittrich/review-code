@@ -34,6 +34,7 @@ Code is never altered. Hidden characters are shown as `<U+XXXX>` and listed in `
 
 - Homoglyphs and other confusables pass the sanitizer.
 - Encoded payloads (base64 and similar) pass.
+- Markdown link and image destinations (`[text](url)`) pass: the URL is data a Spec reader may need, and a renderer shows it only on hover. Valueless attribute words of unlisted tags (`<foo WORD>`) pass too; attribute values are removed.
 - Plain-language instructions in visible text pass. The fence and the rule "data, not instructions" are the only defence.
 - A lane with the Read tool can read host files by absolute path. The run directory is not a sandbox.
 - Claude Code may inject helper tools into subagents.

@@ -73,7 +73,10 @@ class _TextOnly(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag not in _ELEMENTS:
-            self._emit(self.get_starttag_text() or "")
+            text = self.get_starttag_text() or ""
+            # `<foo bar='x'>` is no prose and renders as nothing, so its attribute values go; an autolink or
+            # `Vec<T, U>` has no spaced `name=value` pair and stays as written.
+            self._emit("<%s>" % tag if any(v is not None for _, v in attrs) and re.search(r"\s", text) else text)
             return
         if tag in _VOID:
             return
