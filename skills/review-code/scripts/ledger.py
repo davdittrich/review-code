@@ -394,64 +394,79 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
 
 
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
-                 source: str, named: set) -> Tuple[dict, list, list]:
+                 source: str, named: set, universe: List[str]) -> Tuple[dict, list, list]:
     """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
-    blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A name
-    holding hidden characters (`named`: escaped names target.py flagged) is refused, never escaped
-    into a path: escaped names can collide and hold characters some file systems reject."""
-    skipped, hidden, hidden_text, refs, inc = [], [], [], [], set(included)
+    blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A file whose
+    name holds hidden characters (`named`: escaped names target.py flagged, matched back to the raw names
+    in `universe`) gets its stripped copy under a stand-in name in hidden-names/ instead, listed in
+    tree.skipped: an escaped name can collide and hold characters some file systems reject."""
+    skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
+    tree, stand = os.path.join(run, "tree"), os.path.join(run, "hidden-names")
+    raw_of = {}
+    for n in universe:
+        if target._shown(n) in named and target._shown(n) != n:
+            raw_of.setdefault(target._shown(n), set()).add(n)
+    odd = set()
     for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                      for e in led[c]}):
         if p in named or target._shown(p) != p:
-            skipped.append({"path": target._shown(p), "reason": "hidden-name"})
+            odd |= raw_of.get(p, set()) if p in named else {p}
+            if not raw_of.get(p) and p in named:  # flagged but gone (a deleted file): nothing to copy
+                skipped.append({"path": p, "reason": "hidden-name"})
         else:
-            refs.append(p)
-    tree = os.path.join(run, "tree")
-    shutil.rmtree(tree, ignore_errors=True)
+            jobs.append((p, p, tree, p))
+    for k, raw in enumerate(sorted(odd, key=lambda n: (target._shown(n), n)), 1):
+        label = target._shown(raw)
+        ext = re.search(r"\.[A-Za-z0-9]{1,10}\Z", label)
+        rel = "%d%s" % (k, ext.group(0) if ext else "")
+        skipped.append({"path": label, "reason": "hidden-name", "copy": "hidden-names/" + rel})
+        jobs.append((raw, label, stand, rel))
+    for d in (tree, stand):
+        shutil.rmtree(d, ignore_errors=True)
     os.makedirs(tree, mode=0o700)
 
-    def emit(p: str, data: bytes) -> None:
+    def emit(label: str, data: bytes, root: str, rel: str) -> None:
         """Strip, escape and write one file; called per file so memory holds one file at a time (6xl.47)."""
         nonlocal hidden, hidden_text
         text = _text(data)
         if text is None:  # NUL data is never written raw: GitHub shows it as binary, lanes do not read it
-            skipped.append({"path": p, "reason": "binary"})
+            skipped.append({"path": label, "reason": "binary"})
             return
-        esc, c, t = _scan(p, text)
-        if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
+        esc, c, t = _scan(label, text)
+        if label in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
             hidden, hidden_text = hidden + c, hidden_text + t
-        if not _put(tree, p, esc.encode("utf-8")):
-            skipped.append({"path": p, "reason": "unsafe-path"})
+        if not _put(root, rel, esc.encode("utf-8")):
+            skipped.append({"path": label, "reason": "unsafe-path"})
 
     if listing is None:
-        root = os.path.realpath(repo) + os.sep
-        for p in refs:
+        top = os.path.realpath(repo) + os.sep
+        for p, label, root, rel in jobs:
             fp = os.path.join(repo, p)
             try:
                 st = os.lstat(fp)
                 if stat.S_ISLNK(st.st_mode):  # a link into the host never enters the run dir
-                    skipped.append({"path": p, "reason": "symlink"})
+                    skipped.append({"path": label, "reason": "symlink"})
                     continue
-                if not (stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(root)):
+                if not (stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(top)):
                     continue
                 with open(fp, "rb") as fh:
                     data = fh.read()
             except OSError:
                 continue
-            emit(p, data)
+            emit(label, data, root, rel)
     else:
         want = {}
-        for p in refs:
+        for p, label, root, rel in jobs:
             mode, oid = listing.get(p, (None, None))
             if mode == "120000":
-                skipped.append({"path": p, "reason": "symlink"})
+                skipped.append({"path": label, "reason": "symlink"})
             elif mode == "160000":
-                skipped.append({"path": p, "reason": "submodule"})
+                skipped.append({"path": label, "reason": "submodule"})
             elif mode is not None:
-                want.setdefault(oid, []).append(p)
+                want.setdefault(oid, []).append((label, root, rel))
         for oid, data in _blob_stream(repo, want):
-            for p in want[oid]:
-                emit(p, data)
+            for job in want[oid]:
+                emit(job[0], data, *job[1:])
     skipped.sort(key=lambda k: k["path"])  # blobs arrive in id order; keep the lists in path order
     hidden.sort(key=lambda h: h["file"])  # stable: per-file line order kept
     hidden_text.sort(key=lambda h: h["file"])
@@ -626,10 +641,13 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    # raw names to match target.py's escaped hidden names against (its untracked list is escaped too)
+    universe = files if not inplace or idx is not None else files + [
+        _dec(n) for n in target.git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], repo).split(b"\0") if n]
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
-        {h["file"] for h in tj["hidden_chars"] if h.get("name")})
+        {h["file"] for h in tj["hidden_chars"] if h.get("name")}, universe)
     for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
         for e in led[c]:  # 6xl.51: discovered names reach ledger.json escaped
             e["file"] = target._shown(e["file"])
@@ -657,9 +675,11 @@ def build(run: str, spec: Optional[str] = None) -> dict:
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
                "\n".join("- " + json.dumps(p) for p in tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\nLanes read the files only from tree/ (hidden text stripped from prose and "
-           "markup files, hidden characters escaped in all; files under Skipped are absent), never from the repository.\n\n## Skipped\n\n%s\n" % (
+           "markup files, hidden characters escaped in all; a file under Skipped is absent unless a copy is named), never from the repository.\n\n## Skipped\n\n%s\n" % (
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
-               "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
+               "\n".join("- %s: %s%s" % (json.dumps(k["path"]), k["reason"],
+                                          ", copy " + json.dumps(os.path.join(run, k["copy"])) if "copy" in k else "")
+                         for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
                "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES))
     copies = {c["file"]: json.dumps(os.path.join(run, c["copy"])) for c in conventions}

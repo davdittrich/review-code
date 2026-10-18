@@ -221,7 +221,7 @@ class Tracer(Fixture):
         tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")
         high = "".join(chr(0xE0080 + i) for i in range(6))
         evil, evil2 = "src/x" + tags + ".py", "notes" + high + ".md"
-        self.feature({"src/cfg.py": "def load():\n    return 2\n", evil: "y = 1\n", evil2: "note\n"})
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", evil: "y = 1\n", evil2: "note\n<!-- HT_HIDNAME -->\n"})
         shown, shown2 = "src/x<TAGS:5>.py", "notes<TAGS:6>.md"
         for arg in ("main", "--repo"):
             with self.subTest(arg=arg):
@@ -237,12 +237,20 @@ class Tracer(Fixture):
                 self.assertIn({"file": shown, "name": True, "codepoints": ["TAGS:5"]}, tj["hidden_chars"])
                 with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
                     led = json.load(fh)
-                for n in (shown, shown2):
-                    self.assertIn({"path": n, "reason": "hidden-name"}, led["tree"]["skipped"])
+                # 6xl.53: the content stays reviewable under a stand-in name, stripped like tree/
+                for n, copy, text in ((shown2, "1.md", "note\n[hidden-comment removed: 19 chars]\n"),
+                                      (shown, "2.py", "y = 1\n")):
+                    self.assertIn({"path": n, "reason": "hidden-name", "copy": "hidden-names/" + copy},
+                                  led["tree"]["skipped"])
+                    with open(os.path.join(run, "hidden-names", copy), encoding="utf-8") as fh:
+                        self.assertEqual(fh.read(), text)
+                self.assertIn({"file": shown2, "line": 2, "kind": "comment", "length": 19}, led["hidden_text"])
                 with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
                     defects = fh.read()
                 self.assertIn('- "%s"' % shown, defects)
-                self.assertIn('- "%s": hidden-name' % shown, defects)
+                self.assertIn('- "%s": hidden-name, copy %s' % (shown, json.dumps(os.path.join(run, "hidden-names", "2.py"))),
+                              defects)
+                self.assertEqual([os.path.relpath(p, run) for p in self.lane_files(run) if b"HT_HIDNAME" in self.raw(p)], [])
                 if arg == "main":
                     with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
                         diff = fh.read()
