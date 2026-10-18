@@ -379,7 +379,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A name
     holding hidden characters (`named`: escaped names target.py flagged) is refused, never escaped
     into a path: escaped names can collide and hold characters some file systems reject."""
-    skipped, hidden, hidden_text, data_of, refs = [], [], [], {}, []
+    skipped, hidden, hidden_text, data_of, refs, inc = [], [], [], {}, [], set(included)
     for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                      for e in led[c]}):
         if p in named or target._shown(p) != p:
@@ -420,7 +420,8 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             skipped.append({"path": p, "reason": "binary"})
             continue
         esc, c, t = _scan(p, text)
-        hidden, hidden_text = hidden + c, hidden_text + t
+        if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
+            hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})
     return {"path": tree, "source": source, "skipped": skipped}, hidden, hidden_text

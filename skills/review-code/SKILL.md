@@ -106,7 +106,8 @@ before treating it as unavailable; it is unavailable only when that load fails o
    path with its reason, each `notes` line, the convention copies taken from the base, the ignored
    head-only files and the ledger notes, including the warning that Claude Code itself loads a
    checked-out head's CLAUDE.md. If `hidden_text` or `hidden_chars` is not empty, report each
-   entry (file, line, kind, length; never guess the payload) as a finding: hidden content in a change.
+   entry (file, line, kind, length or codepoints; `name: true` marks a file name; never guess the
+   payload) as a finding: hidden content in a change. Both list changed files only.
 5. Review in one pass in the main thread from `inputs/defects.md`, `inputs/standards.md` and the files
    they name (`tree/` for every target kind). Never open `inputs/spec.md` or any PR, MR, issue or
    commit text: report the Spec axis as "prepared at <path>, reviewed by the Spec lane in a later

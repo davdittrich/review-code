@@ -462,6 +462,22 @@ class Tree(Base):
                 self.assertNotIn(tags.encode("utf-8"), data, n)
                 self.assertNotIn(b"\\udb40", data, n)
 
+    def test_tree_hidden_hits_listed_for_changed_files_only(self):
+        # 6xl.46: referenced-only copies are stripped and escaped, but their hits are not change defects
+        rlo = chr(0x202E)
+        body = "".join("    x = %d\n" % i for i in range(12))
+        self.base({"README.md": "readme\n<!-- HT_REF_README -->\n", "src/cfg.py": "def parse_cfg(s):\n" + body,
+                   "src/use.py": "parse_cfg('x')  # %s\n" % rlo})
+        self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99") + "# %s\n" % rlo,
+                     "notes.md": "n\n<!-- HT_CHANGED -->\n"})
+        _, led = self.build()
+        self.assertIn("src/use.py", files_of(led, "callers"))
+        self.assertIn("README.md", files_of(led, "docs"))
+        self.assertNotIn("HT_REF_README", self.read("tree/README.md"))
+        self.assertIn("<U+202E>", self.read("tree/src/use.py"))
+        self.assertEqual(sorted({h["file"] for h in led["hidden_text"]}), ["notes.md"])
+        self.assertEqual(sorted({h["file"] for h in led["hidden_chars"]}), ["src/cfg.py"])
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:

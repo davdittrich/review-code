@@ -41,7 +41,7 @@ The main thread reads `change.diff` and `tree/` (for every target kind; never th
 - `alt-text`: markdown image alt text (`![x](u)`, `![x][r]`, `![x]`) and `<img alt>` values.
 - `element`: an element with the `hidden` attribute or an invisible inline style (`display:none`, `visibility:hidden`, `font-size:0`, `opacity:0`), with its content.
 
-Each removal is recorded in `ledger.json` `hidden_text` as `{file, line, kind, length}` (the diff copies have `file: "change.diff"`, `path` and the diff line), never the payload. A review should raise a finding when `hidden_text` is not empty: a changed file with hidden content is itself a defect candidate. The reviewer sees only the marker; to read what was hidden the user opens the file.
+Each removal is recorded in `ledger.json` `hidden_text` as `{file, line, kind, length}` (the diff copies have `file: "change.diff"`, `path` and the diff line), never the payload. A review should raise a finding when `hidden_text` is not empty: a changed file with hidden content is itself a defect candidate. `hidden_text` and `hidden_chars` list changed files only: a referenced-only copy in `tree/` (a caller, test, fixture, config, CI or doc file the ledger adds) is stripped and escaped the same way, but its hits are not listed, since it is not part of the change. The reviewer sees only the marker; to read what was hidden the user opens the file.
 
 Limits of this rule:
 
