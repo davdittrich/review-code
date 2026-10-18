@@ -330,6 +330,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
     for p in want:
         data = blobs.get(regular.get(p, ""))
         text = None if data is None else _text(data)
+        if data is not None and text is None:  # NUL data is never copied raw (6xl.48)
+            ignored.append({"file": p, "reason": "binary", "how": "base entry holds a NUL byte"})
+            continue
         if text is not None:  # stripped like tree/; base rules are not part of the change, so hits go unlisted
             data = _scan(p, text)[0].encode("utf-8")
         if data is None or not _put(os.path.join(run, "conventions"), p, data):
@@ -404,10 +407,12 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
         data_of = {p: blobs[oid] for p, oid in want.items() if oid in blobs}
     for p, data in sorted(data_of.items()):
         text = _text(data)
-        if text is not None:
-            esc, c, t = _scan(p, text)
-            data, hidden, hidden_text = esc.encode("utf-8"), hidden + c, hidden_text + t
-        if not _put(tree, p, data):
+        if text is None:  # NUL data is never written raw: GitHub shows it as binary, lanes do not read it
+            skipped.append({"path": p, "reason": "binary"})
+            continue
+        esc, c, t = _scan(p, text)
+        hidden, hidden_text = hidden + c, hidden_text + t
+        if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})
     return {"path": tree, "source": source, "skipped": skipped}, hidden, hidden_text
 

@@ -194,6 +194,18 @@ class Tracer(Fixture):
                 self.git("checkout", "--", "README.md")
                 os.remove(os.path.join(self.repo, "new.md"))
 
+    def test_canary_nul_readme(self):
+        # 6xl.48: target.py excludes a NUL README as binary; its docs-ref copy never reaches tree/ raw
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", "README.md": b"x\x00\n<!-- NULCANARY -->\n"})
+        rc, t = self.pin()
+        self.assertEqual((rc, t["status"]), (0, "ok"), t)
+        rc, _ = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        run = t["run"]
+        self.assertEqual([os.path.relpath(p, run) for p in self.lane_files(run) if b"NULCANARY" in self.raw(p)], [])
+        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+            self.assertIn({"path": "README.md", "reason": "binary"}, json.load(fh)["tree"]["skipped"])
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")

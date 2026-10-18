@@ -325,6 +325,18 @@ class Conventions(Base):
         ledger.build(self.run_dir)
         self.assertEqual(self.read("conventions/CLAUDE.md"), "pinned\n")
 
+    def test_conventions_nul_rule_is_ignored(self):
+        # 6xl.48: a NUL-byte base rule file is never copied raw into conventions/
+        self.base({"CLAUDE.md": b"rule\x00\n<!-- HT_EVIL_BIN_RULE -->\n", "a.txt": "x\n"})
+        self.branch({"a.txt": "y\n"})
+        _, led = self.build()
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "conventions", "CLAUDE.md")))
+        self.assertEqual([(i["file"], i["reason"]) for i in led["ignored"]], [("CLAUDE.md", "binary")])
+        for d, _, names in os.walk(self.run_dir):
+            for n in names:
+                with open(os.path.join(d, n), "rb") as fh:
+                    self.assertNotIn(b"HT_EVIL_BIN_RULE", fh.read(), n)
+
     def test_conventions_in_place(self):
         self.base({"CLAUDE.md": "committed\n", "a.txt": "x\n"})
         with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
@@ -446,13 +458,32 @@ class Tree(Base):
         ledger.build(self.run_dir)
         self.assertIn(tj["hidden_text"][0], self.load()["hidden_text"])
 
-    def test_tree_binary_is_raw(self):
+    def test_tree_binary_is_skipped(self):
+        # 6xl.48: NUL-byte data is never written raw; it gets a skip reason instead
         blob = b"\x00\x01\xff" + chr(0x202E).encode("utf-8")
         self.base({"a.txt": "x\n"})
         self.branch({"img.bin": blob})
-        self.build()
-        with open(os.path.join(self.run_dir, "tree", "img.bin"), "rb") as fh:
-            self.assertEqual(fh.read(), blob)
+        _, led = self.build()
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "img.bin")))
+        self.assertIn({"path": "img.bin", "reason": "binary"}, led["tree"]["skipped"])
+        self.assertIn('- "img.bin": binary', self.read("inputs/defects.md"))
+
+    def test_tree_nul_readme_ref_is_skipped(self):
+        # 6xl.48: target.py drops a NUL README as binary, the ledger re-adds it as a docs ref
+        self.base({"README.md": "root readme\n", "src/a.py": "x = 1\n"})
+        self.branch({"src/a.py": "x = 2\n", "README.md": b"x\x00\n<!-- HT_EVIL_BIN_README -->\n"})
+        head = self.g("rev-parse", "HEAD")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"])
+        ledger.build(self.run_dir)
+        led = self.load()
+        self.assertIn("README.md", files_of(led, "docs"))
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "README.md")))
+        self.assertIn({"path": "README.md", "reason": "binary"}, led["tree"]["skipped"])
+        for d, _, names in os.walk(self.run_dir):
+            for n in names:
+                with open(os.path.join(d, n), "rb") as fh:
+                    self.assertNotIn(b"HT_EVIL_BIN_README", fh.read(), n)
 
     def test_tree_non_utf8_is_escaped(self):
         # CR-03: one stray invalid byte must not carry hidden characters past the escaper
