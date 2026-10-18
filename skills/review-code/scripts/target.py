@@ -24,7 +24,12 @@ STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "me
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
 _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 _DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
-SKIP_REASONS = {"empty-diff", "no-files", "closed", "merged", "draft", "locked"}
+SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
+_LOCKFILES = frozenset((
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "npm-shrinkwrap.json", "Cargo.lock",
+    "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "go.sum", "renv.lock",
+    "flake.lock", "pubspec.lock", "Podfile.lock", "packages.lock.json", "gradle.lockfile"))
+_ARGV_BUDGET = 60000  # bytes of path arguments per git call; far below the kernel limit
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256, lowercase only
 _PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S)
 _MR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/-/merge_requests/([0-9]+)(?:[/?#].*)?", re.S)
@@ -390,6 +395,42 @@ def _plan_commit(rev: str, cwd: str) -> dict:
     return plan
 
 
+def filter_files(plan: dict, names: List[str], top: str) -> tuple:
+    """(kept, excluded, notes): first matching rule wins; every exclusion carries a reason and a detail."""
+    kept, excluded, notes = [], [], []
+    for n in names:
+        if n.rsplit("/", 1)[-1] in _LOCKFILES:
+            excluded.append({"path": n, "reason": "lockfile", "detail": "basename"})
+        else:
+            kept.append(n)
+    return kept, sorted(excluded, key=lambda e: e["path"]), notes
+
+
+def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
+    """The change diff, limited to kept files when some were excluded.
+
+    shortcut: `git diff` has no --pathspec-from-file (git 2.56), so paths go in argv, in chunks under
+    _ARGV_BUDGET; each chunk is its own diff, so the sort order is per chunk. Fine until diffs span >60 kB of paths.
+    """
+    cmd = plan["diff_cmd"]
+    if not cmd:
+        return ""
+    if not narrow:
+        return git(cmd[1:], top)
+    skip = set(plan["untracked"])
+    chunks, cur, size = [], [], 0
+    for n in (n for n in kept if n not in skip):
+        w = len(n.encode("utf-8", "surrogateescape")) + 1
+        if cur and size + w > _ARGV_BUDGET:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(n)
+        size += w
+    if cur:
+        chunks.append(cur)
+    return "".join(git(["--literal-pathspecs"] + cmd[1:] + c, top) for c in chunks)
+
+
 def pin(candidate: dict, cwd: str) -> dict:
     top = git(["rev-parse", "--show-toplevel"], cwd).strip()
     kind = candidate["kind"]
@@ -420,10 +461,13 @@ def pin(candidate: dict, cwd: str) -> dict:
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
                      "the target has no files" if kind in ("path", "repo") else "the change has no differences")
+    names, excluded, fnotes = filter_files(plan, names, top)
+    if not names:
+        raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified or binary")
     run = new_run_dir(cwd)
-    text = git(plan["diff_cmd"][1:], top) if plan["diff_cmd"] else ""
+    text = _diff_text(plan, names, bool(excluded), top)
     if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
-        for u in sorted(plan["untracked"]):
+        for u in sorted(set(plan["untracked"]) & set(names)):
             if not u.endswith("/"):
                 rc, out, _ = _run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--",
                                    "/dev/null", u], top)
@@ -438,8 +482,8 @@ def pin(candidate: dict, cwd: str) -> dict:
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
-        "included": names, "excluded": [], "untracked": sorted(plan["untracked"]),
-        "hidden_chars": [{"file": "change.diff", **h} for h in hidden], "notes": plan.get("notes", []),
+        "included": names, "excluded": excluded, "untracked": sorted(plan["untracked"]),
+        "hidden_chars": [{"file": "change.diff", **h} for h in hidden], "notes": plan.get("notes", []) + fnotes,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:

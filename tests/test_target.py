@@ -507,3 +507,13 @@ class TestFilter(Local):
         rc, out = self.pin("main")
         self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "only-excluded"))
         self.assertEqual(self.run_dirs(), before)
+
+    def test_filter_diff_chunks(self):
+        self.change({"Cargo.lock": "c\n", "src/a.js": "a\n", "src/b.js": "b\n", "src/c.js": "c\n"})
+        with mock.patch.object(target, "_ARGV_BUDGET", 8):  # one path per git call
+            rc, out = self.pin("main")
+        self.assertEqual(rc, 0)
+        text = self.diff(out)
+        for name in ("src/a.js", "src/b.js", "src/c.js"):
+            self.assertEqual(text.count("diff --git a/%s " % name), 1)
+        self.assertNotIn("Cargo.lock", text)
