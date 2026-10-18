@@ -491,7 +491,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
                           for p in sorted(files)]}
-    found = bool(body.strip() or any(x["kind"] in ("issue", "gitlab-ref", "file") for x in sources))
+    found = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "file")))
     return sources, len(ids) > CAP_ISSUES, sections, found
 
 

@@ -545,6 +545,16 @@ class Spec(Base):
         self.assertIn("## Issues\nnone\n", spec)
         self.assertIn("## Spec files\nnone\n", spec)
 
+    def test_spec_unfetched_issue_is_not_a_spec(self):
+        # WR-01: a referenced issue that could not be fetched supplies no spec text
+        self.base({"README.md": "r\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"a.txt": "a\n"}, "fix: yak (fixes #12)")
+        with mock.patch.object(target, "gh_json", side_effect=target.Refuse("gh", "fail")):
+            out, led = self.build(commits=[self.g("rev-parse", "HEAD")])
+        self.assertEqual([s["fetched"] for s in led["spec"]["sources"]], [False])
+        self.assertEqual(out["spec_status"], "none")
+
     def test_spec_issue_cap(self):
         msg = "work\n\nSee #27 #21 #25 #23 #22 #26 #24 and #99999999999999999999999"
         self.base({"README.md": "r\n"})
