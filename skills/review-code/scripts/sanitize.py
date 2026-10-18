@@ -4,8 +4,8 @@ Prose from the change author is stripped (sanitize_prose); code, file names and 
 escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
 `_invisible` predicate on code points of the running interpreter's unicodedata, no NFKC folding.
 Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
-Change-author files that reach the main thread are treated per type. Prose and markup files (.md .markdown
-.html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff: HTML comments, markdown
+Change-author files that reach the main thread are treated per type. Prose and markup files (every linguist
+Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff: HTML comments, markdown
 `[//]: #` comments, markdown and `<img>` alt text and elements hidden by `hidden` or an invisible inline style
 become a one-line `[hidden-KIND removed: N chars]` marker, every newline kept so line numbers and diff anchors
 hold, and each removal is returned as {line, kind, length} (never the payload) for ledger.json `hidden_text`.
@@ -70,11 +70,16 @@ def _invisible(ch: str) -> bool:
             or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or o in _EXTRA)
 
 
-_PROSE_EXT = (".md", ".markdown", ".html", ".htm", ".txt", ".rst")
+# Markdown: every extension and filename github-linguist languages.yml maps to Markdown (.scd is also
+# SuperCollider; over-stripping its code is the safe side). Then HTML, plain text and reStructuredText.
+_PROSE_EXT = (".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd",
+              ".workbook", ".html", ".htm", ".txt", ".rst")
+_PROSE_NAMES = ("contents.lr",)
 
 
 def is_prose_file(path: str) -> bool:
-    return path.lower().endswith(_PROSE_EXT)
+    p = path.lower()
+    return p.endswith(_PROSE_EXT) or p.rpartition("/")[2] in _PROSE_NAMES
 
 
 def strip_invisible(text: str) -> str:

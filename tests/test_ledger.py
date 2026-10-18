@@ -432,6 +432,16 @@ class Tree(Base):
                          [("notes.md", 2, "comment"), ("notes.md", 3, "alt-text"), ("notes.md", 4, "element")])
         self.assertNotIn("HIDDEN", json.dumps(led))
 
+    def test_tree_hidden_text_stripped_in_markdown_extensions(self):
+        # 6xl.49: GitHub renders .mdown and .mkdn (and linguist maps .mkd) as Markdown
+        self.base({"a.txt": "x\n"})
+        names = ("n.mdown", "n.mkdn", "n.mkd")
+        self.branch({n: "intro\n<!-- HT_%s -->\n" % n[2:].upper() for n in names})
+        _, led = self.build()
+        for n in names:
+            self.assertNotIn("HT_", self.read("tree/" + n))
+        self.assertEqual(sorted(h["file"] for h in led["hidden_text"]), sorted(names))
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:

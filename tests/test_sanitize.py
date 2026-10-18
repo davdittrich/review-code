@@ -374,6 +374,20 @@ class HiddenTextTests(unittest.TestCase):
         for p in ("a.py", "x.js", "x.json", "README", "a.md.bak", "x.mdx"):
             self.assertFalse(sanitize.is_prose_file(p), p)
 
+    def test_hidden_every_linguist_markdown_extension(self):
+        # 6xl.49: github-linguist languages.yml, Markdown: extensions plus the filename contents.lr
+        exts = (".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd",
+                ".workbook")
+        for p in ["d/n" + e for e in exts] + ["contents.lr", "d/CONTENTS.LR"]:
+            with self.subTest(path=p):
+                self.assertTrue(sanitize.is_prose_file(p), p)
+                d = ("diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,2 @@\n keep\n+a <!-- INJECT --> b\n"
+                     % (p, p, p, p))
+                out, hits = sanitize.strip_hidden_diff(d)
+                self.assertNotIn("INJECT", out)
+                self.assertEqual([(h["file"], h["kind"]) for h in hits], [(p, "comment")])
+        self.assertFalse(sanitize.is_prose_file("xcontents.lr"))
+
 
 def hunk(old_start, new_start, body):
     """A one-file diff of a markdown file; `body` is the hunk lines with their prefixes."""
