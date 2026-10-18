@@ -614,5 +614,102 @@ class Spec(Base):
         self.assertEqual(pos, sorted(pos))
 
 
+class Trust(Base):
+    def cli(self, *args):
+        e = gitfix.env()
+        p = subprocess.run([sys.executable, os.path.join(SCRIPTS, "ledger.py")] + list(args), cwd=self.repo, env=e,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out = p.stdout.decode("utf-8")
+        return p.returncode, json.loads(out) if out.strip() else None
+
+    def trust(self, *a):
+        return self.cli("trust", *a)
+
+    def built(self):
+        self.base({"README.md": "r\n"})
+        self.branch({"a.txt": "a\n"})
+        self.build()
+
+    def set_ledger(self, text):
+        with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_trust_gate_fail_closed(self):
+        self.built()
+        gate = lambda *c: self.trust("gate", "--run", self.run_dir, "--", *c)  # noqa: E731
+        self.assertEqual(gate("make", "test"), (1, {"status": "refuse", "reason": "trust-unset"}))
+        self.assertEqual(self.trust("set", "external", "--run", self.run_dir)[0], 0)
+        self.assertEqual(gate("make", "test"), (1, {"status": "refuse", "reason": "trust-external"}))
+        self.assertEqual(gate(), (1, {"status": "refuse", "reason": "no-command"}))
+        self.assertEqual(gate(""), (1, {"status": "refuse", "reason": "no-command"}))
+        self.assertEqual(self.trust("gate", "--run", self.run_dir), (1, {"status": "refuse", "reason": "no-command"}))
+        empty = os.path.join(self.tmp, "empty")
+        os.makedirs(empty)
+        self.assertEqual(self.trust("gate", "--run", empty, "--", "make"),
+                         (1, {"status": "refuse", "reason": "no-ledger"}))
+        led = self.load()
+        for bad in ("OWN", "yes", True, ["own"], None, 1):
+            led["trust"] = bad
+            self.set_ledger(json.dumps(led))
+            self.assertEqual(gate("make")[0], 1, bad)
+        self.set_ledger("{")
+        self.assertEqual(gate("make"), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.set_ledger("[1]")
+        self.assertEqual(gate("make"), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.set_ledger("[" * 100000)  # RecursionError in the parser must refuse, not crash open
+        self.assertEqual(gate("make"), (1, {"status": "refuse", "reason": "bad-ledger"}))
+
+    def test_trust_gate_confirm_own(self):
+        self.built()
+        self.assertEqual(self.trust("set", "own", "--run", self.run_dir), (0, {"status": "ok", "trust": "own"}))
+        self.assertEqual(self.trust("gate", "--run", self.run_dir, "--", "make", "test"),
+                         (0, {"status": "confirm", "command": "make test"}))
+        self.assertEqual(self.trust("gate", "--run", self.run_dir, "--", "echo", "a b", "$X"),
+                         (0, {"status": "confirm", "command": "echo 'a b' '$X'"}))
+        self.assertEqual(self.trust("get", "--run", self.run_dir),
+                         (0, {"trust": "own", "asked": True, "effective": "own"}))
+
+    def test_trust_first_set_wins(self):
+        self.built()
+        self.assertEqual(self.trust("get", "--run", self.run_dir),
+                         (0, {"trust": "unset", "asked": False, "effective": "external"}))
+        self.assertEqual(self.trust("set", "maybe", "--run", self.run_dir),
+                         (1, {"status": "refuse", "reason": "bad-trust-value"}))
+        self.assertEqual(self.load()["trust"], "unset")
+        self.assertEqual(self.trust("set", "external", "--run", self.run_dir)[0], 0)
+        self.assertEqual(self.trust("set", "own", "--run", self.run_dir),
+                         (1, {"status": "refuse", "reason": "trust-already-set"}))
+        self.assertEqual(self.trust("get", "--run", self.run_dir),
+                         (0, {"trust": "external", "asked": True, "effective": "external"}))
+        self.assertEqual(self.trust("set", "external", "--run", self.run_dir), (0, {"status": "ok", "trust": "external"}))
+        self.assertEqual(self.trust("set", "own", "--run", os.path.join(self.tmp, "nowhere")),
+                         (1, {"status": "refuse", "reason": "no-ledger"}))
+
+    def test_trust_set_own_twice(self):
+        self.built()
+        self.assertEqual([self.trust("set", "own", "--run", self.run_dir)[0] for _ in range(2)], [0, 0])
+
+    def test_trust_rebuild_keeps_answer(self):
+        self.built()
+        self.trust("set", "own", "--run", self.run_dir)
+        _, led = self.build()
+        self.assertEqual((led["trust"], led["trust_asked"]), ("own", True))
+        self.assertEqual(self.trust("gate", "--run", self.run_dir, "--", "make")[0], 0)
+
+    def test_trust_gate_reads_fresh(self):
+        self.built()
+        self.trust("set", "own", "--run", self.run_dir)
+        self.assertEqual(self.trust("gate", "--run", self.run_dir, "--", "make")[0], 0)
+        led = self.load()
+        led["trust"] = "external"  # edited between two calls: the second call must see it
+        self.set_ledger(json.dumps(led))
+        self.assertEqual(self.trust("gate", "--run", self.run_dir, "--", "make"),
+                         (1, {"status": "refuse", "reason": "trust-external"}))
+        with mock.patch("builtins.open", side_effect=OSError("no")):  # in-process: an unreadable file refuses too
+            with self.assertRaises(target.Refuse) as cm:
+                ledger.trust_gate(self.run_dir, ["make"])
+        self.assertEqual(cm.exception.reason, "bad-ledger")
+
+
 if __name__ == "__main__":
     unittest.main()
