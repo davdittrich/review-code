@@ -442,6 +442,26 @@ class Tree(Base):
             self.assertNotIn("HT_", self.read("tree/" + n))
         self.assertEqual(sorted(h["file"] for h in led["hidden_text"]), sorted(names))
 
+    def test_tree_hidden_named_ref_is_refused(self):
+        # 6xl.51: a referenced-only file whose name holds Tags is listed escaped and never copied into tree/
+        tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")
+        evil = "src/use" + tags + ".py"
+        body = "".join("    x = %d\n" % i for i in range(12))
+        self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, evil: "parse_cfg('x')\n"})
+        self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
+        _, led = self.build()
+        shown = "src/use<TAGS:5>.py"
+        self.assertIn(shown, files_of(led, "callers"))
+        self.assertIn({"path": shown, "reason": "hidden-name"}, led["tree"]["skipped"])
+        for d, dirs, names in os.walk(self.run_dir):
+            for n in dirs + names:
+                self.assertNotIn(tags, n)
+            for n in names:
+                with open(os.path.join(d, n), "rb") as fh:
+                    data = fh.read()
+                self.assertNotIn(tags.encode("utf-8"), data, n)
+                self.assertNotIn(b"\\udb40", data, n)
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:

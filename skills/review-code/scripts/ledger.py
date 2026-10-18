@@ -328,6 +328,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
     blobs = _blobs(repo, regular.values())
     conv, ignored = [], []
     for p in want:
+        if target._shown(p) != p:  # 6xl.51: a hidden-character name never becomes a run-dir path
+            ignored.append({"file": target._shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
+            continue
         data = blobs.get(regular.get(p, ""))
         text = None if data is None else _text(data)
         if data is not None and text is None:  # NUL data is never copied raw (6xl.48)
@@ -347,7 +350,7 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
                      "how": "base-ref"})
     for p in sorted(_conv_paths(files, included) - set(want)):
-        ignored.append({"file": p, "reason": "head-only", "how": "present on head, absent at the merge base"})
+        ignored.append({"file": target._shown(p), "reason": "head-only", "how": "present on head, absent at the merge base"})
     notes = []
     if any(c["differs_on_head"] for c in conv) and target.git(["rev-parse", "HEAD"], repo, check=False).strip() == head:
         notes = ["Claude Code loads the head copy of %s into the session; lanes use the base copy" % json.dumps(c["file"])
@@ -371,12 +374,18 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
 
 
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
-                 source: str) -> Tuple[dict, list, list]:
+                 source: str, named: set) -> Tuple[dict, list, list]:
     """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
-    blobs or, with no listing, from the working copy (never altered); lanes read only tree/."""
-    refs = sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
-                                   for e in led[c]})
-    skipped, hidden, hidden_text, data_of = [], [], [], {}
+    blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A name
+    holding hidden characters (`named`: escaped names target.py flagged) is refused, never escaped
+    into a path: escaped names can collide and hold characters some file systems reject."""
+    skipped, hidden, hidden_text, data_of, refs = [], [], [], {}, []
+    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
+                                     for e in led[c]}):
+        if p in named or target._shown(p) != p:
+            skipped.append({"path": target._shown(p), "reason": "hidden-name"})
+        else:
+            refs.append(p)
     tree = os.path.join(run, "tree")
     shutil.rmtree(tree, ignore_errors=True)
     os.makedirs(tree, mode=0o700)
@@ -587,7 +596,11 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     }
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
-        "index" if idx is not None else "working copy" if inplace else "head commit")
+        "index" if idx is not None else "working copy" if inplace else "head commit",
+        {h["file"] for h in tj["hidden_chars"] if h.get("name")})
+    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
+        for e in led[c]:  # 6xl.51: discovered names reach ledger.json escaped
+            e["file"] = target._shown(e["file"])
     led["hidden_chars"] += more
     led["hidden_text"] += more_text
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
@@ -611,8 +624,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
                "\n".join("- " + json.dumps(p) for p in tj["included"])) +
-           "\n## Files\n\ntree: %s\nsource: %s\nLanes read the files only from tree/ (hidden text stripped), never "
-           "from the repository.\n\n## Skipped\n\n%s\n" % (
+           "\n## Files\n\ntree: %s\nsource: %s\nLanes read the files only from tree/ (hidden text stripped from prose and "
+           "markup files, hidden characters escaped in all; files under Skipped are absent), never from the repository.\n\n## Skipped\n\n%s\n" % (
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(

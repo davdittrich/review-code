@@ -206,6 +206,49 @@ class Tracer(Fixture):
         with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
             self.assertIn({"path": "README.md", "reason": "binary"}, json.load(fh)["tree"]["skipped"])
 
+    def assertNoNamePayload(self, run):
+        """No raw or losslessly encoded plane-14 payload in any run-dir file name or content."""
+        for d, dirs, fs in os.walk(run):
+            for n in dirs + fs:
+                self.assertFalse(any(0xE0000 <= ord(c) <= 0xE0FFF for c in n), repr(n))
+            for f in fs:
+                data = self.raw(os.path.join(d, f))
+                for enc in (b"\xf3\xa0", b"\\udb40", b"\\363\\240", b"\\U000e0", b"U+E00"):
+                    self.assertNotIn(enc, data, (f, enc))
+
+    def test_canary_tags_named_file(self):
+        # 6xl.51: a Tags-named file and an E0080..E00FF-named file never spell their payload to a lane
+        tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")
+        high = "".join(chr(0xE0080 + i) for i in range(6))
+        evil, evil2 = "src/x" + tags + ".py", "notes" + high + ".md"
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", evil: "y = 1\n", evil2: "note\n"})
+        shown, shown2 = "src/x<TAGS:5>.py", "notes<TAGS:6>.md"
+        for arg in ("main", "--repo"):
+            with self.subTest(arg=arg):
+                rc, t = self.pin(arg)
+                self.assertEqual((rc, t["status"]), (0, "ok"), t)
+                rc, _ = self.build(t["run"])
+                self.assertEqual(rc, 0)
+                run = t["run"]
+                self.assertNoNamePayload(run)
+                with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+                    tj = json.load(fh)
+                self.assertIn(shown, tj["included"])
+                self.assertIn({"file": shown, "name": True, "codepoints": ["TAGS:5"]}, tj["hidden_chars"])
+                with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+                    led = json.load(fh)
+                for n in (shown, shown2):
+                    self.assertIn({"path": n, "reason": "hidden-name"}, led["tree"]["skipped"])
+                with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
+                    defects = fh.read()
+                self.assertIn('- "%s"' % shown, defects)
+                self.assertIn('- "%s": hidden-name' % shown, defects)
+                if arg == "main":
+                    with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
+                        diff = fh.read()
+                    self.assertIn("diff --git a/%s b/%s" % (shown, shown), diff)
+                    self.assertIn("+y = 1", diff)
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")

@@ -25,7 +25,8 @@ import sanitize
 STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number", "run",
                "included_count", "excluded_count", "untracked_count", "candidates"}
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
-_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+# core.quotePath=false: diff headers carry names as text, so escape_for_code covers them like content.
+_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
 _WIDE = "--unified=999999"
 _DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
@@ -176,6 +177,11 @@ def _remotes(cwd: str) -> List[tuple]:
             if key and name and not name.startswith("-"):
                 rows.append((name, key))
     return rows
+
+
+def _shown(name: str) -> str:
+    """A file name as run-dir files show it: hidden characters escaped (escape_for_code)."""
+    return sanitize.escape_for_code(name)[0]
 
 
 def _q(name: str) -> str:
@@ -589,7 +595,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                 kept.append(n)
             elif hit[2] and n not in base_ls:
                 kept.append(n)
-                notes.append("%s: kept; it matches the %s rule but the change adds it" % (n, hit[2]))
+                notes.append("%s: kept; it matches the %s rule but the change adds it" % (_shown(n), hit[2]))
             else:
                 drop(n, hit[0], hit[1])
     return sorted(kept), sorted(excluded, key=lambda e: e["path"]), notes
@@ -673,15 +679,20 @@ def pin(candidate: dict, cwd: str) -> dict:
     text, stripped = sanitize.strip_hidden_diff(text + added, full)
     text, hidden = sanitize.escape_for_code(text)
     write_private(os.path.join(run, "change.diff"), text)
+    # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
+    marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
+    named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
+             for (esc, hits), _ in marks if hits]
     rec = {
         "version": 1, "kind": kind, "repo": top, "run": run, "arg": candidate.get("arg", ""),
         "number": plan.get("number"), "url": plan.get("url"),
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
-        "included": names, "excluded": excluded, "untracked": sorted(plan["untracked"]),
-        "hidden_chars": [{"file": "change.diff", **h} for h in hidden],
-        "hidden_text": [{**h, "path": h["file"], "file": "change.diff"} for h in stripped], "notes": plan.get("notes", []) + fnotes,
+        "included": [_shown(n) for n in names], "excluded": [dict(e, path=_shown(e["path"])) for e in excluded],
+        "untracked": sorted(_shown(n) for n in plan["untracked"]),
+        "hidden_chars": [{"file": "change.diff", **h} for h in hidden] + named,
+        "hidden_text": [{**h, "path": _shown(h["file"]), "file": "change.diff"} for h in stripped], "notes": plan.get("notes", []) + fnotes,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     write_private(os.path.join(run, "target.json"), json.dumps(rec, sort_keys=True, indent=2))
