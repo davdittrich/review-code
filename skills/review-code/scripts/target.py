@@ -12,6 +12,7 @@ if sys.version_info < (3, 9):
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -379,8 +380,9 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
     other = _split(git(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
     present = set(names)
+    explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
-            "diff_cmd": None, "commits": []}
+            "diff_cmd": None, "commits": [], "explicit": explicit}
 
 
 def _plan_commit(rev: str, cwd: str) -> dict:
@@ -395,15 +397,162 @@ def _plan_commit(rev: str, cwd: str) -> dict:
     return plan
 
 
-def filter_files(plan: dict, names: List[str], top: str) -> tuple:
-    """(kept, excluded, notes): first matching rule wins; every exclusion carries a reason and a detail."""
-    kept, excluded, notes = [], [], []
+_BASE_VERSION = (2, 40)  # git --attr-source and check-attr --source
+_MINIFIED = (".min.js", ".min.css", ".map")
+_PB_NAMES = (".pb.go", "_pb2.py", ".snap")
+_MARKER = re.compile(r"@generated|do not edit|auto-generated|automatically generated", re.I)
+_LONG_LINE = 1000
+_VERSION: dict = {}
+
+
+def _git_version(cwd: str) -> tuple:
+    if "v" not in _VERSION:
+        m = re.search(r"(\d+)\.(\d+)", git(["--version"], cwd, check=False))
+        _VERSION["v"] = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    return _VERSION["v"]
+
+
+def _attr_source(mb: str, cwd: str) -> List[str]:
+    """Top-level git options that read attributes from the pinned base, not the working tree the change may own."""
+    return ["--attr-source=" + mb] if _git_version(cwd) >= _BASE_VERSION else []
+
+
+def _scan(data: bytes) -> tuple:
+    """(has NUL in the first 8000 bytes, longest line in characters, first ten lines)."""
+    lines = data.split(b"\n")
+    long_ = [l.rstrip(b"\r") for l in lines if len(l) > _LONG_LINE]
+    longest = max((len(l.decode("utf-8", "replace")) for l in long_), default=0)
+    return (b"\0" in data[:8000], longest, [l.decode("utf-8", "replace") for l in lines[:10]])
+
+
+def _blobs(specs: List[tuple], top: str) -> dict:
+    """{key: _scan(content)} for each (key, object-spec) that names a blob; absent objects are left out."""
+    out = {}
+    for i in range(0, len(specs), 256):
+        part = [(k, sp) for k, sp in specs[i:i + 256] if "\n" not in sp]  # a name with LF cannot go on a line
+        data = git_bytes(["cat-file", "--batch"], top, stdin="".join(sp + "\n" for _, sp in part).encode(
+            "utf-8", "surrogateescape"), check=False)
+        pos = 0
+        for k, _ in part:
+            nl = data.find(b"\n", pos)
+            if nl < 0:
+                break
+            head = data[pos:nl].split(b" ")
+            pos = nl + 1
+            if not head[-1].isdigit():
+                continue  # "<spec> missing" or "ambiguous"
+            size = int(head[-1])
+            if len(head) >= 3 and head[-2] == b"blob":
+                out[k] = _scan(data[pos:pos + size])
+            pos += size + 1
+    return out
+
+
+def _files(names: List[str], top: str) -> dict:
+    """_scan of regular working-tree files; a symlink or missing file is left out."""
+    out = {}
     for n in names:
-        if n.rsplit("/", 1)[-1] in _LOCKFILES:
-            excluded.append({"path": n, "reason": "lockfile", "detail": "basename"})
-        else:
+        path = os.path.join(top, n)
+        try:
+            if stat.S_ISREG(os.lstat(path).st_mode):
+                with open(path, "rb") as fh:
+                    out[n] = _scan(fh.read())
+        except OSError:
+            pass
+    return out
+
+
+def _linguist(mb: str, names: List[str], top: str) -> dict:
+    """{path: "generated"|"vendored"} from the attributes of the base commit."""
+    raw = git_bytes(["check-attr", "--source=" + mb, "-z", "--stdin", "linguist-generated", "linguist-vendored"], top,
+                    stdin=b"".join(n.encode("utf-8", "surrogateescape") + b"\0" for n in names), check=False)
+    f = raw.split(b"\0")
+    out = {}
+    for i in range(0, len(f) - 2, 3):
+        if f[i + 2] in (b"set", b"true"):
+            out.setdefault(f[i].decode("utf-8", "replace"), "generated" if f[i + 1] == b"linguist-generated" else "vendored")
+    return out
+
+
+def _numstat_binary(plan: dict, top: str) -> set:
+    """Tracked paths git counts as binary (`-` counts), judged with the base commit's attributes."""
+    cmd = plan["diff_cmd"][1:]
+    raw = git(_attr_source(plan["mb"], top) + cmd[:1] + ["--numstat", "-z", "--no-renames"] + cmd[1:], top, check=False)
+    rows = (r.split("\t", 2) for r in raw.split("\0") if r)
+    return {r[2] for r in rows if len(r) == 3 and r[0] == "-" and r[1] == "-"}
+
+
+def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
+    """(kept, excluded, notes): first matching rule wins; every exclusion carries a reason and a detail.
+
+    Attributes come from the merge base, and header and path rules apply only to files that exist there, so the
+    change cannot hide its own code with a .gitattributes edit, a header marker or a directory name.
+    """
+    kept, excluded, notes, todo = [], [], [], []
+    mb, explicit = plan["mb"], plan.get("explicit", ())
+
+    def drop(n, reason, detail):
+        excluded.append({"path": n, "reason": reason, "detail": detail})
+
+    for n in names:
+        base = n.rsplit("/", 1)[-1]
+        if n in explicit:
             kept.append(n)
-    return kept, sorted(excluded, key=lambda e: e["path"]), notes
+        elif base in _LOCKFILES:
+            drop(n, "lockfile", "basename")
+        elif base.endswith(_MINIFIED):
+            drop(n, "minified", "name pattern")
+        else:
+            todo.append(n)
+    if todo:
+        if kind in ("unstaged", "worktree", "path", "repo"):
+            head = _files(todo, top)
+        else:
+            rev = ":0:" if kind == "staged" else plan["head"] + ":"
+            head = _blobs([(n, rev + n) for n in todo], top)
+        base_ls = _blobs([(n, mb + ":" + n) for n in todo], top)
+        old = _git_version(top) < _BASE_VERSION
+        if old:
+            notes.append("git older than 2.40: linguist attributes not checked")
+        attrs = {} if old else _linguist(mb, todo, top)
+        binary = _numstat_binary(plan, top) if plan["diff_cmd"] else set()
+        for n in todo:
+            parts = n.split("/")[:-1]
+            migration = "migrations" in parts
+            nul, longest, first = head.get(n, (False, 0, []))
+            hit = None
+            if n in head and not nul and longest > _LONG_LINE:
+                hit = ("minified", "longest line %d" % longest, None)
+            elif n in attrs and not (attrs[n] == "generated" and migration):
+                hit = (attrs[n], "linguist-" + attrs[n], None)
+            if hit is None and not migration:
+                lines = base_ls[n][2] if n in base_ls else first
+                mark = next((i for i, l in enumerate(lines, 1) if _MARKER.search(l)), 0)
+                if mark:
+                    hit = ("generated", "header line %d" % mark, "header")
+                else:
+                    for comp, why in (("dist", "generated"), ("build", "generated"), ("vendor", "vendored"),
+                                      ("node_modules", "vendored")):
+                        if comp in parts:
+                            hit = (why, "path rule %s/" % comp, "path")
+                            break
+                    else:
+                        base = n.rsplit("/", 1)[-1]
+                        suffix = next((x for x in _PB_NAMES if base.endswith(x)), None)
+                        if suffix:
+                            hit = ("generated", "path rule *" + suffix, "path")
+            if hit is None and n in binary:
+                hit = ("binary", "numstat", None)
+            elif hit is None and nul and (not plan["diff_cmd"] or n in plan["untracked"]):
+                hit = ("binary", "NUL byte", None)  # git reports no counts for these
+            if hit is None:
+                kept.append(n)
+            elif hit[2] and n not in base_ls:
+                kept.append(n)
+                notes.append("%s: kept; it matches the %s rule but the change adds it" % (n, hit[2]))
+            else:
+                drop(n, hit[0], hit[1])
+    return sorted(kept), sorted(excluded, key=lambda e: e["path"]), notes
 
 
 def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
@@ -415,8 +564,9 @@ def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
     cmd = plan["diff_cmd"]
     if not cmd:
         return ""
+    pre = _attr_source(plan["mb"], top)  # an attributes file the change adds must not turn its files into "binary"
     if not narrow:
-        return git(cmd[1:], top)
+        return git(pre + cmd[1:], top)
     skip = set(plan["untracked"])
     chunks, cur, size = [], [], 0
     for n in (n for n in kept if n not in skip):
@@ -428,7 +578,7 @@ def _diff_text(plan: dict, kept: List[str], narrow: bool, top: str) -> str:
         size += w
     if cur:
         chunks.append(cur)
-    return "".join(git(["--literal-pathspecs"] + cmd[1:] + c, top) for c in chunks)
+    return "".join(git(pre + ["--literal-pathspecs"] + cmd[1:] + c, top) for c in chunks)
 
 
 def pin(candidate: dict, cwd: str) -> dict:
@@ -461,7 +611,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
                      "the target has no files" if kind in ("path", "repo") else "the change has no differences")
-    names, excluded, fnotes = filter_files(plan, names, top)
+    names, excluded, fnotes = filter_files(kind, plan, names, top)
     if not names:
         raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified or binary")
     run = new_run_dir(cwd)
