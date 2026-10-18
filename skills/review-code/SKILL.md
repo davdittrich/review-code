@@ -56,8 +56,10 @@ Keep the tone direct and constructive: state the problem, the trigger and a fix.
 
 ## Procedure
 
-1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/target.py <the user's target words>`. When `status` is not
-   `ok`, state the `reason` and stop. When `ok`, state the `kind`, the pinned refs
+1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/target.py <the user's target words>`. When `status` is
+   `ambiguous`, ask the user once (AskUserQuestion) which listed `candidates[].reading` they mean, then
+   re-run with the same words plus `--choice <index>`. When `status` is otherwise not `ok`, state the
+   `reason` and stop (`skip` is not an error: closed, merged, draft or empty). When `ok`, state the `kind`, the pinned refs
    `merge_base...head_sha` and the `run` path.
 2. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>` and state the `label`.
 3. Review from `inputs/defects.md` and `inputs/standards.md` in the run directory and the files they

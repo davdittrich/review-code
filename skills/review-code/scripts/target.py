@@ -27,6 +27,7 @@ _DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
 SKIP_REASONS = {"empty-diff", "no-files", "closed", "merged", "draft", "locked"}
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256, lowercase only
 _PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S)
+_MR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/-/merge_requests/([0-9]+)(?:[/?#].*)?", re.S)
 _DIGITS = re.compile(r"[0-9]+")
 _REMOTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::[0-9]+)?[:/](.+?)/?", re.I | re.S)
 _PR_FIELDS = "state,isDraft,baseRefOid,headRefOid,baseRefName,isCrossRepository,url,number"
@@ -165,10 +166,11 @@ def _no_argument(cwd: str) -> List[dict]:
 def resolve(argv: List[str], cwd: str) -> List[dict]:
     if not argv:
         return _no_argument(cwd)
-    if argv[0] in ("--staged", "--unstaged", "--repo"):
+    flags = [a for a in argv if a in ("--staged", "--unstaged", "--repo")]
+    if flags:
         if len(argv) > 1:
             raise Refuse("mixed-target", "give one target")
-        kind = argv[0][2:]
+        kind = flags[0][2:]
         return [{"kind": kind, "reading": {"staged": "staged changes", "unstaged": "unstaged changes",
                                            "repo": "the whole repository"}[kind]}]
     for arg in argv:
@@ -176,16 +178,30 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
             raise Refuse("option-like-argument", "the target must not start with a dash")
     if len(argv) > 1:
         return [_path_candidate(argv, cwd)]
-    arg = argv[0]
+    return _classify(argv[0], cwd)
+
+
+def _forge_candidate(kind: str, m: "re.Match") -> dict:
+    n = _num(m.group(3))
+    sep = "/pull/" if kind == "pr" else "/-/merge_requests/"
+    return {"kind": kind, "number": n, "repo_key": (m.group(1) + "/" + m.group(2)).lower(),
+            "url": "https://%s/%s%s%d" % (m.group(1), m.group(2), sep, n),
+            "reading": ("pull request #%d" if kind == "pr" else "merge request !%d") % n}
+
+
+def _classify(arg: str, cwd: str) -> List[dict]:
+    """Candidate readings in fixed order. Explicit syntax is unique; bare words may have several readings."""
     m = _PR_URL.fullmatch(arg)
     if m:
-        n = _num(m.group(3))
-        key = (m.group(1) + "/" + m.group(2)).lower()
-        return [{"kind": "pr", "number": n, "repo_key": key, "reading": "pull request #%d" % n,
-                 "url": "https://%s/%s/pull/%d" % (m.group(1), m.group(2), n)}]
-    if arg.startswith("#") and _DIGITS.fullmatch(arg[1:]) or _DIGITS.fullmatch(arg):
-        n = _num(arg.lstrip("#"))
-        return [{"kind": "pr", "number": n, "url": None, "reading": "pull request #%d" % n}]
+        return [_forge_candidate("pr", m)]
+    m = _MR_URL.fullmatch(arg)
+    if m:
+        return [_forge_candidate("mr", m)]
+    if arg[:1] in ("#", "!") and _DIGITS.fullmatch(arg[1:]):
+        n = _num(arg[1:])
+        kind = "pr" if arg[0] == "#" else "mr"
+        return [{"kind": kind, "number": n, "url": None,
+                 "reading": ("pull request #%d" if kind == "pr" else "merge request !%d") % n}]
     if arg.endswith("^!"):
         _commit_id(arg[:-2], cwd)
         return [{"kind": "commit", "rev": arg[:-2], "reading": "the single commit " + arg[:-2]}]
@@ -198,13 +214,39 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
             pass  # not a range: may be a path that contains ".."
     if arg == ".":
         return [{"kind": "repo", "reading": "the whole repository"}]
+    cands, err = [], None
+    if _DIGITS.fullmatch(arg):
+        try:
+            n = _num(arg)
+            cands.append({"kind": "pr", "number": n, "url": None, "reading": "pull request #%d" % n})
+        except Refuse as e:
+            err = e
     try:
-        _commit_id(arg, cwd)
-        return [{"kind": "branch", "base": arg, "head": "HEAD", "reading": "changes on HEAD since " + arg}]
+        cid = _commit_id(arg, cwd)
+    except Refuse as e:
+        err = err or e
+    else:
+        cands.append({"kind": "branch", "base": arg, "head": "HEAD", "reading": "changes on HEAD since " + arg})
+        cands.extend(_descendant_reading(arg, cid, cwd))
+    if os.path.lexists(os.path.join(cwd, arg)):
+        cands.append(_path_candidate([arg], cwd))
+    if not cands:
+        raise err
+    return cands
+
+
+def _descendant_reading(ref: str, cid: str, cwd: str) -> List[dict]:
+    """HEAD is an ancestor of ref, so `ref...HEAD` is empty: offer `default...ref` as a second reading."""
+    try:
+        if cid == _commit_id("HEAD", cwd) or _run(["merge-base", "--is-ancestor", "HEAD", ref], cwd)[0] != 0:
+            return []
     except Refuse:
-        if os.path.lexists(os.path.join(cwd, arg)):
-            return [_path_candidate(argv, cwd)]
-        raise
+        return []
+    default = default_branch(cwd)
+    if default and _commit_id(default[0], cwd) != cid:
+        return [{"kind": "branch", "base": default[0], "head": ref,
+                 "reading": "changes on %s since %s" % (ref, default[0])}]
+    return []
 
 
 def _path_candidate(paths: List[str], cwd: str) -> dict:
@@ -242,6 +284,27 @@ def _view_pr(cand: dict, cwd: str) -> dict:
             "notes": []}
 
 
+def _view_mr(cand: dict, cwd: str) -> dict:
+    j = glab_json(["mr", "view", cand["url"] or str(cand["number"]), "-F", "json"], cwd)
+    if not isinstance(j, dict):
+        raise Refuse("glab-failed", "glab printed an unexpected document")
+    state = j.get("state")
+    if state not in ("opened", "closed", "merged", "locked"):
+        raise Refuse("glab-failed", "glab reported an unknown merge request state")
+    if state != "opened":
+        raise Refuse(state, "the merge request is " + state)
+    if j.get("draft") or j.get("work_in_progress"):
+        raise Refuse("draft", "the author must mark it ready for review")
+    refs = j.get("diff_refs") if isinstance(j.get("diff_refs"), dict) else {}
+    m = _MR_URL.fullmatch(j.get("web_url") if isinstance(j.get("web_url"), str) else "")
+    if (not m or j.get("iid") != cand["number"] or not _oid_ok(refs.get("base_sha"))
+            or not _oid_ok(refs.get("head_sha")) or not _branch_ok(j.get("target_branch"), cwd)):
+        raise Refuse("glab-failed", "glab reported invalid merge request fields")
+    return {"base": refs["base_sha"], "head": refs["head_sha"], "branch": j["target_branch"], "url": j["web_url"],
+            "key": (m.group(1) + "/" + m.group(2)).lower(), "ref": "refs/merge-requests/%d/head" % cand["number"],
+            "notes": ["merge request reading is untested against a live glab"]}
+
+
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
     rc, _, _ = _run(["-c", "transfer.fsckObjects=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
@@ -265,7 +328,7 @@ def _plan_revs(base: str, head: str, mb: str, cwd: str) -> dict:
 def _plan_forge(cand: dict, cwd: str) -> dict:
     if cand.get("repo_key") and not any(k == cand["repo_key"] for _, k in _remotes(cwd)):
         raise Refuse("cross-repo", "the pull request belongs to a repository with no configured remote")
-    info = _view_pr(cand, cwd)
+    info = (_view_pr if cand["kind"] == "pr" else _view_mr)(cand, cwd)
     remote = next((n for n, k in _remotes(cwd) if k == info["key"]), None)
     if remote is None:
         raise Refuse("cross-repo" if cand.get("repo_key") else "no-remote-for-pr-repo",
@@ -330,7 +393,7 @@ def _plan_commit(rev: str, cwd: str) -> dict:
 def pin(candidate: dict, cwd: str) -> dict:
     top = git(["rev-parse", "--show-toplevel"], cwd).strip()
     kind = candidate["kind"]
-    if kind == "pr":
+    if kind in ("pr", "mr"):
         plan = _plan_forge(candidate, top)
     elif kind == "commit":
         plan = _plan_commit(candidate["rev"], top)
@@ -388,6 +451,19 @@ def emit(obj: dict) -> None:
     print(json.dumps({k: v for k, v in obj.items() if k in STDOUT_KEYS}, sort_keys=True))
 
 
+def _parse_cli(argv: List[str]) -> tuple:
+    args, choice, it = [], None, iter(argv)
+    for a in it:
+        if a != "--choice" and not a.startswith("--choice="):
+            args.append(a)
+            continue
+        v = a[len("--choice="):] if a.startswith("--choice=") else next(it, "")
+        if not _DIGITS.fullmatch(v):
+            raise Refuse("bad-choice", "--choice takes the number of a listed reading")
+        choice = int(v)
+    return args, choice
+
+
 def main(argv: List[str], cwd: Optional[str] = None) -> int:
     cwd = cwd or os.getcwd()
     try:
@@ -395,8 +471,16 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             git(["rev-parse", "--show-toplevel"], cwd)
         except Refuse:
             raise Refuse("not-a-git-repo", "run inside a git repository")
-        cand = resolve(argv, cwd)[0]
-        cand["arg"] = " ".join(argv)
+        args, choice = _parse_cli(argv)
+        cands = resolve(args, cwd)
+        if choice is None and len(cands) > 1:
+            emit({"status": "ambiguous", "candidates": [
+                {"index": i, "kind": c["kind"], "reading": c["reading"]} for i, c in enumerate(cands, 1)]})
+            return 2
+        if choice is not None and not 1 <= choice <= len(cands):
+            raise Refuse("bad-choice", "the choice is not one of the listed readings")
+        cand = cands[(choice or 1) - 1]
+        cand["arg"] = " ".join(args)
         rec = pin(cand, cwd)
     except Refuse as r:
         emit({"status": "skip" if r.reason in SKIP_REASONS else "refuse", "reason": r.reason, "detail": r.detail})

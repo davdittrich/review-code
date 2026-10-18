@@ -358,5 +358,123 @@ class TestKinds(Local):
         self.assertEqual(load(o1["run"])["head_sha"], self.c2)
 
 
+class TestAmbiguity(Local):
+    def ask(self, *args):
+        rc, out = self.pin(*args)
+        self.assertEqual((rc, out["status"]), (2, "ambiguous"))
+        self.assertEqual([c["index"] for c in out["candidates"]], list(range(1, len(out["candidates"]) + 1)))
+        self.assertTrue(all(set(c) == {"index", "kind", "reading"} for c in out["candidates"]))
+        return out["candidates"]
+
+    def test_ambiguity_ref_and_dir(self):
+        gitfix.commit(self.repo, {"main/m.txt": "m\n"}, "dir named like a branch")
+        c = self.ask("main")
+        self.assertEqual([x["kind"] for x in c], ["branch", "path"])
+        rc, out = self.pin("main", "--choice", "2")
+        self.assertEqual((rc, out["kind"]), (0, "path"))
+        self.assertEqual(load(out["run"])["included"], ["main/m.txt"])
+        rc, out = self.pin("--choice=1", "main")
+        self.assertEqual((rc, out["kind"], out["base_sha"]), (0, "branch", self.root))
+        for bad in ("3", "0"):
+            rc, out = self.pin("main", "--choice", bad)
+            self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "bad-choice"))
+        rc, out = self.pin("main", "--choice", "x")
+        self.assertEqual(out["reason"], "bad-choice")
+
+    def test_ambiguity_pr_and_file(self):
+        self.write("7", "seven\n")
+        c = self.ask("7")
+        self.assertEqual([x["kind"] for x in c], ["pr", "path"])
+        rc, out = self.pin("7", "--choice", "2")
+        self.assertEqual((rc, out["kind"], out["number"]), (0, "path", None))
+
+    def test_ambiguity_descendant_ref(self):
+        self.git("checkout", "-q", "main")
+        c = self.ask("feat")
+        self.assertEqual([x["reading"] for x in c], ["changes on HEAD since feat", "changes on feat since main"])
+        rc, out = self.pin("feat", "--choice", "2")
+        self.assertEqual((rc, out["kind"], out["base_sha"], out["head_sha"]), (0, "branch", self.root, self.c2))
+
+    def test_ambiguity_diverged_pins(self):
+        self.git("checkout", "-q", "main")
+        main_tip = gitfix.commit(self.repo, {"z.txt": "z\n"}, "main moves")
+        self.git("checkout", "-q", "feat")
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["kind"], out["base_sha"], out["merge_base"]), (0, "branch", main_tip, self.root))
+
+    def test_ambiguity_unique(self):
+        rc, out = self.pin("HEAD~1")
+        self.assertEqual((rc, out["kind"], out["base_sha"]), (0, "branch", self.c1))
+
+    def test_ambiguity_none(self):
+        for args, reason in ((["no-such-thing"], "bad-ref"), (["--upload-pack=x"], "option-like-argument"),
+                             (["main", "a.txt"], "mixed-target"), (["--staged", "a.txt"], "mixed-target"), (["a.txt", "--repo"], "mixed-target"),
+                             (["0"], "bad-number")):
+            rc, out = self.pin(*args)
+            self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", reason), args)
+        rc, out = self.pin("a.txt", "src")
+        self.assertEqual((rc, out["kind"]), (0, "path"))
+        self.assertEqual(load(out["run"])["included"], ["a.txt", "src/x.py", "src/y.py"])
+
+    def test_ambiguity_no_arg(self):
+        rc, out = self.pin()
+        self.assertEqual((rc, out["kind"], out["base_sha"]), (0, "branch", self.root))  # clean, on feat
+        self.write("a.txt", "dirty\n")
+        rc, out = self.pin()
+        self.assertEqual((rc, out["kind"]), (0, "worktree"))
+
+
+class TestMR(PRWorld):
+    URL = "https://gitlab.com/g/s/r.git"
+    MR = "https://gitlab.com/g/s/r/-/merge_requests/5"
+
+    def setUp(self):
+        super().setUp()
+        self.git("remote", "set-url", "origin", self.URL)
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.git("config", "url." + self.bare + ".insteadOf", self.URL)
+        gitfix.run(["git", "update-ref", "refs/merge-requests/5/head", self.pr], self.bare)
+
+    def mr(self, **kw):
+        d = {"iid": 5, "state": "opened", "draft": False, "target_branch": "main", "web_url": self.MR,
+             "diff_refs": {"base_sha": self.main, "head_sha": self.pr, "start_sha": self.main}}
+        d.update(kw)
+        return mock.Mock(return_value=d)
+
+    def test_mr_pin_open(self):
+        refs = self.git("for-each-ref")
+        for arg in ("!5", self.MR):
+            glab = self.mr()
+            rc, out = call([arg], self.repo, self.tmp, glab=glab)
+            self.assertEqual((rc, out["status"], out["kind"], out["number"]), (0, "ok", "mr", 5), arg)
+            self.assertEqual(glab.call_args[0][0][:2], ["mr", "view"])
+        t = load(out["run"])
+        self.assertEqual((t["head_sha"], t["base_sha"], t["url"]), (self.pr, self.main, self.MR))
+        self.assertEqual(t["notes"], ["merge request reading is untested against a live glab"])
+        self.assertEqual(self.git("for-each-ref"), refs)
+
+    def test_mr_eligibility(self):
+        before = self.run_dirs()
+        for kw, reason in (({"state": "closed"}, "closed"), ({"state": "merged"}, "merged"),
+                           ({"state": "locked"}, "locked"), ({"draft": True}, "draft")):
+            rc, out = call(["!5"], self.repo, self.tmp, glab=self.mr(**kw))
+            self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", reason), kw)
+        self.assertEqual(self.run_dirs(), before)
+        self.assertFalse(self.has_pr_objects())
+        rc, out = call(["!5"], self.repo, self.tmp, glab=self.mr(state="weird"))
+        self.assertEqual((rc, out["reason"]), (1, "glab-failed"))
+        rc, out = call(["!5"], self.repo, self.tmp,
+                       glab=self.mr(diff_refs={"base_sha": "a" * 39, "head_sha": self.pr}))
+        self.assertEqual(out["reason"], "glab-failed")
+        rc, out = call(["https://gitlab.com/other/x/-/merge_requests/5"], self.repo, self.tmp)
+        self.assertEqual(out["reason"], "cross-repo")
+
+    def test_mr_glab_missing(self):
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            with self.assertRaises(target.Refuse) as cm:
+                target.glab_json(["mr", "view", "5"], self.repo)
+        self.assertEqual(cm.exception.reason, "glab-missing")
+
+
 if __name__ == "__main__":
     unittest.main()
