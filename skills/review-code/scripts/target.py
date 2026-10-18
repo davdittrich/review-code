@@ -145,6 +145,11 @@ def _remotes(cwd: str) -> List[tuple]:
     return rows
 
 
+def _q(name: str) -> str:
+    """A ref name from the repository, quoted unless plainly safe: `reading` text goes to stdout."""
+    return name if re.fullmatch(r"[A-Za-z0-9._/+@-]+", name) else json.dumps(name)
+
+
 def default_branch(cwd: str) -> Optional[tuple]:
     """(ref usable in git, local branch name) of the default branch, or None."""
     rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
@@ -165,7 +170,7 @@ def _no_argument(cwd: str) -> List[dict]:
     rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     if default and rc == 0 and out.decode("utf-8", "replace").strip() != default[1]:
         return [{"kind": "branch", "base": default[0], "head": "HEAD",
-                 "reading": "changes on HEAD since " + default[0]}]
+                 "reading": "changes on HEAD since " + _q(default[0])}]
     raise Refuse("no-target", "name a target to review")
 
 
@@ -251,7 +256,7 @@ def _descendant_reading(ref: str, cid: str, cwd: str) -> List[dict]:
     default = default_branch(cwd)
     if default and _commit_id(default[0], cwd) != cid:
         return [{"kind": "branch", "base": default[0], "head": ref,
-                 "reading": "changes on %s since %s" % (ref, default[0])}]
+                 "reading": "changes on %s since %s" % (ref, _q(default[0]))}]
     return []
 
 

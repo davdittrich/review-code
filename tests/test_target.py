@@ -387,6 +387,19 @@ class TestAmbiguity(Local):
         rc, out = self.pin("main", "--choice", "x")
         self.assertEqual(out["reason"], "bad-choice")
 
+    def test_default_branch_name_is_quoted_in_reading(self):
+        # IN-02: a ref name from the remote is printed on stdout, so it is shown quoted unless plainly safe
+        odd = "m" + chr(0x202E) + "x"
+        self.git("update-ref", "refs/remotes/origin/" + odd, self.root)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + odd)
+        self.git("checkout", "-q", "feat")
+        cands = target.resolve([], self.repo)
+        self.assertEqual(len(cands), 1)
+        self.assertTrue(cands[0]["reading"].startswith("changes on HEAD since "), cands)
+        self.assertNotIn(chr(0x202E), cands[0]["reading"])
+        self.assertEqual(target._q("origin/main"), "origin/main")
+        self.assertEqual(target._q("a b"), '"a b"')
+
     def test_ambiguity_pr_and_file(self):
         self.write("7", "seven\n")
         c = self.ask("7")
