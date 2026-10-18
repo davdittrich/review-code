@@ -18,9 +18,10 @@ _MARK = " [sanitizer: markup removed]"
 # Comments, CDATA, doctype and processing instructions; an unterminated comment runs to the end.
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![A-Za-z][^>]*>|<\?[^>]*>", re.DOTALL)
 # Code that a reader sees verbatim: fenced blocks (an unterminated fence runs to the end) and spans.
-_FENCE = re.compile(r"^ {0,3}(`{3,})[^\n]*(?:\n.*?)?(?:^ {0,3}\1`*[ \t]*$|\Z)"
+_FENCE = re.compile(r"^ {0,3}(`{3,})[^`\n]*(?:\n.*?)?(?:^ {0,3}\1`*[ \t]*$|\Z)"
                     r"|^ {0,3}(~{3,})[^\n]*(?:\n.*?)?(?:^ {0,3}\2~*[ \t]*$|\Z)", re.DOTALL | re.MULTILINE)
-_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
+# A span cannot cross a blank line, and a backtick fence's info string cannot hold a backtick.
+_SPAN = re.compile(r"(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n).)+?)(?<!`)\1(?!`)", re.DOTALL)
 _TOKEN = re.compile("\ue000(\\d+)\ue001")
 # `[//]: # (text)` and friends render nothing on GitHub.
 _REFCOMMENT = re.compile(r"^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"[^\"]*\"|'[^']*')[ \t]*$",

@@ -51,6 +51,9 @@ CARRIERS = [
     ("doctype", "a <!DOCTYPE INJECT> b"),
     ("pi", "a <?php INJECT ?> b"),
     ("cdata", "a <![CDATA[ INJECT ]]> b"),
+    ("backtick_pairs_across_paragraphs", "a ` here\n\n<!-- INJECT -->\n\nb ` there"),
+    ("backtick_fence_bad_info", "a\n\n```x`y\n<!-- INJECT -->\nvisible"),
+    ("span_across_blank_line", "a `x\n\n<!-- INJECT -->\n\ny` b"),
 ]
 
 # Carriers whose payload is the invisible character itself.
