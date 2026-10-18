@@ -29,7 +29,7 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
-STDOUT_KEYS = {"status", "reason", "run", "label", "spec_status", "counts"}
+STDOUT_KEYS = {"status", "reason", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
@@ -538,16 +538,10 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         tj, spec, head_ls if head_ls is not None else _listing(repo, head), messages)
     spec_status = "found" if found_spec else "none"
 
-    old = {}
-    try:
-        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
-            old = json.load(fh)
-    except (OSError, ValueError):
-        pass
     led = {
         "version": 1,
         "target": {k: tj[k] for k in ("kind", "base_sha", "head_sha", "merge_base")},
-        "trust": old.get("trust", "unset"), "trust_asked": old.get("trust_asked", False),
+        "trust": "unset", "trust_asked": False,
         "symbols": found["symbols"], "callers": found["callers"], "tests": found["tests"],
         "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"],
         "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
@@ -559,6 +553,7 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     led["tree"], more = _materialize(run, repo, head_ls, included, led)
     led["hidden_chars"] += more
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
+    _keep_trust(run, led)
     _write_json(os.path.join(run, "ledger.json"), led)
 
     nonce = secrets.token_hex(8)
@@ -599,12 +594,92 @@ def build(run: str, spec: Optional[str] = None) -> dict:
             "counts": {c: len(led[c]) for c in CATEGORIES}}
 
 
+TRUST_VALUES = ("own", "external")
+
+
+def _load(run: str) -> dict:
+    """ledger.json, read fresh on every call; anything but a JSON object refuses."""
+    try:
+        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+            led = json.load(fh)
+    except FileNotFoundError:
+        raise target.Refuse("no-ledger", "the run directory has no ledger.json")
+    except (OSError, ValueError, RecursionError):
+        raise target.Refuse("bad-ledger", "ledger.json cannot be read")
+    if not isinstance(led, dict):
+        raise target.Refuse("bad-ledger", "ledger.json is not an object")
+    return led
+
+
+def _stored(led: dict) -> str:
+    v = led.get("trust")
+    return v if isinstance(v, str) and v in TRUST_VALUES else "unset"
+
+
+def _keep_trust(run: str, led: dict) -> None:
+    """A rebuild keeps the stored answer. Re-read just before the write; a set between the read and
+    the replace is lost (shortcut: no lock, the orchestrator never builds and sets at once)."""
+    try:
+        old = _load(run)
+    except target.Refuse:
+        return
+    led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
+
+
+def trust_set(run: str, value: str) -> dict:
+    if value not in TRUST_VALUES:
+        raise target.Refuse("bad-trust-value", "trust is own or external")
+    led = _load(run)
+    cur = _stored(led)
+    if cur not in ("unset", value):
+        raise target.Refuse("trust-already-set", "the trust answer is recorded once per run")
+    if cur == "unset":
+        led["trust"], led["trust_asked"] = value, True
+        _write_json(os.path.join(run, "ledger.json"), led)
+    return {"status": "ok", "trust": value}
+
+
+def trust_get(run: str) -> dict:
+    try:
+        led = _load(run)
+    except target.Refuse:
+        led = {}
+    v = _stored(led)
+    return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external"}
+
+
+def trust_gate(run: str, cmd: List[str]) -> dict:
+    """Choke point for the orchestrator, not a sandbox: it answers, it never runs anything."""
+    if not cmd or not cmd[0].strip():
+        raise target.Refuse("no-command", "no command after --")
+    led = _load(run)
+    if _stored(led) != "own":
+        raise target.Refuse("trust-unset" if led.get("trust") in (None, "unset") else "trust-external",
+                            "own code was not confirmed")
+    return {"status": "confirm", "command": shlex.join(cmd)}
+
+
+def _trust_cli(argv: List[str]) -> dict:
+    """trust set VALUE --run DIR | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
+    sub, rest = argv[0], argv[1:]
+    if sub == "set" and len(rest) == 3 and rest[1] == "--run":
+        return trust_set(rest[2], rest[0])
+    if sub == "get" and len(rest) == 2 and rest[0] == "--run":
+        return trust_get(rest[1])
+    if sub == "gate" and len(rest) >= 2 and rest[0] == "--run" and (len(rest) == 2 or rest[2] == "--"):
+        return trust_gate(rest[1], rest[3:])
+    raise target.Refuse("usage", "usage: ledger.py trust set own|external --run DIR | get --run DIR | "
+                                 "gate --run DIR -- CMD [ARG ...]")
+
+
 def main(argv: List[str], cwd: Optional[str] = None) -> int:
     try:
-        if len(argv) < 3 or argv[0] != "build" or argv[1] != "--run":
+        if argv[:1] == ["trust"] and len(argv) >= 2:
+            out = _trust_cli(argv[1:])
+        elif len(argv) < 3 or argv[0] != "build" or argv[1] != "--run":
             raise target.Refuse("no-target", "usage: ledger.py build --run DIR [--spec PATH]")
-        spec = argv[4] if len(argv) == 5 and argv[3] == "--spec" else None
-        out = build(argv[2], spec)
+        else:
+            out = build(argv[2], argv[4] if len(argv) == 5 and argv[3] == "--spec" else None)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     else:
