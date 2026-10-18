@@ -27,6 +27,14 @@ class GateMutations(unittest.TestCase):
         rc, out = self.gate()
         self.assertEqual(rc, 0, out)
 
+    def test_gate_checks_every_agent_file(self):
+        # WR-07: an added lane with Bash must not ship unchecked
+        with open(os.path.join(self.tree, "agents", "extra.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nname: extra\ndescription: x\ntools: Read, Bash\n---\nbody\n")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-extra-tools", out)
+
     def test_gate_fails_when_listing_fails(self):
         # WR-06: a failing `find` must reach `bad hygiene-tracked`, not print ok
         fake = os.path.join(self._td.name, "bin")

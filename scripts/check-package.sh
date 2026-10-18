@@ -165,12 +165,13 @@ else
 fi
 
 # CTX-05: lane agents are read-only. tools: is an exclusive allowlist; an omitted line inherits every tool.
+# Required lanes must exist; every agents/*.md is checked, so an added lane cannot ship unchecked.
 for name in finder verifier; do
-  f="$tree/agents/$name.md"
-  if [ ! -f "$f" ]; then
-    bad "agent-$name-tools" "missing agents/$name.md"
-    continue
-  fi
+  [ -f "$tree/agents/$name.md" ] || bad "agent-$name-tools" "missing agents/$name.md"
+done
+for f in "$tree"/agents/*.md; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f" .md)
   afm="$scratch/agent-frontmatter"
   if ! awk 'NR == 1 { if ($0 != "---") exit 1; next }
     /^---[ \t]*$/ { found = 1; exit }
