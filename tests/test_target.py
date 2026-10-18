@@ -935,6 +935,28 @@ class TestBlobsByOid(Local):
         self.assertEqual((rc, self.excluded(out)), (0, {}), out)
 
 
+class TestNonUtf8ProseName(Local):
+    def test_non_utf8_prose_name_gets_whole_file_context(self):
+        # 6xl.79: the diff header carries the raw byte; it must match the name the listing decoded
+        name = os.fsdecode(b"caf\xe9.md")
+        doc = lambda e=None: "<!--\n" + "".join("U8CANARY %d%s\n" % (i, " x" if i == e else "") for i in range(30)) + "-->\n"
+        self.git("checkout", "-q", "main")
+        try:
+            gitfix.commit(self.repo, {name: doc()}, "doc")
+        except OSError:
+            self.skipTest("file system refuses non-UTF-8 names")
+        self.git("checkout", "-q", "-b", "chg")
+        gitfix.commit(self.repo, {name: doc(15)}, "edit")
+        for words in (["main"], ["HEAD^!"]):
+            rc, out = self.pin(*words)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("U8CANARY", self.diff(out), words)
+        with open(os.path.join(os.fsencode(self.repo), b"caf\xe9.md"), "w") as fh:
+            fh.write(doc(17))
+        rc, out = self.pin("--unstaged")
+        self.assertNotIn("U8CANARY", self.diff(out))
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

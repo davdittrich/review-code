@@ -758,13 +758,23 @@ def _diff_calls(plan: dict, kept: List[str], narrow: bool, top: str) -> List[Lis
     return [pre + ["--literal-pathspecs"] + cmd[1:] + c for c in chunks]
 
 
+_PATH_LINES = (b"diff --git ", b"--- ", b"+++ ", b"rename from ", b"rename to ", b"copy from ", b"copy to ")
+
+
+def _diff_line(raw: bytes) -> str:
+    """One diff line as text. A line that carries a path decodes with surrogateescape, like every listed name,
+    so a non-UTF-8 name still matches its file (6xl.79); content keeps U+FFFD for undecodable bytes. LF is
+    ASCII, so per-line decoding equals decoding the whole diff."""
+    return raw.decode("utf-8", "surrogateescape" if raw.startswith(_PATH_LINES) else "replace")
+
+
 def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
     """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
     for args in calls:
         p = subprocess.Popen(_GIT + args, cwd=top, env=_env(top), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             for raw in p.stdout:
-                yield raw.rstrip(b"\n").decode("utf-8", "replace")  # LF is ASCII: per-line decoding equals whole
+                yield _diff_line(raw.rstrip(b"\n"))
         finally:
             p.stdout.close()
             rc = p.wait()
@@ -800,7 +810,7 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
                     # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
                     rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
                     if rc in (0, 1):
-                        yield out.decode("utf-8", "replace")
+                        yield "".join(_diff_line(ln) + "\n" for ln in out.split(b"\n")[:-1])
 
     tracked = _sections(_diff_lines(_diff_calls(plan, names, narrow, top), top))
     wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]]) if plan["diff_cmd"] else None
