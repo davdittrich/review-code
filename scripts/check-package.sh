@@ -179,6 +179,11 @@ if [ -f "$lic" ] && [ "$(head -n 1 "$lic")" = "MIT License" ] && [ -n "$holder" 
 else
   bad license-mit 'LICENSE line 1 must be "MIT License" with a "Copyright (c) YYYY holder" line and the full MIT permission, inclusion and disclaimer text'
 fi
+if grep -qF 'Copyright (c) 2026 Matt Pocock' "$notice" 2>/dev/null; then
+  ok notice-matt-copyright
+else
+  bad notice-matt-copyright 'NOTICE lacks the Matt Pocock copyright line'
+fi
 if grep -qF 'Copyright (c) 2025 Posit PBC' "$notice" 2>/dev/null; then
   ok notice-posit-copyright
 else
