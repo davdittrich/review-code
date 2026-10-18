@@ -84,15 +84,15 @@ else
 fi
 
 # CLAUDE_CONFIG_DIR confines install and details to the scratch dir; the real config is untouched.
-cfg="$scratch/cfg"
-if (cd "$tree" && CLAUDE_CONFIG_DIR="$cfg" claude plugin marketplace add "$tree" >"$scratch/add.log" 2>&1 &&
-  CLAUDE_CONFIG_DIR="$cfg" claude plugin install review-code@review-code >>"$scratch/add.log" 2>&1); then
+config="$scratch/cfg"
+if (cd "$tree" && CLAUDE_CONFIG_DIR="$config" claude plugin marketplace add "$tree" >"$scratch/add.log" 2>&1 &&
+  CLAUDE_CONFIG_DIR="$config" claude plugin install review-code@review-code >>"$scratch/add.log" 2>&1); then
   ok install-fresh
 else
   bad install-fresh "$(tail -n 2 "$scratch/add.log" | tr '\n' ';')"
 fi
 
-if CLAUDE_CONFIG_DIR="$cfg" claude plugin details review-code >"$scratch/details.log" 2>&1; then
+if CLAUDE_CONFIG_DIR="$config" claude plugin details review-code >"$scratch/details.log" 2>&1; then
   cat "$scratch/details.log"
   if grep -Eq '^ *Skills \([0-9]+\) +review-code( |$)' "$scratch/details.log"; then
     ok details-skill
