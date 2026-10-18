@@ -2,8 +2,8 @@
 
 Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
 escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
-`_invisible` predicate: Default_Ignorable_Code_Point (embedded Unicode 18.0 table) plus general categories
-Cf, Cc, Zl, Zp of the running interpreter's unicodedata, no NFKC folding.
+`_invisible` predicate: Default_Ignorable_Code_Point plus general categories Cf, Cc, Zl, Zp, all from embedded
+Unicode 18.0 tables (the same set on every interpreter), no NFKC folding.
 Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
 Change-author files that reach the main thread are treated per type. Prose and markup files (every linguist
 Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff: HTML comments, markdown
@@ -70,15 +70,36 @@ _ELEMENTS = _VOID | _OPAQUE | frozenset((
 _DI = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
        (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
        (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
-_DI_LO = tuple(a for a, _ in _DI)
+# General_Category Cf, embedded for the same reason (Python 3.9 misses U+0890, U+0891, U+13439..1343F).
+# Source: extracted/DerivedGeneralCategory-18.0.0.txt, 170 code points. Cc, Zl, Zp are stable and listed whole.
+_CF = ((0x00AD, 0x00AD), (0x0600, 0x0605), (0x061C, 0x061C), (0x06DD, 0x06DD), (0x070F, 0x070F), (0x0890, 0x0891),
+       (0x08E2, 0x08E2), (0x180E, 0x180E), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F),
+       (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
+       (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F))
+_CTRL = ((0x0000, 0x001F), (0x007F, 0x009F), (0x2028, 0x2029))
+
+
+def _merge(ranges) -> Tuple[Tuple[int, int], ...]:
+    out: List[Tuple[int, int]] = []
+    for a, b in sorted(ranges):
+        if out and a <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return tuple(out)
+
+
+# Every code point _invisible flags, independent of the interpreter's unicodedata version (6xl.58).
+_INVIS = _merge(_DI + _CF + _CTRL + tuple((o, o) for o in _EXTRA))
+_INVIS_LO = tuple(a for a, _ in _INVIS)
 
 
 def _invisible(ch: str) -> bool:
     o = ord(ch)
     if ch in "\t\n\r":
         return False
-    i = bisect.bisect_right(_DI_LO, o) - 1
-    return (i >= 0 and o <= _DI[i][1]) or unicodedata.category(ch) in ("Cf", "Zl", "Zp", "Cc") or o in _EXTRA
+    i = bisect.bisect_right(_INVIS_LO, o) - 1
+    return i >= 0 and o <= _INVIS[i][1]
 
 
 # Markdown: every extension and filename github-linguist languages.yml maps to Markdown (.scd is also

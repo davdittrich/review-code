@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "review-code", "scripts"))
 import sanitize  # noqa: E402
@@ -297,6 +298,32 @@ DI_18 = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
          (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
          (0xE0000, 0xE0000), (0xE0001, 0xE0001), (0xE0002, 0xE001F), (0xE0020, 0xE007F), (0xE0080, 0xE00FF),
          (0xE0100, 0xE01EF), (0xE01F0, 0xE0FFF))
+
+
+# Oracle: General_Category Cf of extracted/DerivedGeneralCategory.txt, header "DerivedGeneralCategory-18.0.0.txt"
+# (21 ranges, 170 code points), plus Cc, Zl and Zp (stable since Unicode 1.1).
+CF_18 = ((0x00AD, 0x00AD), (0x0600, 0x0605), (0x061C, 0x061C), (0x06DD, 0x06DD), (0x070F, 0x070F), (0x0890, 0x0891),
+         (0x08E2, 0x08E2), (0x180E, 0x180E), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F),
+         (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
+         (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F))
+CTRL = ((0x0000, 0x0008), (0x000B, 0x000C), (0x000E, 0x001F), (0x007F, 0x009F), (0x2028, 0x2029))
+
+
+class FormatCharacterTests(unittest.TestCase):
+    def test_cf_oracle_total(self):
+        self.assertEqual(sum(b - a + 1 for a, b in CF_18), 170)
+
+    def test_cf_sweep_independent_of_interpreter_tables(self):
+        # 6xl.58: Python 3.9 ships Unicode 13, where U+0890, U+0891 and U+13439..1343F are unassigned
+        with mock.patch.object(sanitize.unicodedata, "category", return_value="Cn"):
+            for a, b in CF_18 + CTRL:
+                for o in range(a, b + 1):
+                    c = chr(o)
+                    out, hits = sanitize.escape_for_code("a" + c + "b")
+                    if c in out or not hits:
+                        self.fail("U+%04X passes escape_for_code" % o)
+                    if c in sanitize.sanitize_prose("a" + c + "b"):
+                        self.fail("U+%04X passes sanitize_prose" % o)
 
 
 class DefaultIgnorableTests(unittest.TestCase):
