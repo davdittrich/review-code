@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import stat
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -121,20 +122,39 @@ def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
 
 
-def _blobs(repo: str, oids) -> Dict[str, bytes]:
-    """Raw blob bytes from one `git cat-file --batch` stream: no filters, no textconv, no archive attributes."""
+def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, bytes]]:
+    """(oid, raw bytes) per blob from one `git cat-file --batch` run, read one object at a time: no filters,
+    no textconv, no archive attributes. Ids go in through a temporary file, so neither pipe can fill and
+    deadlock; a missing id is skipped."""
     uniq = sorted(set(oids))
-    data = target.git_bytes(["cat-file", "--batch"], repo, stdin=("\n".join(uniq) + "\n").encode()) if uniq else b""
-    out, i = {}, 0  # shortcut: whole stream in memory; bounded by the included plus referenced files
-    for oid in uniq:
-        nl = data.index(b"\n", i)
-        head = data[i:nl].split()
-        i = nl + 1
-        if len(head) == 3 and head[1] == b"blob":
-            n = int(head[2])
-            out[oid] = data[i:i + n]
-            i += n + 1
-    return out
+    if not uniq:
+        return
+    with tempfile.TemporaryFile() as ids:
+        ids.write(("\n".join(uniq) + "\n").encode())
+        ids.seek(0)
+        p = subprocess.Popen(target._GIT + ["cat-file", "--batch"], cwd=repo, env=target._env(), stdin=ids,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        finished = False
+        try:
+            for _ in uniq:
+                head = p.stdout.readline().split()
+                if not head:
+                    break
+                if len(head) == 3:
+                    data = p.stdout.read(int(head[2]))
+                    p.stdout.read(1)
+                    if head[1] == b"blob":
+                        yield head[0].decode(), data
+            finished = True
+        finally:
+            p.stdout.close()
+            rc = p.wait()
+        if finished and rc != 0:  # a consumer that stops early makes git exit on SIGPIPE: not a failure
+            raise target.Refuse("bad-ref", "a git command failed")
+
+
+def _blobs(repo: str, oids) -> Dict[str, bytes]:
+    return dict(_blob_stream(repo, oids))
 
 
 def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool = False,
@@ -379,7 +399,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A name
     holding hidden characters (`named`: escaped names target.py flagged) is refused, never escaped
     into a path: escaped names can collide and hold characters some file systems reject."""
-    skipped, hidden, hidden_text, data_of, refs, inc = [], [], [], {}, [], set(included)
+    skipped, hidden, hidden_text, refs, inc = [], [], [], [], set(included)
     for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
                                      for e in led[c]}):
         if p in named or target._shown(p) != p:
@@ -389,6 +409,20 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     tree = os.path.join(run, "tree")
     shutil.rmtree(tree, ignore_errors=True)
     os.makedirs(tree, mode=0o700)
+
+    def emit(p: str, data: bytes) -> None:
+        """Strip, escape and write one file; called per file so memory holds one file at a time (6xl.47)."""
+        nonlocal hidden, hidden_text
+        text = _text(data)
+        if text is None:  # NUL data is never written raw: GitHub shows it as binary, lanes do not read it
+            skipped.append({"path": p, "reason": "binary"})
+            return
+        esc, c, t = _scan(p, text)
+        if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
+            hidden, hidden_text = hidden + c, hidden_text + t
+        if not _put(tree, p, esc.encode("utf-8")):
+            skipped.append({"path": p, "reason": "unsafe-path"})
+
     if listing is None:
         root = os.path.realpath(repo) + os.sep
         for p in refs:
@@ -397,11 +431,14 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
                 st = os.lstat(fp)
                 if stat.S_ISLNK(st.st_mode):  # a link into the host never enters the run dir
                     skipped.append({"path": p, "reason": "symlink"})
-                elif stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(root):
-                    with open(fp, "rb") as fh:
-                        data_of[p] = fh.read()
+                    continue
+                if not (stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(root)):
+                    continue
+                with open(fp, "rb") as fh:
+                    data = fh.read()
             except OSError:
                 continue
+            emit(p, data)
     else:
         want = {}
         for p in refs:
@@ -411,19 +448,13 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             elif mode == "160000":
                 skipped.append({"path": p, "reason": "submodule"})
             elif mode is not None:
-                want[p] = oid
-        blobs = _blobs(repo, want.values())
-        data_of = {p: blobs[oid] for p, oid in want.items() if oid in blobs}
-    for p, data in sorted(data_of.items()):
-        text = _text(data)
-        if text is None:  # NUL data is never written raw: GitHub shows it as binary, lanes do not read it
-            skipped.append({"path": p, "reason": "binary"})
-            continue
-        esc, c, t = _scan(p, text)
-        if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
-            hidden, hidden_text = hidden + c, hidden_text + t
-        if not _put(tree, p, esc.encode("utf-8")):
-            skipped.append({"path": p, "reason": "unsafe-path"})
+                want.setdefault(oid, []).append(p)
+        for oid, data in _blob_stream(repo, want):
+            for p in want[oid]:
+                emit(p, data)
+    skipped.sort(key=lambda k: k["path"])  # blobs arrive in id order; keep the lists in path order
+    hidden.sort(key=lambda h: h["file"])  # stable: per-file line order kept
+    hidden_text.sort(key=lambda h: h["file"])
     return {"path": tree, "source": source, "skipped": skipped}, hidden, hidden_text
 
 

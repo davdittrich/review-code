@@ -478,6 +478,79 @@ class Tree(Base):
         self.assertEqual(sorted({h["file"] for h in led["hidden_text"]}), ["notes.md"])
         self.assertEqual(sorted({h["file"] for h in led["hidden_chars"]}), ["src/cfg.py"])
 
+    def test_tree_streams_working_copy(self):
+        # 6xl.47: each file is read, scanned and written before the next is read (memory bounded by one file)
+        self.base({"a.txt": "x\n"})
+        names = ["f%d.py" % i for i in range(4)]
+        for n in names:
+            with open(os.path.join(self.repo, n), "w", encoding="utf-8") as fh:
+                fh.write("v = '%s'\n" % n)
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "repo", head, head, head, names, untracked=names)
+        events, real_open, real_put = [], open, ledger._put
+
+        def spy_open(path, mode="r", *a, **k):
+            if "b" in mode and str(path).startswith(self.repo + os.sep):
+                events.append(("read", os.path.basename(path)))
+            return real_open(path, mode, *a, **k)
+
+        def spy_put(root, rel, data):
+            if root.endswith(os.sep + "tree"):
+                events.append(("put", rel))
+            return real_put(root, rel, data)
+
+        with mock.patch("ledger.open", spy_open, create=True), mock.patch("ledger._put", spy_put):
+            ledger.build(self.run_dir)
+        tree_events = [e for e in events if e[1] in names]  # context discovery reads the files first
+        self.assertEqual(tree_events[-8:], [(k, n) for n in names for k in ("read", "put")])
+
+    def test_tree_streams_blobs(self):
+        # 6xl.47: on the head path each blob is written before the next one is taken from git
+        self.base({"a.txt": "x\n"})
+        names = ["f%d.py" % i for i in range(4)]
+        self.branch({n: "v = '%s'\n" % n for n in names})
+        events, real_stream, real_put = [], ledger._blob_stream, ledger._put
+
+        def spy_stream(repo, oids):
+            for oid, data in real_stream(repo, oids):
+                events.append(("blob", oid))
+                yield oid, data
+
+        def spy_put(root, rel, data):
+            if root.endswith(os.sep + "tree"):
+                events.append(("put", rel))
+            return real_put(root, rel, data)
+
+        with mock.patch("ledger._blob_stream", spy_stream), mock.patch("ledger._put", spy_put):
+            self.build()
+        kinds = [k for k, v in events if k == "blob" or v in names]
+        self.assertEqual(kinds[-8:], ["blob", "put"] * 4)
+        for n in names:
+            self.assertEqual(self.read("tree/" + n), "v = '%s'\n" % n)
+
+    def test_blob_stream_many_objects(self):
+        # thousands of ids exceed a pipe buffer both ways: the stream must not deadlock or lose objects
+        src = os.path.join(self.tmp, "blobs")
+        os.makedirs(src)
+        paths = []
+        for i in range(3000):
+            paths.append(os.path.join(src, "b%d" % i))
+            with open(paths[-1], "w", encoding="utf-8") as fh:
+                fh.write("blob %d\n" % i)
+        oids = subprocess.run(["git", "hash-object", "-w", "--stdin-paths"], cwd=self.repo, env=gitfix.env(),
+                              input=("\n".join(paths) + "\n").encode(), stdout=subprocess.PIPE,
+                              check=True).stdout.decode().split()
+        got = dict(ledger._blob_stream(self.repo, oids + ["0" * 40]))
+        self.assertEqual(len(got), 3000)
+        self.assertEqual(got[oids[1234]], b"blob 1234\n")
+
+    def test_blob_stream_git_failure_refuses(self):
+        # a failing cat-file must not pass as an empty tree/ (the old git_bytes check)
+        bare = os.path.join(self.tmp, "not-a-repo")
+        os.makedirs(bare)
+        with self.assertRaises(target.Refuse):
+            list(ledger._blob_stream(bare, ["0" * 40]))
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:
