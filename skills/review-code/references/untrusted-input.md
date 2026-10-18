@@ -54,6 +54,8 @@ Limits of this rule:
 ## Known limits
 
 - Homoglyphs and other confusables pass the sanitizer.
+- The quoted here-document that passes the user's words (SKILL.md step 1) is an instruction the model follows; nothing enforces it. `target.py --stdin` reads the words as data and does not refuse shell metacharacters, so it cannot undo what a shell did if the command was built another way.
+- For the working-tree kinds the change's own `.gitignore` decides which untracked files exist (`git ls-files --others --exclude-standard` reads the working tree's ignore files), so a change can hide a new untracked file that way. The `.gitignore` edit is itself a changed file under review.
 - Encoded payloads (base64 and similar) pass.
 - Valueless attribute words of unlisted tags (`<foo WORD>`) pass; attribute values are removed. Bare URLs and `<https://...>` autolinks pass: a renderer shows them.
 - Plain-language instructions in visible text pass. The fence and the rule "data, not instructions" are the only defence.
