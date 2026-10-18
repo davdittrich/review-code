@@ -158,6 +158,13 @@ class Categories(Base):
                 rc = ledger.main(argv)
             self.assertEqual((rc, json.loads(buf.getvalue())["reason"]), (1, "usage"), argv)
 
+    def test_ledger_unexpected_error_keeps_one_line_json(self):
+        for exc in (KeyError("k"), OSError("denied")):
+            buf = io.StringIO()
+            with mock.patch.object(ledger, "build", side_effect=exc), redirect_stdout(buf):
+                rc = ledger.main(["build", "--run", "R"])
+            self.assertEqual((rc, json.loads(buf.getvalue())["reason"]), (1, "internal-error"))
+
     def test_ledger_caps(self):
         self.base({"README.md": "x\n"})
         self.branch({"src/many.py": "".join("def fn_%02d():\n    pass\n" % i for i in range(41))})

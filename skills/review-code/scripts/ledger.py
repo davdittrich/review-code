@@ -29,7 +29,7 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
-STDOUT_KEYS = {"status", "reason", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command"}
+STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
@@ -678,6 +678,8 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = build(argv[2], argv[4] if len(argv) == 5 else None)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
+    except (OSError, KeyError, ValueError) as e:  # the skill reads one JSON line; never a traceback
+        out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:
         rc = 0
     print(json.dumps({k: v for k, v in out.items() if k in STDOUT_KEYS}, sort_keys=True))

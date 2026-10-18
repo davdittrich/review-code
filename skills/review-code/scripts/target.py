@@ -681,6 +681,9 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
     except Refuse as r:
         emit({"status": "skip" if r.reason in SKIP_REASONS else "refuse", "reason": r.reason, "detail": r.detail})
         return 1
+    except (OSError, KeyError, ValueError) as e:  # the skill reads one JSON line; never a traceback
+        emit({"status": "refuse", "reason": "internal-error", "detail": type(e).__name__})
+        return 1
     emit({"status": "ok", "kind": rec["kind"], "base_sha": rec["base_sha"], "head_sha": rec["head_sha"],
           "merge_base": rec["merge_base"], "number": rec["number"], "run": rec["run"],
           "included_count": len(rec["included"]), "excluded_count": len(rec["excluded"]),

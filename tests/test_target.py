@@ -307,6 +307,12 @@ class TestKinds(Local):
             self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "empty-diff"), arg)
         self.assertEqual(self.run_dirs(), before)
 
+    def test_unexpected_error_keeps_one_line_json(self):
+        # WR-03: an OSError on a write must still end in the one-line JSON contract
+        with mock.patch.object(target, "pin", side_effect=PermissionError("denied")):
+            rc, out = self.pin("main")
+        self.assertEqual((rc, out), (1, {"status": "refuse", "reason": "internal-error", "detail": "PermissionError"}))
+
     def test_empty_inputs(self):
         self.git("checkout", "-q", "main")
         rc, out = self.pin()
