@@ -26,6 +26,7 @@ STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "me
                "included_count", "excluded_count", "untracked_count", "candidates"}
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
 _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+_WIDE = "--unified=999999"
 _DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
 _LOCKFILES = frozenset((
@@ -654,7 +655,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     if not names:
         raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified or binary")
     run = new_run_dir(cwd)
-    text = _diff_text(plan, names, bool(excluded), top)
+    text, added = _diff_text(plan, names, bool(excluded), top), ""
     if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
         for u in sorted(set(plan["untracked"]) & set(names)):
             if not u.endswith("/"):
@@ -662,7 +663,14 @@ def pin(candidate: dict, cwd: str) -> dict:
                                    "--dst-prefix=b/", "--",
                                    "/dev/null", u], top)
                 if rc in (0, 1):
-                    text += out.decode("utf-8", "replace")
+                    added += out.decode("utf-8", "replace")
+    # CTX-04: the same diff with whole files as context tells strip_hidden_diff where each comment opens
+    prose = [n for n in names if sanitize.is_prose_file(n) and n not in plan["untracked"]]
+    full = None
+    if prose and plan["diff_cmd"]:
+        wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]])
+        full = _diff_text(wide, prose, True, top) + added
+    text, stripped = sanitize.strip_hidden_diff(text + added, full)
     text, hidden = sanitize.escape_for_code(text)
     write_private(os.path.join(run, "change.diff"), text)
     rec = {
@@ -672,7 +680,8 @@ def pin(candidate: dict, cwd: str) -> dict:
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": names, "excluded": excluded, "untracked": sorted(plan["untracked"]),
-        "hidden_chars": [{"file": "change.diff", **h} for h in hidden], "notes": plan.get("notes", []) + fnotes,
+        "hidden_chars": [{"file": "change.diff", **h} for h in hidden],
+        "hidden_text": [{**h, "path": h["file"], "file": "change.diff"} for h in stripped], "notes": plan.get("notes", []) + fnotes,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     write_private(os.path.join(run, "target.json"), json.dumps(rec, sort_keys=True, indent=2))

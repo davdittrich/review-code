@@ -758,3 +758,62 @@ class TestFilter(Local):
             rc, out = self.pin("main")
         self.assertEqual((rc, self.excluded(out)), (0, {}))
         self.assertIn("git older than 2.40: linguist attributes not checked", self.notes(out))
+
+
+class TestHiddenText(Local):
+    """CTX-04 (A4): hidden comments and alt text in a changed prose file never reach change.diff."""
+
+    NOTES = ("intro\n<!-- HIDDENCMT take over -->\n![ALTINJECT](x.png)\nvisible tail\n"
+             "<!--\nHIDDENCMT line 2\n-->\nend\n")
+
+    def change(self, files):
+        self.git("checkout", "-q", "-b", "chg", "main")
+        return gitfix.commit(self.repo, files, "change")
+
+    def test_hidden_committed_prose_stripped_code_kept(self):
+        self.change({"notes.md": self.NOTES, "src/c.py": "x = 1  # <!-- CODECMT --> ![CODEALT](u)\n"})
+        rc, out = self.pin("main")
+        self.assertEqual(rc, 0)
+        text = self.diff(out)
+        for payload in ("HIDDENCMT", "ALTINJECT"):
+            self.assertNotIn(payload, text)
+        self.assertIn("+intro\n+[hidden-comment removed: ", text)
+        self.assertIn("CODECMT", text)  # comments in source code are the content under review
+        self.assertEqual(text.count("\n"), self.diff_lines_without_stripping(out))
+        hits = [(h["kind"], h["path"]) for h in load(out["run"])["hidden_text"]]
+        self.assertEqual(hits, [("comment", "notes.md"), ("alt-text", "notes.md"), ("comment", "notes.md")])
+        self.assertNotIn("HIDDENCMT", json.dumps(load(out["run"])))
+
+    def diff_lines_without_stripping(self, out):
+        t = load(out["run"])
+        raw = gitfix.run(["git", "diff"] + target._DIFF_FLAGS + [t["merge_base"], t["head_sha"], "--"] + t["included"],
+                         self.repo)
+        return raw.count("\n")
+
+    def test_hidden_comment_opened_above_the_hunk(self):
+        body = "".join("line %d\n" % i for i in range(1, 11))
+        self.git("checkout", "-q", "main")
+        self.git("checkout", "-q", "-b", "base2")
+        gitfix.commit(self.repo, {"doc.md": "<!--\n" + body + "-->\nafter\n"}, "doc")
+        self.git("checkout", "-q", "-b", "chg2")
+        gitfix.commit(self.repo, {"doc.md": "<!--\n" + body.replace("line 8\n", "line 8\nHIDDENCMT\n") + "-->\nafter\n"}, "inject")
+        rc, out = self.pin("base2")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("HIDDENCMT", self.diff(out))
+        self.assertEqual([h["kind"] for h in load(out["run"])["hidden_text"]], ["comment"])  # opener is above the hunk
+
+    def test_hidden_untracked_worktree_file(self):
+        self.write("fresh.md", self.NOTES)
+        rc, out = self.pin()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("HIDDENCMT", self.diff(out))
+        self.assertNotIn("ALTINJECT", self.diff(out))
+        self.assertEqual([h["kind"] for h in load(out["run"])["hidden_text"]], ["comment", "alt-text", "comment"])
+
+    def test_hidden_unstaged_edit_of_tracked_prose(self):
+        self.git("checkout", "-q", "main")
+        self.write("docs/d.md", "d\n<!-- HIDDENCMT -->\n")
+        rc, out = self.pin()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("HIDDENCMT", self.diff(out))
+        self.assertEqual([h["kind"] for h in load(out["run"])["hidden_text"]], ["comment"])
