@@ -439,7 +439,7 @@ class HostileUserConfig(unittest.TestCase):
     sit in a real global config file (GIT_CONFIG_GLOBAL), as a user's ~/.gitconfig would; keep this class."""
 
     KINDS = (["main"], ["main..feat"], ["HEAD^!"], [], ["--staged"], ["--unstaged"], ["--repo"], ["src"])
-    CANARIES = (b"SUBJ_TWO_CANARY", b"EXTCANARY", b"TEXTCONVCANARY", b"\x1b[")
+    CANARIES = (b"SUBJ_TWO_CANARY", b"EXTCANARY", b"TEXTCONVCANARY", b"\x1b[", b"FILTERCANARY")
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -496,8 +496,14 @@ class HostileUserConfig(unittest.TestCase):
                      "[core]\n\tquotePath = true\n\tattributesFile = %s\n\tpager = cat\n\tabbrev = 4\n"
                      "[grep]\n\tcolumn = true\n\tlineNumber = true\n\tpatternType = perl\n"
                      "[log]\n\tshowSignature = true\n[user]\n\tname = U\n\temail = u@example.invalid\n"
+                     "[filter \"evil\"]\n\tclean = %s\n\tsmudge = %s\n\trequired = true\n"
                      % (os.path.join(bin_, "ext.sh"), os.path.join(self.tmp, "order"),
-                        os.path.join(bin_, "conv.sh"), os.path.join(self.tmp, "attrs")))
+                        os.path.join(bin_, "conv.sh"), os.path.join(self.tmp, "attrs"),
+                        os.path.join(bin_, "filter.sh"), os.path.join(bin_, "filter.sh")))
+        self.filter_ran = os.path.join(self.tmp, "filter-ran")
+        with open(os.path.join(bin_, "filter.sh"), "w") as fh:  # 6xl.74: a clean filter must never run
+            fh.write("#!/bin/sh\ntouch %s\necho FILTERCANARY\n" % self.filter_ran)
+        os.chmod(os.path.join(bin_, "filter.sh"), 0o755)
 
     def git(self, *a):
         return gitfix.run(["git"] + list(a), self.repo).strip()
@@ -505,13 +511,15 @@ class HostileUserConfig(unittest.TestCase):
     def run_kind(self, words, cwd, hostile):
         e = gitfix.env()
         e["TMPDIR"] = self.tmp
+        if hostile:  # 6xl.74: pathspec-mode variables must not change or break the review
+            e.update(GIT_ICASE_PATHSPECS="1", GIT_GLOB_PATHSPECS="1")
         info = os.path.join(self.repo, ".git", "info", "attributes")
         if hostile:
             e["GIT_CONFIG_GLOBAL"] = self.hostile
             # 6xl.69: unversioned repo-local attributes are user state too; the exclusion rule is the merge base's
             os.makedirs(os.path.dirname(info), exist_ok=True)
             with open(info, "w") as fh:
-                fh.write("* -diff\n*.md linguist-generated\n*.py linguist-vendored\n")
+                fh.write("* -diff filter=evil\n*.md linguist-generated\n*.py linguist-vendored\n")
             self.addCleanup(lambda: os.path.exists(info) and os.remove(info))
         try:
             return self._run_kind(words, cwd, e)
@@ -590,6 +598,7 @@ class HostileUserConfig(unittest.TestCase):
                     run = bad["target"]["run"]
                     self.assertEqual(self.leaks(run, bad["target_raw"] + bad["ledger_raw"]), [])
                     self.assertEqual(self.snapshot(run), self.snapshot(clean["target"]["run"]))
+                    self.assertFalse(os.path.exists(self.filter_ran), "a user clean filter ran")
 
     def test_submodule_log_subjects_never_leak(self):
         # 6xl.61: diff.submodule=log alone (no ignoreSubmodules masking it) would print submodule commit subjects

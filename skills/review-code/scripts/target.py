@@ -33,7 +33,8 @@ _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "
         "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false", "-c", "grep.column=false",
         "-c", "grep.lineNumber=false", "-c", "log.showSignature=false"]
 # Environment that would inject options or config past the pins above.
-_ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
+_ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+             "GIT_ICASE_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_LITERAL_PATHSPECS")  # 6xl.74
 _WIDE = "--unified=999999"
 # Every option a user's diff.* or color.* setting could change, pinned (6xl.61); the diffs run as plumbing.
 # --text: binary files are already excluded by the base-only rule, so no attribute may hide a kept file (6xl.69).
@@ -61,15 +62,35 @@ class Refuse(Exception):
         self.detail = detail
 
 
-def _env() -> dict:
+_FILTERS: dict = {}
+
+
+def _env(cwd: Optional[str] = None) -> dict:
     e = {k: v for k, v in os.environ.items()
          if k not in _ENV_DROP and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
     e.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    if cwd is not None:  # 6xl.74: no configured clean/smudge/process filter runs; config pairs go via the env,
+        pins = _filter_pins(cwd, e)  # so a driver name with any character needs no -c quoting
+        e["GIT_CONFIG_COUNT"] = str(len(pins))
+        for i, (k, v) in enumerate(pins):
+            e["GIT_CONFIG_KEY_%d" % i], e["GIT_CONFIG_VALUE_%d" % i] = k, v
     return e
 
 
+def _filter_pins(cwd: str, e: dict) -> List[Tuple[str, str]]:
+    """(key, value) pairs emptying every filter driver the user's config defines, cached per cwd."""
+    if cwd not in _FILTERS:
+        p = subprocess.run(_GIT + ["config", "-z", "--get-regexp", r"^filter\."], cwd=cwd, env=e,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        names = {k[7:].rpartition(".")[0] for k in (r.split(b"\n", 1)[0].decode("utf-8", "surrogateescape")
+                                                    for r in p.stdout.split(b"\0") if r) if "." in k[7:]}
+        _FILTERS[cwd] = [("filter.%s.%s" % (n, f), v) for n in sorted(names)
+                         for f, v in (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false"))]
+    return _FILTERS[cwd]
+
+
 def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None):
-    p = subprocess.run(_GIT + list(args), cwd=cwd, env=_env(), input=stdin,
+    p = subprocess.run(_GIT + list(args), cwd=cwd, env=_env(cwd), input=stdin,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return p.returncode, p.stdout, p.stderr
 
@@ -370,6 +391,7 @@ def _view_mr(cand: dict, cwd: str) -> dict:
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
     rc, _, _ = _run(["-c", "transfer.fsckObjects=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
+                     "-c", "fetch.writeCommitGraph=false",
                      "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
                      "--", remote] + refspecs, cwd)
     if rc != 0:
@@ -512,7 +534,7 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool) -> Iterator[Tuple[List[
     with tempfile.TemporaryFile() as fh:
         fh.write(b"".join(ln + b"\n" for ln in lines))
         fh.seek(0)
-        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(), stdin=fh,
+        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(cwd), stdin=fh,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         finished = False
         try:
@@ -695,7 +717,7 @@ def _diff_calls(plan: dict, kept: List[str], narrow: bool, top: str) -> List[Lis
 def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
     """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
     for args in calls:
-        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(top), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             for raw in p.stdout:
                 yield raw.rstrip(b"\n").decode("utf-8", "replace")  # LF is ASCII: per-line decoding equals whole

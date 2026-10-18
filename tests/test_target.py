@@ -848,6 +848,16 @@ class TestQuotedProseNames(Local):
         self.assertEqual(len(load(out["run"])["included"]), len(self.NAMES))
 
 
+class TestFetchPins(unittest.TestCase):
+    def test_fetch_writes_no_commit_graph_and_runs_no_gc(self):
+        # 6xl.74: the PR fetch must not write commit-graphs or start maintenance in the user's repository
+        with mock.patch.object(target, "_run", return_value=(0, b"", b"")) as run:
+            target._fetch("origin", ["refs/pull/1/head"], "/nowhere")
+        args = run.call_args[0][0]
+        for pin in ("fetch.writeCommitGraph=false", "gc.auto=0", "maintenance.auto=false"):
+            self.assertIn(pin, args)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
