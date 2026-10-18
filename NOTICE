@@ -31,8 +31,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Accepted risk (decision D-08, 2026-10-17)
+Licence ruling (decision D-08, 2026-10-18)
 
 The licence of the version 1.3 additions credited to Ziad Hassan has not been verified.
-This project assumes they are MIT and credits him. That is an assumption, not a
-verified fact. Revisit it before any public release.
+The project owner, davdittrich, ruled that this project is released under MIT and that
+those additions are treated as MIT. That is the owner's ruling, not a verified upstream
+fact.

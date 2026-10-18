@@ -206,7 +206,7 @@ else
 fi
 
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
-banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/CLAUDE\.md$|^\.claude/settings(\.local)?\.json$|^\.planning/(\.gsd-beads|milestone)\.lock$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
+banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/CLAUDE\.md$|^\.claude/settings(\.local)?\.json$|^\.planning/|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
 # List the tree under test (the export, or the given directory), never the caller's repo.
 if tracked=$(cd "$tree" && find . -type f ! -path './.git/*' | sed 's|^\./||'); then
   hits=$(printf '%s\n' "$tracked" | grep -E "$banned" | tr '\n' ' ' || true)

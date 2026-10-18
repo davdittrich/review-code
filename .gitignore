@@ -18,8 +18,7 @@
 .agents/
 .opencode/
 .beads/
-.planning/.gsd-beads.lock
-.planning/milestone.lock
+.planning/
 .claude/CLAUDE.md
 .claude/commands/
 .claude/rules/
