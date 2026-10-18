@@ -716,7 +716,8 @@ def pin(candidate: dict, cwd: str) -> dict:
     if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
         for u in sorted(set(plan["untracked"]) & set(names)):
             if not u.endswith("/"):
-                rc, out, _ = _run(["diff", "--no-index"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
+                # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
+                rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
                 if rc in (0, 1):
                     added += out.decode("utf-8", "replace")
     # CTX-04: the same diff with whole files as context tells strip_hidden_diff where each comment opens

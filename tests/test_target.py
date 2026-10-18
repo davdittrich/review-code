@@ -878,6 +878,14 @@ class TestHiddenText(Local):
         self.assertIn("rename from README.md", text)
         self.assertNotIn("RENCANARY", text)
 
+    def test_untracked_attributes_cannot_hide_untracked_text(self):
+        # 6xl.65: an untracked `.gitattributes` with `* -diff` must not turn untracked files into "Binary files differ"
+        self.write(".gitattributes", "* -diff\n")
+        self.write("src/new.py", "UNTRACKEDBODY = 1\n")
+        rc, out = self.pin()
+        self.assertEqual((rc, out["kind"]), (0, "worktree"), out)
+        self.assertIn("+UNTRACKEDBODY = 1", self.diff(out))
+
     def test_hunk_header_context_kept_for_code(self):
         self.change({"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i) for i in range(20))})
         gitfix.commit(self.repo, {"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i if i != 15 else 99)
