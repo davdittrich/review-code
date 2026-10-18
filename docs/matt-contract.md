@@ -1,6 +1,8 @@
 # matt.md Keep-or-Replace Contract
 
-**Status:** proposed 2026-10-18 (awaiting user approval)
+**Status:** approved 2026-10-18
+
+**Approval record:** "approve & push" (owner, 2026-10-18)
 
 **Source:** `docs/matt.md`, an intentionally untracked reference copy (the `code-review` skill by Matt Pocock, MIT), sha256 `09eb147f793e4647949edd32dbad278f0554dfb56e0d46b699cd4c2c55bf0357`, 89 lines. Every `L<n>` is a line in that file. Rows group adjacent lines of one idea.
 
