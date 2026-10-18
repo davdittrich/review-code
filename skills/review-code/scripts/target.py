@@ -36,7 +36,8 @@ _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "
 _ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 _WIDE = "--unified=999999"
 # Every option a user's diff.* or color.* setting could change, pinned (6xl.61); the diffs run as plumbing.
-_DIFF_FLAGS = ["-p", "-M", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
+# --text: binary files are already excluded by the base-only rule, so no attribute may hide a kept file (6xl.69).
+_DIFF_FLAGS = ["-p", "-M", "--text", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
                "--dst-prefix=b/", "--submodule=short", "--ignore-submodules=none", "--diff-algorithm=myers",
                "--inter-hunk-context=0", "--indent-heuristic", "-O/dev/null"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
@@ -558,27 +559,37 @@ def _files(names: List[str], top: str) -> dict:
     return out
 
 
-def _linguist(mb: str, names: List[str], top: str) -> dict:
-    """{path: "generated"|"vendored"} from the attributes of the base commit."""
-    raw = git_bytes(["check-attr", "--source=" + mb, "-z", "--stdin", "linguist-generated", "linguist-vendored"], top,
-                    stdin=b"".join(n.encode("utf-8", "surrogateescape") + b"\0" for n in names), check=False)
+def _base_attrs(mb: str, names: List[str], top: str) -> dict:
+    """{path: "generated"|"vendored"|"binary"} from the merge base's .gitattributes only (6xl.69).
+
+    check-attr runs in a private git dir that borrows the object store through objects/info/alternates: it
+    has no info/attributes and no local config, so neither unversioned repo-local attributes nor the
+    working copy can change which files leave review. `binary` means the base unsets `diff` (e.g. `binary`)."""
+    objs = os.path.join(top, git(["rev-parse", "--git-path", "objects"], top).strip())
+    fmt = git(["rev-parse", "--show-object-format"], top, check=False).strip() or "sha1"
+    with tempfile.TemporaryDirectory() as view:
+        os.makedirs(os.path.join(view, "objects", "info"))
+        os.makedirs(os.path.join(view, "refs"))
+        with open(os.path.join(view, "HEAD"), "w") as fh:
+            fh.write("ref: refs/heads/view\n")
+        with open(os.path.join(view, "objects", "info", "alternates"), "w") as fh:
+            fh.write(os.path.abspath(objs) + "\n")
+        with open(os.path.join(view, "config"), "w") as fh:
+            fh.write("[core]\n\trepositoryformatversion = %d\n\tbare = true\n" % (fmt != "sha1")
+                     + ("[extensions]\n\tobjectFormat = %s\n" % fmt if fmt != "sha1" else ""))
+        raw = git_bytes(["--git-dir=" + view, "check-attr", "--source=" + mb, "-z", "--stdin", "linguist-generated",
+                         "linguist-vendored", "diff"], top,
+                        stdin=b"".join(n.encode("utf-8", "surrogateescape") + b"\0" for n in names), check=False)
     f = raw.split(b"\0")
     out = {}
     for i in range(0, len(f) - 2, 3):
-        if f[i + 2] in (b"set", b"true"):
-            out.setdefault(f[i].decode("utf-8", "replace"), "generated" if f[i + 1] == b"linguist-generated" else "vendored")
+        name = f[i].decode("utf-8", "surrogateescape")
+        if f[i + 1] == b"diff":
+            if f[i + 2] == b"unset":
+                out.setdefault(name, "binary")
+        elif f[i + 2] in (b"set", b"true"):
+            out[name] = "generated" if f[i + 1] == b"linguist-generated" else "vendored"
     return out
-
-
-def _numstat_binary(plan: dict, top: str) -> set:
-    """Tracked paths git counts as binary (`-` counts), judged with the base commit's attributes."""
-    # numstat only: no patch flags (-U and friends imply --patch, 6xl.66), no rename records
-    cmd = [a for a in plan["diff_cmd"][1:] if a not in _DIFF_FLAGS]
-    raw = git(_attr_source(plan["mb"], top) + cmd[:1] + ["--numstat", "-z", "--no-renames", "--no-ext-diff",
-                                                      "--no-textconv", "--ignore-submodules=none"] + cmd[1:],
-              top, check=False)
-    rows = (r.split("\t", 2) for r in raw.split("\0") if r)
-    return {r[2] for r in rows if len(r) == 3 and r[0] == "-" and r[1] == "-"}
 
 
 def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
@@ -612,8 +623,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         old = _git_version(top) < _BASE_VERSION
         if old:
             notes.append("git older than 2.40: linguist attributes not checked")
-        attrs = {} if old else _linguist(mb, todo, top)
-        binary = _numstat_binary(plan, top) if plan["diff_cmd"] else set()
+        attrs = {} if old else _base_attrs(mb, todo, top)
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
@@ -624,7 +634,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                 hit = ("minified", "name pattern", "minified")
             elif n in head and not nul and longest > _LONG_LINE and base.endswith(_LONG_EXT):
                 hit = ("minified", "longest line %d" % longest, "minified")
-            elif n in attrs and not (attrs[n] == "generated" and migration):
+            elif attrs.get(n) in ("generated", "vendored") and not (attrs[n] == "generated" and migration):
                 hit = (attrs[n], "linguist-" + attrs[n], None)
             if hit is None and not migration:
                 lines = base_ls[n][2] if n in base_ls else first
@@ -641,10 +651,10 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                         suffix = next((x for x in _PB_NAMES if base.endswith(x)), None)
                         if suffix:
                             hit = ("generated", "path rule *" + suffix, "path")
-            if hit is None and n in binary:
-                hit = ("binary", "numstat", None)
-            elif hit is None and nul and (not plan["diff_cmd"] or n in plan["untracked"]):
-                hit = ("binary", "NUL byte", None)  # git reports no counts for these
+            if hit is None and attrs.get(n) == "binary":
+                hit = ("binary", "base attribute -diff", None)
+            elif hit is None and (nul or base_ls.get(n, (False,))[0]):
+                hit = ("binary", "NUL byte", None)  # git's own rule: a NUL in the first 8000 bytes of either side
             if hit is None:
                 kept.append(n)
             elif hit[2] and n not in base_ls:

@@ -492,8 +492,21 @@ class HostileUserConfig(unittest.TestCase):
     def run_kind(self, words, cwd, hostile):
         e = gitfix.env()
         e["TMPDIR"] = self.tmp
+        info = os.path.join(self.repo, ".git", "info", "attributes")
         if hostile:
             e["GIT_CONFIG_GLOBAL"] = self.hostile
+            # 6xl.69: unversioned repo-local attributes are user state too; the exclusion rule is the merge base's
+            os.makedirs(os.path.dirname(info), exist_ok=True)
+            with open(info, "w") as fh:
+                fh.write("* -diff\n*.md linguist-generated\n*.py linguist-vendored\n")
+            self.addCleanup(lambda: os.path.exists(info) and os.remove(info))
+        try:
+            return self._run_kind(words, cwd, e)
+        finally:
+            if os.path.exists(info):
+                os.remove(info)
+
+    def _run_kind(self, words, cwd, e):
         out = {}
         for script, args in (("target.py", words), ("ledger.py", None)):
             if args is None:

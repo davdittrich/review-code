@@ -731,7 +731,7 @@ class TestFilter(Local):
     def test_filter_binary(self):
         self.change({"logo.png": b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", "src/app.js": "x\n"})
         rc, out = self.pin("main")
-        self.assertEqual(self.excluded(out), {"logo.png": ("binary", "numstat")})
+        self.assertEqual(self.excluded(out), {"logo.png": ("binary", "NUL byte")})
         self.assertEqual(load(out["run"])["included"], ["src/app.js"])
         self.write("a.txt", "edited\n")  # an untracked binary has no numstat row
         with open(os.path.join(self.repo, "u.bin"), "wb") as fh:
@@ -739,6 +739,18 @@ class TestFilter(Local):
         rc, out = self.pin("--unstaged")
         self.assertEqual(self.excluded(out), {"u.bin": ("binary", "NUL byte")})
         self.assertEqual(load(out["run"])["included"], ["a.txt"])
+
+    def test_filter_binary_by_base_attribute_only(self):
+        # 6xl.69: the merge base's `binary` marks text as binary; .git/info/attributes does not count
+        self.base({".gitattributes": "*.dat binary\n", "d.dat": "a\n", "k.txt": "a\n"})
+        self.change({"d.dat": "b\n", "k.txt": "b\n"})
+        with open(os.path.join(self.repo, ".git", "info", "attributes"), "w") as fh:
+            fh.write("* -diff\n*.txt linguist-generated\n")
+        rc, out = self.pin("main")
+        self.assertEqual(self.excluded(out), {"d.dat": ("binary", "base attribute -diff")})
+        self.assertEqual(load(out["run"])["included"], ["k.txt"])
+        self.assertIn("+b", self.diff(out))
+        self.assertNotIn("Binary files", self.diff(out))
 
     def test_filter_explicit_path(self):
         gitfix.commit(self.repo, {"package-lock.json": "{}\n", "src/ok.js": "ok\n"}, "lock")
