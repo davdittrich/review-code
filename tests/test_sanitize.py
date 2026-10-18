@@ -388,7 +388,7 @@ class HiddenTextTests(unittest.TestCase):
     def test_hidden_keeps_visible(self):
         keep = [
             "plain text, Vec<T> and a < b",
-            "<!doctype html>\n<html><body><p>hi</p></body></html>",
+            "<html><body><p>hi</p></body></html>",  # 6xl.80: a doctype renders nothing, so it is stripped
             "![](u.png) and [t](u) and [r]: ref",
             "<script>var INJECT = 1;</script>",  # code in a markup file is reviewed, not hidden
             "<style>.INJECT { color: red }</style>",
@@ -475,6 +475,52 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(out, "caf<BYTES:2>.txt")
         self.assertEqual(hits, [{"line": 1, "codepoints": ["BYTES:2"]}])
         self.assertEqual(sanitize.sanitize_prose("a\ud800b"), "ab")
+
+
+# 6xl.80: constructs GitHub's gfm renderer shows nothing of (checked with `gh api -X POST /markdown -f mode=gfm`)
+GH_HIDDEN = {
+    "doctype": "a\n\n<!DOCTYPE html GHCANARY>\n\nb\n",
+    "cdata": "a\n\n<![CDATA[GHCANARY]]>\n\nb\n",
+    "pi": "a\n\n<?php GHCANARY ?>\n\nb\n",
+    "footnote_unreferenced": "a\n\n[^n1]: GHCANARY\nlazy GHCANARY\n\nb\n",
+    "linkdef_unreferenced": "a\n\n[ref]: http://x.y/GHCANARY \"GHCANARY\"\n\nb\n",
+    "input_value": "a <input value=\"GHCANARY\"> b\n",
+    "area_alt": "a <map><area alt=\"GHCANARY\"></map> b\n",
+    "meta_content": "a <meta content=\"GHCANARY\"> b\n",
+    "unknown_attr": "a <foo bar=\"GHCANARY\">t</foo> b\n",
+    "data_attr": "a <p data-x='GHCANARY'>t</p> b\n",
+    "title_attr": "a <span title=GHCANARY>t</span> b\n",
+}
+GH_VISIBLE = {
+    "footnote_referenced": ("a[^n1]\n\n[^n1]: KEEPNOTE\n", "KEEPNOTE"),
+    "linkdef_referenced": ("a [t][ref]\n\n[ref]: http://x.y/KEEPURL\n", "KEEPURL"),
+    "href": ("a <a href=\"http://x/KEEPHREF\">t</a> b\n", "KEEPHREF"),
+    "src": ("a <img src=\"KEEPSRC.png\"> b\n", "KEEPSRC"),
+}
+
+
+class GithubHiddenTests(unittest.TestCase):
+    def test_strip_hidden_removes_every_construct(self):
+        for k, text in GH_HIDDEN.items():
+            with self.subTest(k):
+                out, hits = sanitize.strip_hidden(text)
+                self.assertNotIn("GHCANARY", out)
+                self.assertTrue(hits)
+                self.assertEqual(out.count("\n"), text.count("\n"))
+
+    def test_strip_hidden_diff_and_prose(self):
+        for k, text in GH_HIDDEN.items():
+            with self.subTest(k):
+                lines = text.split("\n")[:-1]
+                d = ("diff --git a/n.md b/n.md\n--- a/n.md\n+++ b/n.md\n@@ -0,0 +1,%d @@\n" % len(lines)
+                     + "".join("+" + ln + "\n" for ln in lines))
+                self.assertNotIn("GHCANARY", sanitize.strip_hidden_diff(d)[0])
+                self.assertNotIn("GHCANARY", sanitize.sanitize_prose(text))
+
+    def test_visible_constructs_stay(self):
+        for k, (text, word) in GH_VISIBLE.items():
+            with self.subTest(k):
+                self.assertIn(word, sanitize.strip_hidden(text)[0])
 
 
 class LineBreakTests(unittest.TestCase):

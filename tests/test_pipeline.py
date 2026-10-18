@@ -333,6 +333,19 @@ class Tracer(Fixture):
         self.assertEqual(rc, 0)
         self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"BRKCANARY" in self.raw(p)], [])
 
+    def test_github_hidden_constructs_stripped_everywhere(self):
+        # 6xl.80: every construct GitHub renders as nothing, in .md, .markdown and .html, in the PR text too
+        sys.path.insert(0, os.path.join(HERE))
+        from test_sanitize import GH_HIDDEN  # noqa: E402
+        doc = "".join(GH_HIDDEN.values())
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", "a.md": doc, "b.markdown": doc, "c.html": doc},
+                     message="feat: x\n\n" + doc)
+        rc, t = self.pin("main")
+        self.assertEqual((rc, t["status"]), (0, "ok"), t)
+        rc, _ = self.build(t["run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"GHCANARY" in self.raw(p)], [])
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")

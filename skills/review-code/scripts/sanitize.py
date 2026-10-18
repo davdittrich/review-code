@@ -179,6 +179,8 @@ def _round(s: str) -> str:
         if t == s:
             break
         s = t
+    for a, b, _ in sorted(_unused_defs(s), reverse=True):  # 6xl.80: definitions nothing references
+        s = s[:a] + s[b:]
     s = _REFCOMMENT.sub("", s)
     s = _ALT.sub("![]", s)
     s = _REFDEF_DEST.sub(lambda m: m.group(1) + _DOTS, _INLINE_DEST.sub(lambda m: "](" + _DOTS + ")" if m.group(0).strip("]() \t\r\n") else m.group(0), s))
@@ -268,12 +270,34 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
 # ---- hidden text in prose and markup files (CTX-04) -------------------------------------------------
 _ALTBODY = r"(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])+"
 _HIDDEN = re.compile(
-    r"(?P<comment><!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<!(?![dD][oO][cC][tT][yY][pP][eE]\b)[A-Za-z][^>]*(?:>|\Z)"
+    r"(?P<comment><!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![A-Za-z][^>]*(?:>|\Z)"
     r"|<\?[^>]*(?:>|\Z))"
     r"|(?P<refc>^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"[^\"]*\"|'[^']*')[ \t]*(?=\r?$))"
     r"|!\[(?P<alt>" + _ALTBODY + r")\]", re.DOTALL | re.MULTILINE)
 _MARKER = re.compile(r"\[hidden-[a-z-]+ removed: \d+ chars\]\Z")
 _ALTATTR = re.compile(r"""(?<![\w:-])alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
+# 6xl.80: GitHub drops every attribute value from view; these few carry what a reader sees or follows.
+_ATTRVAL = re.compile(r"""(?<![\w:-])([A-Za-z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+_SHOWN_ATTRS = frozenset("href src srcset width height align valign colspan rowspan start dir lang open border".split())
+# Footnote and link reference definitions render nothing on GitHub unless something references them.
+_FOOTDEF = re.compile(r"^ {0,3}\[\^([^\]\n]+)\]:[^\n]*(?:\n(?![ \t]*\n)(?! {0,3}\[[^\]\n]+\]:)[^\n]*)*"
+                      r"(?:\n[ \t]*\n(?: {4}|\t)[^\n]*(?:\n(?![ \t]*\n)[^\n]*)*)*", re.MULTILINE)
+_LINKDEF = re.compile(r"^ {0,3}\[([^\]\n^][^\]\n]*)\]:[ \t]*(?!#|<>)\S[^\n]*(?:\n[ \t]*(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\))[ \t]*$)?",
+                      re.MULTILINE)
+
+
+def _unused_defs(view: str) -> List[Tuple[int, int, str]]:
+    """Spans of footnote and link definitions whose label nothing else in the text references (case-insensitive;
+    with no other occurrence of `[label]` / `[^label]` the definition is all GitHub would keep, and shows nothing)."""
+    low, out = view.lower(), []
+    for rx, kind, pre in ((_FOOTDEF, "footnote", "[^"), (_LINKDEF, "link-def", "[")):
+        found = list(rx.finditer(view))
+        for m in found:
+            key = pre + m.group(1).lower() + "]"
+            defs = sum(1 for d in found if (pre + d.group(1).lower() + "]") == key)
+            if low.count(key) <= defs:
+                out.append((m.start(), m.end(), kind))
+    return out
 
 
 class _Spans(HTMLParser):
@@ -296,11 +320,12 @@ class _Spans(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         at, raw = self._at(), self.get_starttag_text() or ""
-        if tag == "img":
-            for m in _ALTATTR.finditer(raw):
-                a, b = m.span(m.lastindex)
-                if raw[a:b].strip() and not _MARKER.match(raw[a:b].rstrip("\n")):
-                    self.spans.append((at + a, at + b, "alt-text"))
+        for m in _ATTRVAL.finditer(raw):  # 6xl.80: attribute values a page never shows, on any element
+            name = m.group(1).lower()
+            a, b = m.span(m.lastindex)
+            if name in _SHOWN_ATTRS or not raw[a:b].strip() or _MARKER.match(raw[a:b].rstrip("\n")):
+                continue
+            self.spans.append((at + a, at + b, "alt-text" if (tag, name) == ("img", "alt") else "attribute"))
         if tag not in _ELEMENTS:
             return
         a = {k: v or "" for k, v in attrs}
@@ -350,6 +375,7 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
     """(text, [(first line, last line, kind, length)]) with each hidden span replaced by a marker plus the
     span's line breaks, kept as written. Matching runs on _line_view, so a CR-only file is anchored too."""
     spans, blank, pos, view = [], [], 0, _line_view(text)
+    spans += _unused_defs(view)
     for m in _HIDDEN.finditer(view):
         g = m.lastgroup
         a, b = m.span(g)
