@@ -111,8 +111,9 @@ Follow the steps in order. Ask each question at most once per run.
    must first get `{"status": "confirm"}` from `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust gate
    --run <run> -- <command>` and then show the exact command to the user for confirmation. The gate is
    a choke point you must call, not a sandbox.
-6. Report the run directory path and that it is kept until the user deletes it (it holds the diff, head
-   files and sanitized PR text).
+6. Report the run directory path and that it is removed automatically 14 days after its last write, at
+   the next run in the same repository, unless the user deletes it sooner (it holds the diff, head files
+   and sanitized PR text).
 
 What counts as untrusted, and what the defences do not cover: `references/untrusted-input.md`.
 

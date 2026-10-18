@@ -12,9 +12,11 @@ if sys.version_info < (3, 9):
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -96,11 +98,29 @@ def write_private(path: str, text: str) -> None:
         fh.write(text)
 
 
+RETENTION_DAYS = 14
+
+
+def _prune(base: str) -> None:
+    """IN-01: remove run directories not touched for RETENTION_DAYS. Runs before the new one is made, so the
+    current run is never a candidate; links and other names are left alone; a removal that fails is skipped."""
+    cutoff = time.time() - RETENTION_DAYS * 86400
+    for name in os.listdir(base):
+        path = os.path.join(base, name)
+        try:
+            st = os.lstat(path)
+            if name.startswith("review-code.") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            pass
+
+
 def new_run_dir(cwd: str) -> str:
     """Mode 0700 directory under the git dir: a read-only lane cannot read $TMPDIR (probe A3)."""
     base = git(["rev-parse", "--git-path", "review-code"], cwd).strip()
     base = os.path.join(cwd, base)
     os.makedirs(base, mode=0o700, exist_ok=True)
+    _prune(base)
     return tempfile.mkdtemp(prefix="review-code.", dir=base)
 
 

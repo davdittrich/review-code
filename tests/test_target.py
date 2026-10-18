@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -442,6 +443,43 @@ class TestAmbiguity(Local):
         self.write("a.txt", "dirty\n")
         rc, out = self.pin()
         self.assertEqual((rc, out["kind"]), (0, "worktree"))
+
+
+class TestRunDirPruning(Local):
+    """IN-01: run directories older than the retention period are removed when a new one is made."""
+
+    def mk(self, name, age_days, link_to=None):
+        base = os.path.join(self.repo, ".git", "review-code")
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, name)
+        if link_to:
+            os.symlink(link_to, path)
+            return path
+        os.makedirs(os.path.join(path, "inputs"))
+        with open(os.path.join(path, "inputs", "spec.md"), "w") as fh:
+            fh.write("old\n")
+        t = time.time() - age_days * 86400
+        os.utime(path, (t, t))
+        return path
+
+    def test_old_runs_are_pruned_and_the_rest_kept(self):
+        old = self.mk("review-code.OLD123", target.RETENTION_DAYS + 1)
+        fresh = self.mk("review-code.NEW123", target.RETENTION_DAYS - 1)
+        other = self.mk("not-a-run", 400)  # not ours: never touched
+        keep = os.path.join(self.tmp, "keep")
+        os.makedirs(keep)
+        link = self.mk("review-code.LINK12", 0, link_to=keep)  # a link is never followed or removed
+        rc, out = self.pin("feat~1..feat")
+        self.assertEqual((rc, out["status"]), (0, "ok"))
+        self.assertFalse(os.path.exists(old))
+        for p in (fresh, other, keep, link, out["run"]):
+            self.assertTrue(os.path.exists(p), p)
+
+    def test_a_refused_target_prunes_nothing(self):
+        old = self.mk("review-code.OLD123", target.RETENTION_DAYS + 1)
+        rc, out = self.pin("--staged")  # nothing staged: refused before a run directory is made
+        self.assertEqual(out["status"], "skip")
+        self.assertTrue(os.path.exists(old))
 
 
 class TestWordsFromStdin(Local):

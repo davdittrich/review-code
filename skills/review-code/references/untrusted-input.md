@@ -55,6 +55,6 @@ The skill asks once per run whether the code is the user's own. The first answer
 
 The run directory lives under the repository's git directory: `git rev-parse --git-path review-code`, then a `review-code.XXXXXX` directory of mode 0700. A read-only lane can read it there; it could not read `$TMPDIR` (probe A3). It is never written into the working tree.
 
-Retention: nothing removes a run directory (`ambiguous` re-runs and failed builds leave one too). Each holds the diff, `tree/` and sanitized PR text, so delete a run when its review is done.
+Retention: each `target.py` run that pins a target first removes `review-code.*` directories in that folder that were last written more than 14 days ago (`RETENTION_DAYS` in `target.py`), then creates its own, so the current run is never removed. Links and other names are left alone. `ambiguous` re-runs and failed builds leave a directory too. Each holds the diff, `tree/` and sanitized PR text, so delete a run sooner when its review is done.
 
 Layout: `target.json` (pinned refs, included and excluded files with reasons, notes), `change.diff`, `tree/` (head bytes of included files), `ledger.json` (context categories, label, trust, hidden characters), `inputs/defects.md`, `inputs/standards.md`, `inputs/spec.md`.
