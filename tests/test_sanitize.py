@@ -475,6 +475,27 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(sanitize.sanitize_prose("a\ud800b"), "ab")
 
 
+class RenameSideTests(unittest.TestCase):
+    def test_removed_lines_judged_by_old_path(self):
+        # 6xl.63: README.md renamed to notes.py: its removed comment is prose, the added code stays as written
+        d = ("diff --git a/README.md b/notes.py\nsimilarity index 50%\nrename from README.md\nrename to notes.py\n"
+             "--- a/README.md\n+++ b/notes.py\n@@ -1,3 +1,3 @@\n-<!-- RENCANARY -->\n+y = '<!-- KEEPCODE -->'\n keep\n"
+             " <!-- CTXCANARY -->\n")
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertNotIn("RENCANARY", out)
+        self.assertNotIn("CTXCANARY", out)
+        self.assertIn("+y = '<!-- KEEPCODE -->'", out)
+        self.assertEqual(out.count("\n"), d.count("\n"))
+        self.assertEqual(sorted(h["kind"] for h in hits), ["comment", "comment"])
+
+    def test_code_renamed_to_prose_strips_added_only(self):
+        d = ("diff --git a/a.py b/a.md\nrename from a.py\nrename to a.md\n--- a/a.py\n+++ b/a.md\n@@ -1 +1 @@\n"
+             "-x = '<!-- OLDCODE -->'\n+<!-- NEWPROSE -->\n")
+        out, _ = sanitize.strip_hidden_diff(d)
+        self.assertIn("-x = '<!-- OLDCODE -->'", out)
+        self.assertNotIn("NEWPROSE", out)
+
+
 def hunk(old_start, new_start, body):
     """A one-file diff of a markdown file; `body` is the hunk lines with their prefixes."""
     lines = body.split("\n")

@@ -370,17 +370,19 @@ def strip_hidden(text: str) -> Tuple[str, List[dict]]:
 
 
 def _walk(diff: str):
-    """(index, path, tag, old line, new line, content) for every hunk line of a unified diff; tag is
+    """(index, new path, tag, old line, new line, content, old path) for every hunk line of a unified diff; tag is
     ' ', '+', '-', '\\' or '@' (a hunk header: content is the function-context text after its second @@).
-    path is None before the first file header. A `+++ ` line inside a hunk is content: hunk line counts decide."""
-    path, old_left, new_left, o, n = None, 0, 0, 0, 0
+    Paths are None before the first file header; the old path differs from the new one for a rename or copy.
+    A `+++ ` line inside a hunk is content: hunk line counts decide."""
+    path = old = None
+    old_left, new_left, o, n = 0, 0, 0, 0
     for i, ln in enumerate(diff.split("\n")):
         if old_left > 0 or new_left > 0:
             tag, body = (ln[:1] or " "), ln[1:]
             if tag == "\\":
-                yield i, path, tag, 0, 0, body
+                yield i, path, tag, 0, 0, body, old
                 continue
-            yield i, path, tag, o, n, body
+            yield i, path, tag, o, n, body, old
             if tag != "+":
                 old_left -= 1
                 o += 1
@@ -389,16 +391,17 @@ def _walk(diff: str):
                 n += 1
             continue
         if ln.startswith("diff --git "):
-            path = None
-        elif ln.startswith("--- ") and path is None:
-            path = _hdr_path(ln[4:], "a/")
+            path = old = None
+        elif ln.startswith("--- ") and old is None:
+            old = path = _hdr_path(ln[4:], "a/")
         elif ln.startswith("+++ "):
             p = _hdr_path(ln[4:], "b/")
             path = p if p is not None else path
+            old = old if old is not None else path
         else:
             m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", ln)
             if m:
-                yield i, path, "@", 0, 0, ln[m.end():]  # the function-context trailer git appends
+                yield i, path, "@", 0, 0, ln[m.end():], old  # the function-context trailer git appends
                 o, old_left = int(m.group(1)), int(m.group(2) or 1)
                 n, new_left = int(m.group(3)), int(m.group(4) or 1)
                 o, n = max(o, 1), max(n, 1)
@@ -418,11 +421,16 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
     line the comment state it really has. Without it, or for a line it does not hold, state comes from the
     diff itself and a comment opened above a hunk is missed. Returns the diff and `[{"file", "line", "kind",
     "length"}]`, one per removed span, at the first diff line that shows it."""
-    sides = {}  # (path, side) -> {line number: content}
-    for _, path, tag, o, n, body in _walk(diff if full is None else full):
-        if path and tag not in "\\@" and is_prose_file(path):
+    def prose(path, tag, old):
+        """6xl.63: a removed line belongs to the old path, an added line to the new one, context to both."""
+        olds, news = bool(old and is_prose_file(old)), bool(path and is_prose_file(path))
+        return olds if tag == "-" else news if tag == "+" else olds or news
+
+    sides = {}  # (path, side) -> {line number: content}; the "-" side is keyed by the old path
+    for _, path, tag, o, n, body, old in _walk(diff if full is None else full):
+        if path and tag not in "\\@" and prose(path, tag, old):
             if tag != "+":
-                sides.setdefault((path, "-"), {})[o] = body
+                sides.setdefault((old or path, "-"), {})[o] = body
             if tag != "-":
                 sides.setdefault((path, "+"), {})[n] = body
     done = {}
@@ -435,17 +443,20 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
                 by_line[ln] = k
         done[key] = (out.split("\n"), info, by_line, lines)
     res, hits, seen = diff.split("\n"), [], set()
-    for i, path, tag, o, n, body in _walk(diff):
-        if not (path and tag != "\\" and is_prose_file(path)):
+    for i, path, tag, o, n, body, old in _walk(diff):
+        if not (path and tag != "\\" and prose(path, tag, old)):
             continue
         if tag == "@":  # 6xl.55: the trailer is a lone old-side line, maybe inside a comment: drop it
             res[i] = res[i][:len(res[i]) - len(body)]
             continue
-        side, num = ("-", o) if tag == "-" else ("+", n)
-        got = done.get((path, side))
+        side, num, where = ("-", o, old or path) if tag == "-" else ("+", n, path)
+        got = done.get((where, side))
+        if tag == " " and not (got and got[3].get(num) == body):  # context line of a file prose only on the old side
+            side, num, where = "-", o, old or path
+            got = done.get((where, side))
         if got and got[3].get(num) == body:
             new, k = got[0][num - 1], got[2].get(num)
-            keys = [(path, side, k)] if k is not None else []
+            keys = [(where, side, k)] if k is not None else []
             spans = [got[1][k]] if k is not None else []
         else:  # not in the full-context diff: this line alone
             new, info = _strip(body)

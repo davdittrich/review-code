@@ -864,6 +864,20 @@ class TestHiddenText(Local):
                 self.assertNotIn("HTFUNCCTX", self.diff(out))
                 self.git("checkout", "-q", "--", name)
 
+    def test_prose_renamed_to_code_strips_removed_comment(self):
+        # 6xl.63: the removed lines of README.md are judged by the old path after a rename to notes.py
+        body = "".join("line %d\n" % i for i in range(10))
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"README.md": "<!-- RENCANARY -->\n" + body}, "readme")
+        self.git("checkout", "-q", "-b", "chg", "main")
+        self.git("mv", "README.md", "notes.py")
+        gitfix.commit(self.repo, {"notes.py": body + "y = 1\n"}, "rename")
+        rc, out = self.pin("main")
+        self.assertEqual(rc, 0, out)
+        text = self.diff(out)
+        self.assertIn("rename from README.md", text)
+        self.assertNotIn("RENCANARY", text)
+
     def test_hunk_header_context_kept_for_code(self):
         self.change({"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i) for i in range(20))})
         gitfix.commit(self.repo, {"src/m.py": "def handler():\n" + "".join("    x%d = %d\n" % (i, i if i != 15 else 99)

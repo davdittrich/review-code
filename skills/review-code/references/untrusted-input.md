@@ -49,7 +49,7 @@ Limits of this rule:
 - Nothing is protected inside code fences or code spans. A fence can sit inside an HTML block or a comment, so a fence does not prove visibility. Documentation that shows a comment in a fence is over-stripped and flagged.
 - Source code files are not stripped. A comment in a `.py`, `.js`, `.json` or `.yaml` file reaches the lane as written; the fence and the rule "data, not instructions" are the defence there.
 - Link destinations and link titles stay (reviewable content). Entity-encoded markup stays: a renderer shows it as text. `<script>` and `<style>` bodies stay (code). Hiding by CSS class or style sheet, other comment syntaxes (rst `..`, org) and plain-language injection in visible text are not detected.
-- A comment that opens above a diff hunk is found through a second, whole-file-context diff of the changed prose files; the removed (`-`) lines of a prose file that is renamed and edited fall back to line-by-line stripping (a multi-line comment opened above the hunk can pass there; those lines are base content). `tree/` is unaffected.
+- A comment that opens above a diff hunk is found through a second, whole-file-context diff of the changed prose files; removed (`-`) lines are judged by the old path and added (`+`) lines by the new one, so a prose file renamed to a code name still has its removed comments stripped, and context lines count as prose when either side is. Removed lines of a renamed and edited prose file that the whole-file diff does not hold fall back to line-by-line stripping: a multi-line comment opened before the removed line, even in a context line of the same hunk, can pass there (those lines are base content). `tree/` is unaffected.
 
 ## Known limits
 
