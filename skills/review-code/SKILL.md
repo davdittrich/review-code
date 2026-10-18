@@ -59,7 +59,9 @@ Keep the tone direct and constructive: state the problem, the trigger and a fix.
 Follow the steps in order. Ask each question at most once per run.
 
 1. Target. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/target.py <the user's target words>` (add
-   `--staged`, `--unstaged` or `--repo` when the user asked for that). Read the one-line JSON `status`.
+   `--staged`, `--unstaged` or `--repo` when the user asked for that). Pass every user-supplied word
+   (target words, `--spec` path) as one single-quoted shell argument; if a word contains a single quote
+   or a newline, refuse and ask for a plain value. Read the one-line JSON `status`.
    - `ambiguous`: ask once (AskUserQuestion), one option per `candidates[].reading`, then re-run with
      the same words plus `--choice <index>`. If the question cannot be asked or gets no answer, stop and
      list the readings.
