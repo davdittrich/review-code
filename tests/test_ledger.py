@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -129,6 +130,23 @@ class Categories(Base):
                 self.assertTrue(e["how"], (cat, e))
         self.assertEqual(led["capped"], {c: False for c in
                                          ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues")})
+
+    def test_crlf_change_diff_reads_like_text_mode(self):
+        # 6xl.54: a change.diff written in text mode on Windows ends lines with CRLF; discovery must not change
+        body = "".join("    x = %d\n" % i for i in range(12))
+        self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, "src/use.py": "parse_cfg('x')\n"})
+        self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
+        _, led = self.build()
+        dp = os.path.join(self.run_dir, "change.diff")
+        with open(dp, "rb") as fh:
+            data = fh.read()
+        with open(dp, "wb") as fh:
+            fh.write(data.replace(b"\n", b"\r\n"))
+        ledger.build(self.run_dir)
+        crlf = self.load()
+        self.assertEqual([(e["name"], e["file"]) for e in crlf["symbols"]], [("parse_cfg", "src/cfg.py")])
+        self.assertEqual(files_of(crlf, "callers"), files_of(led, "callers"))
+        self.assertNotIn("src/cfg.py", files_of(crlf, "callers"))
 
     def test_ledger_empty_is_triage(self):
         self.base({"notes.txt": "one\n"})
@@ -267,6 +285,30 @@ class Categories(Base):
         self.assertEqual(sorted(os.listdir(self.run_dir)), first)
         self.assertEqual(self.load()["version"], 1)
         self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".ledger.")])
+
+
+class DiffMemory(Base):
+    def peak(self, n):
+        self.g("checkout", "-q", "main")
+        self.g("checkout", "-q", "-B", "big%d" % n)
+        line = "v = '" + "a" * 990 + "'\n"
+        head = gitfix.commit(self.repo, {"f%02d.py" % i: "# %d\n" % i + line * 512 for i in range(n)}, "big")
+        write_target(self.run_dir, self.repo, "branch", self.mb, head, self.mb, ["f%02d.py" % i for i in range(n)])
+        tree = {"path": "", "source": "head commit", "skipped": []}
+        with mock.patch("ledger._materialize", return_value=(tree, [], [])):  # tree/ streaming is 6xl.47's test
+            tracemalloc.start()
+            try:
+                ledger.build(self.run_dir)
+                return tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+
+    def test_change_diff_read_line_by_line(self):
+        # 6xl.54: symbol discovery reads change.diff line by line, so peak memory does not grow with the diff
+        self.mb = self.base({"README.md": "x\n"})
+        small, big = self.peak(4), self.peak(16)  # change.diff about 2 MB and 8 MB
+        self.assertGreater(os.path.getsize(os.path.join(self.run_dir, "change.diff")), 8_000_000)
+        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
 class Conventions(Base):

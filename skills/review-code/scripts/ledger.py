@@ -19,7 +19,7 @@ import shutil
 import stat
 import tempfile
 from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import sanitize
@@ -164,10 +164,21 @@ def _def_names(lines: Iterator[Tuple[str, str]], file: str = "") -> Iterator[Tup
             yield m.group(1), file, how
 
 
-def _diff_symbols(diff: str) -> Iterator[Tuple[str, str, str]]:
+def _diff_lines(path: str) -> Iterator[str]:
+    """change.diff one line at a time (6xl.54: memory holds one line), in text mode like the whole-file read
+    it replaces, so CRLF and CR end lines exactly as before; a missing file reads as empty."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                yield line[:-1] if line.endswith("\n") else line
+    except OSError:
+        return
+
+
+def _diff_symbols(diff: Iterable[str]) -> Iterator[Tuple[str, str, str]]:
     """Definitions in hunk headers, changed lines and hunk context lines, in diff order."""
     cur, hdr = "", False
-    for line in diff.split("\n"):
+    for line in diff:
         if line.startswith("diff --git "):
             hdr = True
         elif line.startswith("@@"):
@@ -210,7 +221,7 @@ def _is_test(p: str) -> bool:
 
 
 def _discover(repo: str, files: List[str], included: List[str], rev: Optional[str],
-              diff: Optional[str]) -> Tuple[dict, dict]:
+              diff: Optional[Iterable[str]]) -> Tuple[dict, dict]:
     """Callers, tests, fixtures, ci, config and docs for the changed files; each entry says how it was found."""
     inc = set(included)
     gen = _diff_symbols(diff) if diff is not None else _file_symbols(repo, included)
@@ -594,13 +605,7 @@ def build(run: str, spec: Optional[str] = None) -> dict:
         files, rev = sorted(idx), INDEX
     else:
         files, rev = (_worktree_names(repo, tj["untracked"]), None) if inplace else (sorted(head_ls), head)
-    diff = None
-    if tj["diff_cmd"]:
-        try:
-            with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
-                diff = fh.read()
-        except OSError:
-            diff = ""
+    diff = _diff_lines(os.path.join(run, "change.diff")) if tj["diff_cmd"] else None
     found, capped = _discover(repo, files, included, rev, diff)
 
     conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included)
