@@ -138,14 +138,45 @@ def _remotes(cwd: str) -> List[tuple]:
     return rows
 
 
+def default_branch(cwd: str) -> Optional[tuple]:
+    """(ref usable in git, local branch name) of the default branch, or None."""
+    rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
+    if rc == 0:
+        ref = out.decode("utf-8", "replace").strip()[len("refs/remotes/"):]
+        if _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)[0] == 0:
+            return ref, ref.split("/", 1)[-1]
+    for name in ("main", "master"):
+        if _run(["rev-parse", "--verify", "--quiet", "refs/heads/" + name + "^{commit}"], cwd)[0] == 0:
+            return name, name
+    return None
+
+
+def _no_argument(cwd: str) -> List[dict]:
+    if git(["status", "--porcelain"], cwd).strip():
+        return [{"kind": "worktree", "reading": "uncommitted changes against HEAD, untracked files included"}]
+    default = default_branch(cwd)
+    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+    if default and rc == 0 and out.decode("utf-8", "replace").strip() != default[1]:
+        return [{"kind": "branch", "base": default[0], "head": "HEAD",
+                 "reading": "changes on HEAD since " + default[0]}]
+    raise Refuse("no-target", "name a target to review")
+
+
 def resolve(argv: List[str], cwd: str) -> List[dict]:
     if not argv:
-        raise Refuse("no-target", "name a branch or ref to review against")
+        return _no_argument(cwd)
+    if argv[0] in ("--staged", "--unstaged", "--repo"):
+        if len(argv) > 1:
+            raise Refuse("mixed-target", "give one target")
+        kind = argv[0][2:]
+        return [{"kind": kind, "reading": {"staged": "staged changes", "unstaged": "unstaged changes",
+                                           "repo": "the whole repository"}[kind]}]
+    for arg in argv:
+        if arg.startswith("-"):
+            raise Refuse("option-like-argument", "the target must not start with a dash")
     if len(argv) > 1:
-        raise Refuse("mixed-target", "give one target")
+        return [_path_candidate(argv, cwd)]
     arg = argv[0]
-    if arg.startswith("-"):
-        raise Refuse("option-like-argument", "the target must not start with a dash")
     m = _PR_URL.fullmatch(arg)
     if m:
         n = _num(m.group(3))
@@ -155,8 +186,31 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
     if arg.startswith("#") and _DIGITS.fullmatch(arg[1:]) or _DIGITS.fullmatch(arg):
         n = _num(arg.lstrip("#"))
         return [{"kind": "pr", "number": n, "url": None, "reading": "pull request #%d" % n}]
-    _commit_id(arg, cwd)
-    return [{"kind": "branch", "base": arg, "head": "HEAD", "reading": "changes on HEAD since " + arg}]
+    if arg.endswith("^!"):
+        _commit_id(arg[:-2], cwd)
+        return [{"kind": "commit", "rev": arg[:-2], "reading": "the single commit " + arg[:-2]}]
+    if ".." in arg:
+        left, _, right = arg.partition("...") if "..." in arg else arg.partition("..")
+        try:
+            _commit_id(left, cwd), _commit_id(right, cwd)
+            return [{"kind": "range", "base": left, "head": right, "reading": "changes on %s since %s" % (right, left)}]
+        except Refuse:
+            pass  # not a range: may be a path that contains ".."
+    if arg == ".":
+        return [{"kind": "repo", "reading": "the whole repository"}]
+    try:
+        _commit_id(arg, cwd)
+        return [{"kind": "branch", "base": arg, "head": "HEAD", "reading": "changes on HEAD since " + arg}]
+    except Refuse:
+        if os.path.lexists(os.path.join(cwd, arg)):
+            return [_path_candidate(argv, cwd)]
+        raise
+
+
+def _path_candidate(paths: List[str], cwd: str) -> dict:
+    if not all(os.path.lexists(os.path.join(cwd, p)) for p in paths):
+        raise Refuse("mixed-target", "give one target, or only paths")
+    return {"kind": "path", "paths": list(paths), "reading": "files under " + ", ".join(paths)}
 
 
 def _branch_ok(name: object, cwd: str) -> bool:
@@ -231,30 +285,95 @@ def _plan_forge(cand: dict, cwd: str) -> dict:
     return plan
 
 
+_EMPTY_NAMES = ("--name-only", "-z", "--no-ext-diff", "--no-textconv")
+
+
+def _head_plan(top: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
+    """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
+    head = _commit_id("HEAD", top)
+    names = _split(git(["diff"] + list(_EMPTY_NAMES) + extra + ["--"], top))
+    other = _split(git(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
+    return {"base": head, "head": head, "mb": head, "names": names, "untracked": other, "dirty": True,
+            "diff_cmd": ["git", "diff"] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
+
+
+def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
+    """path and repo: the files themselves; no diff."""
+    head = _commit_id("HEAD", top)
+    root = os.path.realpath(top)
+    specs = []
+    for p in paths:
+        rp = os.path.realpath(os.path.join(cwd, p))
+        if rp != root and not rp.startswith(root + os.sep):
+            raise Refuse("outside-repo", "the path is outside the repository")
+        specs.append(os.path.relpath(rp, root))
+    tracked = _split(git(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
+    other = _split(git(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
+    names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
+    present = set(names)
+    return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
+            "diff_cmd": None, "commits": []}
+
+
+def _plan_commit(rev: str, cwd: str) -> dict:
+    head = _commit_id(rev, cwd)
+    rc, out, _ = _run(["rev-parse", "--verify", "--quiet", head + "^1"], cwd)
+    if rc == 0:
+        base = out.decode("utf-8", "replace").strip()
+    else:  # root commit: the empty tree of this repository's hash algorithm
+        base = git(["hash-object", "-t", "tree", "--stdin"], cwd, stdin=b"").strip()
+    plan = _plan_revs(base, head, base, cwd)
+    plan["commits"] = [head]
+    return plan
+
+
 def pin(candidate: dict, cwd: str) -> dict:
     top = git(["rev-parse", "--show-toplevel"], cwd).strip()
     kind = candidate["kind"]
     if kind == "pr":
         plan = _plan_forge(candidate, top)
-    else:
+    elif kind == "commit":
+        plan = _plan_commit(candidate["rev"], top)
+    elif kind in ("branch", "range"):
         base = _commit_id(candidate["base"], cwd)
         head = _commit_id(candidate["head"], cwd)
         mb = git(["merge-base", base, head], cwd, check=False).strip()
         if not mb:
             raise Refuse("bad-ref", "no common ancestor")
         plan = _plan_revs(base, head, mb, cwd)
+    elif kind == "staged":
+        head = _commit_id("HEAD", top)
+        plan = _head_plan(top, ["--cached", head], False, ["--cached", head])
+    elif kind == "unstaged":
+        plan = _head_plan(top, [], True, [])
+    elif kind == "worktree":
+        head = _commit_id("HEAD", top)
+        plan = _head_plan(top, [head], True, [head])
+    elif kind in ("path", "repo"):
+        plan = _plan_files(candidate.get("paths", []), cwd, top)
+    else:
+        raise Refuse("bad-ref", "unknown target kind")
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
-        raise Refuse("empty-diff", "the change has no differences")
+        raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
+                     "the target has no files" if kind in ("path", "repo") else "the change has no differences")
     run = new_run_dir(cwd)
-    text, hidden = sanitize.escape_for_code(git(plan["diff_cmd"][1:], top))
+    text = git(plan["diff_cmd"][1:], top) if plan["diff_cmd"] else ""
+    if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
+        for u in sorted(plan["untracked"]):
+            if not u.endswith("/"):
+                rc, out, _ = _run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--",
+                                   "/dev/null", u], top)
+                if rc in (0, 1):
+                    text += out.decode("utf-8", "replace")
+    text, hidden = sanitize.escape_for_code(text)
     with open(os.path.join(run, "change.diff"), "w", encoding="utf-8") as fh:
         fh.write(text)
     rec = {
         "version": 1, "kind": kind, "repo": top, "run": run, "arg": candidate.get("arg", ""),
         "number": plan.get("number"), "url": plan.get("url"),
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
-        "dirty": bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
+        "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": names, "excluded": [], "untracked": sorted(plan["untracked"]),
         "hidden_chars": [{"file": "change.diff", **h} for h in hidden], "notes": plan.get("notes", []),

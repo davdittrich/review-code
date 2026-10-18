@@ -189,5 +189,174 @@ class TestPR(PRWorld):
             self.assertEqual((rc, out["reason"]), (1, "gh-failed"), bad)
 
 
+class Local(Base):
+    def setUp(self):
+        super().setUp()
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        self.root = gitfix.commit(self.repo, {"a.txt": "1\n", "src/x.py": "x = 1\n", "docs/d.md": "d\n",
+                                              ".gitignore": "*.log\n"}, "root")
+        self.git("checkout", "-q", "-b", "feat")
+        self.c1 = gitfix.commit(self.repo, {"src/x.py": "x = 2\n"}, "c1")
+        self.c2 = gitfix.commit(self.repo, {"src/y.py": "y = 1\n", "B.py": "b\n", "a.py": "a\n"}, "c2")
+
+    def pin(self, *args):
+        return call(list(args), self.repo, self.tmp)
+
+    def write(self, rel, text="n\n"):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    def diff(self, out):
+        with open(os.path.join(out["run"], "change.diff"), encoding="utf-8") as fh:
+            return fh.read()
+
+
+class TestKinds(Local):
+    def test_kinds_commit(self):
+        rc, out = self.pin(self.c2 + "^!")
+        self.assertEqual((rc, out["kind"], out["base_sha"], out["head_sha"]), (0, "commit", self.c1, self.c2))
+        t = load(out["run"])
+        self.assertEqual((t["commits"], t["merge_base"], t["included"]), ([self.c2], self.c1, ["B.py", "a.py", "src/y.py"]))
+        rc, out = self.pin(self.root + "^!")  # root commit: base is the empty tree
+        empty = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=self.repo, input=b"",
+                               env=gitfix.env(), stdout=subprocess.PIPE).stdout.decode().strip()
+        self.assertEqual((rc, out["base_sha"], out["head_sha"]), (0, empty, self.root))
+        self.assertIn("a.txt", load(out["run"])["included"])
+
+    def _range(self, spec):
+        self.git("checkout", "-q", "main")
+        main_tip = gitfix.commit(self.repo, {"z.txt": "z\n"}, "main moves")
+        self.git("checkout", "-q", "feat")
+        rc, out = self.pin(spec % ("main", "feat"))
+        self.assertEqual((rc, out["kind"], out["base_sha"], out["head_sha"], out["merge_base"]),
+                         (0, "range", main_tip, self.c2, self.root))
+        self.assertNotIn("z.txt", load(out["run"])["included"])
+
+    def test_kinds_range_two_dot(self):
+        self._range("%s..%s")
+
+    def test_kinds_range_three_dot(self):
+        self._range("%s...%s")
+
+    def test_kinds_staged(self):
+        self.write("a.txt", "staged\n")
+        self.git("add", "a.txt")
+        self.write("src/x.py", "unstaged\n")
+        rc, out = self.pin("--staged")
+        self.assertEqual((rc, out["kind"], out["head_sha"], out["base_sha"]), (0, "staged", self.c2, self.c2))
+        t = load(out["run"])
+        self.assertTrue(t["dirty"])
+        self.assertEqual((t["included"], t["commits"]), (["a.txt"], []))
+        self.assertEqual(t["diff_cmd"][-3:], ["--cached", self.c2, "--"])
+
+    def test_kinds_unstaged(self):
+        self.write("a.txt", "edited\n")
+        self.write("n.txt")
+        self.write("ignored.log")
+        rc, out = self.pin("--unstaged")
+        self.assertEqual((rc, out["kind"]), (0, "unstaged"))
+        t = load(out["run"])
+        self.assertTrue(t["dirty"])
+        self.assertEqual((t["included"], t["untracked"]), (["a.txt", "n.txt"], ["n.txt"]))
+        self.assertNotIn("--cached", t["diff_cmd"])
+        self.assertNotIn(self.c2, t["diff_cmd"])
+        text = self.diff(out)
+        self.assertIn("new file mode", text)
+        self.assertIn("+++ b/n.txt", text)
+
+    def test_kinds_worktree(self):
+        self.write("a.txt", "staged\n")
+        self.git("add", "a.txt")
+        self.write("src/x.py", "unstaged\n")
+        self.write("n.txt")
+        rc, out = self.pin()  # dirty tree, no argument
+        self.assertEqual((rc, out["kind"], out["head_sha"]), (0, "worktree", self.c2))
+        t = load(out["run"])
+        self.assertTrue(t["dirty"])
+        self.assertEqual(t["included"], ["a.txt", "n.txt", "src/x.py"])
+        self.assertEqual(t["diff_cmd"][-2:], [self.c2, "--"])
+        self.assertIn("+++ b/n.txt", self.diff(out))
+
+    def test_kinds_path(self):
+        self.write("src/new.py")
+        rc, out = self.pin("a.txt")
+        self.assertEqual((rc, out["kind"]), (0, "path"))
+        t = load(out["run"])
+        self.assertEqual((t["included"], t["diff_cmd"], t["head_sha"]), (["a.txt"], None, self.c2))
+        rc, out = self.pin("src")
+        self.assertEqual(load(out["run"])["included"], ["src/new.py", "src/x.py", "src/y.py"])
+        self.write_outside = os.path.join(self.tmp, "outside.txt")
+        with open(self.write_outside, "w") as fh:
+            fh.write("o\n")
+        rc, out = self.pin("../outside.txt")
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "outside-repo"))
+
+    def test_kinds_repo(self):
+        everything = [".gitignore", "B.py", "a.py", "a.txt", "docs/d.md", "src/x.py", "src/y.py"]
+        for arg in (".", "--repo"):
+            rc, out = self.pin(arg)
+            self.assertEqual((rc, out["kind"]), (0, "repo"))
+            self.assertEqual(load(out["run"])["included"], everything)
+
+    def test_adjacency_head_and_empty_range(self):
+        before = self.run_dirs()
+        for arg in ("HEAD", "feat..feat", "feat...feat"):
+            rc, out = self.pin(arg)
+            self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "empty-diff"), arg)
+        self.assertEqual(self.run_dirs(), before)
+
+    def test_empty_inputs(self):
+        self.git("checkout", "-q", "main")
+        rc, out = self.pin()
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "no-target"))
+        rc, out = self.pin("--staged")
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "empty-diff"))
+        os.makedirs(os.path.join(self.repo, "emptydir"))
+        rc, out = self.pin("emptydir")
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "no-files"))
+        self.assertEqual(self.run_dirs(), [])
+
+    def test_ordering_stable(self):
+        rc1, o1 = self.pin("main")
+        rc2, o2 = self.pin("main")
+        a, b = load(o1["run"]), load(o2["run"])
+        self.assertNotEqual(a["run"], b["run"])
+        for d in (a, b):
+            d.pop("run"), d.pop("created")
+        self.assertEqual(a, b)
+        self.assertEqual(a["included"], sorted(a["included"]))
+        self.assertEqual(a["included"][:2], ["B.py", "a.py"])  # code point order: upper case first
+        self.assertEqual(a["commits"], [self.c1, self.c2])
+
+    def test_precision_full_ids(self):
+        rc, out = self.pin(self.c1[:7])
+        self.assertEqual((rc, out["base_sha"], out["head_sha"]), (0, self.c1, self.c2))
+        t = load(out["run"])
+        self.assertEqual({len(t[k]) for k in ("base_sha", "head_sha", "merge_base")}, {40})
+        repo = os.path.join(self.tmp, "sha256")
+        gitfix.run(["git", "init", "-q", "-b", "main", "--object-format=sha256", repo], self.tmp)
+        gitfix.commit(repo, {"f.txt": "1\n"}, "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+        gitfix.commit(repo, {"f.txt": "2\n"}, "change")
+        rc, out = call(["main"], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        t = load(out["run"])
+        self.assertEqual({len(t[k]) for k in ("base_sha", "head_sha", "merge_base")} | {len(c) for c in t["commits"]},
+                         {64})
+
+    def test_concurrency_distinct_runs(self):
+        rc, o1 = self.pin("main")
+        rc, o2 = self.pin("main")
+        self.assertNotEqual(o1["run"], o2["run"])
+        before = load(o1["run"])
+        gitfix.commit(self.repo, {"late.txt": "l\n"}, "late")
+        self.assertEqual(load(o1["run"]), before)
+        rc, o3 = self.pin("main")
+        self.assertNotEqual(o3["head_sha"], o1["head_sha"])
+        self.assertEqual(load(o1["run"])["head_sha"], self.c2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,7 @@ class Tracer(Fixture):
         self.assertLessEqual(set(t), TARGET_KEYS)
         rc, out = self.build(t["run"])
         self.assertLessEqual(set(json.loads(out)), LEDGER_KEYS)
+        self.git("checkout", "-q", "main")  # clean tree on the default branch: nothing to infer
         cases = [(["-x"], "option-like-argument"), (["no-such-ref"], "bad-ref"), ([], "no-target")]
         for args, reason in cases:
             rc, out, _ = cli("target.py", args, self.repo, self.tmp)
