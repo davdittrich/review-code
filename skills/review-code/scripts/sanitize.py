@@ -76,7 +76,7 @@ _CF = ((0x00AD, 0x00AD), (0x0600, 0x0605), (0x061C, 0x061C), (0x06DD, 0x06DD), (
        (0x08E2, 0x08E2), (0x180E, 0x180E), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F),
        (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
        (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F))
-_CTRL = ((0x0000, 0x001F), (0x007F, 0x009F), (0x2028, 0x2029))
+_CTRL = ((0x0000, 0x001F), (0x007F, 0x009F), (0x2028, 0x2029), (0xD800, 0xDFFF))  # + surrogates (Cs, 6xl.60)
 
 
 def _merge(ranges) -> Tuple[Tuple[int, int], ...]:
@@ -103,9 +103,10 @@ def _invisible(ch: str) -> bool:
 
 
 # Markdown: every extension and filename github-linguist languages.yml maps to Markdown (.scd is also
-# SuperCollider; over-stripping its code is the safe side). Then HTML, plain text and reStructuredText.
+# SuperCollider; over-stripping its code is the safe side), the Markdown-based MDX, R Markdown and Quarto
+# (6xl.60), then HTML, plain text and reStructuredText. Other markup keeps its own hidden syntax (see the doc).
 _PROSE_EXT = (".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd",
-              ".workbook", ".html", ".htm", ".txt", ".rst")
+              ".workbook", ".mdx", ".rmd", ".qmd", ".html", ".htm", ".txt", ".rst")
 _PROSE_NAMES = ("contents.lr",)
 
 
@@ -217,11 +218,17 @@ def _is_vs(c: str) -> bool:
     return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180D or o == 0x180F
 
 
+def _is_surrogate(c: str) -> bool:
+    """A lone surrogate: an undecodable name byte (surrogateescape gives U+DC80..DCFF), one byte each."""
+    return 0xD800 <= ord(c) <= 0xDFFF
+
+
 def escape_for_code(text: str) -> Tuple[str, List[dict]]:
     """Replace each invisible character with `<U+XXXX>`; lines split on newline only, so line
     numbers never shift. A run of plane-14 default-ignorables (Tags U+E0000..E007F spell ASCII,
     U+E0080..E0FFF more bytes) becomes one `<TAGS:n>`, and a run of variation selectors (one byte
-    each) one `<VS:n>` that never names a selector, so the escaped text never carries the payload. A single U+FE0F right after a
+    each) one `<VS:n>` that never names a selector, and a run of lone surrogates (undecodable name bytes)
+    one `<BYTES:n>`, so the escaped text never carries the payload. A single U+FE0F right after a
     symbol (category So: the emoji presentation selector) stays as written. Returns the text and
     `[{"line": n, "codepoints": [...]}]`."""
     out, hits = [], []
@@ -231,7 +238,7 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
             buf, i = [], 0
             while i < len(line):
                 c = line[i]
-                test = _is_tag if _is_tag(c) else _is_vs if _is_vs(c) else None
+                test = _is_tag if _is_tag(c) else _is_vs if _is_vs(c) else _is_surrogate if _is_surrogate(c) else None
                 if test is not None:
                     j = i
                     while j < len(line) and test(line[j]):
@@ -240,7 +247,7 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
                             and unicodedata.category(line[i - 1]) == "So":
                         buf.append(c)
                     else:
-                        lab = "%s:%d" % ("TAGS" if test is _is_tag else "VS", j - i)
+                        lab = "%s:%d" % ({_is_tag: "TAGS", _is_vs: "VS"}.get(test, "BYTES"), j - i)
                         cps.append(lab)
                         buf.append("<%s>" % lab)
                     i = j

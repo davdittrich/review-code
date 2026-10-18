@@ -643,7 +643,10 @@ class TestFilter(Local):
         except OSError:
             self.skipTest("file system refuses non-UTF-8 names")
         rc, out = self.pin("main")
-        self.assertEqual((rc, load(out["run"])["included"]), (0, [name]))
+        # 6xl.60: the undecodable byte is a hidden name: listed escaped and flagged; ledger.py maps it back
+        t = load(out["run"])
+        self.assertEqual((rc, t["included"]), (0, ["bad<BYTES:1>.txt"]))
+        self.assertIn({"file": "bad<BYTES:1>.txt", "name": True, "codepoints": ["BYTES:1"]}, t["hidden_chars"])
 
     def test_forge_key_ignores_web_port(self):
         self.assertEqual(target._forge_key("ghe.example:8443", "O/R"),

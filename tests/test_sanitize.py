@@ -442,7 +442,7 @@ class HiddenTextTests(unittest.TestCase):
     def test_hidden_is_prose_file(self):
         for p in ("a.md", "A.MD", "d/x.markdown", "x.html", "x.htm", "n.txt", "r.rst"):
             self.assertTrue(sanitize.is_prose_file(p), p)
-        for p in ("a.py", "x.js", "x.json", "README", "a.md.bak", "x.mdx"):
+        for p in ("a.py", "x.js", "x.json", "README", "a.md.bak", "x.adoc", "x.org", "x.ipynb", "x.svg", "x.textile"):
             self.assertFalse(sanitize.is_prose_file(p), p)
 
     def test_hidden_every_linguist_markdown_extension(self):
@@ -458,6 +458,21 @@ class HiddenTextTests(unittest.TestCase):
                 self.assertNotIn("INJECT", out)
                 self.assertEqual([(h["file"], h["kind"]) for h in hits], [(p, "comment")])
         self.assertFalse(sanitize.is_prose_file("xcontents.lr"))
+
+    def test_hidden_markdown_like_types(self):
+        # 6xl.60: MDX, R Markdown and Quarto documents are Markdown underneath
+        for p in ("d/x.mdx", "a.Rmd", "a.rmd", "b.qmd"):
+            with self.subTest(path=p):
+                self.assertTrue(sanitize.is_prose_file(p))
+                out, hits = sanitize.strip_hidden("a\n<!-- INJECT -->\n")
+                self.assertNotIn("INJECT", out)
+
+    def test_lone_surrogates_collapse(self):
+        # 6xl.60: a non-UTF-8 name decodes to lone surrogates (surrogateescape): a byte channel, never named
+        out, hits = sanitize.escape_for_code("caf\udce9\udcff.txt")
+        self.assertEqual(out, "caf<BYTES:2>.txt")
+        self.assertEqual(hits, [{"line": 1, "codepoints": ["BYTES:2"]}])
+        self.assertEqual(sanitize.sanitize_prose("a\ud800b"), "ab")
 
 
 def hunk(old_start, new_start, body):

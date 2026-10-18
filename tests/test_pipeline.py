@@ -299,6 +299,28 @@ class Tracer(Fixture):
         with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
             self.assertNotIn("hidden-names", fh.read())
 
+    def test_non_utf8_name_is_flagged_and_copied(self):
+        # 6xl.60: undecodable name bytes are a hidden_chars name finding; the content stays reachable
+        try:
+            with open(os.fsencode(self.repo) + b"/caf\xe9.py", "wb") as fh:
+                fh.write(b"latin_body = 1\n")
+        except OSError:
+            self.skipTest("file system refuses non-UTF-8 names")
+        self.git("add", "-A")
+        self.feature({"src/cfg.py": "def load():\n    return 2\n"})
+        for arg in ("main", "--repo"):
+            with self.subTest(arg=arg):
+                rc, t = self.pin(arg)
+                self.assertEqual((rc, t["status"]), (0, "ok"), t)
+                rc, _ = self.build(t["run"])
+                self.assertEqual(rc, 0)
+                with open(os.path.join(t["run"], "ledger.json"), encoding="utf-8") as fh:
+                    led = json.load(fh)
+                self.assertIn({"file": "caf<BYTES:1>.py", "name": True, "codepoints": ["BYTES:1"]}, led["hidden_chars"])
+                copy = [k["copy"] for k in led["tree"]["skipped"] if k["path"] == "caf<BYTES:1>.py"]
+                with open(os.path.join(t["run"], copy[0]), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), "latin_body = 1\n")
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")
