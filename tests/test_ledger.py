@@ -107,13 +107,18 @@ class Categories(Base):
         self.assertEqual(led["label"], "full")
         self.assertEqual(out["label"], "full")
         self.assertEqual([(e["name"], e["file"]) for e in led["symbols"]], [("parse_cfg", "src/cfg.py")])
-        self.assertEqual([(e["symbol"], e["file"], e["line"]) for e in led["callers"]],
-                         [("parse_cfg", "src/use.py", 1), ("parse_cfg", "src/use.py", 2)])
+        self.assertEqual([(e["file"], e["line"]) for e in led["callers"] if e["file"] == "src/use.py"],
+                         [("src/use.py", 1), ("src/use.py", 2)])
+        self.assertEqual({e["symbol"] for e in led["callers"]}, {"parse_cfg"})
+        self.assertNotIn("src/cfg.py", files_of(led, "callers"))
         self.assertEqual(files_of(led, "tests"), ["tests/test_cfg.py"])
         self.assertEqual(files_of(led, "fixtures"), ["tests/fixtures/cfg.json"])
         self.assertEqual(files_of(led, "config"), ["pyproject.toml"])
         self.assertEqual(files_of(led, "ci"), [".github/workflows/ci.yml"])
         self.assertEqual(files_of(led, "docs"), ["README.md", "docs/cfg.md"])
+        defects = self.read("inputs/defects.md")
+        self.assertIn("- tests: 1\n", defects)
+        self.assertIn("- callers: 4\n", defects)
         for cat in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
             for e in led[cat]:
                 self.assertTrue(e["how"], (cat, e))
