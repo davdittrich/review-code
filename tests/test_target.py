@@ -542,6 +542,17 @@ class TestFilter(Local):
             "c.map": ("minified", "name pattern"), "long.js": ("minified", "longest line 1001")})
         self.assertEqual(load(out["run"])["included"], ["edge.js"])
 
+    def test_diff_prefixes_pinned_against_user_config(self):
+        # WR-05: ledger.py strips two characters from ---/+++ paths, so a/ and b/ must not depend on config
+        self.git("config", "diff.noprefix", "true")
+        self.change({"src/a.py": "a = 1\n"})
+        rc, out = self.pin("main")
+        self.assertIn("+++ b/src/a.py", self.diff(out))
+        self.write("new.txt", "u\n")
+        self.git("checkout", "-q", "main")
+        rc, out = self.pin("--unstaged")
+        self.assertIn("+++ b/new.txt", self.diff(out))
+
     def test_filter_added_noise_names_are_kept(self):
         # CR-02: the change cannot hide a file it adds behind a name or a long line
         self.change({"evil.min.js": "evil()\n", "src/b.py": "x = '" + "a" * 1200 + "'\nrun()\n"})

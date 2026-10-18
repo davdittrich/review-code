@@ -24,7 +24,7 @@ STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "me
                "included_count", "excluded_count", "untracked_count", "candidates"}
 # No hooks, no fsmonitor program; check-out family subcommands are never run.
 _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
-_DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
+_DIFF_FLAGS = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
 _LOCKFILES = frozenset((
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "npm-shrinkwrap.json", "Cargo.lock",
@@ -621,7 +621,8 @@ def pin(candidate: dict, cwd: str) -> dict:
     if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
         for u in sorted(set(plan["untracked"]) & set(names)):
             if not u.endswith("/"):
-                rc, out, _ = _run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--",
+                rc, out, _ = _run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
+                                   "--dst-prefix=b/", "--",
                                    "/dev/null", u], top)
                 if rc in (0, 1):
                     text += out.decode("utf-8", "replace")
