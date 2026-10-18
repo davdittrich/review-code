@@ -168,10 +168,21 @@ def sanitize_prose(text: Optional[str]) -> str:
         s = t
 
 
+def _is_tag(c: str) -> bool:
+    return 0xE0000 <= ord(c) <= 0xE007F
+
+
+def _is_vs(c: str) -> bool:
+    o = ord(c)
+    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
+
+
 def escape_for_code(text: str) -> Tuple[str, List[dict]]:
     """Replace each invisible character with `<U+XXXX>`; lines split on newline only, so line
     numbers never shift. A run of Tags-block characters (U+E0000..E007F spell ASCII) becomes one
-    `<TAGS:n>`, so the escaped text never carries the payload. Returns the text and
+    `<TAGS:n>`, and a run of variation selectors (256 values, one byte each) one `<VS:n>` that never
+    names a selector, so the escaped text never carries the payload. A single U+FE0F right after a
+    symbol (category So: the emoji presentation selector) stays as written. Returns the text and
     `[{"line": n, "codepoints": [...]}]`."""
     out, hits = [], []
     for n, line in enumerate(text.split("\n"), 1):
@@ -180,12 +191,18 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
             buf, i = [], 0
             while i < len(line):
                 c = line[i]
-                if 0xE0000 <= ord(c) <= 0xE007F:
+                test = _is_tag if _is_tag(c) else _is_vs if _is_vs(c) else None
+                if test is not None:
                     j = i
-                    while j < len(line) and 0xE0000 <= ord(line[j]) <= 0xE007F:
+                    while j < len(line) and test(line[j]):
                         j += 1
-                    cps.append("TAGS:%d" % (j - i))
-                    buf.append("<TAGS:%d>" % (j - i))
+                    if test is _is_vs and j == i + 1 and c == "\ufe0f" and i \
+                            and unicodedata.category(line[i - 1]) == "So":
+                        buf.append(c)
+                    else:
+                        lab = "%s:%d" % ("TAGS" if test is _is_tag else "VS", j - i)
+                        cps.append(lab)
+                        buf.append("<%s>" % lab)
                     i = j
                     continue
                 if _invisible(c):

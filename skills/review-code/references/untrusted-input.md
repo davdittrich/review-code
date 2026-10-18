@@ -29,7 +29,7 @@ The main thread never opens `inputs/spec.md`. Only the Spec lane reads it, in a 
 
 Prose is sanitized before it reaches `inputs/spec.md`. Removed: invisible and tag characters, HTML comments, hidden elements and styles, image alt text, link titles, markdown link and image destinations (the link text stays; the destination becomes an ellipsis, in `[t](url)` and in `[r]: url` definitions), markdown comment lines and entity-encoded variants of all of these. The nonce is also removed from the content, so text cannot close its own fence.
 
-Source code is not stripped: its comments are the content under review. Invisible and bidirectional characters, in every file type, are shown as `<U+XXXX>` and listed in `hidden_chars`, so a reviewer sees them (they can be the defect). A run of Tags-block characters (they spell ASCII) is shown as `<TAGS:n>`: the escaped form does not carry the payload.
+Source code is not stripped: its comments are the content under review. Invisible and bidirectional characters, in every file type, are shown as `<U+XXXX>` and listed in `hidden_chars`, so a reviewer sees them (they can be the defect). A run of Tags-block characters (they spell ASCII) is shown as `<TAGS:n>`, and a run of variation selectors (U+FE00..FE0F, U+E0100..E01EF: 256 values, one byte each) as `<VS:n>` even when n is 1, so no escape names which selector it was and the escaped form does not carry the payload. One exception: a single U+FE0F right after a symbol (Unicode category So, an emoji) stays as written and is not listed; after a letter or digit it is escaped, because it makes a look-alike identifier.
 
 ### Hidden text in prose and markup files
 

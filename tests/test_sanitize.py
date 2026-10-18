@@ -179,12 +179,12 @@ class EscapeTests(unittest.TestCase):
         lines = out.split("\r\n")
         self.assertEqual(lines[0], "if x:\t# safe <U+202E>")
         self.assertEqual(lines[1], "    y = '<U+2066><U+2067><U+2068><U+2069>'")
-        self.assertEqual(lines[2], "z = 1<U+200B><U+FEFF><TAGS:1><U+FE0F><U+2028>end")
+        self.assertEqual(lines[2], "z = 1<U+200B><U+FEFF><TAGS:1><VS:1><U+2028>end")
         self.assertEqual(lines[3], "<U+001B>q")
         self.assertEqual(hits, [
             {"line": 1, "codepoints": ["U+202E"]},
             {"line": 2, "codepoints": ["U+2066", "U+2067", "U+2068", "U+2069"]},
-            {"line": 3, "codepoints": ["U+200B", "U+FEFF", "TAGS:1", "U+FE0F", "U+2028"]},
+            {"line": 3, "codepoints": ["U+200B", "U+FEFF", "TAGS:1", "VS:1", "U+2028"]},
             {"line": 4, "codepoints": ["U+001B"]},
         ])
         self.assertEqual(sanitize.strip_invisible(out), out)
@@ -235,6 +235,36 @@ class TagRunTests(unittest.TestCase):
         self.assertEqual(out, "a <TAGS:6> b\nx")
         self.assertEqual(hits, [{"line": 1, "codepoints": ["TAGS:6"]}])
         self.assertEqual(sanitize.escape_for_code(tagged("AB") + "\u200b" + tagged("C"))[0], "<TAGS:2><U+200B><TAGS:1>")
+
+
+def vs(data):
+    """Variation-selector encoding of bytes ('emoji smuggling'): one selector per byte."""
+    return "".join(chr(0xFE00 + b if b < 16 else 0xE0100 + b - 16) for b in data)
+
+
+class VariationSelectorTests(unittest.TestCase):
+    # gap 3: an escape that names the selector still spells the payload, so every escape hides which one it was
+    def test_payload_never_decodes(self):
+        emoji = "\U0001F600"
+        cases = [
+            ("ok" + emoji + vs(b"PWN"), "ok" + emoji + "<VS:3>", ["VS:3"]),
+            ("a" + vs(b"P") + "b" + vs(b"W") + "c" + vs(b"N"), "a<VS:1>b<VS:1>c<VS:1>", ["VS:1"] * 3),
+            (vs(b"P") + "\u200b" + vs(b"W"), "<VS:1><U+200B><VS:1>", ["VS:1", "U+200B", "VS:1"]),
+            (emoji + "\ufe0f" + vs(b"PW"), emoji + "<VS:3>", ["VS:3"]),
+            ("a\ufe0f = 1", "a<VS:1> = 1", ["VS:1"]),  # a look-alike identifier, not an emoji
+            (tagged("A") + "\ufe0f", "<TAGS:1><VS:1>", ["TAGS:1", "VS:1"]),
+        ]
+        for src, want, cps in cases:
+            with self.subTest(src=ascii(src)):
+                out, hits = sanitize.escape_for_code(src)
+                self.assertEqual(out, want)
+                self.assertEqual(hits, [{"line": 1, "codepoints": cps}])
+                self.assertEqual(sanitize.strip_invisible(out), out)
+                self.assertNotRegex(out, r"FE0|E01")
+
+    def test_single_vs16_after_emoji_kept(self):
+        src = "ok \U0001F600\ufe0f \u2764\ufe0f done\n\u2705\ufe0f"
+        self.assertEqual(sanitize.escape_for_code(src), (src, []))
 
 
 # Each carrier hides INJECT in a prose or markup file; strip_hidden must remove it and keep the line count.
