@@ -294,5 +294,102 @@ class Conventions(Base):
         self.assertEqual(led["label"], "full")
 
 
+class Tree(Base):
+    def tree_files(self):
+        out = []
+        root = os.path.join(self.run_dir, "tree")
+        for d, _, names in os.walk(root):
+            out += [os.path.relpath(os.path.join(d, n), root) for n in names]
+        return sorted(out)
+
+    def test_tree_head_files(self):
+        body = "".join("    x = %d\n" % i for i in range(12))
+        self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, "src/use.py": "parse_cfg('x')\n",
+                   "tests/test_cfg.py": "parse_cfg\n", "unrelated.txt": "nope\n"})
+        self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
+        _, led = self.build()
+        self.assertEqual(self.tree_files(), ["src/cfg.py", "src/use.py", "tests/test_cfg.py"])
+        head = self.g("rev-parse", "HEAD")
+        want = subprocess.run(["git", "show", head + ":src/cfg.py"], cwd=self.repo, stdout=subprocess.PIPE,
+                              env=gitfix.env(), check=True).stdout
+        with open(os.path.join(self.run_dir, "tree", "src", "cfg.py"), "rb") as fh:
+            self.assertEqual(fh.read(), want)
+        self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "in_place": False, "skipped": []})
+        self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
+
+    def test_tree_symlink_never_created(self):
+        secret = os.path.join(self.tmp, "secret.txt")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("TOPSECRET-VALUE\n")
+        self.base({"a.txt": "x\n"})
+        self.g("checkout", "-q", "-b", "feat")
+        os.symlink(secret, os.path.join(self.repo, "leak"))
+        self.g("add", "leak")
+        self.g("update-index", "--add", "--cacheinfo", "160000,%s,sub" % self.g("rev-parse", "HEAD"))
+        gitfix.commit(self.repo, {"a.txt": "y\n"}, "links")
+        _, led = self.build()
+        self.assertEqual(self.tree_files(), ["a.txt"])
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "sub")))
+        self.assertEqual(sorted((e["path"], e["reason"]) for e in led["tree"]["skipped"]),
+                         [("leak", "symlink"), ("sub", "submodule")])
+        defects = self.read("inputs/defects.md")
+        self.assertIn(json.dumps("leak"), defects)
+        for d, _, names in os.walk(self.run_dir):
+            for n in names:
+                fp = os.path.join(d, n)
+                self.assertFalse(os.path.islink(fp), fp)
+                with open(fp, "rb") as fh:
+                    self.assertNotIn(b"TOPSECRET-VALUE", fh.read(), fp)
+
+    def test_tree_archive_attributes_ignored(self):
+        self.base({"a.txt": "x\n"})
+        self.branch({".gitattributes": "hidden.py export-ignore\nver.txt export-subst\n",
+                     "hidden.py": "secret = 1\n", "ver.txt": "$Format:%H$\n"})
+        self.build()
+        self.assertIn("hidden.py", self.tree_files())
+        self.assertEqual(self.read("tree/ver.txt"), "$Format:%H$\n")
+
+    def test_tree_hidden_chars(self):
+        rlo = chr(0x202E)
+        self.base({"a.txt": "x\n"})
+        self.branch({"a.txt": "ok\nevil %s line\n" % rlo})
+        _, led = self.build()
+        text = self.read("tree/a.txt")
+        self.assertIn("<U+202E>", text)
+        self.assertNotIn(rlo, text)
+        self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
+
+    def test_tree_binary_is_raw(self):
+        blob = b"\x00\x01\xff" + chr(0x202E).encode("utf-8")
+        self.base({"a.txt": "x\n"})
+        self.branch({"img.bin": blob})
+        self.build()
+        with open(os.path.join(self.run_dir, "tree", "img.bin"), "rb") as fh:
+            self.assertEqual(fh.read(), blob)
+
+    def test_tree_in_place(self):
+        rlo = chr(0x202E)
+        self.base({"a.txt": "x\n"})
+        with open(os.path.join(self.repo, "a.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x\nbad %s\n" % rlo)
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.txt"])
+        ledger.build(self.run_dir)
+        led = self.load()
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree")))
+        self.assertEqual(led["tree"]["in_place"], self.repo)
+        self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
+        self.assertIn(json.dumps(self.repo), self.read("inputs/defects.md"))
+
+    def test_tree_put_rejects_unsafe_paths(self):
+        root = os.path.join(self.tmp, "t")
+        for bad in ("../x", "/abs", "a/../../x", ".git/config", "a//b"):
+            self.assertFalse(ledger._put(root, bad, b"x"), bad)
+        self.assertTrue(ledger._put(root, "a/b.txt", b"x"))
+        self.assertEqual(oct(os.stat(os.path.join(root, "a", "b.txt")).st_mode & 0o777), "0o600")
+        self.assertEqual(oct(os.stat(os.path.join(root, "a")).st_mode & 0o777), "0o700")
+
+
 if __name__ == "__main__":
     unittest.main()
