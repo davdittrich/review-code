@@ -164,6 +164,31 @@ else
   fi
 fi
 
+# CTX-05: lane agents are read-only. tools: is an exclusive allowlist; an omitted line inherits every tool.
+for name in finder verifier; do
+  f="$tree/agents/$name.md"
+  if [ ! -f "$f" ]; then
+    bad "agent-$name-tools" "missing agents/$name.md"
+    continue
+  fi
+  afm="$scratch/agent-frontmatter"
+  if ! awk 'NR == 1 { if ($0 != "---") exit 1; next }
+    /^---[ \t]*$/ { found = 1; exit }
+    { print }
+    END { if (!found) exit 1 }' "$f" >"$afm"; then
+    bad "agent-$name-tools" "agents/$name.md: line 1 must be --- with a closing ---"
+    continue
+  fi
+  count=$(grep -c '^tools:' "$afm" || true)
+  val=$(sed -n 's/^tools:[ \t]*//p' "$afm" | head -n 1)
+  got=$(printf '%s\n' "$val" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | sort | tr '\n' ' ' | sed 's/ $//')
+  if [ "$count" -eq 1 ] && [ "$got" = "Glob Grep Read" ]; then
+    ok "agent-$name-tools"
+  else
+    bad "agent-$name-tools" "tools must be exactly Read, Grep, Glob; got: $val"
+  fi
+done
+
 # PKG-02: licence and upstream attribution (D-07, D-08).
 lic="$tree/LICENSE"
 notice="$tree/NOTICE"
