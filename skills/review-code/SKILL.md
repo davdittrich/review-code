@@ -56,7 +56,9 @@ Keep the tone direct and constructive: state the problem, the trigger and a fix.
 
 ## Procedure
 
-Follow the steps in order. Ask each question at most once per run.
+Follow the steps in order. Ask each question at most once per run. AskUserQuestion can be a deferred
+tool whose schema is not loaded: if you cannot call it, load it with ToolSearch (query `select:AskUserQuestion`)
+before treating it as unavailable; it is unavailable only when that load fails or there is no ToolSearch.
 
 1. Target. Never put the user's words on the command line: the shell would parse `&`, `;`, `$(...)`
    and backticks. Pass them on stdin, one word per line, inside a quoted here-document:
