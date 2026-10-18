@@ -238,7 +238,9 @@ fi
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
 banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/CLAUDE\.md$|^\.claude/settings(\.local)?\.json$|^\.planning/|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
 # List the tree under test (the export, or the given directory), never the caller's repo.
-if tracked=$(cd "$tree" && find . -type f ! -path './.git/*' | sed 's|^\./||'); then
+# find runs alone: a pipeline's status is its last stage, and POSIX sh has no pipefail.
+if listing=$(cd "$tree" && find . -type f ! -path './.git/*'); then
+  tracked=$(printf '%s\n' "$listing" | sed 's|^\./||')
   hits=$(printf '%s\n' "$tracked" | grep -E "$banned" | tr '\n' ' ' || true)
   if [ -z "$hits" ]; then ok hygiene-tracked; else bad hygiene-tracked "tracked: $hits"; fi
 else
