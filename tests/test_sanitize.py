@@ -288,6 +288,50 @@ HIDDEN = [
 ]
 
 
+# Oracle, copied independently of sanitize.py: Default_Ignorable_Code_Point ranges of
+# https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt, header
+# "DerivedCoreProperties-18.0.0.txt", "Total code points: 4174".
+DI_18 = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+         (0x180B, 0x180D), (0x180E, 0x180E), (0x180F, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+         (0x2060, 0x2064), (0x2065, 0x2065), (0x2066, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F),
+         (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+         (0xE0000, 0xE0000), (0xE0001, 0xE0001), (0xE0002, 0xE001F), (0xE0020, 0xE007F), (0xE0080, 0xE00FF),
+         (0xE0100, 0xE01EF), (0xE01F0, 0xE0FFF))
+
+
+class DefaultIgnorableTests(unittest.TestCase):
+    def test_di_oracle_total(self):
+        self.assertEqual(sum(b - a + 1 for a, b in DI_18), 4174)
+
+    def test_di_sweep_every_range(self):
+        # 6xl.50: no Default_Ignorable_Code_Point passes either escaper raw, whatever unicodedata version runs
+        for a, b in DI_18:
+            for o in range(a, b + 1):
+                c = chr(o)
+                out, hits = sanitize.escape_for_code("a" + c + "b")
+                if c in out or not hits:
+                    self.fail("U+%04X passes escape_for_code" % o)
+                if c in sanitize.sanitize_prose("a" + c + "b"):
+                    self.fail("U+%04X passes sanitize_prose" % o)
+
+    def test_di_plane14_runs_never_name_a_code_point(self):
+        # E0080..E00FF map one-to-one onto bytes 0x80..0xFF: naming each one would spell the payload
+        for start in (0xE0002, 0xE0080, 0xE00F0, 0xE01F0, 0xE0FF0):
+            run = "".join(chr(start + i) for i in range(16))
+            out, hits = sanitize.escape_for_code("x" + run + "y")
+            self.assertEqual(out, "x<TAGS:16>y", hex(start))
+            self.assertEqual(hits, [{"line": 1, "codepoints": ["TAGS:16"]}])
+        self.assertEqual(sanitize.escape_for_code(chr(0xE007F) + chr(0xE0080))[0], "<TAGS:2>")
+        self.assertEqual(sanitize.escape_for_code("q" + chr(0xE0085))[0], "q<TAGS:1>")
+
+    def test_di_mongolian_free_variation_selectors_collapse(self):
+        # U+180B..180D and U+180F are Variation_Selector code points: never named one by one
+        for o in (0x180B, 0x180C, 0x180D, 0x180F):
+            self.assertEqual(sanitize.escape_for_code("x" + chr(o))[0], "x<VS:1>", hex(o))
+        self.assertEqual(sanitize.escape_for_code("x" + chr(0x180B) + chr(0x180F))[0], "x<VS:2>")
+        self.assertEqual(sanitize.escape_for_code("x" + chr(0x180E))[0], "x<U+180E>")  # vowel separator, not a VS
+
+
 class HiddenTextTests(unittest.TestCase):
     def test_hidden_each_carrier_removed(self):
         for name, text, kind in HIDDEN:

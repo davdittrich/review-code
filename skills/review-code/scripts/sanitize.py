@@ -2,7 +2,8 @@
 
 Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
 escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
-`_invisible` predicate on code points of the running interpreter's unicodedata, no NFKC folding.
+`_invisible` predicate: Default_Ignorable_Code_Point (embedded Unicode 18.0 table) plus general categories
+Cf, Cc, Zl, Zp of the running interpreter's unicodedata, no NFKC folding.
 Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
 Change-author files that reach the main thread are treated per type. Prose and markup files (every linguist
 Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff: HTML comments, markdown
@@ -12,13 +13,14 @@ hold, and each removal is returned as {line, kind, length} (never the payload) f
 Nothing is protected inside code fences or code spans: a fence can sit inside an HTML block or a comment, so a
 fence is no proof of visibility; examples of comments in fenced docs are over-stripped and flagged. Source code
 files are never touched by this (their comments are the content); invisible and bidi characters are escaped in
-all files (escape_for_code) and a run of Tags-block characters, which spells ASCII, collapses to `<TAGS:n>`.
+all files (escape_for_code) and a run of plane-14 default-ignorables (Tags spell ASCII) collapses to `<TAGS:n>`.
 Not covered by the strip: link destinations and titles (reviewable content), entity-encoded markup (a renderer
 shows it as text), `<script>`/`<style>` bodies (code), comments written in other markup (rst `..`, org), and
 hiding by CSS classes or external style sheets.
 Not detected: homoglyphs, base64, plain-language injection, valueless attribute words of unlisted tags. The defence is structural: PR text
 reaches only the Spec input (02-07) and lanes run without execution tools (02-01, 02-08).
 """
+import bisect
 import re
 import unicodedata
 from html.parser import HTMLParser
@@ -62,12 +64,21 @@ _ELEMENTS = _VOID | _OPAQUE | frozenset((
     "ul var video").split())
 
 
+# Default_Ignorable_Code_Point, embedded because unicodedata has no property lookup and its version
+# follows the interpreter (Python 3.9: Unicode 13). Source: DerivedCoreProperties-18.0.0.txt
+# (https://www.unicode.org/Public/UCD/latest/ucd/), 4174 code points; adjacent ranges merged.
+_DI = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
+       (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+       (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+_DI_LO = tuple(a for a, _ in _DI)
+
+
 def _invisible(ch: str) -> bool:
     o = ord(ch)
     if ch in "\t\n\r":
         return False
-    return (unicodedata.category(ch) in ("Cf", "Zl", "Zp", "Cc")
-            or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or o in _EXTRA)
+    i = bisect.bisect_right(_DI_LO, o) - 1
+    return (i >= 0 and o <= _DI[i][1]) or unicodedata.category(ch) in ("Cf", "Zl", "Zp", "Cc") or o in _EXTRA
 
 
 # Markdown: every extension and filename github-linguist languages.yml maps to Markdown (.scd is also
@@ -174,19 +185,22 @@ def sanitize_prose(text: Optional[str]) -> str:
 
 
 def _is_tag(c: str) -> bool:
-    return 0xE0000 <= ord(c) <= 0xE007F
+    """Plane-14 default-ignorables other than selectors: Tags spell ASCII, E0080..E00FF the bytes 0x80..0xFF."""
+    o = ord(c)
+    return 0xE0000 <= o <= 0xE0FFF and not 0xE0100 <= o <= 0xE01EF
 
 
 def _is_vs(c: str) -> bool:
+    """Variation_Selector: FE00..FE0F, E0100..E01EF and the Mongolian free variation selectors."""
     o = ord(c)
-    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
+    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180D or o == 0x180F
 
 
 def escape_for_code(text: str) -> Tuple[str, List[dict]]:
     """Replace each invisible character with `<U+XXXX>`; lines split on newline only, so line
-    numbers never shift. A run of Tags-block characters (U+E0000..E007F spell ASCII) becomes one
-    `<TAGS:n>`, and a run of variation selectors (256 values, one byte each) one `<VS:n>` that never
-    names a selector, so the escaped text never carries the payload. A single U+FE0F right after a
+    numbers never shift. A run of plane-14 default-ignorables (Tags U+E0000..E007F spell ASCII,
+    U+E0080..E0FFF more bytes) becomes one `<TAGS:n>`, and a run of variation selectors (one byte
+    each) one `<VS:n>` that never names a selector, so the escaped text never carries the payload. A single U+FE0F right after a
     symbol (category So: the emoji presentation selector) stays as written. Returns the text and
     `[{"line": n, "codepoints": [...]}]`."""
     out, hits = [], []
