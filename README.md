@@ -17,7 +17,7 @@ To install from a local checkout instead, use `claude plugin marketplace add /pa
 
 The repository is its own marketplace (`.claude-plugin/marketplace.json`, source `./`).
 
-Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`.
+Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`. Path targets are relative to the current directory; `.` at the repository top level means the whole repository, and in a subdirectory that directory.
 
 ## Requirements
 

@@ -888,6 +888,16 @@ class TestTooLarge(Local):
         self.assertEqual(self.excluded(out)["huge.txt"][0], "too-large")
 
 
+class TestDotTarget(Local):
+    def test_dot_is_the_current_directory(self):
+        # 6xl.78: '.' from a subdirectory means that directory, like every other path word
+        rc, out = call(["."], os.path.join(self.repo, "src"), self.tmp)
+        self.assertEqual((rc, out["kind"]), (0, "path"), out)
+        self.assertTrue(all(n.startswith("src/") for n in load(out["run"])["included"]), load(out["run"])["included"])
+        rc, out = call(["."], self.repo, self.tmp)
+        self.assertEqual((rc, out["kind"]), (0, "repo"), out)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

@@ -298,8 +298,8 @@ def _classify(arg: str, cwd: str) -> List[dict]:
             return [{"kind": "range", "base": left, "head": right, "reading": "changes on %s since %s" % (right, left)}]
         except Refuse:
             pass  # not a range: may be a path that contains ".."
-    if arg == ".":
-        return [{"kind": "repo", "reading": "the whole repository"}]
+    if arg == "." and os.path.realpath(cwd) == os.path.realpath(git(["rev-parse", "--show-toplevel"], cwd).strip()):
+        return [{"kind": "repo", "reading": "the whole repository"}]  # elsewhere '.' is a cwd path (6xl.78)
     cands, err = [], None
     if _DIGITS.fullmatch(arg):
         try:
