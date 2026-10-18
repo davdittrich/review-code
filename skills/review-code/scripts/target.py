@@ -214,7 +214,7 @@ def default_branch(cwd: str) -> Optional[tuple]:
 
 
 def _no_argument(cwd: str) -> List[dict]:
-    if git(["status", "--porcelain"], cwd).strip():
+    if git(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"], cwd).strip():  # 6xl.68
         return [{"kind": "worktree", "reading": "uncommitted changes against HEAD, untracked files included"}]
     default = default_branch(cwd)
     rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
@@ -790,7 +790,7 @@ def pin(candidate: dict, cwd: str) -> dict:
         "version": 1, "kind": kind, "repo": top, "run": run, "arg": _shown(candidate.get("arg", "")),
         "number": plan.get("number"), "url": plan.get("url"),
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
-        "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
+        "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [_shown(n) for n in names], "excluded": [dict(e, path=_shown(e["path"])) for e in excluded],
         "untracked": sorted(_shown(n) for n in plan["untracked"]),

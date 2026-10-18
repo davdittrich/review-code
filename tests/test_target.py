@@ -789,6 +789,16 @@ class TestBlobMemory(Local):
         self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
+class TestUntrackedDefault(Local):
+    def test_no_argument_sees_untracked_despite_status_config(self):
+        # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
+        self.git("checkout", "-q", "main")
+        self.git("config", "status.showUntrackedFiles", "no")
+        self.write("src/fresh.py", "f = 1\n")
+        rc, out = self.pin()
+        self.assertEqual((rc, out.get("kind")), (0, "worktree"), out)
+
+
 class TestDiffMemory(Local):
     def peak(self, n):
         self.git("checkout", "-q", "main")
