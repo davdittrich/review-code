@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It pins the review target, writes a context ledger and the lane input files, then reviews in one pass in the main thread. There are no reviewer lanes and no independent verification yet. Do not rely on it for review results.
+Status: early version. It pins the review target, writes a context ledger and the lane input files, records once whether the code is your own, then reviews in one pass in the main thread. There are no reviewer lanes and no independent verification yet. Nothing of the target runs. Do not rely on it for review results.
 
 ## Install
 
@@ -23,8 +23,13 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 - Claude Code 2.1.246 or later. This floor is provisional; the plugin is tested on 2.1.302.
 - `git`.
-- `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets still work, with reduced review.
-- `gh`, for PR reading and posting in later versions. PR targets route to the skill now, but the PR is not fetched yet; review a local diff or branch.
+- `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
+- `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; posting comes in a later version.
+- `glab`, for MR targets. MR reading is untested against a live glab.
+
+## Run directory
+
+Each run writes its pinned target, diff, context ledger and lane inputs to a mode 0700 directory under `git rev-parse --git-path review-code` inside the repository's git directory, never into the working tree. The skill asks once per run whether the code is your own and records the answer; every other outcome, including headless runs, records `external`. What is untrusted and what the defences do not cover: `skills/review-code/references/untrusted-input.md`.
 
 ## What ships
 
