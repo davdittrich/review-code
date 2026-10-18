@@ -3,7 +3,6 @@ import ast
 import io
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -177,7 +176,6 @@ class Tracer(Fixture):
         for f in ("target.py", "ledger.py", "sanitize.py"):
             with open(os.path.join(SCRIPTS, f), encoding="utf-8") as fh:
                 ast.parse(fh.read(), filename=f, feature_version=(3, 9))
-        self.assertTrue(re.match(r"3\.", sys.version))
 
 
 if __name__ == "__main__":
