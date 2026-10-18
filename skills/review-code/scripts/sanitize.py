@@ -394,16 +394,18 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
         line += text.count("\n", pos, a)
         nl = text.count("\n", a, b)
         out.append(text[pos:a] + "[hidden-%s removed: %d chars]" % (kind, b - a) + "".join(_BREAK.findall(text[a:b])))
-        info.append((line, line + nl, kind, b - a))
+        info.append((line, line + nl, kind, b - a, a))
         pos, last, line = b, b, line + nl
     return "".join(out) + text[pos:], info
 
 
 def strip_hidden(text: str) -> Tuple[str, List[dict]]:
     """Remove hidden text from a prose or markup file; see the module docstring. Returns the text and
-    `[{"line", "kind", "length"}]` (kind: comment, alt-text, element), never the payload."""
+    `[{"line", "kind", "length"}]` (kind: comment, alt-text, element, footnote, link-def, attribute), never the
+    payload."""
     out, info = _strip(text)
-    return out, [{"line": a, "kind": k, "length": n} for a, _, k, n in info]
+    # 6xl.84: the line a reader counts, by the one line-break rule (a CR ends a line too)
+    return out, [{"line": 1 + len(_BREAK.findall(text, 0, at)), "kind": k, "length": n} for _, _, k, n, at in info]
 
 
 def _walk(diff: str):
@@ -499,9 +501,9 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
         text = "\n".join(lines.get(i, "") for i in range(1, max(lines) + 1))
         out, info = _strip(text)
         by_line = {}
-        for k, (a, b, kind, length) in enumerate(info):
+        for k, (a, b, kind, length, _) in enumerate(info):
             for ln in range(a, b + 1):
-                by_line[ln] = k
+                by_line.setdefault(ln, []).append(k)  # 6xl.84: every removal on a line gets its entry
         done[key] = (out.split("\n"), info, by_line, lines)
     res, hits, seen = diff.split("\n"), [], set()
     for i, path, tag, o, n, body, old in _walk(diff):
@@ -516,9 +518,9 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
             side, num, where = "-", o, old or path
             got = done.get((where, side))
         if got and got[3].get(num) == body:
-            new, k = got[0][num - 1], got[2].get(num)
-            keys = [(where, side, k)] if k is not None else []
-            spans = [got[1][k]] if k is not None else []
+            new, ks = got[0][num - 1], got[2].get(num, [])
+            keys = [(where, side, k) for k in ks]
+            spans = [got[1][k] for k in ks]
         else:  # not in the full-context diff: this line alone
             new, info = _strip(body)
             keys, spans = [(i, j) for j in range(len(info))], info

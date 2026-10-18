@@ -556,6 +556,19 @@ class LineBreakTests(unittest.TestCase):
                 self.assertNotIn(sep, sanitize.escape_for_code(out)[0])
 
 
+class HitNumberingTests(unittest.TestCase):
+    def test_cr_only_lines_numbered_by_the_break_rule(self):
+        # 6xl.84: tree/ hits count CR, CRLF and LF line ends alike
+        _, hits = sanitize.strip_hidden("a\r<!-- x -->\rb\r\n<!-- y -->\nc")
+        self.assertEqual([h["line"] for h in hits], [2, 4])
+
+    def test_two_removals_on_one_diff_line_give_two_entries(self):
+        d = "diff --git a/n.md b/n.md\n--- a/n.md\n+++ b/n.md\n@@ -0,0 +1 @@\n+a <!-- X --> b <!-- YY --> c\n"
+        out, hits = sanitize.strip_hidden_diff(d)
+        self.assertEqual(out.count("[hidden-comment removed:"), 2)
+        self.assertEqual([(h["line"], h["length"]) for h in hits], [(5, 10), (5, 11)])
+
+
 class RenameSideTests(unittest.TestCase):
     def test_removed_lines_judged_by_old_path(self):
         # 6xl.63: README.md renamed to notes.py: its removed comment is prose, the added code stays as written
