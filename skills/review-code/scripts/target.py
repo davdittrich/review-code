@@ -186,7 +186,7 @@ def _shown(name: str) -> str:
 
 def _q(name: str) -> str:
     """A ref name from the repository, quoted unless plainly safe: `reading` text goes to stdout."""
-    return name if re.fullmatch(r"[A-Za-z0-9._/+@-]+", name) else json.dumps(name)
+    return name if re.fullmatch(r"[A-Za-z0-9._/+@-]+", name) else json.dumps(_shown(name))
 
 
 def default_branch(cwd: str) -> Optional[tuple]:
@@ -684,7 +684,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
     rec = {
-        "version": 1, "kind": kind, "repo": top, "run": run, "arg": candidate.get("arg", ""),
+        "version": 1, "kind": kind, "repo": top, "run": run, "arg": _shown(candidate.get("arg", "")),
         "number": plan.get("number"), "url": plan.get("url"),
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no"], top).strip()),
@@ -729,7 +729,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
         cands = resolve(args, cwd)
         if choice is None and len(cands) > 1:
             emit({"status": "ambiguous", "candidates": [
-                {"index": i, "kind": c["kind"], "reading": c["reading"]} for i, c in enumerate(cands, 1)]})
+                {"index": i, "kind": c["kind"], "reading": _shown(c["reading"])} for i, c in enumerate(cands, 1)]})
             return 2
         if choice is not None and not 1 <= choice <= len(cands):
             raise Refuse("bad-choice", "the choice is not one of the listed readings")

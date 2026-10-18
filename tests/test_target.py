@@ -760,6 +760,30 @@ class TestFilter(Local):
         self.assertIn("git older than 2.40: linguist attributes not checked", self.notes(out))
 
 
+class TestHiddenRefNames(Local):
+    """6xl.52: branch names and the target words never carry a hidden payload to stdout or target.json."""
+
+    def test_tags_branch_name_escaped(self):
+        name = "br" + "".join(chr(0xE0000 + ord(c)) for c in "PAY")
+        self.git("checkout", "-q", "-b", name, "main")
+        gitfix.commit(self.repo, {"q.py": "q = 1\n"}, "q")
+        self.git("checkout", "-q", "feat")
+        gitfix.commit(self.repo, {name: "same name as the branch\n"}, "clash")  # path and branch: ambiguous
+        rc, out = call([name], self.repo, self.tmp)
+        self.assertEqual(out["status"], "ambiguous", out)
+        shown = json.dumps(out)
+        self.assertNotIn("\\udb40", shown)
+        self.assertIn("br<TAGS:3>", shown)
+        rc, out = call(["main.." + name], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(os.path.join(out["run"], "target.json"), "rb") as fh:
+            raw = fh.read()
+        self.assertNotIn(b"\\udb40", raw)
+        self.assertNotIn(b"\xf3\xa0", raw)
+        self.assertEqual(load(out["run"])["arg"], "main..br<TAGS:3>")
+        self.assertEqual(target._q(name), '"br<TAGS:3>"')  # a default-branch name is quoted inside `reading`
+
+
 class TestHiddenText(Local):
     """CTX-04 (A4): hidden comments and alt text in a changed prose file never reach change.diff."""
 
