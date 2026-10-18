@@ -402,6 +402,7 @@ _MINIFIED = (".min.js", ".min.css", ".map")
 _PB_NAMES = (".pb.go", "_pb2.py", ".snap")
 _MARKER = re.compile(r"@generated|do not edit|auto-generated|automatically generated", re.I)
 _LONG_LINE = 1000
+_LONG_EXT = (".js", ".mjs", ".css", ".json")  # only these can be minified; a long line in .py is real source
 _VERSION: dict = {}
 
 
@@ -486,7 +487,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     """(kept, excluded, notes): first matching rule wins; every exclusion carries a reason and a detail.
 
     Attributes come from the merge base, and header and path rules apply only to files that exist there, so the
-    change cannot hide its own code with a .gitattributes edit, a header marker or a directory name.
+    change cannot hide its own code with a .gitattributes edit, a header marker, a directory name, a
+    minified name or a long line (all kept when the change adds the file; only lockfile names are dropped outright).
     """
     kept, excluded, notes, todo = [], [], [], []
     mb, explicit = plan["mb"], plan.get("explicit", ())
@@ -500,10 +502,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
             kept.append(n)
         elif base in _LOCKFILES:
             drop(n, "lockfile", "basename")
-        elif base.endswith(_MINIFIED):
-            drop(n, "minified", "name pattern")
         else:
-            todo.append(n)
+            todo.append(n)  # a minified name is judged below, with the "the change adds it" keep
     if todo:
         if kind in ("unstaged", "worktree", "path", "repo"):
             head = _files(todo, top)
@@ -520,9 +520,12 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
             nul, longest, first = head.get(n, (False, 0, []))
+            base = n.rsplit("/", 1)[-1]
             hit = None
-            if n in head and not nul and longest > _LONG_LINE:
-                hit = ("minified", "longest line %d" % longest, None)
+            if base.endswith(_MINIFIED):
+                hit = ("minified", "name pattern", "minified")
+            elif n in head and not nul and longest > _LONG_LINE and base.endswith(_LONG_EXT):
+                hit = ("minified", "longest line %d" % longest, "minified")
             elif n in attrs and not (attrs[n] == "generated" and migration):
                 hit = (attrs[n], "linguist-" + attrs[n], None)
             if hit is None and not migration:
@@ -537,7 +540,6 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                             hit = (why, "path rule %s/" % comp, "path")
                             break
                     else:
-                        base = n.rsplit("/", 1)[-1]
                         suffix = next((x for x in _PB_NAMES if base.endswith(x)), None)
                         if suffix:
                             hit = ("generated", "path rule *" + suffix, "path")

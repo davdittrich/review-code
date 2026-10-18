@@ -527,13 +527,29 @@ class TestFilter(Local):
         return load(out["run"])["notes"]
 
     def test_filter_minified(self):
-        self.change({"a.min.js": "a\n", "b.min.css": "b\n", "c.map": "{}\n", "long.txt": "x" * 1001 + "\n",
-                     "edge.txt": "x" * 1000 + "\n"})
+        self.base({"a.min.js": "a\n", "b.min.css": "b\n", "c.map": "{}\n", "long.js": "x" * 1001 + "\n"})
+        self.change({"a.min.js": "a2\n", "b.min.css": "b2\n", "c.map": "{1}\n", "long.js": "y" * 1001 + "\n",
+                     "edge.js": "x" * 1000 + "\n"})
         rc, out = self.pin("main")
         self.assertEqual(self.excluded(out), {
             "a.min.js": ("minified", "name pattern"), "b.min.css": ("minified", "name pattern"),
-            "c.map": ("minified", "name pattern"), "long.txt": ("minified", "longest line 1001")})
-        self.assertEqual(load(out["run"])["included"], ["edge.txt"])
+            "c.map": ("minified", "name pattern"), "long.js": ("minified", "longest line 1001")})
+        self.assertEqual(load(out["run"])["included"], ["edge.js"])
+
+    def test_filter_added_noise_names_are_kept(self):
+        # CR-02: the change cannot hide a file it adds behind a name or a long line
+        self.change({"evil.min.js": "evil()\n", "src/b.py": "x = '" + "a" * 1200 + "'\nrun()\n"})
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["status"]), (0, "ok"))
+        self.assertEqual(load(out["run"])["included"], ["evil.min.js", "src/b.py"])
+        self.assertEqual(self.excluded(out), {})
+        self.assertIn("evil.min.js: kept", " ".join(self.notes(out)))
+
+    def test_filter_added_long_js_is_kept(self):
+        self.change({"app.js": "x = '" + "a" * 1200 + "'\n"})
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["status"]), (0, "ok"))
+        self.assertEqual(load(out["run"])["included"], ["app.js"])
 
     def test_filter_generated_attr(self):
         self.base({".gitattributes": "gen/*.py linguist-generated\nthird/** linguist-vendored\n",
