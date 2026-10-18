@@ -567,15 +567,39 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool,
         raise Refuse("bad-ref", "a git command failed")
 
 
-def _blobs(specs: List[tuple], top: str) -> dict:
-    """{key: _scan(content)} for each (key, object-spec) that names a blob; absent objects are left out."""
-    part = [(k, sp) for k, sp in specs if "\n" not in sp]  # a name with LF cannot go on a line
+def tree_listing(rev: str, top: str) -> dict:
+    """path -> (mode, oid) for every entry of a commit or tree, from `ls-tree -r -z`: exact names, any bytes."""
     out = {}
-    for (k, _), (f, data) in zip(part, cat_batch([sp.encode("utf-8", "surrogateescape") for _, sp in part], top,
-                                                 False, _MAX_FILE)):
-        if len(f) >= 3 and f[-2] == b"blob":
-            out[k] = _scan(data) if data is not None else (False, 0, [], int(f[-1]))
+    for rec in git_bytes(["ls-tree", "-r", "-z", rev], top).split(b"\0"):
+        meta, tab, path = rec.partition(b"\t")
+        if tab:
+            mode, _, oid = meta.split(b" ")
+            out[path.decode("utf-8", "surrogateescape")] = (mode.decode(), oid.decode())
     return out
+
+
+def index_listing(top: str) -> dict:
+    """path -> (mode, oid) of each stage-0 index entry, from `ls-files -s -z`."""
+    out = {}
+    for rec in git_bytes(["ls-files", "-s", "-z"], top).split(b"\0"):
+        meta, tab, path = rec.partition(b"\t")
+        if tab:
+            mode, oid, stage = meta.decode().split(" ")
+            if stage == "0":
+                out[path.decode("utf-8", "surrogateescape")] = (mode, oid)
+    return out
+
+
+def _blobs(listing: dict, names: List[str], top: str) -> dict:
+    """{name: _scan(content)} for each name the listing holds as a blob, read by object id (6xl.82/.83): a
+    name is never parsed by cat-file, so LF, CR and every other byte in it are harmless."""
+    want = {n: listing[n][1] for n in names if n in listing and listing[n][0] != "160000"}
+    uniq = sorted(set(want.values()))
+    got = {}
+    for oid, (f, data) in zip(uniq, cat_batch([o.encode() for o in uniq], top, False, _MAX_FILE)):
+        if len(f) >= 3 and f[-2] == b"blob":
+            got[oid] = _scan(data) if data is not None else (False, 0, [], int(f[-1]))
+    return {n: got[o] for n, o in want.items() if o in got}
 
 
 def _files(names: List[str], top: str) -> dict:
@@ -653,9 +677,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         if kind in ("unstaged", "worktree", "path", "repo"):
             head = _files(todo, top)
         else:
-            rev = ":0:" if kind == "staged" else plan["head"] + ":"
-            head = _blobs([(n, rev + n) for n in todo], top)
-        base_ls = _blobs([(n, mb + ":" + n) for n in todo], top)
+            head = _blobs(index_listing(top) if kind == "staged" else tree_listing(plan["head"], top), todo, top)
+        base_ls = _blobs(tree_listing(mb, top), todo, top)
         old = _git_version(top) < _BASE_VERSION
         if old:
             notes.append("git older than 2.40: linguist attributes not checked")
@@ -832,7 +855,8 @@ def pin(candidate: dict, cwd: str) -> dict:
                      "the target has no files" if kind in ("path", "repo") else "the change has no differences")
     names, excluded, fnotes = filter_files(kind, plan, names, top)
     if not names:
-        raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified or binary")
+        raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified, binary or "
+                                      "too large")
     run = new_run_dir(cwd)
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding

@@ -787,7 +787,7 @@ class TestBlobMemory(Local):
             specs.append(("f%d" % i, oid))
         tracemalloc.start()
         try:
-            got = target._blobs(specs, self.repo)
+            got = target._blobs({k: ("100644", oid) for k, oid in specs}, [k for k, _ in specs], self.repo)
             return tracemalloc.get_traced_memory()[1], got
         finally:
             tracemalloc.stop()
@@ -896,6 +896,43 @@ class TestDotTarget(Local):
         self.assertTrue(all(n.startswith("src/") for n in load(out["run"])["included"]), load(out["run"])["included"])
         rc, out = call(["."], self.repo, self.tmp)
         self.assertEqual((rc, out["kind"]), (0, "repo"), out)
+
+
+class TestBlobsByOid(Local):
+    """6xl.82/.83: blobs are read by object id, so LF/CR-suffixed names get their own size, NUL and reasons."""
+
+    def excluded(self, out):
+        return {e["path"]: (e["reason"], e["detail"]) for e in load(out["run"])["excluded"]}
+
+    def test_lf_and_cr_names_get_cap_and_nul_rule(self):
+        line = "v = '" + "a" * 90 + "'\n"
+        big = line * (target._MAX_FILE * 2 // len(line))
+        self.git("checkout", "-q", "-b", "chg", "main")
+        gitfix.commit(self.repo, {"big\n.py": big, "nul\r": b"x\x00y\n", "ok.py": "o = 1\n"}, "odd")
+        for words in (["main"], ["HEAD^!"]):
+            rc, out = self.pin(*words)
+            self.assertEqual(rc, 0, out)
+            ex = self.excluded(out)
+            self.assertEqual(ex.get("big\n.py", ("",))[0], "too-large", (words, ex))
+            self.assertEqual(ex.get("nul\r", ("",))[0], "binary", (words, ex))
+
+    def test_cr_sibling_judged_by_its_own_content(self):
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"logo.png": b"\x89PNG\r\n\x1a\n\x00\x00", "gen.py": "# @generated\ng = 1\n"}, "assets")
+        self.git("checkout", "-q", "-b", "chg", "main")
+        gitfix.commit(self.repo, {"logo.png\r": "HIDDEN_BEHIND_SIBLING = 1\n", "gen.py\r": "real = 1\n",
+                                  "logo.png ": "s = 1\n", "gen.py\n": "n = 1\n"}, "sneak")
+        for words in (["main"], ["HEAD^!"]):
+            rc, out = self.pin(*words)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.excluded(out), {}, words)
+            self.assertEqual(sorted(load(out["run"])["included"]), sorted(["gen.py\n", "gen.py\r", "logo.png ", "logo.png\r"]),
+                             words)
+        self.git("reset", "-q", "--soft", "main")
+        self.git("reset", "-q")
+        self.git("add", "--", "logo.png\r", "gen.py\r", "logo.png ", "gen.py\n")
+        rc, out = self.pin("--staged")
+        self.assertEqual((rc, self.excluded(out)), (0, {}), out)
 
 
 class TestUntrackedDefault(Local):

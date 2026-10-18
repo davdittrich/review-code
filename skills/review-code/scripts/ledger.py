@@ -74,26 +74,11 @@ def _bytes(path: str) -> bytes:
 
 
 def _listing(repo: str, rev: str) -> Dict[str, Tuple[str, str]]:
-    """path -> (mode, oid) for every entry of a commit or tree, one ls-tree run."""
-    out = {}
-    for rec in target.git_bytes(["ls-tree", "-r", "-z", rev], repo).split(b"\0"):
-        meta, tab, path = rec.partition(b"\t")
-        if tab:
-            mode, _, oid = meta.split(b" ")
-            out[_dec(path)] = (mode.decode(), oid.decode())
-    return out
+    return target.tree_listing(rev, repo)
 
 
 def _index_listing(repo: str) -> Dict[str, Tuple[str, str]]:
-    """path -> (mode, oid) of each stage-0 index entry: the bytes a staged review pins."""
-    out = {}
-    for rec in target.git_bytes(["ls-files", "-s", "-z"], repo).split(b"\0"):
-        meta, tab, path = rec.partition(b"\t")
-        if tab:
-            mode, oid, stage = meta.decode().split(" ")
-            if stage == "0":
-                out[_dec(path)] = (mode, oid)
-    return out
+    return target.index_listing(repo)
 
 
 def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
