@@ -88,7 +88,8 @@ Follow the steps in order. Ask each question at most once per run.
    "There is no spec"). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
    unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path re-runs the
-   build with `--spec <path>`; no spec means the Spec axis is stated as skipped.
+   build with `--spec <path>` (an absolute path is read from anywhere on the host, so state the exact path
+   you are about to read first, and use only a path the user typed); no spec means the Spec axis is stated as skipped.
 4. Context report, after trust is recorded. Read `target.json` and `ledger.json`. State each excluded
    path with its reason, each `notes` line, the convention copies taken from the base, the ignored
    head-only files and the ledger notes, including the warning that Claude Code itself loads a
