@@ -28,8 +28,9 @@ A finding is reportable only with all four of:
 3. A concrete trigger: the input or state that makes it fail.
 4. An evidence class of `reproduced` or `traced` (see below).
 
-A concern that cannot meet the gate, including any at `inferred` or `speculative`, is asked as a
-question or listed as an unverified note and never stated as a finding.
+A concern that cannot meet the gate is never stated as a finding. At `inferred` it is listed as a
+Suggestion labeled `inferred` (never Blocking; accessibility at `inferred` is Required). At
+`speculative` it is asked as a question.
 
 ## Severity and evidence
 

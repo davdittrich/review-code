@@ -18,7 +18,10 @@ differently.
 ## Description under test
 
 SKILL.md git blob id: `3700f2cca4617802e2cdd7529e3c87a61a72dc33`
-(`git rev-parse HEAD:skills/review-code/SKILL.md`). A later description change invalidates the
+(`git rev-parse HEAD:skills/review-code/SKILL.md`).
+A later edit to the gate wording in the SKILL.md body (review-code-qz4.26) moved the file blob to
+`4828f0c74dae805534260c9c224395416dfd3089`. The description text is byte-identical, so the trial
+results below still apply. A later description change invalidates the
 results below.
 
 The trials ran against this blob (commit `039d0e0`). It replaces the first description (blob
