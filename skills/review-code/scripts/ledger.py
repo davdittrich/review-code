@@ -20,6 +20,7 @@ import stat
 import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import sanitize
 import target
@@ -410,12 +411,19 @@ def _forge(tj: dict) -> Optional[dict]:
             "closing": {n for n in closing if isinstance(n, int) and 0 < n < 10 ** 9}}
 
 
+def _repo_args(tj: dict) -> List[str]:
+    """`-R host/owner/repo` from the PR or MR URL, so #N resolves in the repository the target was matched to."""
+    u = urlparse(tj.get("url") or "")
+    m = re.match(r"(/.+?)/(?:-/)?(?:pull|merge_requests)/\d+\Z", u.path.rstrip("/"))
+    return ["-R", u.netloc + m.group(1)] if u.netloc and m else []
+
+
 def _issue_text(tj: dict, n: int) -> Optional[str]:
     try:
         if tj["kind"] == "mr":
-            j = target.glab_json(["issue", "view", str(n), "-F", "json"], tj["repo"])
+            j = target.glab_json(["issue", "view", str(n), "-F", "json"] + _repo_args(tj), tj["repo"])
         else:
-            j = target.gh_json(["issue", "view", str(n), "--json", "title,body"], tj["repo"])
+            j = target.gh_json(["issue", "view", str(n), "--json", "title,body"] + _repo_args(tj), tj["repo"])
     except target.Refuse:
         return None
     if not isinstance(j, dict):

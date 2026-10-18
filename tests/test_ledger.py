@@ -23,7 +23,7 @@ DIFF = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 
 
-def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None):
+def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None):
     """Write target.json and change.diff for a run dir straight from git, without running target.py."""
     os.makedirs(run, exist_ok=True)
     if kind in INPLACE:
@@ -32,7 +32,7 @@ def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untr
         diff = gitfix.run(["git", "diff"] + DIFF + [merge_base, head_sha, "--"], repo)
     with open(os.path.join(run, "change.diff"), "w", encoding="utf-8") as fh:
         fh.write(diff)
-    rec = {"version": 1, "kind": kind, "repo": repo, "run": run, "arg": "", "number": number, "url": None,
+    rec = {"version": 1, "kind": kind, "repo": repo, "run": run, "arg": "", "number": number, "url": url,
            "base_sha": base_sha, "head_sha": head_sha, "merge_base": merge_base, "dirty": kind in INPLACE,
            "diff_cmd": ["git", "diff"] if kind not in ("path", "repo") else None,
            "commits": commits if commits is not None else ([] if kind in INPLACE else [head_sha]), "included": list(included), "excluded": [],
@@ -70,12 +70,12 @@ class Base(unittest.TestCase):
         return [n for n in out.split("\0") if n]
 
     def build(self, kind="branch", included=None, untracked=(), head=None, mb=None, commits=None, number=None,
-              spec=None):
+              spec=None, url=None):
         head = head or self.g("rev-parse", "HEAD")
         mb = mb or self.g("merge-base", "main", head)
         if included is None:
             included = self.names(mb, head)
-        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number)
+        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url)
         out = ledger.build(self.run_dir, spec)
         return out, self.load()
 
@@ -570,6 +570,25 @@ class Spec(Base):
             out, led = self.build(commits=[self.g("rev-parse", "HEAD")])
         self.assertEqual([s["fetched"] for s in led["spec"]["sources"]], [False])
         self.assertEqual(out["spec_status"], "none")
+
+    def test_spec_issue_fetched_from_the_prs_repository(self):
+        # WR-04: #N belongs to the repo the PR was matched to, not the checkout's default remote
+        self.base({"README.md": "r\n"})
+        self.branch({"a.txt": "a\n"})
+        for kind, url, want, tool in (
+                ("pr", "https://github.com/up/stream/pull/7", "github.com/up/stream", "gh_json"),
+                ("mr", "https://gitlab.example:8443/g/sub/proj/-/merge_requests/7", "gitlab.example:8443/g/sub/proj",
+                 "glab_json")):
+            calls = []
+
+            def fake(args, cwd, calls=calls):
+                calls.append(list(args))
+                return {"title": "t", "body": "see #13", "description": "see #13", "closingIssuesReferences": [],
+                        "headRefName": "wip", "source_branch": "wip"}
+            with mock.patch.object(target, tool, side_effect=fake):
+                self.build(kind=kind, commits=[], number=7, url=url)
+            issue = [c for c in calls if c[:2] == ["issue", "view"]][0]
+            self.assertEqual(issue[-2:], ["-R", want], kind)
 
     def test_spec_issue_cap(self):
         msg = "work\n\nSee #27 #21 #25 #23 #22 #26 #24 and #99999999999999999999999"
