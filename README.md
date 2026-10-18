@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: v0.1.0 is a stub. It states its own limits: no reviewer lanes, no context ledger and no independent verification yet. Do not rely on it for review results.
+Status: early version. It pins the review target, writes a context ledger and the lane input files, then reviews in one pass in the main thread. There are no reviewer lanes and no independent verification yet. Do not rely on it for review results.
 
 ## Install
 
@@ -23,6 +23,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 - Claude Code 2.1.246 or later. This floor is provisional; the plugin is tested on 2.1.302.
 - `git`.
+- `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets still work, with reduced review.
 - `gh`, for PR reading and posting in later versions. PR targets route to the skill now, but the PR is not fetched yet; review a local diff or branch.
 
 ## What ships
@@ -38,7 +39,7 @@ The plugin root is the repository root, so every tracked file ships to installer
 
 ## Development
 
-`sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
+`python3 -m unittest discover -s tests` runs the unit suite. `sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
 
 ## Licence
 

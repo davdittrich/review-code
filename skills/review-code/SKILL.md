@@ -6,8 +6,9 @@ description: >
   when a user asks for a code review, a critical or adversarial review, a critique, an audit or a
   check of code, or asks what is wrong with a change. Not for writing, explaining or debugging code.
 license: MIT
-compatibility: Claude Code >= 2.1.246 (provisional); git; gh for pull request reading and posting, which arrives in a later version
+compatibility: Claude Code >= 2.1.246 (provisional); git; python3 >= 3.9; gh for pull request reading and posting, which arrives in a later version
 argument-hint: "[target]"
+allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)
 metadata:
   upstream: "code-review (Matt Pocock); evidence gate from critical-code-reviewer 1.3 (Garrick Aden-Buie, Ziad Hassan)"
 ---
@@ -53,13 +54,22 @@ contradicts the source, and constructor divergence between related types.
 Style findings are Required or Suggestions at most, and only when a linter would not catch them.
 Keep the tone direct and constructive: state the problem, the trigger and a fix.
 
+## Procedure
+
+1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/target.py <the user's target words>`. When `status` is not
+   `ok`, state the `reason` and stop. When `ok`, state the `kind`, the pinned refs
+   `merge_base...head_sha` and the `run` path.
+2. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>` and state the `label`.
+3. Review from `inputs/defects.md` and `inputs/standards.md` in the run directory and the files they
+   name. Never open `inputs/spec.md`: it holds untrusted change-author text for the Spec lane, which
+   a later version adds.
+
 ## Status
 
-This is the v0.1.0 stub. Reviewer lanes, the context ledger, the independent verifier, JSON or SARIF
-output, PR reading and posting, and fix mode do not exist yet. Pull request targets route to this
-skill, but the PR is not fetched: ask for a local diff or branch instead. When invoked, say so to
-the user, then do a single-pass review in the main thread under the iron law and the verification
-gate.
+This is an early version. Target pinning, the context ledger and the lane input files now run
+first. Reviewer lanes and the independent verifier do not exist yet, so review in one pass in the
+main thread under the iron law and the verification gate. The Spec axis is prepared, not reviewed.
+JSON or SARIF output, PR reading and posting, and fix mode do not exist yet.
 
 - Label each finding's evidence class honestly. A single read-only pass reaches `traced` at most.
 - Never claim independent verification.
