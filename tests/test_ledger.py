@@ -623,6 +623,16 @@ class Tree(Base):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "README.md")))
         self.assertLess(peak, target._MAX_FILE)
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_tree_special_file_skipped_with_reason(self):
+        # 6xl.90: a FIFO never gets opened; it gets a skip record
+        self.base({"a.txt": "x\n"})
+        os.mkfifo(os.path.join(self.repo, "p.fifo"))
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "repo", head, head, head, ["a.txt", "p.fifo"])
+        ledger.build(self.run_dir)
+        self.assertIn({"path": "p.fifo", "reason": "special"}, self.load()["tree"]["skipped"])
+
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:

@@ -407,7 +407,11 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
                 if stat.S_ISLNK(st.st_mode):  # a link into the host never enters the run dir
                     skipped.append({"path": label, "reason": "symlink"})
                     continue
-                if not (stat.S_ISREG(st.st_mode) and os.path.realpath(fp).startswith(top)):
+                if not stat.S_ISREG(st.st_mode):  # 6xl.90: a FIFO, socket or device is never opened
+                    if not stat.S_ISDIR(st.st_mode):
+                        skipped.append({"path": label, "reason": "special"})
+                    continue
+                if not os.path.realpath(fp).startswith(top):
                     continue
                 if st.st_size > target._MAX_FILE:  # 6xl.75: never read whole
                     skipped.append({"path": label, "reason": "too-large"})

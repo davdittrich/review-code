@@ -412,9 +412,19 @@ _NAME_FLAGS = ["-r", "-z", "-M", "-l1000", "--numstat", "--no-ext-diff", "--no-t
                "--ignore-submodules=none"]
 
 
+def _special(path: str) -> bool:
+    """A working-copy entry that is no regular file, symlink or directory (a FIFO, socket or device): git cannot
+    diff it and reading it can block, so it is never opened (6xl.90)."""
+    try:
+        m = os.lstat(path).st_mode
+    except OSError:
+        return False
+    return not (stat.S_ISREG(m) or stat.S_ISLNK(m) or stat.S_ISDIR(m))
+
+
 def _oversized(sub: str, revs: List[str], top: str) -> List[str]:
-    """Names with a side over _MAX_FILE, from a `--raw -z` listing and blob sizes (6xl.85): git never has to
-    diff them, since its own numstat of a huge file can take far more memory than the file."""
+    """Names git must not diff: a side over _MAX_FILE, from a `--raw -z` listing and blob sizes (6xl.85), since
+    git's own numstat of a huge file can take far more memory than the file, or a special working-copy entry."""
     raw = git_bytes([sub, "-r", "-z", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none"] + revs + ["--"],
                     top).split(b"\0")
     rows, oids = [], set()
@@ -435,6 +445,9 @@ def _oversized(sub: str, revs: List[str], top: str) -> List[str]:
     for name, sides in rows:
         size = max([sizes.get(o, 0) for _, o in sides if o.strip("0")] or [0])
         work = any(m != b"000000" and not o.strip("0") for m, o in sides)  # the working-tree side has no object yet
+        if work and _special(os.path.join(top, name)):
+            big.append(name)
+            continue
         if work:
             try:
                 size = max(size, os.lstat(os.path.join(top, name)).st_size)
@@ -728,6 +741,9 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
+            if kind in ("unstaged", "worktree", "path", "repo") and _special(os.path.join(top, n)):
+                drop(n, "special", "not a regular file (FIFO, socket or device); never opened")
+                continue
             nul, longest, first, size = head.get(n, (False, 0, [], 0))
             size = max(size, base_ls.get(n, (False, 0, [], 0))[3])
             base = n.rsplit("/", 1)[-1]

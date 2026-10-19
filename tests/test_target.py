@@ -1032,6 +1032,23 @@ class TestSidesPerKind(Local):
         self.assertEqual(self.excluded(out), {"logo.png": "binary", "big.txt": "too-large"})
 
 
+class TestSpecialFiles(Local):
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_fifo_is_excluded_with_a_reason_and_never_opened(self):
+        # 6xl.90: a tracked file the user replaced with a FIFO is listed as special, never read (no hang)
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"pipe.txt": "p\n", "ok.py": "o = 1\n"}, "pipe")
+        os.remove(os.path.join(self.repo, "pipe.txt"))
+        os.mkfifo(os.path.join(self.repo, "pipe.txt"))
+        self.write("ok.py", "o = 2\n")
+        for words in (["--repo"], ["--unstaged"], []):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                ex = {e["path"]: e["reason"] for e in load(out["run"])["excluded"]}
+                self.assertEqual(ex.get("pipe.txt"), "special", ex)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
