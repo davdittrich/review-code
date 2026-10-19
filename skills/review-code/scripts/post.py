@@ -132,6 +132,7 @@ def _target(run: str) -> dict:
 class GitHub:
     refs = None  # GitLab only: the diff refs read by the last state()
     login = None  # the user existing() checked; a failed create deletes only a pending review of theirs
+    ids = frozenset()  # the finding ids of the payload the last create sent
 
     def __init__(self, info: dict):
         self.i = info
@@ -191,6 +192,7 @@ class GitHub:
         return ids
 
     def create(self, payload: dict) -> int:
+        self.ids = {c["id"] for c in payload["comments"]}  # cleanup deletes a review only when it holds nothing else
         body = {"commit_id": payload["head_sha"], "body": payload["body"],
                 "comments": [{k: c[k] for k in ("path", "line", "side", "body")} for c in payload["comments"]]}
         try:
@@ -261,7 +263,16 @@ class GitHub:
             raise Refuse("post-failed", r.detail) if r.reason == "gh-failed" else r
 
     def cleanup(self, handle: int) -> None:
-        """Delete the pending review this run's own create returned; nothing else is ever listed or deleted."""
+        """Delete the pending review this run's own create made, only while every comment in it carries one of this
+        payload's markers as a whole line. A comment the user starts in the web UI joins their one pending review, and
+        the delete would take it too: then the review is kept (`review-kept`) for the user to submit or delete."""
+        try:
+            stored = _pages("gh", self.i["host"], "%s/reviews/%d/comments" % (self.pr, handle), self.i["run"])
+        except Refuse:
+            raise Refuse("cleanup-failed", "pending review %d" % handle)
+        if not all(isinstance(c, dict) and isinstance(c.get("body"), str)
+                   and set(MARK_RE.findall(c["body"].replace("\r\n", "\n"))) & self.ids for c in stored):
+            raise Refuse("review-kept", "pending review %d" % handle)
         try:
             self._call("DELETE", "%s/reviews/%d" % (self.pr, handle))
         except Refuse:

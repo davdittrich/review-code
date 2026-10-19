@@ -503,10 +503,25 @@ class Safety(Base):
             return comments if len(listings) == 1 else comments + [dict(comments[0], body="typed in the web UI")]
 
         self.fake.stored_override = stored
-        self.refused(self.submit(digest), "verify-failed")
-        self.assertEqual(len(listings), 2)
+        self.refused(self.submit(digest), "review-kept", "pending review 100")  # the user's comment is in it
+        self.assertEqual(len(listings), 3)  # verify, recount, and cleanup's own check
         self.assertFalse(any(c[1].endswith("/events") for c in self.fake.calls))
-        self.assertEqual(self.fake.pending(), [])
+        self.assertEqual(self.deletes(), [])
+        self.assertEqual([r["id"] for r in self.fake.pending()], [100])
+
+    def test_a_comment_added_before_a_head_move_at_d_keeps_the_review(self):
+        digest = self.confirmed()
+        listings = []
+
+        def stored(comments):
+            listings.append(1)
+            return comments if len(listings) == 1 else comments + [dict(comments[0], body="typed in the web UI")]
+
+        self.fake.stored_override = stored
+        self.fake.moves_after = 1
+        self.refused(self.submit(digest), "review-kept", "pending review 100")
+        self.assertEqual(self.deletes(), [])
+        self.assertEqual([r["id"] for r in self.fake.pending()], [100])
 
     def test_stored_comments_differ_deletes_the_review(self):
         digest = self.confirmed()
@@ -538,15 +553,16 @@ class Safety(Base):
         self.refused(self.submit(digest), "verify-failed")
         self.assertEqual(len(self.deletes()), 1)
 
-    def test_stored_comment_without_its_marker_refuses(self):
+    def test_stored_comment_without_its_marker_refuses_and_keeps_the_review(self):
         digest = self.confirmed()
         self.fake.stored_override = lambda comments: [dict(c, body="no marker here") for c in comments]
-        self.refused(self.submit(digest), "verify-failed")
+        self.refused(self.submit(digest), "review-kept", "pending review 100")  # not provably ours: never deleted
+        self.assertEqual(self.deletes(), [])
 
     def test_stored_comment_with_a_marker_inside_a_longer_line_refuses(self):
         digest = self.confirmed()
         self.fake.stored_override = lambda comments: [dict(c, body="x " + c["body"].replace("\n", " ")) for c in comments]
-        self.refused(self.submit(digest), "verify-failed")
+        self.refused(self.submit(digest), "review-kept", "pending review 100")  # no whole-line marker: kept
 
     def test_a_stored_comment_that_does_carry_line_and_side_is_compared_on_them(self):
         digest = self.confirmed()
@@ -582,7 +598,7 @@ class Safety(Base):
 
     def test_interrupt_after_create_deletes_the_review(self):
         digest = self.confirmed()
-        self.fake.stored_override = mock.Mock(side_effect=KeyboardInterrupt)
+        self.fake.stored_override = mock.Mock(side_effect=[KeyboardInterrupt, []])  # one Ctrl-C; cleanup then lists
         with self.assertRaises(KeyboardInterrupt):
             self.submit(digest)
         self.assertEqual(self.fake.pending(), [])
