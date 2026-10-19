@@ -35,8 +35,9 @@ REVIEW_RE = re.compile(r"<!-- review-code:review v1 head=[0-9a-f]{40}(?:[0-9a-f]
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders; wider than this only makes the guard stricter
 _REF = re.compile(r"[@#!](?=\w)[\w./-]*")  # @name, @org/team, #123, !123: each would ping or link
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
-_PEM = (r"-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----(?:\n(?!(?:\d+: )?-----END)(?:\d+: )?[\w+/=:,. -]{8,})*"
-        r"(?:\n(?:\d+: )?-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----)?")
+# A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
+# CRLF, string literals), so a hit blanks every free-text field of the finding instead of guessing where the key ends.
+_PEM = r"-----(?:BEGIN|END)[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----"
 SECRET_RULES = tuple((rule, re.compile(rx)) for rule, rx in (
     ("aws-access-token", r"\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b"),
     ("github-pat", r"ghp_[0-9a-zA-Z]{36}"),
@@ -479,6 +480,8 @@ def _render(f: dict, where: Optional[str] = None):
     for k in ("title", "trigger", "quote", "fix"):
         raw[k], got = _redact(f[k])
         rules += got
+    if "private-key" in rules:  # key material may sit in any field, with or without the marker line next to it
+        raw = {k: "[REDACTED:private-key]" for k in raw}
     quote = sanitize.escape_for_code(raw["quote"])[0].split("\n")
     quote = ["%d: %s" % (f["line"] + n, ln) for n, ln in enumerate(quote)]
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)

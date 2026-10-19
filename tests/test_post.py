@@ -696,7 +696,7 @@ class TextSafety(Base):
             "slack-bot-token": "xoxb-" + "1" * 10 + "-" + "2" * 10 + "-abc",
             "stripe-access-token": "sk_live_" + "a1" * 6,
             "jwt": "eyJ" + "a" * 20 + ".eyJ" + "b" * 20 + "." + "c" * 12,
-            "private-key": "-----BEGIN RSA " + "PRIVATE KEY-----\n12: " + "A" * 40 + "\n13: " + "B" * 20 + "\n14: -----END RSA PRIVATE KEY-----",
+            "private-key": "-----BEGIN RSA " + "PRIVATE KEY-----",  # the marker line only: _render blanks the finding
             "generic-secret": 'password = "hunter2hunter2"',
         }
         self.assertEqual({r for r, _ in post.SECRET_RULES}, set(samples))
@@ -708,6 +708,7 @@ class TextSafety(Base):
             self.assertEqual(red, "before [REDACTED:%s] after" % rule, rule)
         red, rules = post._redact("def f(x):\n    return x + 1  # ghp_short AKIA password = x\n")
         self.assertEqual((rules, post._scan(red)), ([], []))
+        self.assertEqual(post._redact("tail\n-----END OPENSSH PRIVATE KEY-----")[1], ["private-key"])  # END alone counts
         two, rules = post._redact("a %s b %s c" % (samples["github-pat"], samples["gitlab-pat"]))
         self.assertEqual((two, rules), ("a [REDACTED:github-pat] b [REDACTED:gitlab-pat] c", ["github-pat", "gitlab-pat"]))
 
@@ -791,6 +792,42 @@ class Redaction(Base):
         body = payload["comments"][0]["body"]
         self.assertIsNone(LIVE_LINK.search(body), body)
         self.assertIn("**Fix:** see \\\\\\[x](https://evil.example)", body)
+
+
+KEYS = ["MIIEowIBAAKCAQEA%dq7BFUwW3hvrJ" % n + "Zk9" * 8 for n in range(1, 6)]  # one key body line per case
+
+
+class PrivateKey(Base):
+    """A private-key marker anywhere in a finding blanks all of its free text: the key body is never found by regex."""
+
+    inject = {2: "-----BEGIN PGP PRIVATE KEY BLOCK-----", 3: " ", 4: KEYS[0], 5: "-----END PGP PRIVATE KEY BLOCK-----",
+              9: "-----BEGIN RSA PRIVATE KEY-----\r", 10: KEYS[1] + "\r", 11: "-----END RSA PRIVATE KEY-----\r",
+              15: "key = '-----BEGIN RSA PRIVATE KEY-----\\n' +", 16: "'%s\\n' +" % KEYS[2],
+              17: "'-----END RSA PRIVATE KEY-----'", 26: KEYS[4]}
+
+    def cand(self, line, end, quote, **kw):
+        return dict({"path": "src/calc.py", "line": line, "end_line": end, "severity": "required", "category": "bug",
+                     "title": "title %d" % line, "trigger": "trigger %d" % line, "quote": quote, "fix": "fix"}, **kw)
+
+    def test_no_key_body_line_is_posted(self):
+        i = self.inject
+        cands = [self.cand(2, 5, "\n".join(i[n] for n in range(2, 6))),  # PGP armor: a blank line after BEGIN
+                 self.cand(9, 11, "\r\n".join(i[n].rstrip("\r") for n in range(9, 12))),  # CRLF
+                 self.cand(15, 17, "\n".join(i[n] for n in range(15, 18))),  # JS string concatenation
+                 self.cand(21, 21, row(21), fix="-----BEGIN RSA PRIVATE KEY-----\n%s\n-----END RSA PRIVATE KEY-----" % KEYS[3]),
+                 self.cand(26, 26, KEYS[4], title="-----BEGIN RSA PRIVATE KEY-----")]  # header in title, body in quote
+        self.ingest(cands, {c["line"]: (c["line"], c["quote"].split("\n")[0].rstrip("\r")) for c in cands})
+        rc, out, st = self.build()
+        raw, payload = self.payload()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        self.assertEqual({h["where"] for h in payload["scan"] if h["rule"] == "private-key"},
+                         {"src/calc.py:%d" % n for n in (2, 9, 15, 21, 26)})
+        rc, sub_out, sub = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual((rc, sub["status"]), (0, "ok"), sub_out)
+        for text in (out, raw.decode("utf-8"), json.dumps(self.fake.calls)):
+            for k in KEYS:
+                self.assertNotIn(k[:24], text)
+            self.assertNotIn("PRIVATE KEY", text)
 
 
 class HtmlQuote(Base):
