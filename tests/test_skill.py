@@ -1,4 +1,5 @@
 """SKILL.md procedure text that live runs showed is load-bearing."""
+import ast
 import os
 import re
 import unittest
@@ -168,6 +169,56 @@ class Phase5Procedure(unittest.TestCase):
         self.assertIn("post.py build *", fm)
         self.assertNotIn("post.py submit", fm)
         self.assertNotIn("post.py *", fm)
+
+
+class PostingDocs(unittest.TestCase):
+    """05-04: posting.md names every refusal post.py can emit; the pointers and the README caveats exist."""
+
+    POST = os.path.join(ROOT, "skills", "review-code", "scripts", "post.py")
+    REFS = os.path.join(ROOT, "skills", "review-code", "references")
+
+    def read(self, *parts):
+        with open(os.path.join(*parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    def reasons(self):
+        """The first string of every Refuse(...) call; `tool + suffix` expands for gh and glab; the explicit extras are
+        the reasons that do not go through Refuse (python-too-old, internal-error) and the forge-state backstop."""
+        found = {"python-too-old", "internal-error", "closed", "merged", "draft", "locked"}
+        for node in ast.walk(ast.parse(self.read(self.POST))):
+            if not (isinstance(node, ast.Call) and node.args):
+                continue
+            fn, arg = node.func, node.args[0]
+            if not (getattr(fn, "id", None) == "Refuse" or getattr(fn, "attr", None) == "Refuse"):
+                continue
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found.add(arg.value)
+            elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add) and isinstance(arg.right, ast.Constant):
+                found.update(tool + arg.right.value for tool in ("gh", "glab"))
+        return found
+
+    def test_every_reason_documented(self):
+        doc = self.read(self.REFS, "posting.md")
+        found = self.reasons()
+        self.assertGreater(len(found), 30, found)  # the walk found the Refuse calls
+        missing = sorted(r for r in found if "`%s`" % r not in doc)
+        self.assertEqual(missing, [], "posting.md has no backticked entry for these refusal reasons")
+
+    def test_pointers(self):
+        self.assertIn("references/posting.md", self.read(SKILL))
+        untrusted = self.read(self.REFS, "untrusted-input.md")
+        self.assertIn("references/posting.md", untrusted)
+        self.assertRegex(" ".join(untrusted.split()), r"post\.py submit. is not pre-approved")
+
+    def test_readme(self):
+        text = self.read(ROOT, "README.md")
+        for s in ("--comment", "glab", "untested against a live GitLab", "references/posting.md"):
+            self.assertIn(s, text)
+        for s in ("posting comes in a later version", "PR posting and fix mode do not exist yet"):
+            self.assertNotIn(s, text)
+
+    def test_skill_shape(self):
+        self.assertLess(len(self.read(SKILL).splitlines()), 500)
 
 
 if __name__ == "__main__":

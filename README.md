@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. PR posting and fix mode do not exist yet. The tier defaults are unvalidated. Do not rely on it for review results.
+Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; fix mode does not exist yet. The tier defaults are unvalidated. Do not rely on it for review results.
 
 ## Install
 
@@ -24,8 +24,8 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 - Claude Code 2.1.292 or later. This floor is provisional; the plugin is tested on 2.1.303.
 - `git`.
 - `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
-- `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; posting comes in a later version.
-- `glab`, for MR targets. MR reading is untested against a live glab.
+- `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; with `--comment` the review is posted to the PR through `gh api`.
+- `glab`, for MR targets. MR reading and MR posting (`--comment`) are untested against a live GitLab.
 - Headless `claude -p`: a prompt that makes the model call the Skill tool ("use the review-code skill ...") is denied in the default permission mode, with the bare result `Execute skill: review-code:review-code` and no detail. Pass `--allowedTools Skill`, or use the slash form `/review-code`.
 - The Agent tool (subagents). The lanes and verifiers run as subagents; without it the skill runs in serial mode in the main thread (see Serial mode).
 
@@ -61,6 +61,10 @@ When the Agent tool is unavailable, when an Agent call fails with a nesting-dept
 ## Output
 
 The default is a terminal report. `--json` prints the schema v1 review document and `--sarif` prints SARIF 2.1.0. Both go to stdout and never to a file; in headless runs, redirect stdout to keep them. The schema is documented in the `skills/review-code/scripts/report.py` module docstring. Unverifiable items are listed in the text and JSON output but are not SARIF results.
+
+## Posting
+
+`--comment` on a PR or MR target posts the verified findings as one `COMMENT` review, never an approval or a request for changes. The skill first prints the exact payload and a digest and asks; only "Post as COMMENT" posts, and headless runs never post. Re-posting skips the findings you already posted. Secrets matching eleven regular expressions are redacted (no entropy check). MR posting is untested against a live GitLab. Flow, markers, refusals and limits: `skills/review-code/references/posting.md`.
 
 ## Reproduction
 

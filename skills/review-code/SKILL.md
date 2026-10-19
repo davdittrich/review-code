@@ -204,6 +204,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
    and sanitized PR text).
 
 What counts as untrusted, and what the defences do not cover: `references/untrusted-input.md`.
+Posting rules, refusals and limits: `references/posting.md`.
 
 ## Status
 
