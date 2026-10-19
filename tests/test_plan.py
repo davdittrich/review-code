@@ -126,9 +126,95 @@ class Overrides(Fixture):
         self.assertEqual(set(cfg), mod.CONFIG_KEYS)
 
 
+DIFFERENT_TIER = "verifier not on a different tier: finders and verifier both run on "
+
+
+class Tiers(Fixture):
+    def lanes(self, *args, **kw):
+        rc, out = self.plan("plan", "--run", self.run_dir, *args, **kw)
+        self.assertEqual(rc, 0, out)
+        return out, self.plan_json()
+
+    def test_standards_lane_in_every_tier_and_serial(self):
+        for args in (["--tier", "quick"], ["--tier", "standard"], ["--tier", "deep"], ["--serial"]):
+            _, p = self.lanes(*args)
+            self.assertIn("standards", [c["lane"] for c in p["calls"]], args)
+
+    def test_tier_table(self):
+        for tier, fin, ver, cap in (("quick", ("sonnet", "low"), ("opus", "medium"), 10),
+                                    ("standard", ("opus", "medium"), ("sonnet", "high"), 25),
+                                    ("deep", ("opus", "xhigh"), ("sonnet", "high"), 60)):
+            _, p = self.lanes("--tier", tier)
+            self.assertEqual({(c["model"], c["effort"]) for c in p["calls"]}, {fin}, tier)
+            for v in (p["verifier"], p["spec_verifier"]):
+                self.assertEqual((v["model"], v["effort"]), ver, tier)
+            self.assertEqual((p["caps"]["max_verifier_calls"], p["lost_guarantees"]), (cap, []), tier)
+
+    def test_equal_models_lose_the_guarantee(self):
+        out, p = self.lanes(stdin="verifier_model=opus\n")
+        self.assertEqual(p["lost_guarantees"], [DIFFERENT_TIER + "opus"])
+        self.assertEqual(out["lost_guarantees"], p["lost_guarantees"])
+        _, p = self.lanes("--tier", "quick", stdin="verifier_model=sonnet\n")
+        self.assertEqual(p["lost_guarantees"], [DIFFERENT_TIER + "sonnet"])
+        _, p = self.lanes(stdin="verifier_model=haiku\nfinder_model=haiku\n")  # case-insensitive equality below
+        self.assertEqual(len(p["lost_guarantees"]), 1)
+        _, p = self.lanes(stdin="verifier_model=OPUS\n")
+        self.assertEqual(len(p["lost_guarantees"]), 1)
+        _, p = self.lanes(stdin="verifier_model=haiku\n")
+        self.assertEqual(p["lost_guarantees"], [])
+
+    def test_environment_forcing_is_recorded_as_heuristic(self):
+        for v in ("1", "true", "YES"):
+            _, p = self.lanes(env={"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": v})
+            self.assertEqual(len(p["lost_guarantees"]), 1, v)
+            self.assertIn("per-lane models ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set", p["lost_guarantees"][0])
+            self.assertIn("heuristic", p["lost_guarantees"][0])
+        _, p = self.lanes(env={"CLAUDE_CODE_EFFORT_LEVEL": "high"})
+        self.assertIn("per-lane effort ignored: CLAUDE_CODE_EFFORT_LEVEL is set", p["lost_guarantees"][0])
+        self.assertIn("heuristic", p["lost_guarantees"][0])
+        for env in ({"CLAUDE_CODE_SUBAGENT_MODEL": "haiku"}, {"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "0"},
+                    {"CLAUDE_CODE_EFFORT_LEVEL": ""}):
+            self.assertEqual(self.lanes(env=env)[1]["lost_guarantees"], [], env)
+
+    def test_sota_flags(self):
+        out, p = self.lanes("--sota")
+        self.assertEqual(out["skipped"][-1], {"what": "sota", "why": "no dependency or import names in the change"})
+        _, p = self.lanes("--tier", "deep", "--no-sota")
+        self.assertEqual(p["skipped"], [{"what": "spec", "why": "no spec"}])
+        self.assertNotIn("sota", [c["lane"] for c in p["calls"]])
+        self.assertEqual(self.plan("plan", "--run", self.run_dir, "--sota", "--no-sota")[1]["reason"], "usage")
+        self.assertEqual(self.plan("plan", "--run", self.run_dir, "--sota", "--sota")[1]["reason"], "usage")
+
+    def test_ai_flag(self):
+        self.assertIs(self.lanes()[1]["ai"], False)
+        self.assertIs(self.lanes("--ai")[1]["ai"], True)
+
+
+class Serial(Fixture):
+    def test_serial_plan(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep", "--serial", "--sota")
+        self.assertEqual(rc, 0)
+        p = self.plan_json()
+        self.assertEqual(p["mode"], "serial")
+        self.assertEqual([(c["lane"], c["agent"]) for c in p["calls"]],
+                         [("defects", "main-thread"), ("standards", "main-thread")])
+        self.assertEqual(p["calls"][0]["input"], os.path.join(self.run_dir, "inputs", "defects.md"))
+        self.assertEqual(p["skipped"], [{"what": "spec", "why": "serial: the main thread never opens inputs/spec.md"},
+                                        {"what": "sota", "why": "serial: no isolated web lane"}])
+        self.assertEqual([g.split(":")[0] for g in p["lost_guarantees"]],
+                         ["no independent verifier", "no lane isolation", "Spec axis skipped", "SOTA skipped"])
+        self.assertEqual(out["lost_guarantees"], p["lost_guarantees"])
+        self.assertEqual(out["mode"], "serial")
+
+    def test_serial_ignores_environment_and_models(self):
+        _, out = self.plan("plan", "--run", self.run_dir, "--serial", stdin="verifier_model=opus\n",
+                           env={"CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"})
+        self.assertEqual(len(out["lost_guarantees"]), 4)
+
+
 class Tracer(Fixture):
     KEYS = {"version", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
-            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides"}
+            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
 
     def test_standard_tier_without_spec(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "standard")

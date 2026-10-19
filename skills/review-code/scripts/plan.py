@@ -1,14 +1,15 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
-    plan.py plan --run DIR [--tier quick|standard|deep]     stdout: one JSON line (status, reason, detail, tier,
-                                                            mode, calls (count), skipped)
+    plan.py plan --run DIR [--tier quick|standard|deep] [--sota|--no-sota] [--serial] [--ai]
+                                    stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
+                                    skipped, lost_guarantees)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
 plan.json (sort_keys): version, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_shards, max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, sota_inventory, preview,
-confirm, effective_overrides{key: value}. The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
+confirm, effective_overrides{key: value}, ai. The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
 """
 import sys
 
@@ -24,11 +25,12 @@ import ledger
 import report
 import target
 
-STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped"}
+STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees"}
 DEFAULT_TIER = "standard"
-# (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against.
+# (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
+# is opus so it differs from the sonnet finder (user's choice b at 04-06 Task 2, LANE-07).
 TIERS = {
-    "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("sonnet", "medium"),
+    "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("opus", "medium"),
               "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},
     "standard": {"lanes": ("defects", "standards", "spec"), "finder": ("opus", "medium"),
                  "verifier": ("sonnet", "high"), "max_verifier_calls": 25, "max_shards": 6, "max_packs": 4},
@@ -87,7 +89,26 @@ def _read_config():
     return parse_config(text)
 
 
-def plan(run, tier, cfg, flag_tier=False):
+BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
+              "--ai": ("ai", True)}
+# Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
+SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing is Blocking",
+               "no lane isolation: the main thread reads target code while holding Bash",
+               "Spec axis skipped: the main thread never opens inputs/spec.md",
+               "SOTA skipped: no isolated web lane"]
+HEURISTIC = "(heuristic: settings env may not reach this script)"
+
+
+def _env_lost():
+    lost = []
+    if os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        lost.append("per-lane models ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set " + HEURISTIC)
+    if os.environ.get("CLAUDE_CODE_EFFORT_LEVEL"):
+        lost.append("per-lane effort ignored: CLAUDE_CODE_EFFORT_LEVEL is set " + HEURISTIC)
+    return lost
+
+
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     _target_exists(run)
     led = ledger._load(run)
     spec = led.get("spec")
@@ -96,43 +117,75 @@ def plan(run, tier, cfg, flag_tier=False):
     fm, fe = cfg.get("finder_model", t["finder"][0]), cfg.get("finder_effort", t["finder"][1])
     vm, ve = cfg.get("verifier_model", t["verifier"][0]), cfg.get("verifier_effort", t["verifier"][1])
     caps = {k: cfg.get(k, t[k]) for k in CAP_BOUNDS}
+    lanes = [x for x in t["lanes"] if x != "sota" or sota is not False]
+    if sota and "sota" not in lanes:
+        lanes.append("sota")
     inventory, skipped, calls = [], [], []  # inventory: 04-07 fills it; an empty one drops the sota lane
-    for lane in t["lanes"]:
+    lost = []
+    if serial:
+        lanes = ["defects", "standards"]
+        skipped = [{"what": "spec", "why": "serial: the main thread never opens inputs/spec.md"},
+                   {"what": "sota", "why": "serial: no isolated web lane"}]
+        lost = list(SERIAL_LOST)
+    else:
+        # shortcut: aliases and full IDs of one model compare unequal; upgrade when a model registry ships.
+        if fm.lower() == vm.lower():
+            lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
+        lost += _env_lost()
+    for lane in lanes:
         if lane == "spec" and spec_none:
             skipped.append({"what": "spec", "why": "no spec"})
         elif lane == "sota" and not inventory:
             skipped.append({"what": "sota", "why": "no dependency or import names in the change"})
         else:
             path = os.path.join(run, "inputs", lane + ".md")
-            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": LANE_AGENT[lane], "model": fm,
-                          "effort": fe, "input": path, "shard": None,
-                          "prompt": "%s lane. Input: %s" % (lane.capitalize(), path)})
+            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else LANE_AGENT[lane],
+                          "model": None if serial else fm, "effort": None if serial else fe, "input": path,
+                          "shard": None, "prompt": "%s lane. Input: %s" % (lane.capitalize(), path)})
     ver = {"model": vm, "effort": ve}
-    doc = {"version": 1, "tier": tier, "mode": "parallel", "calls": calls,
+    doc = {"version": 1, "tier": tier, "mode": "serial" if serial else "parallel", "calls": calls,
            "verifier": dict(ver, agent="review-code:verifier"),
            "spec_verifier": dict(ver, agent="review-code:spec-verifier"),
            "caps": dict(caps, wave_size=WAVE_SIZE),
-           "max_turns": dict(MAX_TURNS), "packs": [], "shards": [], "skipped": skipped, "lost_guarantees": [],
-           "sota_inventory": inventory, "preview": [], "confirm": False,
+           "max_turns": dict(MAX_TURNS), "packs": [], "shards": [], "skipped": skipped, "lost_guarantees": lost,
+           "sota_inventory": inventory, "preview": [], "confirm": False, "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items()) if k != "default_tier" or not flag_tier}}
+    if serial:
+        doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
-    return {"status": "ok", "tier": tier, "mode": doc["mode"], "calls": len(calls), "skipped": skipped}
+    return {"status": "ok", "tier": tier, "mode": doc["mode"], "calls": len(calls), "skipped": skipped,
+            "lost_guarantees": lost}
 
 
 def _usage():
-    return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier quick|standard|deep]")
+    return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier quick|standard|deep] "
+                                  "[--sota|--no-sota] [--serial] [--ai]")
+
+
+def _parse(argv):
+    if argv[:2] != ["plan", "--run"] or len(argv) < 3:
+        raise _usage()
+    opts, i = {}, 3
+    while i < len(argv):
+        a = argv[i]
+        if a == "--tier" and "tier" not in opts and i + 1 < len(argv) and argv[i + 1] in TIERS:
+            opts["tier"] = argv[i + 1]
+            i += 2
+        elif a in BOOL_FLAGS and BOOL_FLAGS[a][0] not in opts:
+            opts[BOOL_FLAGS[a][0]] = BOOL_FLAGS[a][1]
+            i += 1
+        else:
+            raise _usage()
+    return argv[2], opts
 
 
 def main(argv):
     try:
-        if argv[:2] != ["plan", "--run"] or len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--tier"):
-            raise _usage()
-        flag_tier = len(argv) == 5
-        if flag_tier and argv[4] not in TIERS:
-            raise _usage()
+        run, opts = _parse(argv)
         cfg = _read_config()
-        tier = argv[4] if flag_tier else cfg.get("default_tier", DEFAULT_TIER)
-        out, rc = plan(argv[2], tier, cfg, flag_tier), 0
+        tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
+        out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
+                       opts.get("ai", False)), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback
