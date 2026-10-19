@@ -194,6 +194,96 @@ def _install_packs(run, packs):
         ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md")))])
 
 
+# Module shards (path and repo targets). 400000 bytes is about 100k tokens at 4 bytes per token, which leaves room in
+# a 200k-token lane context for the ledger, the diff and the lane's output.
+SHARD_BYTES = 400000
+CHURN_DAYS = 180  # about two release cycles
+CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when a monorepo needs more
+RISK_TOKENS = ("auth", "login", "passw", "secret", "token", "crypt", "session", "admin", "payment", "billing",
+               "upload", "sql", "migrat", "exec", "shell", "serial", "pickle", "permission")
+
+
+def _file_stat(repo, p):
+    """(bytes, lines) of a working-copy file; (0, 0) when unreadable."""
+    size = lines = 0
+    try:
+        with open(os.path.join(repo, p), "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                size, lines = size + len(chunk), lines + chunk.count(b"\n")
+    except OSError:
+        return 0, 0
+    return size, lines
+
+
+def _groups(files, size):
+    """Ordered file lists: top-level directory groups (root files form "."), a group above SHARD_BYTES split by its
+    second path component, consecutive small groups merged in path order up to SHARD_BYTES. shortcut: one level of
+    split only, so a single huge directory below that stays one shard; upgrade when one appears."""
+    by = {}
+    for p in sorted(files):
+        by.setdefault(p.split("/")[0] if "/" in p else ".", []).append(p)
+    groups = []
+    for top in sorted(by):
+        if top != "." and sum(size[p] for p in by[top]) > SHARD_BYTES:
+            sub = {}
+            for p in by[top]:
+                parts = p.split("/")
+                sub.setdefault(parts[1] if len(parts) > 2 else ".", []).append(p)
+            groups += [sub[k] for k in sorted(sub)]
+        else:
+            groups.append(by[top])
+    out, cur, tot = [], [], 0
+    for g in groups:
+        n = sum(size[p] for p in g)
+        if cur and tot + n > SHARD_BYTES:
+            out.append(cur)
+            cur, tot = [], 0
+        cur, tot = cur + g, tot + n
+    return out + [cur] if cur else out
+
+
+def _churn(repo, names):
+    """{path: lines added + deleted over CHURN_DAYS} from one git log call; empty when git fails."""
+    out = target.git(["-c", "core.quotepath=off", "log", "--numstat", "--format=", "--no-renames",
+                      "--since=%d.days" % CHURN_DAYS, "--max-count=%d" % CHURN_COMMITS], repo, check=False)
+    churn = {}
+    for ln in out.splitlines():
+        added, _, rest = ln.partition("\t")
+        deleted, _, path = rest.partition("\t")
+        if path in names and added.isdigit() and deleted.isdigit():
+            churn[path] = churn.get(path, 0) + int(added) + int(deleted)
+    return churn
+
+
+def _rank_shards(tj, led, groups, stats):
+    """[(risk, files)] riskiest first. Risk = files whose path holds a RISK_TOKENS entry, plus 1 when no file of the
+    shard is a test or has a test in the ledger, plus churn over the shard's current line count. Weights are
+    unvalidated: ties break by first path."""
+    churn = _churn(tj["repo"], {p for g in groups for p in g})
+    tested = {e["file"] for e in led.get("tests", []) if isinstance(e, dict) and isinstance(e.get("file"), str)}
+    ranked = []
+    for g in groups:
+        tokens = sum(1 for p in g if any(t in p.lower() for t in RISK_TOKENS))
+        untested = 0 if any(p in tested or ledger._is_test(p) for p in g) else 1
+        ranked.append((tokens + untested + sum(churn.get(p, 0) for p in g) / max(1, sum(stats[p][1] for p in g)), g))
+    return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
+
+
+def _build_shard(run, tj, i, files, trust, packs):
+    """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
+    and the global packs that match its files."""
+    d = os.path.join(run, "shards", str(i))
+    os.makedirs(d, mode=0o700)
+    target.write_private(os.path.join(d, "target.json"), json.dumps(dict(tj, included=files, run=d), sort_keys=True, indent=2))
+    target.write_private(os.path.join(d, "change.diff"), "")
+    ledger.build(d)
+    if trust in ledger.TRUST_VALUES:
+        ledger.trust_set(d, trust)
+    mine = set(files)
+    _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)])
+    return d
+
+
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
               "--ai": ("ai", True)}
 # Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
@@ -242,16 +332,31 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
     skipped += [{"what": "pack " + n, "why": "pack cap"} for n, _ in dropped]
     _install_packs(run, packs)
+    shards = []
+    if tj["kind"] in ("path", "repo"):
+        stats = {p: _file_stat(tj["repo"], p) for p in tj["included"]}
+        groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
+        if len(groups) > 1:  # one group is the parent run itself
+            shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
+            os.makedirs(os.path.join(run, "shards"), mode=0o700)
+            for i, (risk, files) in enumerate(_rank_shards(tj, led, groups, stats), 1):
+                if i > caps["max_shards"]:
+                    skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
+                else:
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger._stored(led), packs),
+                                   "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
             skipped.append({"what": "spec", "why": "no spec"})
         elif lane == "sota" and not inventory:
             skipped.append({"what": "sota", "why": "no dependency or import names in the change"})
         else:
-            path = os.path.join(run, "inputs", lane + ".md")
-            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else LANE_AGENT[lane],
-                          "model": None if serial else fm, "effort": None if serial else fe, "input": path,
-                          "shard": None, "prompt": "%s lane. Input: %s" % (lane.capitalize(), path)})
+            for sh in (shards if lane in ("defects", "standards") else None) or [None]:
+                path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
+                calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else LANE_AGENT[lane],
+                              "model": None if serial else fm, "effort": None if serial else fe, "input": path,
+                              "shard": sh["id"] if sh else None,
+                              "prompt": "%s lane%s. Input: %s" % (lane.capitalize(), ", shard %d" % sh["id"] if sh else "", path)})
     ver = {"model": vm, "effort": ve}
     doc = {"version": 1, "tier": tier, "mode": "serial" if serial else "parallel", "calls": calls,
            "verifier": dict(ver, agent="review-code:verifier"),
@@ -259,7 +364,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
            "caps": dict(caps, wave_size=WAVE_SIZE),
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
-           "shards": [], "skipped": skipped, "lost_guarantees": lost,
+           "shards": shards, "skipped": skipped, "lost_guarantees": lost,
            "sota_inventory": inventory, "preview": [], "confirm": False, "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items()) if k != "default_tier" or not flag_tier}}
     if serial:

@@ -394,6 +394,9 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
+    def test_change_target_is_never_sharded(self):
+        self.assertEqual(self.run_plan("--tier", "deep")["shards"], [])
+
     def test_no_match_writes_none(self):
         with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
@@ -456,6 +459,118 @@ class SecurityPackAdded(SecurityPack):
 
     def test_added_call_loads(self):
         self.assertEqual(self.names(), ["python", "security-owasp"])
+
+
+PAD = "value = 1\n"
+BIG = "x" * 59 + "\n"  # 60 bytes
+SMALL = "y = 1\n\n\n\n"  # 10 bytes
+
+
+class ShardBase(Fixture):
+    """Path and repo targets; SHARD_BYTES is patched small, so plan runs in process."""
+    pin_args = ["."]
+
+    def run_plan(self, shard_bytes=1, cfg=None, tier="standard", **kw):
+        import plan as mod
+        with mock.patch.object(mod, "SHARD_BYTES", shard_bytes), mock.patch.dict(os.environ):
+            for k in ENV_VARS:
+                os.environ.pop(k, None)
+            mod.plan(self.run_dir, tier, cfg or {}, **kw)
+        return self.plan_json()
+
+    def read_text(self, *rel):
+        with open(os.path.join(self.run_dir, *rel), encoding="utf-8") as fh:
+            return fh.read()
+
+    def read_json(self, *rel):
+        return json.loads(self.read_text(*rel))
+
+
+class ShardMerge(ShardBase):
+    base_files = {"big/a/x.py": BIG, "big/b/y.py": BIG, "small1/m.py": SMALL, "small2/n.py": SMALL}
+    feat_files = {"small1/m.py": SMALL + "#\n"}
+
+    def test_big_group_splits_and_small_groups_merge(self):
+        p = self.run_plan(shard_bytes=100)
+        self.assertEqual(sorted(sorted(s["files"]) for s in p["shards"]),
+                         [["big/a/x.py"], ["big/b/y.py", "small1/m.py", "small2/n.py", ]])
+
+    def test_one_group_is_not_sharded(self):
+        p = self.run_plan(shard_bytes=10 ** 9)
+        self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
+
+
+class Shards(ShardBase):
+    base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
+    feat_files = {"auth/login.py": PAD + "other = 2\n"}
+
+    def test_cap_keeps_the_riskiest_and_lists_the_rest(self):
+        p = self.run_plan(cfg={"max_shards": 2})
+        self.assertEqual([(s["id"], s["files"]) for s in p["shards"]],
+                         [(1, ["auth/login.py"]), (2, ["docs/guide.md"])])
+        self.assertGreater(p["shards"][0]["risk"], p["shards"][1]["risk"])
+        self.assertIn({"what": "shard 3", "why": "shard cap: 1 files", "files": 1}, p["skipped"])
+
+    def test_each_shard_has_its_own_run_tree_and_ledger(self):
+        before = self.read_text("ledger.json")
+        parent_tree = sorted(os.listdir(os.path.join(self.run_dir, "tree")))
+        p = self.run_plan()
+        for s in p["shards"]:
+            d = os.path.join(self.run_dir, "shards", str(s["id"]))
+            self.assertEqual(s["run"], d)
+            self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
+            tj = self.read_json("shards", str(s["id"]), "target.json")
+            self.assertEqual((tj["included"], tj["run"]), (s["files"], d))
+            self.assertEqual(self.read_text("shards", str(s["id"]), "change.diff"), "")
+            tree = os.path.join(d, "tree")
+            on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
+            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md", "util/helpers.py"}, set(s["files"]))
+            self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
+        self.assertEqual(self.read_text("ledger.json"), before)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)
+
+    def test_shards_inherit_the_single_trust_answer(self):
+        import ledger
+        for stored in ("own", "external", None):
+            with self.subTest(stored=stored):
+                self.run_dir = self.pin(["."])
+                if stored:
+                    ledger.trust_set(self.run_dir, stored)
+                with mock.patch.object(ledger, "trust_set", wraps=ledger.trust_set) as spy:
+                    p = self.run_plan(cfg={"max_shards": 2})
+                self.assertEqual(len(p["shards"]), 2)
+                for s in p["shards"]:
+                    led = self.read_json("shards", str(s["id"]), "ledger.json")
+                    self.assertEqual((led["trust"], led["trust_asked"]), (stored or "unset", stored is not None))
+                self.assertNotIn(self.run_dir, [c.args[0] for c in spy.call_args_list])
+                self.assertEqual(len(spy.call_args_list), 2 if stored else 0)
+
+    def test_calls_per_shard(self):
+        p = self.run_plan(cfg={"max_shards": 2}, tier="deep")
+        self.assertEqual(sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] != "spec"),
+                         [("defects", 1), ("defects", 2), ("standards", 1), ("standards", 2)])
+        for c in p["calls"]:
+            self.assertEqual(c["input"], os.path.join(self.run_dir, "shards", str(c["shard"]), "inputs",
+                                                      c["lane"] + ".md"))
+
+    def test_packs_go_into_each_shard_input(self):
+        self.run_plan(cfg={"max_shards": 2})
+        self.assertIn("packs/python.md", self.read_text("shards", "1", "inputs", "defects.md"))
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "shards", "1", "inputs", "packs", "python.md")))
+        self.assertNotIn("packs/python.md", self.read_text("shards", "2", "inputs", "defects.md"))
+
+    def test_rerun_rebuilds_the_shard_dirs(self):
+        self.run_plan(cfg={"max_shards": 3})
+        self.run_plan(cfg={"max_shards": 2})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "shards"))), ["1", "2"])
+
+    def test_end_to_end_ingest_and_render_list_the_skipped_shard(self):
+        self.run_plan(cfg={"max_shards": 2})
+        c = cand("value = 1", 1, path="auth/login.py", category="bug")
+        rc, out = self.rep("ingest", tr.lines(c), extra=["--lane", "defects", "--shard", "1"])
+        self.assertEqual(rc, 0, out)
+        rc, out = self.rep("render")
+        self.assertIn("shard skipped: shard 3 (shard cap: 1 files) 1 files", out)
 
 
 if __name__ == "__main__":
