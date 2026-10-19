@@ -264,5 +264,95 @@ class Derivation(Base):
         self.assertEqual(self.doc()["findings"], [])
 
 
+class Renders(Base):
+    base_files, feat_files = BASE2, {"src/calc.py": FEAT2}
+
+    def seed(self, title="add subtracts"):
+        self.ingest(cand(Q_ADD, 8, title=title, severity="blocking", category="security"), cand(Q_MUL, 11),
+                    cand(Q_NEG, 14), cand(Q_INC, 20, category="accessibility"), {"inspected": ["src/calc.py"]})
+        self.verdicts(dict(verdict((Q_ADD, 8)), id=fid("src/calc.py", "security", Q_ADD)),
+                      verdict((Q_MUL, 11), "unverifiable", reason="needs runtime"),
+                      dict(verdict((Q_INC, 20)), id=fid("src/calc.py", "accessibility", Q_INC)))
+
+    def test_json_is_identical_for_shuffled_input(self):
+        cs = [cand(Q_ADD, 8), cand(Q_MUL, 11, severity="suggestion"), cand(Q_NEG, 14), cand(Q_OLD, 5, severity="blocking",
+              category="security")]
+        vs = [verdict((Q_ADD, 8)), verdict((Q_MUL, 11), "unverifiable"), verdict((Q_NEG, 14), "refuted"),
+              dict(verdict((Q_OLD, 5)), id=fid("src/calc.py", "security", Q_OLD))]
+        outs = []
+        for order in (1, -1):
+            self.ingest(*cs[::order], {"inspected": ["src/calc.py"]})
+            self.verdicts(*vs[::order])
+            outs.append(self.rep("render", extra=["--format", "json"])[1])
+        self.assertEqual(outs[0], outs[1])
+        self.assertTrue(outs[0].isascii() and outs[0].endswith("}\n"))
+
+    def test_sarif(self):
+        self.seed()
+        d = self.doc()
+        rc, out = self.rep("render", extra=["--format", "sarif"])
+        sarif = json.loads(out)
+        self.assertEqual((sarif["version"], sarif["$schema"]), ("2.1.0", "https://json.schemastore.org/sarif-2.1.0.json"))
+        (run,) = sarif["runs"]
+        self.assertEqual(run["tool"]["driver"]["name"], "review-code")
+        rules = [r["id"] for r in run["tool"]["driver"]["rules"]]
+        self.assertEqual(len(run["results"]), len(d["findings"]))
+        self.assertEqual(len(d["findings"]), 2)
+        self.assertEqual(rules, sorted({"review-code/" + f["category"] for f in d["findings"]}))
+        for r, f in zip(run["results"], d["findings"]):
+            self.assertIn(r["ruleId"], rules)
+            self.assertEqual(r["message"]["text"], f["title"])
+            (loc,) = r["locations"]
+            self.assertEqual(loc["physicalLocation"]["artifactLocation"]["uri"], f["path"])
+            self.assertEqual(loc["physicalLocation"]["region"], {"startLine": f["line"], "endLine": f["end_line"]})
+            self.assertEqual(r["partialFingerprints"], {"reviewCodeId/v1": f["id"]})
+            self.assertEqual(r["properties"], {"evidenceClass": f["evidence_class"], "severity": f["severity"],
+                                               "origin": f["origin"], "score": f["score"]})
+        self.assertEqual([r["level"] for r in run["results"]], ["error", "warning"])
+
+    def test_text_sections_and_escape(self):
+        self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")
+        rc, out = self.rep("render")
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\r", out)
+        self.assertIn("<U+001B>[31mRED", out)
+        heads = [h for h in ("Summary", "Blocking", "Required", "Suggestions", "Unverifiable", "Areas inspected", "Verdict")
+                 if re.search(r"(?m)^" + h + r"\b", out)]
+        self.assertEqual(heads, ["Summary", "Blocking", "Required", "Suggestions", "Unverifiable", "Areas inspected", "Verdict"])
+        for want in ("Needs changes", "advisory only", "needs runtime", "src/calc.py:8", "refuted 0", "do-not-flag 0",
+                     "invalid 0", "trust: external"):
+            self.assertIn(want, out)
+        self.assertRegex(out, r"(?m)^Suggestions\nnone$")
+
+    def test_render_before_ingest_refuses(self):
+        for fmt in ("text", "json", "sarif"):
+            rc, out = self.rep("render", extra=["--format", fmt])
+            self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"))
+
+    def test_usage_refuses_with_one_json_line(self):
+        for args in ([], ["bogus", "--run", self.run_dir], ["render", "--run"], ["render", "--run", self.run_dir, "--format", "xml"],
+                     ["ingest", "--run", self.run_dir, "x"], ["ingest", "--run", self.tmp]):
+            rc, out, err = cli("report.py", args, self.repo, self.tmp)
+            self.assertEqual((rc, err, json.loads(out)["status"]), (1, "", "refuse"), args)
+
+    def test_python_39_grammar(self):
+        with open(os.path.join(SCRIPTS, "report.py"), encoding="utf-8") as fh:
+            ast.parse(fh.read(), feature_version=(3, 9))
+
+
+class RepoTarget(Base):
+    pin_args = ["--repo"]
+
+    def test_whole_file_finding_is_existing_and_says_so(self):
+        self.ingest(cand("return 1", 2, severity="suggestion"), {"inspected": ["src/calc.py"]})
+        self.verdicts(verdict(("return 1", 2)))
+        d = self.doc()
+        (f,) = d["findings"]
+        self.assertEqual((f["origin"], f["severity"], d["target"]["not_a_change"], d["dropped"]["do_not_flag"]),
+                         ("existing", "suggestion", True, 0))
+        rc, out = self.rep("render")
+        self.assertIn("Target is not a change: whole-file findings", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+from urllib.parse import quote
 
 import ledger
 import sanitize
@@ -255,9 +256,59 @@ def build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
 
 
+_LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "noted": "note"}
+
+
+def _sarif(doc):
+    fs = doc["findings"]
+    return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "review-code",
+                            "rules": [{"id": "review-code/" + c} for c in sorted({f["category"] for f in fs})]}},
+        "results": [{"ruleId": "review-code/" + f["category"], "level": _LEVEL[f["severity"]],
+                     "message": {"text": f["title"]},
+                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": quote(f["path"])},
+                                                         "region": {"startLine": f["line"], "endLine": f["end_line"]}}}],
+                     "partialFingerprints": {"reviewCodeId/v1": f["id"]},
+                     "properties": {"evidenceClass": f["evidence_class"], "severity": f["severity"],
+                                    "origin": f["origin"], "score": f["score"]}} for f in fs]}]}
+
+
+def _text(doc):
+    def e(x):  # repo and LLM text reaches the terminal only through here; one line each, so no CR overwrite
+        return sanitize.escape_for_code(" ".join(str(x).split()))[0]
+
+    def item(i):
+        out = ["- [%s] %s:%d  %s (%s, score %d, %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
+                                                      i["evidence_class"], i["score"], i["origin"]),
+               "    trigger: " + e(i["trigger"])]
+        out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
+        return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
+
+    t, d, fs = doc["target"], doc["dropped"], doc["findings"]
+    out = ["Summary", "verdict: " + doc["verdict"], "target: %s %s (merge base %s), ledger %s" % (
+        e(t["kind"]), e(t["head_sha"]), e(t["merge_base"]), e(t["label"]))]
+    if t["not_a_change"]:
+        out.append("Target is not a change: whole-file findings")
+    out += ["findings: %d, unverifiable: %d" % (len(fs), len(doc["unverifiable"])),
+            "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
+            "trust: " + doc["trust"], ""]
+    def section(head, rows):
+        return [head] + (rows or ["none"]) + [""]
+
+    for head, pick in (("Blocking", ("blocking",)), ("Required", ("required",)), ("Suggestions", ("suggestion", "noted"))):
+        out += section(head, [x for i in fs if i["severity"] in pick for x in item(i)])
+    out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
+                                                                   i["evidence_class"], e(i["reason"]))
+                                    for i in doc["unverifiable"]])
+    out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
+    return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
+
+
 def render(run, fmt):
     doc = build(run)
-    return json.dumps(doc, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+    if fmt == "text":
+        return _text(doc)
+    return json.dumps(_sarif(doc) if fmt == "sarif" else doc, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
 
 def _usage():
