@@ -30,6 +30,25 @@ ID_RE = r"F-[0-9a-f]{10}"
 MARK = "<!-- review-code:finding %s v1 -->"
 REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
+REVIEW_RE = re.compile(r"<!-- review-code:review v1 head=[0-9a-f]{40}(?:[0-9a-f]{24})? -->")
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders; wider than this only makes the guard stricter
+_REF = re.compile(r"[@#!](?=\w)[\w./-]*")  # @name, @org/team, #123, !123: each would ping or link
+# Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
+_PEM = (r"-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----(?:\n(?!(?:\d+: )?-----END)(?:\d+: )?[\w+/=:,. -]{8,})*"
+        r"(?:\n(?:\d+: )?-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----)?")
+SECRET_RULES = tuple((rule, re.compile(rx)) for rule, rx in (
+    ("aws-access-token", r"\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b"),
+    ("github-pat", r"ghp_[0-9a-zA-Z]{36}"),
+    ("github-oauth", r"gho_[0-9a-zA-Z]{36}"),
+    ("github-fine-grained-pat", r"github_pat_\w{82}"),
+    ("gitlab-pat", r"glpat-[\w-]{20}"),
+    ("gcp-api-key", r"\bAIza[\w-]{35}"),
+    ("slack-bot-token", r"xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*"),
+    ("stripe-access-token", r"\b(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}"),
+    ("jwt", r"\bey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9/\\_-]{17,}\.[a-zA-Z0-9/\\_-]{10,}"),
+    ("private-key", _PEM),
+    ("generic-secret", r"""(?i)(?:password|secret|token|api[_-]?key)\s*[:=]\s*["'][^"'\s]{8,}["']"""),
+))
 MAX_INLINE = 32
 MAX_BODY = 60000
 PER_PAGE = 100
@@ -148,11 +167,17 @@ class GitHub:
         return login
 
     def existing(self, me: str) -> set:
-        """Refuse when `me` already has a pending review (never deleted: it may hold their own work); else the ids already posted."""
-        for r in _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"]):
+        """Refuse when `me` already has a pending review (never deleted: it may hold their own work); else the finding ids
+        already posted: whole-line markers in review bodies and review comments written by `me` (exact login), never by anyone else."""
+        reviews = _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"])
+        for r in reviews:
             if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == me:
                 raise Refuse("pending-review-exists")
-        return set()
+        ids = set()
+        for item in reviews + _pages("gh", self.i["host"], self.pr + "/comments", self.i["run"]):
+            if isinstance(item, dict) and (item.get("user") or {}).get("login") == me and isinstance(item.get("body"), str):
+                ids.update(MARK_RE.findall(item["body"].replace("\r\n", "\n")))  # the web editor stores CRLF
+        return ids
 
     def create(self, payload: dict) -> int:
         body = {"commit_id": payload["head_sha"], "body": payload["body"],
@@ -203,7 +228,45 @@ def _anchors(diff_text: str) -> dict:
 
 
 def _prose(s) -> str:
-    return sanitize.escape_for_code(" ".join(str(s).split()))[0]
+    """One line of repository-derived text that pings, links and renders nothing: references in backticks, `<` and `[` escaped."""
+    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'")
+    return _REF.sub(lambda m: "`" + m.group() + "`", t).replace("<", "&lt;").replace("[", "\\[")
+
+
+def _scan(text: str) -> list:
+    """[(rule, start, end)] for every rule match, in text order."""
+    return sorted(((rule, m.start(), m.end()) for rule, rx in SECRET_RULES for m in rx.finditer(text)), key=lambda h: h[1:])
+
+
+def _redact(text: str):
+    """(text with each secret replaced by `[REDACTED:<rule>]`, the rule ids in text order). Overlaps keep the earliest, widest match."""
+    hits, end = [], 0
+    for rule, a, b in sorted(_scan(text), key=lambda h: (h[1], -h[2])):
+        if a >= end:
+            hits.append((rule, a, b))
+            end = b
+    for rule, a, b in reversed(hits):
+        text = text[:a] + "[REDACTED:%s]" % rule + text[b:]
+    return text, [h[0] for h in hits]
+
+
+def _guard(text: str) -> None:
+    """Refuse a line a forge or bot could run as a command or hide as markup, unless it is exactly one of our marker lines."""
+    for ln in _LINE_BREAK.split(text):
+        if re.match(r"\s*(?:/|<!--)", ln) and not (MARK_RE.fullmatch(ln) or REVIEW_RE.fullmatch(ln)):
+            raise Refuse("unsafe-text")
+
+
+def _checked(texts: List[str]) -> None:
+    """The guard and the secret scan over every outgoing body; a scanner failure refuses rather than posts unscanned."""
+    for t in texts:
+        _guard(t)
+    try:
+        found = any(_scan(t) for t in texts)
+    except Exception:
+        raise Refuse("scan-failed")
+    if found:
+        raise Refuse("secret-found")
 
 
 def _render(f: dict, where: Optional[str] = None) -> str:
@@ -219,10 +282,10 @@ def _render(f: dict, where: Optional[str] = None) -> str:
     return "\n".join(out + [MARK % f["id"]])
 
 
-def _body(doc: dict, entries: List[str], n_unverifiable: int, head: str) -> str:
-    out = ["**Verdict:** %s (advisory)" % _prose(doc["verdict"])]
+def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str) -> str:
+    out = ["**Verdict:** %s (advisory)" % _prose(verdict)]
     for ax in report.AXES:
-        n = sum(1 for f in doc["findings"] if f["axis"] == ax)
+        n = sum(1 for f in findings if f["axis"] == ax)
         out += ["%s: %d finding%s" % (ax.capitalize(), n, "" if n == 1 else "s")] if n else []
     text = "\n".join(out)
     if entries:
@@ -238,7 +301,9 @@ def _preview(payload: dict) -> str:
     for k, c in enumerate(payload["comments"], 1):
         out += ["== inline %d/%d: %s:%d (%s) ==" % (k, len(payload["comments"]), _prose(c["path"]), c["line"], c["side"]),
                 c["body"]]
-    return "\n".join(out + ["== not posted ==", "unverifiable: %d" % payload["unverifiable"]])
+    out += ["== secret scan =="] + (["%s %s" % (h["rule"], _prose(h["where"])) for h in payload["scan"]] or ["no matches"])
+    return "\n".join(out + ["== not posted ==", "unverifiable: %d" % payload["unverifiable"],
+                            "already posted: %d" % len(payload["skipped"])])
 
 
 def build(run: str) -> dict:
@@ -251,25 +316,37 @@ def build(run: str) -> dict:
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head
         raise Refuse("head-moved")
     anchors = _anchors(gh.diff())
-    gh.existing(gh.me())
+    posted = gh.existing(gh.me())
     if gh.state() != head:  # check (b): nothing moved while the reads ran
         raise Refuse("head-moved")
-    comments, entries, in_body = [], [], []
-    for f in doc["findings"]:  # report order: axis, severity, path, line, id
+    fresh = [f for f in doc["findings"] if f["id"] not in posted]
+    if not fresh:
+        raise Refuse("already-posted")
+    comments, entries, in_body, scan = [], [], [], []
+    for f in fresh:  # report order: axis, severity, path, line, id
         row = anchors.get((f["path"], f["line"]))
-        if row is not None and len(comments) < MAX_INLINE:
+        inline = row is not None and len(comments) < MAX_INLINE
+        try:  # each finding on its own, so every match is reported at the finding's path:line
+            text, rules = _redact(_render(f) if inline else _render(f, "%s:%d" % (_prose(f["path"]), f["line"])))
+        except Exception:
+            raise Refuse("scan-failed")
+        scan += [{"rule": r, "where": "%s:%d" % (f["path"], f["line"])} for r in rules]
+        if inline:
             comments.append({"id": f["id"], "path": f["path"], "line": f["line"], "side": "RIGHT", "old_path": row[2],
-                             "old_line": row[1], "body": _render(f)})
+                             "old_line": row[1], "body": text})
         else:
-            entries.append(_render(f, "%s:%d" % (_prose(f["path"]), f["line"])))
+            entries.append(text)
             in_body.append(f["id"])
     n_unverifiable = sum(1 for i in doc["unverifiable"] if i["category"] != "sota")
     payload = {"version": 1, "forge": info["forge"], "host": info["host"], "repo": info["repo"],
                "number": info["number"], "url": info["url"], "head_sha": head,
-               "body": _body(doc, entries, n_unverifiable, head), "comments": comments, "in_body": in_body,
-               "unverifiable": n_unverifiable}
-    if any(len(t) > MAX_BODY for t in [payload["body"]] + [c["body"] for c in comments]):
+               "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head), "comments": comments,
+               "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
+               "skipped": [f["id"] for f in doc["findings"] if f["id"] in posted]}
+    texts = [payload["body"]] + [c["body"] for c in comments]
+    if any(len(t) > MAX_BODY for t in texts):
         raise Refuse("too-large")
+    _checked(texts)
     out_dir = os.path.join(run, "post")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
@@ -278,8 +355,8 @@ def build(run: str) -> dict:
     with open(path, "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
     print(_preview(payload))
-    return {"status": "ok", "digest": digest, "inline": len(comments), "in_body": len(in_body), "skipped": 0,
-            "unverifiable": n_unverifiable, "redacted": 0}
+    return {"status": "ok", "digest": digest, "inline": len(comments), "in_body": len(in_body),
+            "skipped": len(payload["skipped"]), "unverifiable": n_unverifiable, "redacted": len(scan)}
 
 
 def submit(run: str, digest: str) -> dict:
@@ -296,10 +373,13 @@ def submit(run: str, digest: str) -> dict:
     info = _target(run)
     if not isinstance(payload, dict) or any(payload.get(k) != info[k] for k in ("forge", "host", "repo", "number", "head_sha")):
         raise Refuse("payload-mismatch")
+    _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
     if gh.state() != info["head_sha"]:  # check (c): before the first write
         raise Refuse("head-moved")
-    gh.existing(gh.me())  # fresh: a pending review made since build would be stacked on or confused with ours
+    posted = gh.existing(gh.me())  # fresh: a pending review made since build would be stacked on or confused with ours
+    if posted & ({c["id"] for c in payload["comments"]} | set(payload["in_body"])):
+        raise Refuse("already-posted")  # a retry after a timeout, or a first submit that died after its event call
     handle = gh.create(payload)
     try:
         gh.verify(payload, handle)
