@@ -64,7 +64,7 @@ The default is a terminal report. `--json` prints the schema v1 review document 
 
 ## Posting
 
-`--comment` on a PR or MR target posts the verified findings as one `COMMENT` review, never an approval or a request for changes. The skill first prints the exact payload and a digest and asks; only "Post as COMMENT" posts, and headless runs never post. Re-posting skips the findings you already posted. Secrets matching eleven regular expressions are redacted (no entropy check). MR posting is untested against a live GitLab. Flow, markers, refusals and limits: `skills/review-code/references/posting.md`.
+`--comment` on a PR or MR target posts the verified findings as one `COMMENT` review, never an approval or a request for changes. The skill first prints the exact payload and a digest and asks; only "Post as COMMENT" posts, and headless runs never post. Re-posting skips the findings you already posted. Secrets matching eleven regular expressions are redacted (no entropy check). MR posting is untested against a live GitLab; PR posting was run once against a live GitHub PR (one review posted, hidden markers survived, re-posting refused). Flow, markers, refusals and limits: `skills/review-code/references/posting.md`.
 
 ## Reproduction
 
