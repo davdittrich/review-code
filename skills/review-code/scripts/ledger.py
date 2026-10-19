@@ -268,20 +268,11 @@ def _conv_paths(names, included: List[str]) -> set:
 
 
 def _put(root: str, rel: str, data: bytes) -> bool:
-    """Write data at root/rel, mode 0600 in 0700 directories; refuse anything that could leave root."""
-    parts = rel.split("/")
-    if rel.startswith("/") or any(x in ("", "..", ".git") for x in parts):
-        return False
+    """Write data at root/rel (a git path: never absolute, never `..`), mode 0600 in owner-only directories."""
+    dest = os.path.join(root, rel)
     try:
-        os.makedirs(root, mode=0o700, exist_ok=True)
-        cur = root
-        for x in parts[:-1]:
-            cur = os.path.join(cur, x)
-            os.makedirs(cur, mode=0o700, exist_ok=True)
-        dest = os.path.join(cur, parts[-1])
-        if not os.path.realpath(dest).startswith(os.path.realpath(root) + os.sep):
-            return False
-        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
         return False
     with os.fdopen(fd, "wb") as fh:

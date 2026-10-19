@@ -375,35 +375,23 @@ _NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv"]
 
 
 def read_working(path: str, limit: int) -> Tuple[str, object]:
-    """("ok", bytes) | ("symlink"|"special"|"missing", None) | ("too-large", size) for a working-copy file, judged on
-    the open descriptor (6xl.91): O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from blocking, fstat
-    decides the type and size, and at most limit + 1 bytes are read, so a file swapped after an lstat cannot
-    block, escape or exceed the cap."""
+    """("ok", bytes) | ("symlink"|"special"|"missing", None) | ("too-large", size) for a working-copy file. It is
+    opened without following a link or blocking on a FIFO, and judged on the open descriptor."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError as e:
         return ("symlink" if e.errno == errno.ELOOP else "missing"), None
-    try:
+    with os.fdopen(fd, "rb") as fh:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return "special", None
-        if st.st_size > limit:
-            return "too-large", st.st_size
-        chunks, size = [], 0
-        while size <= limit:
-            b = os.read(fd, min(1 << 20, limit + 1 - size))
-            if not b:
-                break
-            chunks.append(b)
-            size += len(b)
-        return ("too-large", size) if size > limit else ("ok", b"".join(chunks))
-    finally:
-        os.close(fd)
+        data = fh.read(limit + 1) if st.st_size <= limit else b""
+    return ("ok", data) if st.st_size <= limit and len(data) <= limit else ("too-large", max(st.st_size, len(data)))
 
 
 def _special(path: str) -> bool:
     """A working-copy entry that is no regular file, symlink or directory (a FIFO, socket or device): git cannot
-    diff it and reading it can block, so it is never opened (6xl.90)."""
+    diff it and reading it can block (6xl.90)."""
     try:
         m = os.lstat(path).st_mode
     except OSError:
@@ -600,6 +588,8 @@ def _files(names: List[str], top: str) -> dict:
             out[n] = _scan(got)
         elif status == "too-large":
             out[n] = (False, 0, [], got)
+        elif status == "special":
+            out[n] = None
     return out
 
 
@@ -633,8 +623,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
-            if kind in ("unstaged", "worktree", "path", "repo") and _special(os.path.join(top, n)):
-                drop(n, "special", "not a regular file (FIFO, socket or device); never opened")
+            if n in head and head[n] is None:
+                drop(n, "special", "not a regular file (FIFO, socket or device)")
                 continue
             nul, longest, first, size = head.get(n, (False, 0, [], 0))
             size = max(size, base_ls.get(n, (False, 0, [], 0))[3])

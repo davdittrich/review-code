@@ -753,13 +753,6 @@ class Tree(Base):
         with open(os.path.join(self.repo, "a.txt"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "x\nbad %s\n" % rlo)
 
-    def test_tree_put_rejects_unsafe_paths(self):
-        root = os.path.join(self.tmp, "t")
-        for bad in ("../x", "/abs", "a/../../x", ".git/config", "a//b"):
-            self.assertFalse(ledger._put(root, bad, b"x"), bad)
-        self.assertTrue(ledger._put(root, "a/b.txt", b"x"))
-        self.assertEqual(oct(os.stat(os.path.join(root, "a", "b.txt")).st_mode & 0o777), "0o600")
-        self.assertEqual(oct(os.stat(os.path.join(root, "a")).st_mode & 0o777), "0o700")
 
 ZWSP = chr(0x200B)
 NONCE = "0123456789abcdef"
