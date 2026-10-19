@@ -10,6 +10,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "skills", "review-code", "scripts"))
 sys.path.insert(0, HERE)
 
+import plan  # noqa: E402
 import report  # noqa: E402
 import test_plan as tp  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import lines  # noqa: E402
@@ -64,6 +65,11 @@ class Finder(unittest.TestCase):
 
     def test_default_model(self):
         self.assertIn("model: opus", self.fm)
+
+    def test_packs_applied_for_defects_categories_only(self):
+        sentence = next(s for s in re.split(r"(?<=\.)\s", self.text) if "## Domain packs" in s)
+        for w in ("Checks", "Do not flag", "Defects categories"):
+            self.assertIn(w, sentence)
 
 
 STD_BASE = "def load():\n    return 1\n"
@@ -163,6 +169,11 @@ class Verifier(unittest.TestCase):
 
     def test_default_model(self):
         self.assertIn("model: sonnet", self.fm)
+
+    def test_rule_property_and_do_not_flag_blocks(self):
+        low = self.text.lower()
+        for item in ("`rule:`", "check: rule", "check: property", "`do-not-flag:`", "shows the property"):
+            self.assertIn(item, low)
 
 
 def words_ok(testcase, text, allowed, backticked_pool):
@@ -272,6 +283,20 @@ class Sota(unittest.TestCase):
     def test_frontmatter(self):
         for line in ("model: opus", "maxTurns: 20"):
             self.assertIn(line, self.fm)
+
+
+class TurnCeilings(unittest.TestCase):
+    """LANE-09: maxTurns is frontmatter-only, so each agent file carries plan.py's ceiling."""
+
+    def test_every_agent_declares_the_plan_ceiling(self):
+        self.assertEqual(sorted(plan.MAX_TURNS), sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents"))))
+        for name, n in plan.MAX_TURNS.items():
+            self.assertIn("maxTurns: %d" % n, parts(name)[0], name)
+
+    def test_tool_sets(self):
+        for name in plan.MAX_TURNS:
+            want = "tools: WebSearch, WebFetch" if name == "sota" else "tools: Read, Grep, Glob"
+            self.assertEqual([x for x in parts(name)[0] if x.startswith("tools:")], [want], name)
 
 
 class ModelOverride(unittest.TestCase):

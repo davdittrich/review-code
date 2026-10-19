@@ -35,6 +35,32 @@ class GateMutations(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-extra-tools", out)
 
+    def mutate_agent(self, name, old, new):
+        path = os.path.join(self.tree, "agents", name + ".md")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn(old, text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace(old, new, 1))
+
+    def test_gate_rejects_filesystem_tool_on_sota(self):  # LANE-05
+        self.mutate_agent("sota", "tools: WebSearch, WebFetch", "tools: WebSearch, WebFetch, Read")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-sota-tools", out)
+
+    def test_gate_rejects_web_tool_on_standards(self):
+        self.mutate_agent("standards", "tools: Read, Grep, Glob", "tools: Read, Grep, Glob, WebFetch")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-standards-tools", out)
+
+    def test_gate_requires_all_six_agents(self):
+        os.remove(os.path.join(self.tree, "agents", "spec-verifier.md"))
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-spec-verifier-tools", out)
+
     def test_gate_fails_when_listing_fails(self):
         # WR-06: a failing `find` must reach `bad hygiene-tracked`, not print ok
         fake = os.path.join(self._td.name, "bin")
