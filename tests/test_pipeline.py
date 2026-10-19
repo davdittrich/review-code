@@ -238,19 +238,12 @@ class Tracer(Fixture):
                 self.assertIn({"file": shown, "name": True, "codepoints": ["TAGS:5"]}, tj["hidden_chars"])
                 with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
                     led = json.load(fh)
-                # 6xl.53: the content stays reviewable under a stand-in name, stripped like tree/
-                for n, copy, text in ((shown2, "1.md", "note\n[hidden-comment removed: 19 chars]\n"),
-                                      (shown, "2.py", "y = 1\n")):
-                    self.assertIn({"path": n, "reason": "hidden-name", "copy": "hidden-names/" + copy},
-                                  led["tree"]["skipped"])
-                    with open(os.path.join(run, "hidden-names", copy), encoding="utf-8") as fh:
-                        self.assertEqual(fh.read(), text)
-                self.assertIn({"file": shown2, "line": 2, "kind": "comment", "length": 19}, led["hidden_text"])
+                for n in (shown, shown2):  # never copied: listed, and its diff hunk stays reviewable
+                    self.assertIn({"path": n, "reason": "hidden-name"}, led["tree"]["skipped"])
                 with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
                     defects = fh.read()
                 self.assertIn('- "%s"' % shown, defects)
-                self.assertIn('- "%s": hidden-name, copy %s' % (shown, json.dumps(os.path.join(run, "hidden-names", "2.py"))),
-                              defects)
+                self.assertIn('- "%s": hidden-name' % shown, defects)
                 self.assertEqual([os.path.relpath(p, run) for p in self.lane_files(run) if b"HT_HIDNAME" in self.raw(p)], [])
                 if arg == "main":
                     with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
@@ -258,50 +251,8 @@ class Tracer(Fixture):
                     self.assertIn("diff --git a/%s b/%s" % (shown, shown), diff)
                     self.assertIn("+y = 1", diff)
 
-    def test_escaped_name_collision_keeps_both_files(self):
-        # 6xl.56: a file literally named a<U+200B>.md next to a\u200b.md: both contents stay reachable
-        self.feature({"src/cfg.py": "def load():\n    return 2\n", "a\u200b.md": "HIDDENNAMED body\n",
-                      "a<U+200B>.md": "LITERALNAMED body\n"})
-        for arg in ("main", "--repo"):
-            with self.subTest(arg=arg):
-                rc, t = self.pin(arg)
-                self.assertEqual((rc, t["status"]), (0, "ok"), t)
-                rc, _ = self.build(t["run"])
-                self.assertEqual(rc, 0)
-                run = t["run"]
-                with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
-                    skipped = json.load(fh)["tree"]["skipped"]
-                copies = [k["copy"] for k in skipped if k["path"] == "a<U+200B>.md"]
-                self.assertEqual(len(set(copies)), 2, skipped)
-                bodies = set()
-                for c in copies:
-                    with open(os.path.join(run, c), encoding="utf-8") as fh:
-                        bodies.add(fh.read())
-                self.assertEqual(bodies, {"HIDDENNAMED body\n", "LITERALNAMED body\n"})
-
-    def test_hidden_named_link_and_submodule_name_no_copy(self):
-        # 6xl.57: a skipped hidden-named symlink or submodule never lists a hidden-names/ copy
-        os.symlink("src/cfg.py", os.path.join(self.repo, "lnk\u200b.py"))
-        self.git("add", "lnk\u200b.py")
-        self.git("update-index", "--add", "--cacheinfo", "160000,%s,sub\u200bmod" % self.base)
-        self.feature({"src/cfg.py": "def load():\n    return 2\n"})
-        rc, t = self.pin("main")
-        self.assertEqual((rc, t["status"]), (0, "ok"), t)
-        rc, _ = self.build(t["run"])
-        self.assertEqual(rc, 0)
-        run = t["run"]
-        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
-            skipped = json.load(fh)["tree"]["skipped"]
-        self.assertIn({"path": "lnk<U+200B>.py", "reason": "symlink"}, skipped)
-        self.assertIn({"path": "sub<U+200B>mod", "reason": "submodule"}, skipped)
-        for k in skipped:
-            if "copy" in k:
-                self.assertTrue(os.path.isfile(os.path.join(run, k["copy"])), k)
-        with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
-            self.assertNotIn("hidden-names", fh.read())
-
-    def test_non_utf8_name_is_flagged_and_copied(self):
-        # 6xl.60: undecodable name bytes are a hidden_chars name finding; the content stays reachable
+    def test_non_utf8_name_is_flagged(self):
+        # 6xl.60: undecodable name bytes are a hidden_chars name finding
         try:
             with open(os.fsencode(self.repo) + b"/caf\xe9.py", "wb") as fh:
                 fh.write(b"latin_body = 1\n")
@@ -318,9 +269,7 @@ class Tracer(Fixture):
                 with open(os.path.join(t["run"], "ledger.json"), encoding="utf-8") as fh:
                     led = json.load(fh)
                 self.assertIn({"file": "caf<BYTES:1>.py", "name": True, "codepoints": ["BYTES:1"]}, led["hidden_chars"])
-                copy = [k["copy"] for k in led["tree"]["skipped"] if k["path"] == "caf<BYTES:1>.py"]
-                with open(os.path.join(t["run"], copy[0]), encoding="utf-8") as fh:
-                    self.assertEqual(fh.read(), "latin_body = 1\n")
+                self.assertIn({"path": "caf<BYTES:1>.py", "reason": "hidden-name"}, led["tree"]["skipped"])
 
     def test_cr_only_comment_lines_stripped_everywhere(self):
         # 6xl.71: a lone CR ends a line, so a [//]: # comment between CR-only blank lines is hidden on GitHub
@@ -334,7 +283,7 @@ class Tracer(Fixture):
         self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"BRKCANARY" in self.raw(p)], [])
 
     def test_battery_hidden_constructs_reach_no_sink(self):
-        # 6xl.87: every GitHub-hidden battery construct leaves tree/, change.diff, hidden-names/, conventions/, spec.md
+        # 6xl.87: every GitHub-hidden battery construct leaves tree/, change.diff, conventions/, spec.md
         sys.path.insert(0, HERE)
         from test_battery import BATTERY  # noqa: E402
         hidden = [(n, t.replace("TOK", "BAT%02d" % k)) for k, (n, t) in enumerate(BATTERY) if n != "tags_run"]
@@ -350,7 +299,7 @@ class Tracer(Fixture):
         rc, _ = self.build(t["run"], ["--spec", "docs/spec-feat.md"])
         self.assertEqual(rc, 0)
         sinks = [p for p in self.lane_files(t["run"])]
-        self.assertTrue(any("hidden-names" in p for p in sinks) and any("conventions" in p for p in sinks))
+        self.assertTrue(any("conventions" in p for p in sinks))
         for k, (n, _) in enumerate(hidden):
             tok = b"BAT%02d" % k
             self.assertEqual([os.path.relpath(p, t["run"]) for p in sinks if tok in self.raw(p)], [], n)

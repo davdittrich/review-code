@@ -109,7 +109,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
    entry (file, line, kind, length or codepoints; `name: true` marks a file name; never guess the
    payload) as a finding: hidden content in a change. Both list changed files only.
 5. Review in one pass in the main thread from `inputs/defects.md`, `inputs/standards.md` and the files
-   they name (`tree/` for every target kind, plus a `hidden-names/` copy that Skipped names). Never open `inputs/spec.md` or any PR, MR, issue or
+   they name (`tree/` for every target kind). Never open `inputs/spec.md` or any PR, MR, issue or
    commit text: report the Spec axis as "prepared at <path>, reviewed by the Spec lane in a later
    version". Nothing of the target runs in this version. A future step that would run a target command
    must first get `{"status": "confirm"}` from `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust gate

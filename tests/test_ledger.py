@@ -508,8 +508,7 @@ class Tree(Base):
         _, led = self.build()
         shown = "src/use<TAGS:5>.py"
         self.assertIn(shown, files_of(led, "callers"))
-        self.assertIn({"path": shown, "reason": "hidden-name", "copy": "hidden-names/1.py"}, led["tree"]["skipped"])
-        self.assertEqual(self.read("hidden-names/1.py"), "parse_cfg('x')\n")  # 6xl.53: content stays reviewable
+        self.assertIn({"path": shown, "reason": "hidden-name"}, led["tree"]["skipped"])
         for d, dirs, names in os.walk(self.run_dir):
             for n in dirs + names:
                 self.assertNotIn(tags, n)
