@@ -16,12 +16,12 @@
     "finder_model": {
       "type": "string",
       "title": "Finder model",
-      "description": "Model for the finder lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the default (opus)."
+      "description": "Model for the finder lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the tier's value."
     },
     "verifier_model": {
       "type": "string",
       "title": "Verifier model",
-      "description": "Model for the verifier lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the default (sonnet)."
+      "description": "Model for the verifier lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the tier's value."
     },
     "default_tier": {
       "type": "string",
