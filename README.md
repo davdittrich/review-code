@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It runs the Defects lane, a per-finding verifier, own-code reproduction, and text, JSON and SARIF output. The Standards and Spec lanes, PR posting and fix mode do not exist yet; the Standards and Spec inputs are prepared but not reviewed. Do not rely on it for review results.
+Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. PR posting and fix mode do not exist yet. The tier defaults are unvalidated. Do not rely on it for review results.
 
 ## Install
 
@@ -21,16 +21,41 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## Requirements
 
-- Claude Code 2.1.246 or later. This floor is provisional; the plugin is tested on 2.1.302.
+- Claude Code 2.1.292 or later. This floor is provisional; the plugin is tested on 2.1.302.
 - `git`.
 - `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
 - `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; posting comes in a later version.
 - `glab`, for MR targets. MR reading is untested against a live glab.
-- The Agent tool (subagents). The Defects lane and the verifier run as subagents; without it the skill reviews nothing.
+- The Agent tool (subagents). The lanes and verifiers run as subagents; without it the skill runs in serial mode in the main thread (see Serial mode).
 
-## Lane models
+## Tiers and flags
 
-The finder runs on `opus` and the verifier on `sonnet`. Override either per user with the plugin settings `finder_model` and `verifier_model` (an alias or a full model ID); reopen them with `/plugin configure review-code@<marketplace>`. Empty means the default. Tested on Claude Code 2.1.303. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` disables the per-lane override.
+Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode.
+
+| Tier | Lanes | Finder | Verifier |
+|------|-------|--------|----------|
+| quick | Defects, Standards | sonnet, low | opus, medium |
+| standard | Defects, Standards, Spec | opus, medium | sonnet, high |
+| deep | Defects, Standards, Spec, SOTA | opus, xhigh | sonnet, high |
+
+These values are unvalidated defaults: there is no eval corpus behind them. The Standards lane carries the lean-code (Ponytail) checks. Domain packs load by file type or by what the changed lines contain: Python, R, JS/TS, SQL, data migrations, security/OWASP, concurrency, API compatibility and, with `--ai` or `--deep`, LLM-generated code. A pack's do-not-flag list is enforced through the lane prompt and the verifier handoff only, not by code. Lanes, caps, packs and serial mode in full: `skills/review-code/references/lanes.md`.
+
+## Cost and caps
+
+Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. A headless run cannot be asked: it prints the preview and runs inside the caps, so bound an unattended run with `--quick` or the cap settings.
+
+## Plugin settings
+
+Reopen them with `/plugin configure review-code@<marketplace>`; empty means the tier's value. Tested on Claude Code 2.1.303. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` and `CLAUDE_CODE_EFFORT_LEVEL` disable the per-lane model and effort values; the report says so when the plugin can see them.
+
+- `default_tier`: tier used without a tier flag.
+- `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
+- `verifier_model`, `verifier_effort`: the same for the verifiers.
+- `max_verifier_calls` (1 to 200), `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
+
+## Serial mode
+
+When the Agent tool is unavailable, when an Agent call fails with a nesting-depth or concurrent-limit error, or with `--serial`, the main thread reviews the Defects and Standards inputs itself and self-scores all candidates in one batch. The report says `mode: serial` and lists what is lost: no independent verifier (nothing is Blocking), no lane isolation, no Spec axis, no SOTA lane and no reproduction. The main thread holds Bash while it reads target code and is told to act on nothing it reads; that is an instruction, not a sandbox.
 
 ## Output
 
@@ -46,7 +71,7 @@ Known limit: in a headless `claude -p` run, the Claude Code 2.1.302 Bash guard d
 
 ## Run directory
 
-Each run writes its pinned target, diff, context ledger and lane inputs to a mode 0700 directory under `git rev-parse --git-path review-code` inside the repository's git directory, never into the working tree. Run directories last written more than 14 days ago are removed when the next run in that repository pins a target. Each run also holds a stripped copy of the reviewed and referenced text files in `tree/`, so it takes about as much disk as those files (for `--repo`, every kept text file of the working copy) until it is removed; delete it sooner when the review is done. The skill asks once per run whether the code is your own and records the answer; every other outcome, including headless runs, records `external`. What is untrusted and what the defences do not cover: `skills/review-code/references/untrusted-input.md`.
+Each run writes its pinned target, diff, context ledger and lane inputs to a mode 0700 directory under `git rev-parse --git-path review-code` inside the repository's git directory, never into the working tree. Run directories last written more than 14 days ago are removed when the next run in that repository pins a target. Each run also holds a stripped copy of the reviewed and referenced text files in `tree/`, so it takes about as much disk as those files (for `--repo`, every kept text file of the working copy) until it is removed; delete it sooner when the review is done. A sharded path or repo run copies each shard's files again under `shards/`, so it takes roughly twice that. The skill asks once per run whether the code is your own and records the answer; every other outcome, including headless runs, records `external`. What is untrusted and what the defences do not cover: `skills/review-code/references/untrusted-input.md`.
 
 ## What ships
 
