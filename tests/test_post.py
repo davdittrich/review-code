@@ -785,6 +785,13 @@ class Redaction(Base):
         self.assertEqual(sent, [body])
         self.assertNotIn(JWT, calls)
 
+    def test_a_backslash_before_a_bracket_cannot_unescape_it(self):
+        self.review(20, fix="see \\[x](https://evil.example) and \\\\[y](https://evil.example)")
+        _, payload, _ = self.posted()
+        body = payload["comments"][0]["body"]
+        self.assertIsNone(LIVE_LINK.search(body), body)
+        self.assertIn("**Fix:** see \\\\\\[x](https://evil.example)", body)
+
 
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
