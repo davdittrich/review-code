@@ -1,4 +1,6 @@
 """post.py on real target.py, ledger.py and report.py run dirs, against a dict-backed fake GitHub (`_cli` is patched)."""
+import ast
+import contextlib
 import hashlib
 import io
 import json
@@ -23,6 +25,7 @@ import target  # noqa: E402
 
 PR_URL = "https://github.com/o/r/pull/7"
 PR = "repos/o/r/pulls/7"
+CANARY = "CANARY-FORGE-TEXT-7c1"  # every fake failure carries it on stderr; no stdout line may
 
 
 def cli(script, args, cwd, tmp, stdin=""):
@@ -70,6 +73,18 @@ class FakeGitHub:
         with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
             self.diff = fh.read()
         self.calls, self.reviews, self.login, self.next_id = [], {}, "me", 100
+        self.fail_map = {}  # "METHOD endpoint-prefix" -> HTTP status
+        self.head_reads, self.moves_after = 0, None  # the head changes after this many head reads
+        self.pr_state, self.draft, self.merged = "open", False, False
+        self.stored_override = None  # callable(stored comments) -> comments GitHub "returns"
+
+    def add_review(self, login, state="PENDING"):
+        rid, self.next_id = self.next_id, self.next_id + 1
+        self.reviews[rid] = {"id": rid, "state": state, "user": {"login": login}, "commit_id": self.head, "body": "", "comments": []}
+        return rid
+
+    def pending(self):
+        return [r for r in self.reviews.values() if r["state"] == "PENDING"]
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("POST", "PUT", "DELETE")]
@@ -83,7 +98,7 @@ class FakeGitHub:
 
     @staticmethod
     def fail(code):
-        return 1, b"", ("gh: Validation Failed (HTTP %d)" % code).encode()
+        return 1, b"", ("gh: %s (HTTP %d)" % (CANARY, code)).encode()
 
     @staticmethod
     def page(items, query):
@@ -105,18 +120,25 @@ class FakeGitHub:
             assert body["event"] == "COMMENT", body
         path, _, query = endpoint.partition("?")
         self.calls.append((method, path, body))
+        for key, code in self.fail_map.items():
+            m, _, prefix = key.partition(" ")
+            if method == m and path.startswith(prefix):
+                return self.fail(code)
         return self.route(method, path, query, body)
 
     def route(self, method, path, query, body):
         if (method, path) == ("GET", "user"):
             return self.ok({"login": self.login})
         if (method, path) == ("GET", PR):
-            return self.ok({"state": "open", "draft": False, "merged": False, "head": {"sha": self.head}})
+            moved = self.moves_after is not None and self.head_reads >= self.moves_after
+            self.head_reads += 1
+            return self.ok({"state": self.pr_state, "draft": self.draft, "merged": self.merged,
+                            "head": {"sha": "f" * 40 if moved else self.head}})
         if path == PR + "/reviews" and method == "GET":
             return self.ok(self.page([{k: v for k, v in r.items() if k != "comments"} for r in self.reviews.values()], query))
         if path == PR + "/reviews" and method == "POST":
             rows = self.rows()
-            if any((c["path"], c["line"]) not in rows or c["side"] != "RIGHT" for c in body["comments"]):
+            if self.login in [r["user"]["login"] for r in self.pending()] or any((c["path"], c["line"]) not in rows or c["side"] != "RIGHT" for c in body["comments"]):
                 return self.fail(422)
             rid, self.next_id = self.next_id, self.next_id + 1
             self.reviews[rid] = {"id": rid, "state": "PENDING", "user": {"login": self.login},
@@ -128,7 +150,8 @@ class FakeGitHub:
         if rev is None:
             return self.fail(404)
         if m.group(2) == "/comments" and method == "GET":
-            return self.ok(self.page(rev["comments"], query))
+            stored = self.stored_override(rev["comments"]) if self.stored_override else rev["comments"]
+            return self.ok(self.page(stored, query))
         if m.group(2) == "/events" and method == "POST":
             assert body == {"event": "COMMENT"}, body
             rev["state"] = "COMMENTED"
@@ -158,11 +181,11 @@ class Base(unittest.TestCase):
         rc, out, _ = cli("ledger.py", ["build", "--run", self.run_dir], self.repo, self.tmp)
         self.assertEqual(rc, 0, out)
 
-    def review(self, *specs):
+    def review(self, *specs, fix=None):
         """Ingest and confirm one Required finding per (line, category) or bare line; make the run a PR run. Ids by line."""
         specs = [s if isinstance(s, tuple) else (s, "bug") for s in specs]
         cands = [{"path": "src/calc.py", "line": n, "severity": "required", "category": cat, "title": "title %d" % n,
-                  "trigger": "trigger %d" % n, "quote": row(n), "fix": "fix %d" % n} for n, cat in specs]
+                  "trigger": "trigger %d" % n, "quote": row(n), "fix": fix or "fix %d" % n} for n, cat in specs]
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp,
                            lines(*cands, {"inspected": ["src/calc.py"]}))
         self.assertEqual((rc, err), (0, ""), out)
@@ -182,11 +205,14 @@ class Base(unittest.TestCase):
         rec.update(kw)
         target.write_private(path, json.dumps(rec, sort_keys=True, indent=2))
 
-    def call(self, *argv, fake=None):
+    def call(self, *argv, cli=None):
+        """post.main in-process with the fake forge behind _cli; cli=False leaves the real _cli in place."""
         buf = io.StringIO()
-        with redirect_stdout(buf), mock.patch.object(post, "_cli", fake or self.fake):
+        patch = contextlib.nullcontext() if cli is False else mock.patch.object(post, "_cli", cli or self.fake)
+        with redirect_stdout(buf), patch:
             rc = post.main(list(argv))
         out = buf.getvalue()
+        self.assertNotIn(CANARY, out)  # forge and tool text never reaches stdout
         return rc, out, json.loads(out.splitlines()[-1])
 
     def build(self):
@@ -265,6 +291,267 @@ class GitHubTracer(Base):
             rc, out, st = self.call(*argv)
             self.assertEqual((rc, st["status"], st["reason"], st["detail"]), (1, "refuse", "usage", post.USAGE), argv)
         self.assertEqual(self.fake.calls, [])
+
+
+class Safety(Base):
+    """Refusals, races and cleanup (Task 2); each failure leaves the forge as it was or names what it left behind."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = self.review(2, 20)
+
+    def confirmed(self):
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        self.fake.calls[:] = []
+        self.fake.head_reads = 0
+        return st["digest"]
+
+    def submit(self, digest):
+        return self.call("submit", "--run", self.run_dir, "--digest", digest)
+
+    def refused(self, res, reason, detail=None):
+        rc, out, st = res
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", reason), out)
+        if detail is not None:
+            self.assertEqual(st.get("detail"), detail)
+        self.assertNotIn("digest", st)
+        return st
+
+    def deletes(self):
+        return [c for c in self.fake.calls if c[0] == "DELETE"]
+
+    def test_head_moved_at_a_before_the_diff(self):
+        self.fake.moves_after = 0
+        self.refused(self.build(), "head-moved")
+        self.assertEqual(self.fake.calls, [("GET", PR, None)])  # nothing read after the first head read
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_head_moved_at_b_after_the_reads(self):
+        self.fake.moves_after = 1
+        self.refused(self.build(), "head-moved")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_head_moved_at_c_before_the_first_write(self):
+        digest = self.confirmed()
+        self.fake.moves_after = 0
+        self.refused(self.submit(digest), "head-moved")
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_head_moved_at_d_deletes_the_created_review(self):
+        digest = self.confirmed()
+        self.fake.moves_after = 1
+        self.refused(self.submit(digest), "head-moved")
+        self.assertEqual([c[:2] for c in self.fake.writes()], [("POST", PR + "/reviews"), ("DELETE", PR + "/reviews/100")])
+        self.assertEqual(self.fake.pending(), [])
+        self.assertFalse(any(c[1].endswith("/events") for c in self.fake.calls))
+
+    def test_own_pending_review_refuses_and_is_never_deleted(self):
+        rid = self.fake.add_review("me")
+        self.refused(self.build(), "pending-review-exists")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertIn(rid, self.fake.reviews)
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_another_users_pending_review_does_not_block(self):
+        self.fake.add_review("someone-else")
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+
+    def test_pending_review_is_found_on_a_later_page(self):
+        for _ in range(120):
+            self.fake.add_review("someone-else", "COMMENTED")
+        self.fake.add_review("me")
+        self.refused(self.build(), "pending-review-exists")
+        self.assertEqual([c[1:2] for c in self.fake.calls if c[1].endswith("/reviews")], [(PR + "/reviews",)] * 2)
+
+    def test_pending_review_appearing_after_build_refuses_submit_before_any_write(self):
+        digest = self.confirmed()
+        self.fake.add_review("me")
+        self.refused(self.submit(digest), "pending-review-exists")
+        self.assertEqual(self.fake.writes(), [])
+
+    def test_pages_stop_at_the_cap(self):
+        full = mock.Mock(return_value=[{}] * post.PER_PAGE)
+        with mock.patch.object(post, "_api", full):
+            with self.assertRaises(post.Refuse) as cm:
+                post._pages("gh", "github.com", "repos/o/r/pulls/7/reviews", ".")
+        self.assertEqual((cm.exception.reason, full.call_count), ("too-many-comments", post.MAX_PAGES))
+
+    def test_one_changed_byte_refuses_digest_mismatch_without_a_write(self):
+        digest = self.confirmed()
+        raw, _ = self.payload()
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(raw.replace(b"title 20", b"title 21"))
+        self.refused(self.submit(digest), "digest-mismatch")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_payload_for_another_repository_refuses_even_with_a_recomputed_digest(self):
+        self.confirmed()
+        for key, value in (("host", "evil.example"), ("repo", "x/y"), ("number", 8), ("head_sha", "a" * 40)):
+            with self.subTest(key):
+                _, payload = self.payload()
+                payload[key] = value
+                data = json.dumps(payload, sort_keys=True, indent=2).encode()
+                with open(self.payload_path(), "wb") as fh:
+                    fh.write(data)
+                self.refused(self.submit(hashlib.sha256(data).hexdigest()), "payload-mismatch")
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_create_rejected_reports_only_the_status(self):
+        digest = self.confirmed()
+        self.fake.fail_map["POST " + PR + "/reviews"] = 422
+        self.refused(self.submit(digest), "post-failed", "HTTP 422")  # the canary on stderr is checked in call()
+        self.assertEqual(self.deletes(), [])  # nothing was created, nothing to delete
+
+    def test_create_without_an_integer_id_refuses(self):
+        digest = self.confirmed()
+        real = self.fake.route
+        self.fake.route = lambda m, p, q, b: self.fake.ok({"id": "100"}) if (m, p) == ("POST", PR + "/reviews") else real(m, p, q, b)
+        self.refused(self.submit(digest), "post-failed")
+
+    def test_stored_comments_differ_deletes_the_review(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: []
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(self.deletes()), 1)
+        self.assertEqual(self.fake.pending(), [])
+
+    def test_stored_comment_at_another_commit_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, commit_id="b" * 40) for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(self.deletes()), 1)
+
+    def test_failed_delete_names_the_review_and_the_next_build_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: []
+        self.fake.fail_map["DELETE " + PR + "/reviews/"] = 500
+        self.refused(self.submit(digest), "cleanup-failed", "pending review 100")
+        self.assertEqual([r["id"] for r in self.fake.pending()], [100])
+        self.fake.fail_map.clear()
+        self.refused(self.build(), "pending-review-exists")  # no second review is stacked
+        self.assertEqual(len(self.fake.pending()), 1)
+
+    def test_event_error_deletes_the_review(self):
+        digest = self.confirmed()
+        self.fake.fail_map["POST " + PR + "/reviews/100/events"] = 500
+        self.refused(self.submit(digest), "post-failed", "HTTP 500")
+        self.assertEqual(len(self.deletes()), 1)
+        self.assertEqual(self.fake.pending(), [])
+
+    def test_interrupt_after_create_deletes_the_review(self):
+        digest = self.confirmed()
+        self.fake.stored_override = mock.Mock(side_effect=KeyboardInterrupt)
+        with self.assertRaises(KeyboardInterrupt):
+            self.submit(digest)
+        self.assertEqual(self.fake.pending(), [])
+
+    def test_a_branch_run_is_not_a_forge_target(self):
+        self.retarget(kind="branch")
+        self.refused(self.build(), "not-a-forge-target")
+        self.assertEqual(self.fake.calls, [])
+
+    def test_gh_missing(self):
+        with mock.patch.object(post.subprocess, "run", side_effect=FileNotFoundError):
+            self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
+
+    def test_closed_merged_and_draft_pull_requests_refuse(self):
+        for state, merged, draft, reason in (("closed", False, False, "closed"), ("closed", True, False, "merged"),
+                                             ("open", False, True, "draft")):
+            with self.subTest(reason):
+                self.fake.pr_state, self.fake.merged, self.fake.draft = state, merged, draft
+                self.refused(self.build(), reason)
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_crafted_target_urls_refuse_before_any_call(self):
+        head = "0123456789abcdef0123456789abcdef01234567"
+        for what, patch in (("owner starting with a dash", {"url": "https://github.com/-o/r/pull/7"}),
+                            ("repo starting with a dash", {"url": "https://github.com/o/-r/pull/7"}),
+                            ("three segments", {"url": "https://github.com/o/r/x/pull/7"}),
+                            ("host starting with a dash", {"url": "https://-h/o/r/pull/7"}),
+                            ("host with a space", {"url": "https://a b/o/r/pull/7"}),
+                            ("odd segment character", {"url": "https://github.com/o/r;x/pull/7"}),
+                            ("number differs from the url", {"number": 8}),
+                            ("head is not an object id", {"head_sha": "-" * 40}),
+                            ("head in capitals", {"head_sha": head.upper()})):
+            with self.subTest(what):
+                self.retarget(**patch)
+                self.refused(self.build(), "bad-target-url")
+                self.assertEqual(self.fake.calls, [])
+                self.retarget(kind="pr", url=PR_URL, number=7, head_sha=self.fake.head)
+
+
+class EmptyRun(Base):
+    def test_zero_verified_findings_refuse_nothing_to_post(self):
+        self.review()
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["reason"]), (1, "nothing-to-post"), out)
+        self.assertFalse(os.path.exists(self.payload_path()))
+        self.assertEqual(self.fake.writes(), [])
+
+
+class Anchors(Base):
+    def test_first_and_last_row_of_a_hunk_are_inline_and_the_next_line_is_not(self):
+        ids = self.review(17, 25, (26, "test"))  # the hunk's new side is lines 17 to 25
+        rc, out, st = self.build()
+        _, payload = self.payload()
+        self.assertEqual((rc, st["inline"], st["in_body"]), (0, 2, 1), out)
+        self.assertEqual([c["line"] for c in payload["comments"]], [17, 25])
+        self.assertEqual(payload["in_body"], [ids[26]])
+        self.assertEqual(post.MARK_RE.findall(payload["body"]), [ids[26]])
+
+    def test_two_builds_of_one_run_are_byte_identical(self):
+        self.review(2, 17, 20, 25, (26, "test"))
+        _, _, first = self.build()
+        raw1, _ = self.payload()
+        _, _, second = self.build()
+        raw2, _ = self.payload()
+        self.assertEqual((raw1, first["digest"]), (raw2, second["digest"]))
+
+    def test_findings_follow_report_order(self):
+        ids = self.review(25, 17, 20)
+        self.build()
+        _, payload = self.payload()
+        self.assertEqual([c["id"] for c in payload["comments"]], [ids[17], ids[20], ids[25]])
+
+    def test_a_body_or_comment_over_the_limit_refuses_too_large(self):
+        for line, where in ((2, "body"), (20, "comment")):
+            with self.subTest(where):
+                self.review(line, fix="x" * (post.MAX_BODY + 1))
+                self.refused_too_large()
+
+    def refused_too_large(self):
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["reason"]), (1, "too-large"), out)
+        self.assertFalse(os.path.exists(self.payload_path()))
+        self.assertEqual(self.fake.writes(), [])
+
+
+class InlineCap(Base):
+    extra = 97  # lines 31 to 127 are added
+
+    def test_thirty_three_anchorable_findings_post_thirty_two_inline(self):
+        lines_ = list(range(31, 128, 3))  # three lines apart, so ingest merges none of them
+        self.assertEqual(len(lines_), 33)
+        ids = self.review(*lines_)
+        rc, out, st = self.build()
+        _, payload = self.payload()
+        self.assertEqual((rc, st["inline"], st["in_body"]), (0, post.MAX_INLINE, 1), out)
+        self.assertEqual(payload["in_body"], [ids[lines_[-1]]])
+        self.assertEqual(len(payload["comments"]), 32)
+
+
+class EventConstant(unittest.TestCase):
+    def test_no_other_review_event_in_any_string_constant(self):
+        with open(os.path.join(SCRIPTS, "post.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        self.assertIn("COMMENT", strings)
+        for s in strings:
+            self.assertIsNone(re.search(r"approve|request[ _]?changes?|requested[ _]changes", s, re.I), s)
+        self.assertEqual(post.EVENT, "COMMENT")
 
 
 if __name__ == "__main__":
