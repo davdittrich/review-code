@@ -495,7 +495,18 @@ def _checked(texts: List[str]) -> None:
         raise Refuse("secret-found")
 
 
-def _render(f: dict, where: Optional[str] = None):
+def _first_line(quote: List[str], rows) -> Optional[int]:
+    """The index into `rows` (the finding's line..end_line of the reviewed file) where `quote` sits, when exactly one
+    place fits after whitespace folding: inner lines equal to their row, the first a row's tail, the last a row's head
+    (a one-line quote anywhere in its row). None when no place or several fit: the line numbers would be a guess."""
+    k, ws = len(quote), report._ws
+    fits = [o for o in range(len(rows or ()) - k + 1)
+            if all(ws(q) == ws(r) or (k == 1 and ws(q) in ws(r)) or (k > 1 and i == 0 and ws(r).endswith(ws(q)))
+                   or (k > 1 and i == k - 1 and ws(r).startswith(ws(q))) for i, (q, r) in enumerate(zip(quote, rows[o:])))]
+    return fits[0] if len(fits) == 1 else None
+
+
+def _render(f: dict, rows=None, where: Optional[str] = None):
     """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
     escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
     raw, rules = {}, []
@@ -505,10 +516,14 @@ def _render(f: dict, where: Optional[str] = None):
     if "private-key" in rules:  # key material may sit in any field, with or without the marker line next to it
         raw = {k: "[REDACTED:private-key]" for k in raw}
     quote = sanitize.escape_for_code(raw["quote"].replace("\r\n", "\n").replace("\r", "<U+000D>"))[0].split("\n")
-    quote = ["%d: %s" % (f["line"] + n, ln) for n, ln in enumerate(quote)]
+    src = f["quote"].replace("\r\n", "\n").split("\n")  # numbered from the lane's own lines, if redaction kept their count
+    at = _first_line(src, rows) if len(src) == len(quote) else None
+    quote = ["%d: %s" % (f["line"] + at + n, ln) if at is not None else "| " + ln for n, ln in enumerate(quote)]
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)
     out = ["**%s** (%s, %s) - %s" % (LABEL[f["severity"]], _prose(f["axis"]), _prose(f["category"]), _prose(raw["title"]))]
     out += ["**Location:** %s (outside the diff)" % where] if where else []
+    span = "%d" % f["line"] if f["end_line"] == f["line"] else "%d-%d" % (f["line"], f["end_line"])
+    out += ["**Lines:** %s (quoted without line numbers)" % span] if at is None else []
     out += ["**Trigger:** " + _prose(raw["trigger"]),
             "**Evidence:** %s, score %d, %s" % (_prose(f["evidence_class"]), f["score"], _prose(f["origin"])),
             fence + "text"] + quote + [fence]
@@ -560,8 +575,9 @@ def build(run: str) -> dict:
     for f in fresh:  # report order: axis, severity, path, line, id
         row = anchors.get((f["path"], f["line"]))
         inline = row is not None and len(comments) < MAX_INLINE
+        rows = report._cited(report._tree(run, f.get("shard")), f["path"], f["line"], f["end_line"], f["quote"])
         try:  # each finding on its own, so every match is reported at the finding's path:line
-            text, rules = _render(f) if inline else _render(f, "%s:%d" % (_prose(f["path"]), f["line"]))
+            text, rules = _render(f, rows) if inline else _render(f, rows, "%s:%d" % (_prose(f["path"]), f["line"]))
         except Exception:
             raise Refuse("scan-failed")
         scan += [{"rule": r, "where": "%s:%d" % (f["path"], f["line"])} for r in rules]

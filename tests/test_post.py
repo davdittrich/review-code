@@ -900,6 +900,33 @@ class Entities(Base):
         self.assertIn("&amp;commat;octocat", fix)
 
 
+class QuoteNumbers(Base):
+    """A quote line is numbered only when it maps to one row of the reviewed file; otherwise it is posted unnumbered."""
+
+    def cand(self, line, end, quote, category):
+        return {"path": "src/calc.py", "line": line, "end_line": end, "severity": "required", "category": category,
+                "title": "t", "trigger": "t", "quote": quote, "fix": "f"}
+
+    def test_numbers_follow_the_file_rows(self):
+        cands = [self.cand(20, 22, row(22), "bug"),  # the quote is the finding's last line
+                 self.cand(21, 22, "v21 = -21 v22\n= -22", "test"),  # reflowed: a line break where the file has none
+                 self.cand(22, 24, "= 2", "other")]  # in every row of 22 to 24: no single place
+        ids = self.ingest(cands, {c["line"]: (c["line"] + 1, row(c["line"] + 1)) for c in cands})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        bodies = {c["id"]: c["body"] for c in self.payload()[1]["comments"]}
+        self.assertIn("\n22: v22 = -22\n", bodies[ids[20]])
+        self.assertNotIn("20: ", bodies[ids[20]])
+        for n, lines in ((21, ("| v21 = -21 v22", "| = -22")), (22, ("| = 2",))):
+            body = bodies[ids[n]]
+            self.assertIn("**Lines:** %d-%d (quoted without line numbers)" % (n, n + 1 if n == 21 else n + 2), body)
+            for ln in lines:
+                self.assertIn("\n%s\n" % ln, body)
+            self.assertNotRegex(body, r"(?m)^\d+: ")
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+
+
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
 

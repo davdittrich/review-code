@@ -40,7 +40,7 @@ The head sha in `target.json` is the head that was reviewed. It is compared with
 
 Every posted finding ends with the line `<!-- review-code:finding F-xxxxxxxxxx v1 -->`, and the review body ends with `<!-- review-code:review v1 head=<sha> -->`. Finding ids do not change when the head moves, so a finding posted for one head is skipped for a later one.
 
-Re-posting counts a marker only when it is a whole line (CRLF normalised) in a review body, review comment or note written by the authenticated user: the exact login on GitHub, the user id on GitLab. A marker in anyone else's text, or inside a quote line (which carries a `N: ` prefix), is not counted. Build drops the findings already posted and reports them as "already posted"; when nothing is left it refuses `already-posted`. Submit repeats the check before its first write.
+Re-posting counts a marker only when it is a whole line (CRLF normalised) in a review body, review comment or note written by the authenticated user: the exact login on GitHub, the user id on GitLab. A marker in anyone else's text, or inside a quote line (which carries a `N: ` or `| ` prefix), is not counted. Build drops the findings already posted and reports them as "already posted"; when nothing is left it refuses `already-posted`. Submit repeats the check before its first write.
 
 ## Secret scan
 
@@ -54,7 +54,7 @@ Repository-derived text can ping people, trigger forge commands or hide markup, 
 
 - Fixed labels (`**Trigger:**`, `**Evidence:**`, `**Fix:**`) start each field, so no posted line starts with `/` or `<!--`.
 - Prose is one line. `@name`, `@org/team`, `#123` and `!123` go in backticks; `&` becomes `&amp;` (so `&commat;x` cannot render `@x`), `\` is doubled, then `<` becomes `&lt;` and `[` becomes `\[`.
-- The quoted code sits in a fence longer than any backtick run inside it, each line prefixed with its line number. A CRLF in the quote becomes LF and a lone CR becomes the visible text `<U+000D>`, so no quote text can start a line of its own.
+- The quoted code sits in a fence longer than any backtick run inside it. Each line is prefixed with its line number only when the quote fits exactly one place in the finding's rows of the reviewed file (inner lines equal to their row after whitespace folding, the first a row's tail, the last a row's head). Otherwise each line is prefixed `| ` under a `**Lines:** L-E (quoted without line numbers)` label, because a lane chooses where the quote's line breaks go. A CRLF in the quote becomes LF and a lone CR becomes the visible text `<U+000D>`, so no quote text can start a line of its own.
 - The line guard refuses `unsafe-text` for any CR in a body, and for any line, outside the fence prefix, that starts with `/` or `<!--` and is not one of the marker lines.
 - Outside the quote fence every line except a marker line must keep the prose rules: no raw `<`, `&` (other than `&amp;` and `&lt;`) or backtick, no `[` behind an even backslash run, and no `@`, `#` or `!` reference outside a backtick span. A fence that CommonMark could close early, or one that never closes, refuses too.
 - Build and submit run the same guard, so an edited `payload.json` with a recomputed digest is held to every rule above and refuses `unsafe-text`.
