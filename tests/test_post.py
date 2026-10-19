@@ -759,6 +759,33 @@ class TextSafety(Base):
         self.assertEqual(self.fake.calls, [])
 
 
+JWT = "eyJ" + "a" * 20 + ".eyJ" + "b" * 20 + "." + "c" * 12
+LIVE_LINK = re.compile(r"(?<!\\)(?:\\\\)*\[[^\]\n]*\]\(")  # a `[` behind an even backslash run, then `](`: CommonMark links it
+
+
+class Redaction(Base):
+    """Secrets are redacted in each raw field before any escaping, so a redaction can never eat an escape."""
+
+    def posted(self):
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        rc, out, sub = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual((rc, sub["status"]), (0, "ok"), out)
+        _, payload = self.payload()
+        return st, payload, json.dumps(self.fake.calls)
+
+    def test_a_jwt_right_before_a_link_leaves_the_link_escaped(self):
+        self.review(20, fix="use %s[click here](https://evil.example/login) to fix" % JWT)
+        st, payload, calls = self.posted()
+        self.assertEqual(st["redacted"], 1)
+        body = payload["comments"][0]["body"]
+        self.assertIn("**Fix:** use \\[REDACTED:jwt]\\[click here](https://evil.example/login) to fix", body)
+        self.assertIsNone(LIVE_LINK.search(body), body)
+        sent = [b["comments"][0]["body"] for m, e, b in self.fake.calls if (m, e) == ("POST", PR + "/reviews")]
+        self.assertEqual(sent, [body])
+        self.assertNotIn(JWT, calls)
+
+
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
 

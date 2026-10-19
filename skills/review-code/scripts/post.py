@@ -471,17 +471,23 @@ def _checked(texts: List[str]) -> None:
         raise Refuse("secret-found")
 
 
-def _render(f: dict, where: Optional[str] = None) -> str:
-    quote = sanitize.escape_for_code(f["quote"])[0].split("\n")
+def _render(f: dict, where: Optional[str] = None):
+    """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
+    escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
+    raw, rules = {}, []
+    for k in ("title", "trigger", "quote", "fix"):
+        raw[k], got = _redact(f[k])
+        rules += got
+    quote = sanitize.escape_for_code(raw["quote"])[0].split("\n")
     quote = ["%d: %s" % (f["line"] + n, ln) for n, ln in enumerate(quote)]
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)
-    out = ["**%s** (%s, %s) - %s" % (LABEL[f["severity"]], _prose(f["axis"]), _prose(f["category"]), _prose(f["title"]))]
+    out = ["**%s** (%s, %s) - %s" % (LABEL[f["severity"]], _prose(f["axis"]), _prose(f["category"]), _prose(raw["title"]))]
     out += ["**Location:** %s (outside the diff)" % where] if where else []
-    out += ["**Trigger:** " + _prose(f["trigger"]),
+    out += ["**Trigger:** " + _prose(raw["trigger"]),
             "**Evidence:** %s, score %d, %s" % (_prose(f["evidence_class"]), f["score"], _prose(f["origin"])),
             fence + "text"] + quote + [fence]
-    out += ["**Fix:** " + _prose(f["fix"])] if f["fix"] else []
-    return "\n".join(out + [MARK % f["id"]])
+    out += ["**Fix:** " + _prose(raw["fix"])] if raw["fix"] else []
+    return "\n".join(out + [MARK % f["id"]]), rules
 
 
 def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str) -> str:
@@ -529,7 +535,7 @@ def build(run: str) -> dict:
         row = anchors.get((f["path"], f["line"]))
         inline = row is not None and len(comments) < MAX_INLINE
         try:  # each finding on its own, so every match is reported at the finding's path:line
-            text, rules = _redact(_render(f) if inline else _render(f, "%s:%d" % (_prose(f["path"]), f["line"])))
+            text, rules = _render(f) if inline else _render(f, "%s:%d" % (_prose(f["path"]), f["line"]))
         except Exception:
             raise Refuse("scan-failed")
         scan += [{"rule": r, "where": "%s:%d" % (f["path"], f["line"])} for r in rules]

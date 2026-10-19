@@ -44,7 +44,7 @@ Re-posting counts a marker only when it is a whole line (CRLF normalised) in a r
 
 ## Secret scan
 
-Eleven regular expressions adapted from gitleaks (MIT, see NOTICE) run on every outgoing body: `aws-access-token`, `github-pat`, `github-oauth`, `github-fine-grained-pat`, `gitlab-pat`, `gcp-api-key`, `slack-bot-token`, `stripe-access-token`, `jwt`, `private-key` and `generic-secret`. A match is replaced by `[REDACTED:<rule>]` before the payload is written. The preview lists each rule and the finding's `path:line`, never the matched text. Submit scans again, so an edited `payload.json` with a recomputed digest still refuses `secret-found`; a scanner that raises refuses `scan-failed` rather than posting unscanned.
+Eleven regular expressions adapted from gitleaks (MIT, see NOTICE) run on every outgoing body: `aws-access-token`, `github-pat`, `github-oauth`, `github-fine-grained-pat`, `gitlab-pat`, `gcp-api-key`, `slack-bot-token`, `stripe-access-token`, `jwt`, `private-key` and `generic-secret`. A match is replaced by `[REDACTED:<rule>]` in each raw field (title, trigger, quote, fix) before that field is escaped, so a redaction can never remove an escape character; the scan then runs again on every rendered body before the payload is written. The preview lists each rule and the finding's `path:line`, never the matched text. Submit scans again, so an edited `payload.json` with a recomputed digest still refuses `secret-found`; a scanner that raises refuses `scan-failed` rather than posting unscanned.
 
 Limits: regex only. There is no entropy check and no decoding, so an encoded, split or unusual secret passes. The scan runs on posted text, not on the repository.
 
@@ -91,7 +91,7 @@ Bare URLs still autolink.
 | `pending-drafts-exist` | You already have draft notes on this MR (the publish call would send them too; never deleted) | Publish or delete them, then re-run |
 | `too-large` | A body is over 60000 characters | Review a smaller change |
 | `unsafe-text` | A line would run as a command or hide as markup | Report it; nothing was posted |
-| `secret-found` | A secret rule matches in an outgoing body at submit time | Re-run build, which redacts |
+| `secret-found` | A secret rule matches in an outgoing body: at submit time, or at build time in text the per-field redaction did not cover (a path) | At submit: re-run build, which redacts. At build: report it; nothing was posted |
 | `scan-failed` | The secret scanner raised | Report it; nothing was posted |
 | `no-payload` | `post/payload.json` is missing | Run build first |
 | `digest-mismatch` | The payload hash is not the digest given | Run build again and confirm the new preview |
