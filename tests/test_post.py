@@ -92,6 +92,33 @@ class FakeGitHub:
     def rows(self):
         return {(p, n) for _, p, tag, _, n, _, _ in sanitize._walk(self.diff) if p and tag in " +"}
 
+    def position(self, path, line):
+        """GitHub's `position`: 1-based lines below the file's first @@ header, later @@ headers included (an independent
+        count, so a wrong walk in post.py cannot agree with it by sharing code)."""
+        for chunk in re.split(r"(?m)^(?=diff --git )", self.diff):
+            m = re.search(r"(?m)^\+\+\+ b/(.*)$", chunk)
+            if not m or m.group(1) != path:
+                continue
+            pos, n, hunks = 0, 0, 0
+            for ln in chunk.split("\n"):
+                h = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", ln)
+                if h:
+                    hunks, n = hunks + 1, int(h.group(1))
+                    pos += hunks > 1
+                elif hunks:
+                    pos += 1
+                    if ln[:1] in (" ", "+"):
+                        if n == line:
+                            return pos
+                        n += 1
+        raise AssertionError((path, line))
+
+    def pending_shape(self, c):
+        """What GitHub returned live for a comment of a PENDING review (2026-10-20): no line, side or original_line, a
+        diff `position` instead, the commit id and body kept."""
+        return {"path": c["path"], "line": None, "original_line": None, "side": None, "start_line": None,
+                "position": self.position(c["path"], c["line"]), "commit_id": c["commit_id"], "body": c["body"]}
+
     @staticmethod
     def ok(obj):
         return 0, json.dumps(obj).encode(), b""
@@ -153,7 +180,8 @@ class FakeGitHub:
         if rev is None:
             return self.fail(404)
         if m.group(2) == "/comments" and method == "GET":
-            stored = self.stored_override(rev["comments"]) if self.stored_override else rev["comments"]
+            stored = rev["comments"] if rev["state"] != "PENDING" else [self.pending_shape(c) for c in rev["comments"]]
+            stored = self.stored_override(stored) if self.stored_override else stored
             return self.ok(self.page(stored, query))
         if m.group(2) == "/events" and method == "POST":
             assert body == {"event": "COMMENT"}, body
@@ -441,6 +469,48 @@ class Safety(Base):
         self.refused(self.submit(digest), "verify-failed")
         self.assertEqual(len(self.deletes()), 1)
 
+    def test_stored_comment_at_another_position_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, position=c["position"] + 1) for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(self.deletes()), 1)
+
+    def test_stored_comment_on_another_path_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, path="src/other.py") for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+
+    def test_an_extra_stored_comment_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: comments + comments
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(self.deletes()), 1)
+
+    def test_stored_comment_without_its_marker_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, body="no marker here") for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+
+    def test_stored_comment_with_a_marker_inside_a_longer_line_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, body="x " + c["body"].replace("\n", " ")) for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+
+    def test_a_stored_comment_that_does_carry_line_and_side_is_compared_on_them(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, line=20, side="RIGHT") for c in comments]
+        rc, out, st = self.submit(digest)
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        self.fake.reviews.clear()
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, line=21, side="RIGHT") for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+
+    def test_a_stored_comment_with_neither_line_nor_a_position_refuses(self):
+        digest = self.confirmed()
+        self.fake.stored_override = lambda comments: [dict(c, position=None) for c in comments]
+        self.refused(self.submit(digest), "verify-failed")
+
     def test_failed_delete_names_the_review_and_the_next_build_refuses(self):
         digest = self.confirmed()
         self.fake.stored_override = lambda comments: []
@@ -498,6 +568,20 @@ class Safety(Base):
                 self.refused(self.build(), "bad-target-url")
                 self.assertEqual(self.fake.calls, [])
                 self.retarget(kind="pr", url=PR_URL, number=7, head_sha=self.fake.head)
+
+
+class PositionAcrossHunks(Base):
+    """A pending review's comments come back with a diff `position`; a second hunk's header counts as a line."""
+    extra = 5  # lines 31 to 35 are added: a second hunk below the one around lines 20 to 22
+
+    def test_submit_verifies_comments_in_both_hunks(self):
+        self.review(20, 32)
+        rc, out, st = self.call("build", "--run", self.run_dir)
+        self.assertEqual((rc, st["inline"]), (0, 2), out)
+        # counted by hand: hunk one is 12 rows, the second @@ is row 13, so line 32 is row 18 (a one-hunk count gives 17)
+        self.assertEqual([self.fake.position("src/calc.py", n) for n in (20, 32)], [7, 18])
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
 class EmptyRun(Base):
