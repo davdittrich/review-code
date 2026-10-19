@@ -9,7 +9,7 @@ Only with `--comment`, only for a PR or MR target, only in an interactive sessio
 ## Flow
 
 1. `post.py build --run <run>` is read-only on the forge and pre-approved in `allowed-tools`. It reads the pinned `target.json`, the live PR or MR and its diff, builds `post/payload.json`, prints a preview and prints the sha256 of the payload bytes as `digest`.
-2. The skill relays the preview verbatim and makes one AskUserQuestion: "Post as COMMENT" or "Do not post". Every other answer, a dismissed one included, posts nothing.
+2. The skill relays the preview verbatim and makes one AskUserQuestion that names the digest: "Post as COMMENT" or "Do not post". Every other answer, a dismissed one included, posts nothing.
 3. `post.py submit --run <run> --digest <digest>` is not pre-approved, so the harness permission prompt also applies. It refuses unless the hash of `payload.json` equals the digest the user saw, re-scans every body, re-checks the head and then writes.
 4. GitHub: create one pending review with `commit_id` pinned and its inline comments, read the stored comments back and compare them with the payload (count; per comment path, commit id, its finding marker line and its place, see Verify), re-check the head, count the review's comments once more (a comment started in the web UI joins your one pending review), send the one `COMMENT` event. GitLab: create a summary draft note and one positioned draft per inline finding, verify the user's drafts are exactly those, re-check the head, count the drafts once more, publish all drafts in one call that takes no parameters.
 5. Any failure after a create deletes only the objects this call made: the review id its own create returned, or the drafts that carry this payload's marker lines. When a GitHub create fails or its answer is lost (a timeout, a dropped connection, unparsable JSON), submit lists your reviews and deletes a PENDING one of yours whose body holds this payload's review marker line; a pending review you start in the web UI meanwhile has no marker and is never touched. If a delete fails, `cleanup-failed` names what is left.
@@ -25,7 +25,7 @@ After the create, submit lists the pending review's comments and refuses `verify
 - Verified findings (a confirmed verdict), in report order: axis, severity, path, line, id. Unverifiable items are not posted; the body says how many ("Not posted: N unverifiable items").
 - One review, event `COMMENT`, and never `APPROVE` or `REQUEST_CHANGES`: `COMMENT` is the only event in `post.py`. The verdict line is labelled advisory.
 - Severity as a word label (Blocking, Required, Suggestion, Noted), no emoji.
-- At most 32 inline comments. A finding without a diff anchor, or beyond the 32nd, goes into the review body with its location. Each body stays under 60000 characters (`too-large` otherwise).
+- At most 32 inline comments. A finding without a diff anchor, or beyond the 32nd, goes into the review body with its location. Each body stays under 60000 characters (`too-large` otherwise); the whole preview stays under 25000 characters (`preview-too-large` otherwise), so the confirmation never covers text the harness cut.
 - No disclosure or attribution line, and no option to add one.
 
 ## Anchors
@@ -92,6 +92,7 @@ Bare URLs still autolink.
 | `pending-review-exists` | You already have a pending review on this PR (never deleted: it may hold your work) | Submit or delete it, then re-run |
 | `pending-drafts-exist` | You already have draft notes on this MR (the publish call would send them too; never deleted) | Publish or delete them, then re-run |
 | `too-large` | A body is over 60000 characters | Review a smaller change |
+| `preview-too-large` | The preview is over 25000 characters. Claude Code saves Bash output over 30000 characters (its default `BASH_MAX_OUTPUT_LENGTH`) to a file, so you would confirm text you never saw | Review a smaller change; nothing was written |
 | `unsafe-text` | A body holds a CR, or a line would run as a command or hide as markup | Report it; nothing was posted |
 | `secret-found` | A secret rule matches in an outgoing body: at submit time, or at build time in text the per-field redaction did not cover (a path) | At submit: re-run build, which redacts. At build: report it; nothing was posted |
 | `scan-failed` | The secret scanner raised | Report it; nothing was posted |

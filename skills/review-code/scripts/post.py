@@ -53,6 +53,7 @@ SECRET_RULES = tuple((rule, re.compile(rx)) for rule, rx in (
 ))
 MAX_INLINE = 32
 MAX_BODY = 60000
+MAX_PREVIEW = 25000  # Claude Code saves Bash output over 30000 characters (its default) to a file, unseen by the user
 PER_PAGE = 100
 MAX_PAGES = 20
 LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggestion", "noted": "Noted"}
@@ -629,6 +630,9 @@ def build(run: str) -> dict:
     if any(len(t) > MAX_BODY for t in texts):
         raise Refuse("too-large")
     _checked(texts)
+    preview = _preview(payload)
+    if len(preview) > MAX_PREVIEW:  # the user must see every byte they confirm
+        raise Refuse("preview-too-large")
     out_dir = os.path.join(run, "post")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
@@ -636,7 +640,7 @@ def build(run: str) -> dict:
     target.write_private(path, json.dumps(payload, sort_keys=True, indent=2))
     with open(path, "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
-    print(_preview(payload))
+    print(preview)
     return {"status": "ok", "digest": digest, "inline": len(comments), "in_body": len(in_body),
             "skipped": len(payload["skipped"]), "unverifiable": n_unverifiable, "redacted": len(scan)}
 
