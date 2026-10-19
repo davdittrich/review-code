@@ -56,6 +56,8 @@ Repository-derived text can ping people, trigger forge commands or hide markup, 
 - Prose is one line. `@name`, `@org/team`, `#123` and `!123` go in backticks; `&` becomes `&amp;` (so `&commat;x` cannot render `@x`), `\` is doubled, then `<` becomes `&lt;` and `[` becomes `\[`.
 - The quoted code sits in a fence longer than any backtick run inside it, each line prefixed with its line number. A CRLF in the quote becomes LF and a lone CR becomes the visible text `<U+000D>`, so no quote text can start a line of its own.
 - The line guard refuses `unsafe-text` for any CR in a body, and for any line, outside the fence prefix, that starts with `/` or `<!--` and is not one of the marker lines.
+- Outside the quote fence every line except a marker line must keep the prose rules: no raw `<`, `&` (other than `&amp;` and `&lt;`) or backtick, no `[` behind an even backslash run, and no `@`, `#` or `!` reference outside a backtick span. A fence that CommonMark could close early, or one that never closes, refuses too.
+- Build and submit run the same guard, so an edited `payload.json` with a recomputed digest is held to every rule above and refuses `unsafe-text`.
 
 Bare URLs still autolink.
 

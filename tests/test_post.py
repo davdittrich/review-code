@@ -684,6 +684,8 @@ class TextSafety(Base):
         for good in (post.MARK % OTHER_ID, post.REVIEW_MARK % ("a" * 40), "20: /approve behind a prefix",
                      "a // b", "**Fix:** /merge", "x\n" + post.MARK % OTHER_ID + "\ny"):
             post._guard(good)
+        for text in ("a \\@x [y]", "\\\\#1 & <b> `c` \\`@d`", "&commat;x &#64;y \\[z](u)", "!x @o/t \\\\[w]"):
+            post._guard("**Fix:** " + post._prose(text))  # whatever _prose writes, the guard accepts
 
     def test_rules(self):
         samples = {
@@ -753,6 +755,30 @@ class TextSafety(Base):
         rc, out, st = self.edited(lambda p: p.update(body=p["body"] + "\n/approve"))
         self.assertEqual((rc, st["reason"]), (1, "unsafe-text"))
         self.assertEqual(self.fake.calls, [])
+
+    def test_submit_reapplies_every_text_rule(self):
+        self.adversarial()
+        self.build()
+        _, original = self.payload()
+        body_edits = (("mention", "ping @org/team"), ("html", "<img src=x>"), ("link", "[text](https://e)"),
+                      ("image", "![x](https://e/p.png)"), ("even backslash run", "\\\\[text](https://e)"),
+                      ("entity", "&commat;x"), ("escaped backtick", "\\`[x](https://e)`"), ("raw ampersand", "a & b"))
+        edits = [(what, lambda p, line=line: p.update(body=line + "\n" + p["body"])) for what, line in body_edits]
+        edits.append(("a fence closed early by a longer backtick line", lambda p: p["comments"][0].update(
+            body=p["comments"][0]["body"].replace("```text\n", "```text\n````\n[x](https://e)\n", 1))))
+        edits.append(("an unclosed fence", lambda p: p["comments"][0].update(
+            body=p["comments"][0]["body"].replace("\n```\n", "\n", 1))))
+        for what, edit in edits:
+            with self.subTest(what):
+                payload = json.loads(json.dumps(original))
+                edit(payload)
+                data = json.dumps(payload, sort_keys=True, indent=2).encode()
+                with open(self.payload_path(), "wb") as fh:
+                    fh.write(data)
+                self.fake.calls[:] = []
+                rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+                self.assertEqual((rc, st.get("reason")), (1, "unsafe-text"), out)
+                self.assertEqual(self.fake.calls, [])
 
     def test_submit_reguards_every_comment(self):
         rc, out, st = self.edited(lambda p: p["comments"][0].update(body="<!-- x -->\n" + p["comments"][0]["body"]))

@@ -454,14 +454,33 @@ def _redact(text: str):
     return text, [h[0] for h in hits]
 
 
+_SPAN = re.compile(r"(?<!\\)((?:\\\\)*)`[@#!][\w./-]*`")  # the only code span _prose writes, behind an even backslash run
+_LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|[@#!]\w|(?<!\\)(?:\\\\)*\[")  # what _prose never leaves outside a fence
+
+
 def _guard(text: str) -> None:
     """Refuse a line a forge or bot could run as a command or hide as markup, unless it is exactly one of our marker lines.
-    A CR refuses outright: a forge that turns it into a line break would start a line no `N: ` prefix covers."""
+    A CR refuses outright: a forge that turns it into a line break would start a line no `N: ` prefix covers. Outside
+    the quote fence every line must hold _prose's invariants (no raw `<`, `&`, backtick, reference or unescaped `[`),
+    so an edited payload is held to the rules build applies; any fence CommonMark could read differently refuses."""
     if "\r" in text:
         raise Refuse("unsafe-text")
+    fence = None
     for ln in text.split("\n"):
-        if re.match(r"\s*(?:/|<!--)", ln) and not (MARK_RE.fullmatch(ln) or REVIEW_RE.fullmatch(ln)):
+        marker = MARK_RE.fullmatch(ln) or REVIEW_RE.fullmatch(ln)
+        if re.match(r"\s*(?:/|<!--)", ln) and not marker:
             raise Refuse("unsafe-text")
+        if fence:
+            if re.fullmatch(r" {0,3}`{3,}\s*", ln):  # any backtick line of 3 or more may close a fence
+                if ln != fence:
+                    raise Refuse("unsafe-text")
+                fence = None
+        elif re.fullmatch(r"`{3,}text", ln):
+            fence = ln[:-4]
+        elif not marker and _LOOSE.search(_SPAN.sub(r"\1", ln)):
+            raise Refuse("unsafe-text")
+    if fence:
+        raise Refuse("unsafe-text")
 
 
 def _checked(texts: List[str]) -> None:
