@@ -40,7 +40,7 @@ Severity is `suggestion` or `noted`. Never use `blocking` or `required`. Categor
 
 One JSON object per line, nothing else. Each finding uses exactly these keys:
 
-{"path": "requirements.txt", "line": 3, "end_line": 3, "severity": "suggestion", "category": "sota", "title": "requests 2.19.0 has a published advisory", "trigger": "the advisory covers releases before 2.20.0", "quote": "requests==2.19.0", "fix": "Upgrade to a release with the fix", "sources": ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]}
+{"path": "requirements.txt", "line": 3, "end_line": 3, "severity": "suggestion", "category": "sota", "title": "requests 2.19.0 has a published advisory", "trigger": "the advisory covers releases before 2.20.0", "quote": "requests", "fix": "Upgrade to a release with the fix", "sources": ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]}
 
 - path, line and quote come from one inventory item: path and line as given, quote equal to its name.
   end_line, when present, equals line.

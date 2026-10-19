@@ -59,7 +59,7 @@ tree/ that exists; the spec cite is `spec_line` alone.
 
 One JSON object per line, nothing else. Each finding uses exactly these keys:
 
-{"path": "src/calc.py", "line": 5, "end_line": 5, "severity": "required", "category": "spec-wrong", "title": "Subtraction replaces the addition the spec asks for", "trigger": "add(2, 3) returns -1 where the requirement expects 5", "quote": "return a - b", "fix": "Return a + b", "spec_line": 12}
+{"path": "src/calc.py", "line": 5, "end_line": 5, "severity": "required", "category": "spec-wrong", "title": "Subtraction replaces the addition the spec asks for", "trigger": "add(2, 3) returns -1 where the requirement expects 5", "quote": "return a - b", "fix": "Return a + b", "spec_line": 30}
 
 - path is relative to tree/; line and end_line are 1-based; end_line and fix may be left out.
 - quote is copied verbatim from the cited lines in tree/, never from inputs/spec.md.
@@ -74,6 +74,6 @@ Then one line listing every file you read, relative to tree/:
 Last, one line with each requirement you looked at and chose not to report, `why` in your own words
 (at most 300 characters, no spec text):
 
-{"declined": [{"spec_line": 7, "why": "needs a deployment the change does not touch"}]}
+{"declined": [{"spec_line": 33, "why": "needs a deployment the change does not touch"}]}
 
 With no findings, output only the inspected line and the declined line. Return findings only; never offer options or next steps.
