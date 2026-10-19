@@ -398,6 +398,10 @@ class Safety(Base):
                     fh.write(data)
                 self.refused(self.submit(hashlib.sha256(data).hexdigest()), "payload-mismatch")
                 self.assertEqual(self.fake.writes(), [])
+        data = b"[]"
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.refused(self.submit(hashlib.sha256(data).hexdigest()), "payload-mismatch")
 
     def test_create_rejected_reports_only_the_status(self):
         digest = self.confirmed()

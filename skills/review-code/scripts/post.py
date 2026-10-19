@@ -38,6 +38,8 @@ LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggesti
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "inline", "in_body", "skipped", "unverifiable", "redacted",
                "posted", "review_id")
 USAGE = "usage: post.py build --run DIR | submit --run DIR --digest HEX"
+_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?")
+_SEGMENT = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")  # no leading dash: a segment can never read as an option
 
 
 def _cli(tool: str, args: List[str], cwd: str, stdin: Optional[bytes] = None):
@@ -92,7 +94,10 @@ def _target(run: str) -> dict:
     if kind not in ("pr", "mr"):
         raise Refuse("not-a-forge-target")
     m = (target._PR_URL if kind == "pr" else target._MR_URL).fullmatch(url) if isinstance(url, str) else None
-    if m is None:
+    segments = m.group(2).split("/") if m else []
+    if (m is None or not _HOST.fullmatch(m.group(1)) or not all(_SEGMENT.fullmatch(x) for x in segments)
+            or len(segments) < 2 or (kind == "pr" and len(segments) != 2) or rec.get("number") != int(m.group(3))
+            or not isinstance(head, str) or not target._OID.fullmatch(head)):
         raise Refuse("bad-target-url")
     return {"forge": "github" if kind == "pr" else "gitlab", "host": m.group(1), "repo": m.group(2),
             "number": int(m.group(3)), "head_sha": head, "url": url, "run": run}
@@ -109,9 +114,16 @@ class GitHub:
     def state(self) -> str:
         """The live head commit of the pull request."""
         try:
-            sha = self._call("GET", self.pr)["head"]["sha"]
-        except (KeyError, TypeError):
+            got = self._call("GET", self.pr)
+            sha, merged, draft, state = got["head"]["sha"], got.get("merged"), got.get("draft"), got.get("state")
+        except (KeyError, TypeError, AttributeError):
             raise Refuse("gh-failed")
+        if merged is True:
+            raise Refuse("merged")
+        if draft is True:
+            raise Refuse("draft")
+        if state != "open":
+            raise Refuse("closed")
         if not isinstance(sha, str) or not target._OID.fullmatch(sha):
             raise Refuse("gh-failed")
         return sha
@@ -136,12 +148,19 @@ class GitHub:
         return login
 
     def existing(self, me: str) -> set:
+        """Refuse when `me` already has a pending review (never deleted: it may hold their own work); else the ids already posted."""
+        for r in _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"]):
+            if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == me:
+                raise Refuse("pending-review-exists")
         return set()
 
     def create(self, payload: dict) -> int:
         body = {"commit_id": payload["head_sha"], "body": payload["body"],
                 "comments": [{k: c[k] for k in ("path", "line", "side", "body")} for c in payload["comments"]]}
-        got = self._call("POST", self.pr + "/reviews", body)
+        try:
+            got = self._call("POST", self.pr + "/reviews", body)
+        except Refuse as r:
+            raise Refuse("post-failed", r.detail) if r.reason == "gh-failed" else r
         rid = got.get("id") if isinstance(got, dict) else None
         if not isinstance(rid, int) or isinstance(rid, bool):
             raise Refuse("post-failed")
@@ -158,7 +177,14 @@ class GitHub:
             raise Refuse("verify-failed")
 
     def finish(self, handle: int) -> None:
-        self._call("POST", "%s/reviews/%d/events" % (self.pr, handle), {"event": EVENT})
+        try:
+            self._call("POST", "%s/reviews/%d/events" % (self.pr, handle), {"event": EVENT})
+        except Refuse as r:
+            raise Refuse("post-failed", r.detail) if r.reason == "gh-failed" else r
+
+    def cleanup(self, handle: int) -> None:
+        """Delete the pending review this run's own create returned; nothing else is ever listed or deleted."""
+        self._call("DELETE", "%s/reviews/%d" % (self.pr, handle))
 
 
 def _forge(info: dict):
@@ -218,6 +244,8 @@ def _preview(payload: dict) -> str:
 def build(run: str) -> dict:
     info = _target(run)
     doc = report.build(run)
+    if not doc["findings"]:
+        raise Refuse("nothing-to-post")
     gh = _forge(info)
     head = info["head_sha"]
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head
@@ -240,6 +268,8 @@ def build(run: str) -> dict:
                "number": info["number"], "url": info["url"], "head_sha": head,
                "body": _body(doc, entries, n_unverifiable, head), "comments": comments, "in_body": in_body,
                "unverifiable": n_unverifiable}
+    if any(len(t) > MAX_BODY for t in [payload["body"]] + [c["body"] for c in comments]):
+        raise Refuse("too-large")
     out_dir = os.path.join(run, "post")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
@@ -264,14 +294,24 @@ def submit(run: str, digest: str) -> dict:
         raise Refuse("digest-mismatch")
     payload = json.loads(raw.decode("utf-8"))
     info = _target(run)
+    if not isinstance(payload, dict) or any(payload.get(k) != info[k] for k in ("forge", "host", "repo", "number", "head_sha")):
+        raise Refuse("payload-mismatch")
     gh = _forge(info)
     if gh.state() != info["head_sha"]:  # check (c): before the first write
         raise Refuse("head-moved")
+    gh.existing(gh.me())  # fresh: a pending review made since build would be stacked on or confused with ours
     handle = gh.create(payload)
-    gh.verify(payload, handle)
-    if gh.state() != info["head_sha"]:  # check (d): before the event
-        raise Refuse("head-moved")
-    gh.finish(handle)
+    try:
+        gh.verify(payload, handle)
+        if gh.state() != info["head_sha"]:  # check (d): before the event
+            raise Refuse("head-moved")
+        gh.finish(handle)
+    except BaseException:  # any failure, an interrupt too, withdraws the review this call created
+        try:
+            gh.cleanup(handle)
+        except Refuse:
+            raise Refuse("cleanup-failed", "pending review %d" % handle)
+        raise
     out = {"status": "ok", "posted": len(payload["comments"]), "in_body": len(payload["in_body"]), "review_id": handle}
     target.write_private(os.path.join(run, "post", "result.json"), json.dumps(out, sort_keys=True))
     return out
