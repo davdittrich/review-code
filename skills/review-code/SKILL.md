@@ -171,11 +171,11 @@ before treating it as unavailable; it is unavailable only when that load fails o
    `subagent_type` `review-code:verifier`, and for each id in `spec_ids` one with `subagent_type`
    `review-code:spec-verifier`. The `prompt` is exactly `<handoff>/<id>.md` and nothing else; `model` and
    `effort` come from plan.json `verifier` or `spec_verifier`. Issue them in waves as in step 7, with the
-   same fan-out rule. Serial mode: self-score all ids in one batch: read each handoff file and the cited
-   lines in `tree/` and write one verdict line per id in the format of `agents/verifier.md`, trying to
+   same fan-out rule. Serial mode: self-score all ids in one batch: read each handoff file with one Read call per file
+   (never a shell loop or other compound command) and the cited lines in `tree/`, and write one verdict line per id in the format of `agents/verifier.md`, trying to
    refute each claim (`unverifiable` when unsure). Pass every reply line that
-   starts with `[[` to `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run>` in a quoted
-   `REVIEW_VERDICTS` here-document, as in step 7. Skip this step when `ids` and `spec_ids` are empty.
+   starts with `[[`, from every wave, to `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run>` in ONE quoted
+   `REVIEW_VERDICTS` here-document, as in step 7: each call replaces the previous `verdicts.json`, so a second call drops the first call's verdicts. Skip this step when `ids` and `spec_ids` are empty.
 9. Reproduce, own code only, never in serial mode. Run this step only when `ledger.py trust get`
    reports `effective` `own`, verdicts' `confirmed` is not empty, and `ledger.json` lists tests or
    test config. For each confirmed id, write the smallest test that fails the way the finding claims,

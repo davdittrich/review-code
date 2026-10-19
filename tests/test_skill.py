@@ -116,6 +116,11 @@ class Phase4Procedure(unittest.TestCase):
         self.assertIn(FAN_OUT, self.flat)
         self.assertNotRegex(self.text, r"(?i)foreground Agent")
 
+    # documentation check (review-code-cmp, review-code-csd): a compound read and a split verdicts call both failed live
+    def test_verdict_step_reads_by_call_and_sends_one_verdicts_call(self):
+        for t in ("one Read call per file", "never a shell loop", "ONE quoted", "replaces the previous `verdicts.json`"):
+            self.assertIn(t, self.flat)
+
     def test_cost_gate_and_serial(self):
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
                   "nesting-depth or concurrent-limit"):
