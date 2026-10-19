@@ -126,6 +126,7 @@ def _target(run: str) -> dict:
 
 class GitHub:
     refs = None  # GitLab only: the diff refs read by the last state()
+    login = None  # the user existing() checked; a failed create deletes only a pending review of theirs
 
     def __init__(self, info: dict):
         self.i = info
@@ -173,6 +174,7 @@ class GitHub:
     def existing(self, me: str) -> set:
         """Refuse when `me` already has a pending review (never deleted: it may hold their own work); else the finding ids
         already posted: whole-line markers in review bodies and review comments written by `me` (exact login), never by anyone else."""
+        self.login = me
         reviews = _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"])
         for r in reviews:
             if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == me:
@@ -188,12 +190,29 @@ class GitHub:
                 "comments": [{k: c[k] for k in ("path", "line", "side", "body")} for c in payload["comments"]]}
         try:
             got = self._call("POST", self.pr + "/reviews", body)
-        except Refuse as r:
-            raise Refuse("post-failed", r.detail) if r.reason == "gh-failed" else r
-        rid = got.get("id") if isinstance(got, dict) else None
-        if not isinstance(rid, int) or isinstance(rid, bool):
-            raise Refuse("post-failed")
+            rid = got.get("id") if isinstance(got, dict) else None
+            if not isinstance(rid, int) or isinstance(rid, bool):
+                raise Refuse("post-failed")
+        except BaseException as e:  # the forge may have stored the review although its answer was lost
+            self._orphan(payload["head_sha"])
+            if isinstance(e, Refuse) and e.reason == "gh-failed":
+                raise Refuse("post-failed", e.detail)
+            raise
         return rid
+
+    def _orphan(self, head: str) -> None:
+        """Delete the pending review a failed create may still have made: PENDING, written by `me`, with this payload's
+        review marker as a whole line. existing() showed `me` had no pending review just before, and one the user starts
+        in the web UI meanwhile has no marker, so it is never touched."""
+        try:
+            found = [r["id"] for r in _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"])
+                     if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == self.login
+                     and isinstance(r.get("id"), int) and isinstance(r.get("body"), str)
+                     and REVIEW_MARK % head in r["body"].replace("\r\n", "\n").split("\n")]
+        except Refuse:
+            raise Refuse("cleanup-failed", "pending review unknown")
+        for rid in found:
+            self.cleanup(rid)
 
     def verify(self, payload: dict, handle: int) -> None:
         """Every stored comment of the pending review must be one of ours: path and commit id, our marker line in its

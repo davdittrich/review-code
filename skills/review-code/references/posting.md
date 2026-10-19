@@ -12,7 +12,7 @@ Only with `--comment`, only for a PR or MR target, only in an interactive sessio
 2. The skill relays the preview verbatim and makes one AskUserQuestion: "Post as COMMENT" or "Do not post". Every other answer, a dismissed one included, posts nothing.
 3. `post.py submit --run <run> --digest <digest>` is not pre-approved, so the harness permission prompt also applies. It refuses unless the hash of `payload.json` equals the digest the user saw, re-scans every body, re-checks the head and then writes.
 4. GitHub: create one pending review with `commit_id` pinned and its inline comments, read the stored comments back and compare them with the payload (count; per comment path, commit id, its finding marker line and its place, see Verify), re-check the head, send the one `COMMENT` event. GitLab: create a summary draft note and one positioned draft per inline finding, verify the user's drafts are exactly those, re-check the head, publish all drafts in one call that takes no parameters.
-5. Any failure after a create deletes only the objects this call made: the review id its own create returned, or the drafts that carry this payload's marker lines. If a delete fails, `cleanup-failed` names what is left.
+5. Any failure after a create deletes only the objects this call made: the review id its own create returned, or the drafts that carry this payload's marker lines. When a GitHub create fails or its answer is lost (a timeout, a dropped connection, unparsable JSON), submit lists your reviews and deletes a PENDING one of yours whose body holds this payload's review marker line; a pending review you start in the web UI meanwhile has no marker and is never touched. If a delete fails, `cleanup-failed` names what is left.
 
 The forge calls go through `gh api` and `glab api` with an explicit `--hostname`, repository and number taken from `target.json`, never from the working directory's remote.
 
@@ -98,9 +98,9 @@ Bare URLs still autolink.
 | `no-payload` | `post/payload.json` is missing | Run build first |
 | `digest-mismatch` | The payload hash is not the digest given | Run build again and confirm the new preview |
 | `payload-mismatch` | The payload does not belong to this target and head | Run build again |
-| `post-failed` | The forge refused the create, event or publish call | Check `detail`; nothing was left pending unless `cleanup-failed` follows |
+| `post-failed` | The forge refused the create, event or publish call, or the create's answer was lost | Check `detail`; nothing was left pending unless `cleanup-failed` follows |
 | `verify-failed` | What the forge stored differs from the payload: count, path, commit id, marker line, or position (line and side on GitLab) | Nothing is posted; the plugin's own pending objects are deleted |
-| `cleanup-failed` | A delete after a failure did not work; `detail` names the review or drafts left | Delete them by hand |
+| `cleanup-failed` | A delete after a failure did not work; `detail` names the review or drafts left, or is `pending review unknown` when the listing after a failed GitHub create did not work | Delete them by hand; for `pending review unknown`, check the PR for a pending review of yours that ends with the review marker |
 
 ## GitLab specifics and not covered
 
@@ -108,6 +108,7 @@ Bare URLs still autolink.
 - The reviewer state after publish is undocumented (OQ7). No approval or request-changes call exists; whether publishing marks you as having reviewed is not known.
 - Race: a draft you add in the GitLab UI between verify and publish is published with the review. The pre-check refuses drafts that exist before submit, not ones added during it.
 - Race: the head can still move between check (d) and the forge call. The window is one request.
+- The lost-create cleanup on GitHub assumes the reviews listing shows your own PENDING review with its body, as the fake forge does; this is not checked live.
 - `glab api` is called with a query string in the endpoint (`...?per_page=100&page=N`); that is assumed to work and is unchecked. The fallback is `--method GET -F page=N`.
 - Observed live on GitHub (one real PR, 2026-10-20; the first live submit refused `verify-failed` and was fixed, see Verify): a pending review's stored comments have null `line`, `side` and `original_line` and a `position`; the plugin's own delete of that pending review worked; a failing `gh api` call exits non-zero with `HTTP nnn` on stderr (A3, a 404 read); the second submit posted one `COMMENTED` review whose `commit_id` is the pinned head, with the inline comment on the expected line and side RIGHT and the out-of-hunk finding in the body.
 - A7 holds on GitHub: both marker lines are stored whole-line in the review body and the review comment body, and the rendered `body_html` shows neither marker nor escaped marker text. Re-building the same run then refuses `already-posted`. GitLab is not checked: its markers are assumed to survive the same way.

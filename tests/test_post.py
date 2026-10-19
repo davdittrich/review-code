@@ -457,6 +457,42 @@ class Safety(Base):
         self.fake.route = lambda m, p, q, b: self.fake.ok({"id": "100"}) if (m, p) == ("POST", PR + "/reviews") else real(m, p, q, b)
         self.refused(self.submit(digest), "post-failed")
 
+    def lose_create_answer(self, answer, also=None):
+        """The forge stores the review, but gh reports `answer` (an exit status or bad JSON); `also` runs right after."""
+        real = self.fake.route
+
+        def route(m, p, q, b):
+            got = real(m, p, q, b)
+            if (m, p) != ("POST", PR + "/reviews"):
+                return got
+            if also:
+                also()
+            return answer
+
+        self.fake.route = route
+
+    def test_a_lost_create_answer_deletes_the_review_it_made(self):
+        for what, answer in (("exit status", self.fake.fail(502)), ("unparsable", (0, b"<html>", b""))):
+            with self.subTest(what):
+                digest = self.confirmed()
+                self.lose_create_answer(answer)
+                st = self.refused(self.submit(digest), "post-failed")
+                self.assertEqual([c[:2] for c in self.deletes()], [("DELETE", PR + "/reviews/%d" % (self.fake.next_id - 1))])
+                self.assertEqual(self.fake.pending(), [])
+                self.fake.route = type(self.fake).route.__get__(self.fake)
+
+    def test_a_lost_create_answer_never_deletes_a_review_the_user_started(self):
+        digest = self.confirmed()
+        self.lose_create_answer(self.fake.fail(502), also=lambda: self.fake.add_review("me"))
+        self.refused(self.submit(digest), "post-failed", "HTTP 502")
+        self.assertEqual(len(self.deletes()), 1)
+        self.assertEqual([r["body"] for r in self.fake.pending()], [""])  # the user's own, no marker
+
+    def test_a_lost_create_answer_with_no_listing_names_the_unknown(self):
+        digest = self.confirmed()
+        self.lose_create_answer(self.fake.fail(502), also=lambda: self.fake.fail_map.update({"GET " + PR + "/reviews": 500}))
+        self.refused(self.submit(digest), "cleanup-failed", "pending review unknown")
+
     def test_stored_comments_differ_deletes_the_review(self):
         digest = self.confirmed()
         self.fake.stored_override = lambda comments: []
