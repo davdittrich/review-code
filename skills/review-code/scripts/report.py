@@ -229,7 +229,7 @@ def _candidate(o, tree, lane, base, ctx=None):
     c["path"] = os.path.normpath(c["path"])
     if lane == "sota":
         src = _sources(o.get("sources"))
-        if src is None or _ws(c["quote"]) != _ws(ctx.get((c["path"], c["line"]), "")) or end != c["line"]:
+        if src is None or not _int(c["line"]) or _ws(c["quote"]) != _ws(ctx.get((c["path"], c["line"]), "")) or end != c["line"]:
             return None
         c["sources"] = src
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
@@ -404,7 +404,7 @@ def verdicts(run, text):
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     got = {}
     for o in _objects(text):
-        if o is None or o.get("id") not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
+        if o is None or not isinstance(o.get("id"), str) or o["id"] not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
             continue
         ev = o.get("evidence")
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)

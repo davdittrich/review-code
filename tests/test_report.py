@@ -426,6 +426,14 @@ class MultiLane(Lanes):
         self.assertEqual({f["line"] for f in d["findings"] + d["unverifiable"]}, {3, 6})
         self.assertEqual(d["findings"][0]["also_found_by"], [])
 
+    def test_unhashable_verdict_id_is_skipped_and_keeps_the_batch(self):  # CR-01
+        (i,) = self.lane("defects", mc(2))["ids"]
+        cite = [dict(CITE, line=2, quote=MQ[2])]
+        v = self.verdicts({"id": [i], "verdict": "confirmed", "evidence": [], "reason": "r"},
+                          {"id": {"a": "b"}, "verdict": "confirmed", "evidence": [], "reason": "r"},
+                          {"id": i, "verdict": "confirmed", "evidence": cite, "reason": "r"})
+        self.assertEqual(v["confirmed"], [i])
+
     def test_same_line_on_two_axes_keeps_both(self):
         self.lane("defects", mc(2))
         out = self.lane("standards", mc(2, "lean"))
@@ -655,6 +663,11 @@ class Sota(Lanes):
         out = self.lane("sota", *bad)
         self.assertEqual(out["dropped"]["invalid"], len(bad))
         self.assertEqual(self.doc()["unverifiable"], [])
+
+    def test_unhashable_line_counts_invalid_and_keeps_the_batch(self):  # CR-01
+        out = self.lane("sota", self.sota(), self.sota(line=[3]), {"inspected": []})
+        self.assertEqual(out["dropped"]["invalid"], 1)
+        self.assertEqual(len(self.doc()["unverifiable"]), 1)
 
     def test_sota_does_not_flip_a_verdict_and_ignores_stray_verdicts(self):
         out = self.lane("sota", self.sota())
