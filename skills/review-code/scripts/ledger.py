@@ -268,7 +268,10 @@ def _conv_paths(names, included: List[str]) -> set:
 
 
 def _put(root: str, rel: str, data: bytes) -> bool:
-    """Write data at root/rel (a git path: never absolute, never `..`), mode 0600 in owner-only directories."""
+    """Write data at root/rel, mode 0600 in owner-only directories. A fetched tree can name anything, so a path
+    that is absolute or holds an empty, `..` or `.git` component is refused."""
+    if rel.startswith("/") or any(x in ("", "..", ".git") for x in rel.split("/")):
+        return False
     dest = os.path.join(root, rel)
     try:
         os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)

@@ -474,6 +474,12 @@ class Tree(Base):
             self.assertNotIn("HT_", self.read("tree/" + n))
         self.assertEqual(sorted(h["file"] for h in led["hidden_text"]), sorted(names))
 
+    def test_tree_put_refuses_paths_that_leave_root(self):
+        root = os.path.join(self.tmp, "t")
+        for bad in ("../x", "/abs", "a/../../x", ".git/config", "a//b"):
+            self.assertFalse(ledger._put(root, bad, b"x"), bad)
+        self.assertTrue(ledger._put(root, "a/b.txt", b"x"))
+
     def test_tree_hidden_named_ref_is_refused(self):
         # 6xl.51: a referenced-only file whose name holds Tags is listed escaped and never copied into tree/
         tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")

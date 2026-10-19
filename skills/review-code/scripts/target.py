@@ -356,7 +356,8 @@ def _view_mr(cand: dict, cwd: str) -> dict:
 
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
-    rc, _, _ = _run(["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
+    rc, _, _ = _run(["-c", "transfer.fsckObjects=true",  # a tree naming `..` or `.git` is refused
+                     "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
                      "--", remote] + refspecs, cwd)
     if rc != 0:
         raise Refuse("fetch-failed", "git could not fetch the pull request objects")
