@@ -26,6 +26,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 - `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
 - `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; posting comes in a later version.
 - `glab`, for MR targets. MR reading is untested against a live glab.
+- Headless `claude -p`: a prompt that makes the model call the Skill tool ("use the review-code skill ...") is denied in the default permission mode, with the bare result `Execute skill: review-code:review-code` and no detail. Pass `--allowedTools Skill`, or use the slash form `/review-code`.
 - The Agent tool (subagents). The lanes and verifiers run as subagents; without it the skill runs in serial mode in the main thread (see Serial mode).
 
 ## Tiers and flags
