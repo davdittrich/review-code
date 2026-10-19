@@ -686,6 +686,110 @@ class HtmlQuote(Base):
         self.assertIn("\n20: <!-- note -->\n", self.payload()[1]["comments"][0]["body"])
 
 
+class Idempotency(Base):
+    """Re-posting adds nothing: only whole-line markers written by the authenticated user count."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = self.review(2, 20)  # line 2 posts in the review body, line 20 inline
+
+    def posted_once(self):
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        rc, out, st2 = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual(rc, 0, out)
+        return st["digest"]
+
+    def other_review(self, login, body="", comment=None, state="COMMENTED"):
+        rid = self.fake.add_review(login, state)
+        self.fake.reviews[rid]["body"] = body
+        if comment is not None:
+            self.fake.reviews[rid]["comments"].append({"path": "src/calc.py", "line": 20, "side": "RIGHT", "body": comment})
+        return rid
+
+    def payload_ids(self):
+        _, payload = self.payload()
+        return sorted(c["id"] for c in payload["comments"]) + sorted(payload["in_body"])
+
+    def test_second_build_already_posted(self):
+        self.posted_once()
+        before = self.payload()[0]
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "already-posted"), out)
+        self.assertEqual(self.payload()[0], before)  # the refused build wrote nothing
+
+    def test_second_submit_already_posted(self):
+        digest = self.posted_once()
+        writes = len(self.fake.writes())
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", digest)
+        self.assertEqual((rc, st["reason"]), (1, "already-posted"), out)
+        self.assertEqual(len(self.fake.writes()), writes)  # no POST and no DELETE
+        self.assertEqual([r["state"] for r in self.fake.reviews.values() if r["user"]["login"] == "me"], ["COMMENTED"])
+
+    def test_new_head_posts_only_new(self):
+        self.posted_once()
+        old = self.fake
+        gitfix.commit(self.repo, {"docs/n.txt": "n\n"}, "later")
+        self.make_run()
+        ids = self.review(2, 20, 24)
+        self.fake.reviews, self.fake.next_id = old.reviews, old.next_id
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"], st["skipped"], st["inline"], st["in_body"]), (0, "ok", 2, 1, 0), out)
+        self.assertEqual(self.payload_ids(), [ids[24]])
+        self.assertEqual(sorted(self.payload()[1]["skipped"]), sorted([ids[2], ids[20]]))
+        self.assertIn("already posted: 2", out)
+        self.assertEqual(self.payload()[1]["body"].count("1 finding"), 1)  # the counts describe what this review posts
+
+    def test_body_marker_counts(self):
+        self.other_review("me", body="earlier\n" + post.MARK % self.ids[2] + "\nlater\n", comment=None)
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"]), (0, 1), out)
+        self.assertEqual(self.payload_ids(), [self.ids[20]])
+        self.fake.reviews.clear()
+        self.other_review("me", comment=post.MARK % self.ids[20] + "\r\n")  # a CRLF body from the web editor
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"]), (0, 1), out)
+        self.assertEqual(self.payload_ids(), [self.ids[2]])
+
+    def test_spoofed_marker_ignored(self):
+        self.other_review("mallory", body=post.MARK % self.ids[2], comment=post.MARK % self.ids[20])
+        self.other_review("Me", body=post.MARK % self.ids[20])  # logins compare exactly, no case folding
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"]), (0, 0), out)
+        self.assertEqual(self.payload_ids(), sorted([self.ids[20], self.ids[2]]))
+
+    def test_marker_must_be_whole_line(self):
+        self.other_review("me", body="see " + post.MARK % self.ids[2] + " ok", comment="> " + post.MARK % self.ids[20])
+        self.other_review("me", comment="20: " + post.MARK % self.ids[20])
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"]), (0, 0), out)
+
+    def test_pages(self):
+        rid = self.other_review("me")
+        cs = self.fake.reviews[rid]["comments"]
+        cs += [{"path": "src/calc.py", "line": 20, "side": "RIGHT", "body": "c%d" % n} for n in range(150)]
+        cs[120]["body"] = post.MARK % self.ids[20]  # on the second page
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"]), (0, 1), out)
+        self.assertEqual([c[1] for c in self.fake.calls].count(PR + "/comments"), 2)
+        cs += [{"path": "src/calc.py", "line": 20, "side": "RIGHT", "body": "d"}] * (post.MAX_PAGES * post.PER_PAGE - 150)
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["reason"]), (1, "too-many-comments"), out)
+
+
+class Unverifiable(Base):
+    extra = 5  # line 31 is an added row, so its unverifiable item is introduced and not dropped as pre-existing
+
+    def test_unverifiable_count_only(self):
+        ids = self.review(2, 20, 31, unverifiable=(31,))
+        rc, out, st = self.build()
+        raw, payload = self.payload()
+        self.assertEqual((rc, st["unverifiable"]), (0, 1), out)
+        for hidden in ("title 31", ids[31], "w031", "trigger 31"):
+            self.assertNotIn(hidden, raw.decode("utf-8"))
+        self.assertIn("Not posted: 1 unverifiable items", payload["body"])
+
+
 class Notice(unittest.TestCase):
     def test_gitleaks_attribution(self):
         with open(os.path.join(os.path.dirname(SCRIPTS), "..", "..", "NOTICE"), encoding="utf-8") as fh:
