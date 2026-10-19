@@ -448,6 +448,12 @@ class TestAmbiguity(Local):
         self.assertEqual((rc, out["kind"]), (0, "path"))
         self.assertEqual(load(out["run"])["included"], ["a.txt", "src/x.py", "src/y.py"])
 
+    def test_mixed_target_detail_names_the_accepted_forms(self):  # review-code-to1
+        for args in (["main", "a.txt"], ["--staged", "a.txt"]):
+            rc, out = self.pin(*args)
+            self.assertIn("--staged", out["detail"], args)
+            self.assertIn("PR number", out["detail"], args)
+
     def test_ambiguity_no_arg(self):
         rc, out = self.pin()
         self.assertEqual((rc, out["kind"], out["base_sha"]), (0, "branch", self.root))  # clean, on feat

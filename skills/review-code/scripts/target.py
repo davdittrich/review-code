@@ -222,7 +222,7 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
     flags = [a for a in argv if a in ("--staged", "--unstaged", "--repo")]
     if flags:
         if len(argv) > 1:
-            raise Refuse("mixed-target", "give one target")
+            raise Refuse("mixed-target", "give one target: a ref or range, a PR number, paths, --staged, --unstaged or --repo")
         kind = flags[0][2:]
         return [{"kind": kind, "reading": {"staged": "staged changes", "unstaged": "unstaged changes",
                                            "repo": "the whole repository"}[kind]}]
@@ -304,7 +304,7 @@ def _descendant_reading(ref: str, cid: str, cwd: str) -> List[dict]:
 
 def _path_candidate(paths: List[str], cwd: str) -> dict:
     if not all(os.path.lexists(os.path.join(cwd, p)) for p in paths):
-        raise Refuse("mixed-target", "give one target, or only paths")
+        raise Refuse("mixed-target", "give one target: a ref or range, a PR number, paths, --staged, --unstaged or --repo")
     return {"kind": "path", "paths": list(paths), "reading": "files under " + ", ".join(paths)}
 
 
