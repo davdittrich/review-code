@@ -608,6 +608,22 @@ class SpecAxis(Base):
         self.assertEqual((f["axis"], f["spec_line"], f["category"]), ("spec", inner, "spec-wrong"))
         self.assertIn("spec: 1 finding", blobs[-3])
 
+    def test_spec_text_in_a_free_text_field_counts_invalid(self):  # CR-03
+        rows, inner, _, _ = self.spec_rows()
+        copy = "SPEC SAYS: " + rows[inner - 1]
+        cats = ("spec-missing", "spec-partial", "scope-creep")  # one category each, so no id or dedupe overlap
+        out = self.lane(*[dict(self.spec(inner), category=c, **{k: copy}) for c, k in zip(cats, ("title", "trigger", "fix"))],
+                        {"declined": [{"spec_line": inner, "why": "copied " + rows[inner - 1]}]},
+                        self.spec(inner, title="the adder must canary spec"),  # five words: ordinary overlap stays
+                        {"inspected": []})
+        self.assertEqual((len(out["spec_ids"]), out["dropped"]["invalid"]), (1, 4))
+        (sid,) = out["spec_ids"]
+        v = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": copy})
+        self.assertEqual(v["confirmed"], [])
+        for fmt in ("text", "json"):
+            self.assertNotIn(CANARY, self.rep("render", extra=["--format", fmt])[1])
+        self.assertEqual(len(self.ingest(dict(CAND, title=copy))["ids"]), 1)  # Defects never reads the spec: no check
+
     def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
         rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
         os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))

@@ -16,7 +16,7 @@ PR and MR titles and bodies, commit messages, issue text, spec files, file and b
 | Review rules (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING`, `REVIEW.md`) | `conventions/` | Read from the merge base only; treated by file type as above |
 | Finder and verifier replies | `candidates.json`, `verdicts.json` (via `report.py ingest` and `verdicts`) | Paths must stay inside `tree/`; every quote is re-checked against `tree/`; every string is escaped on text render |
 | One candidate for its verifier | `handoff/<id>.md` | Claim and trigger only, inside a per-run nonce fence; no sibling candidates |
-| Spec candidates | `candidates.json`, `handoff/<id>.md` | Cited by `spec_line` number only; spec text is never copied into a handoff, the report or the main thread. `review-code:spec-verifier` is the second reader of `inputs/spec.md` |
+| Spec candidates | `candidates.json`, `handoff/<id>.md` | Cited by `spec_line` number only. A spec-lane title, trigger, fix or declined reason, or a spec-verifier reason, holding 6 consecutive words of spec text (case and punctuation ignored) counts invalid, so no handoff or report carries such a run. `review-code:spec-verifier` is the second reader of `inputs/spec.md` |
 | Domain pack text | `inputs/packs/` | Plugin-authored data copied from `references/packs/`, read by the lanes as guidance; not reviewed code |
 | SOTA inventory | `plan.json`, the SOTA call's prompt | Names only (dependency and import names, with path and line), never code or comments; the SOTA lane's web search and fetch are its exposure to hostile pages, and its https sources are shown with the item |
 
@@ -41,6 +41,7 @@ The skill asks once per run whether the code is the user's own. The first answer
 - Serial mode is a weaker boundary: the main thread reads target code while holding Bash and web tools, and only the instruction to stay read-only, act on nothing it reads and run no command from it stands in the way of an injected instruction. The report states the lost guarantee. Nothing is Blocking in serial mode and the Spec axis and SOTA lane are skipped.
 - The SOTA lane has web tools and reads hostile pages. Its output is checked against the inventory and needs 1 to 5 https sources, never trusted as a verdict, and does not count toward the verdict.
 - A pack's do-not-flag list is enforced by prompt, not by code.
+- Spec text can still reach the main thread: it relays the Spec lane's and the spec-verifier's replies into `report.py`, so it sees whatever they wrote, and a paraphrase or a run under 6 words passes the check. Only their instruction to cite by `spec_line` keeps the author's text out.
 - Not stripped: attribute values (`title`, `data-*`), link titles and definitions, footnotes, entity-encoded markup, markdown comment lines inside a list or quote, and other markup's comment syntax (AsciiDoc, Org, rst `..`).
 - A hidden-named file's content is reviewable only through its `change.diff` hunk, so not for `path` and `repo` targets.
 - Python 3.9 reads Unicode 13 categories; a later format character escapes only if it is in the explicit set.

@@ -30,7 +30,9 @@ cut by the same budget; SOTA candidates are in neither), dropped, handoff, cappe
 unverifiable with reason verifier-cap.
 
 Spec lane (CTX-03): a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
-UNTRUSTED block; spec text is never copied into any output. A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
+UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
+consecutive words of spec text counts invalid (verdicts: the line is dropped), so no output carries such a run; a
+paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
 and sources (SOTA). SOTA (path, line, quote = item name) must match plan.json sota_inventory, with 1 to 5 https
 `sources`; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
@@ -190,6 +192,30 @@ def _spec_lines(run):
     return ok
 
 
+SPEC_RUN = 6  # consecutive words; a shorter shared run is ordinary phrasing, not a copy
+
+
+def _words(s):
+    return re.findall(r"\w+", s.casefold())
+
+
+def _spec_copy(run):
+    """Predicate: True when a string holds SPEC_RUN consecutive words (case and punctuation ignored) of the text inside
+    the UNTRUSTED blocks of inputs/spec.md. The text stays inside this closure (CTX-03)."""
+    inside = _spec_lines(run)
+    try:
+        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
+            w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
+    except OSError:
+        w = []
+    runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
+
+    def copied(s):
+        t = _words(s)
+        return any(tuple(t[i:i + SPEC_RUN]) in runs for i in range(len(t) - SPEC_RUN + 1))
+    return copied
+
+
 def _inventory(run):
     """{(normalised path, line): name} of plan.json sota_inventory."""
     inv = _plan(run).get("sota_inventory")
@@ -326,19 +352,20 @@ def _cap_of(run):
     return n
 
 
-def _declined(o, ctx):
+def _declined(o, ctx, copied):
     """(valid entries, invalid count) of a {"declined": [{spec_line, why}]} trailer."""
     if not isinstance(o["declined"], list):
         return [], 1
     good = [{"spec_line": d["spec_line"], "why": _ws(d["why"])} for d in o["declined"] if isinstance(d, dict)
             and _int(d.get("spec_line")) and d["spec_line"] in ctx and isinstance(d.get("why"), str)
-            and _ws(d["why"]) and len(d["why"]) <= 300]
+            and _ws(d["why"]) and len(d["why"]) <= 300 and not copied(d["why"])]
     return good, len(o["declined"]) - len(good)
 
 
 def _read_lane(text, lane, tree, run, shard=None):
     kept, areas, invalid, ignored, complete, declined = {}, [], 0, 0, False, []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
+    copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     for o in _objects(text):
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
@@ -346,10 +373,12 @@ def _read_lane(text, lane, tree, run, shard=None):
                 complete = True
                 areas += [a for a in o["inspected"] if _real(tree, a)] if isinstance(o["inspected"], list) else []
             if "declined" in o and lane == "spec":
-                good, bad = _declined(o, ctx)
+                good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + bad
             continue
         c = _candidate(o, tree, lane, base, ctx) if o is not None else None
+        if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
+            c = None
         if c is None or c["id"] in kept:
             invalid += 1
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
@@ -402,6 +431,8 @@ def verdicts(run, text):
     cand = _load(run, "candidates.json")
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
+    spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
+    copied = _spec_copy(run) if spec else None
     got = {}
     for o in _objects(text):
         if o is None or not isinstance(o.get("id"), str) or o["id"] not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
@@ -410,6 +441,8 @@ def verdicts(run, text):
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
                  and _cited(trees[o["id"]], e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")
+        if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
+            continue
         got[o["id"]] = {"verdict": o["verdict"], "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
     target.write_private(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
