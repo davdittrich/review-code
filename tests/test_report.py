@@ -456,6 +456,14 @@ class MultiLane(Lanes):
         self.assertEqual([i["id"] for i in d["findings"]], [kept])
         self.assertEqual([(i["id"], i["reason"]) for i in d["unverifiable"]], [(by["verifier-cap"], "verifier-cap")])
 
+    def test_cap_cut_on_an_unchanged_line_still_renders_verifier_cap(self):  # CR-02
+        self.set_cap(1)
+        self.lane("defects", mc(5, severity="blocking", category="security"),
+                  dict(CAND, line=1, quote="def f(a):", severity="required"))  # line 1 is unchanged
+        d = self.doc()
+        self.assertEqual(sorted((i["line"], i["reason"]) for i in d["unverifiable"]), [(1, "verifier-cap"), (5, "no-verdict")])
+        self.assertEqual(d["dropped"]["do_not_flag"], 0)
+
     def test_cap_order_is_severity_axis_path_line_id(self):
         self.set_cap(3)
         self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="required"))

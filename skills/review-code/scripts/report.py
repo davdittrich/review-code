@@ -473,7 +473,8 @@ def build(run):
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
-        if origin == "pre-existing" and sev in SEVERITIES[2:]:  # VERI-05; Blocking and Required stay (VERI-06)
+        # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap
+        if origin == "pre-existing" and sev in SEVERITIES[2:] and c["id"] not in capped:
             dropped["do_not_flag"] += 1
             continue
         items.append(dict(c, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
