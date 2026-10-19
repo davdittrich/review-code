@@ -602,6 +602,20 @@ class Safety(Base):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
         self.assertEqual(hung.call_args.kwargs["timeout"], post.CLI_TIMEOUT)
 
+    def test_a_failed_result_write_after_the_event_still_reports_ok(self):
+        digest = self.confirmed()
+        real = target.write_private
+
+        def write(path, text):
+            if path.endswith("result.json"):
+                raise PermissionError(path)
+            return real(path, text)
+
+        with mock.patch.object(post.target, "write_private", write):
+            rc, out, st = self.submit(digest)
+        self.assertEqual((rc, st["status"], st["review_id"]), (0, "ok", 100), out)
+        self.assertEqual(self.fake.reviews[100]["state"], "COMMENTED")
+
     def test_closed_merged_and_draft_pull_requests_refuse(self):
         for state, merged, draft, reason in (("closed", False, False, "closed"), ("closed", True, False, "merged"),
                                              ("open", False, True, "draft")):

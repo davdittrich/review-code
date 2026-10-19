@@ -691,7 +691,10 @@ def submit(run: str, digest: str) -> dict:
         gh.cleanup(handle)  # names what it could not remove
         raise
     out = {"status": "ok", "posted": len(payload["comments"]), "in_body": len(payload["in_body"]), "review_id": handle}
-    target.write_private(os.path.join(run, "post", "result.json"), json.dumps(out, sort_keys=True))
+    try:  # the review is public now: a lost local record must not read as "nothing was posted"
+        target.write_private(os.path.join(run, "post", "result.json"), json.dumps(out, sort_keys=True))
+    except OSError:
+        pass
     return out
 
 
