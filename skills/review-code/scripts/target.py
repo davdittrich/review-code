@@ -719,7 +719,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
             head = _files(todo, top)
         else:
             head = _blobs(index_listing(top) if kind == "staged" else tree_listing(plan["head"], top), todo, top)
-        base_ls = _blobs(tree_listing(mb, top), todo, top)
+        # 6xl.88: the base side is what the diff compares against: the index for --unstaged, the merge base else
+        base_ls = _blobs(index_listing(top) if kind == "unstaged" else tree_listing(mb, top), todo, top)
         old = _git_version(top) < _BASE_VERSION
         if old:
             notes.append("git older than 2.40: linguist attributes not checked")

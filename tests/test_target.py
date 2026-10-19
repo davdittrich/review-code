@@ -993,6 +993,36 @@ class TestNonUtf8ProseName(Local):
         self.assertNotIn("U8CANARY", self.diff(out))
 
 
+class TestSidesPerKind(Local):
+    """6xl.88: --unstaged compares the index with the working copy, so its base side is the index, not HEAD."""
+
+    def excluded(self, out):
+        return {e["path"]: e["reason"] for e in load(out["run"])["excluded"]}
+
+    def test_unstaged_base_is_the_index(self):
+        self.git("checkout", "-q", "main")
+        big = "x = 1\n" * (target._MAX_FILE // 6 + 10)
+        gitfix.commit(self.repo, {"logo.png": b"\x89PNG\x00\x00", "big.txt": big, "plain.md": "p\n"}, "head side")
+        self.write("logo.png", "TEXT_IN_INDEX = 1\n")
+        self.write("big.txt", "small\n")
+        with open(os.path.join(self.repo, "plain.md"), "wb") as fh:
+            fh.write(b"p\x00\n")
+        self.write("keep.py", "k = 1\n")
+        self.git("add", "logo.png", "big.txt", "plain.md", "keep.py")
+        self.write("logo.png", "TEXT_IN_INDEX = 2\n")
+        self.write("big.txt", "small 2\n")
+        self.write("plain.md", "p2\n")
+        rc, out = self.pin("--unstaged")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.excluded(out), {"plain.md": "binary"})  # the index side holds the NUL
+        self.assertEqual(sorted(load(out["run"])["included"]), ["big.txt", "logo.png"])
+        rc, out = self.pin("--staged")  # HEAD -> index: logo.png and big.txt changed to text, plain.md gained a NUL
+        self.assertEqual(self.excluded(out), {"logo.png": "binary", "big.txt": "too-large", "plain.md": "binary"})
+        rc, out = self.pin()  # HEAD -> working copy
+        self.assertEqual((rc, out["kind"]), (0, "worktree"), out)
+        self.assertEqual(self.excluded(out), {"logo.png": "binary", "big.txt": "too-large"})
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
