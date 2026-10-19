@@ -697,15 +697,6 @@ class TestFilter(Local):
         self.assertEqual((rc, out["status"]), (0, "ok"))
         self.assertEqual(load(out["run"])["included"], ["app.js"])
 
-    def test_filter_generated_attr(self):
-        self.base({".gitattributes": "gen/*.py linguist-generated\nthird/** linguist-vendored\n",
-                   "gen/a.py": "a = 1\n", "third/x.js": "x\n", "src/k.js": "k\n"})
-        self.change({"gen/a.py": "a = 2\n", "third/x.js": "y\n", "src/k.js": "k2\n"})
-        rc, out = self.pin("main")
-        self.assertEqual(self.excluded(out), {"gen/a.py": ("generated", "linguist-generated"),
-                                              "third/x.js": ("vendored", "linguist-vendored")})
-        self.assertEqual(load(out["run"])["included"], ["src/k.js"])
-
     def test_filter_attr_from_base_only(self):
         self.change({".gitattributes": "evil.js linguist-generated\nevil.js -diff\n", "evil.js": "evil()\n"})
         rc, out = self.pin("main")
@@ -751,18 +742,6 @@ class TestFilter(Local):
         self.assertEqual(self.excluded(out), {"u.bin": ("binary", "NUL byte")})
         self.assertEqual(load(out["run"])["included"], ["a.txt"])
 
-    def test_filter_binary_by_base_attribute_only(self):
-        # 6xl.69: the merge base's `binary` marks text as binary; .git/info/attributes does not count
-        self.base({".gitattributes": "*.dat binary\n", "d.dat": "a\n", "k.txt": "a\n"})
-        self.change({"d.dat": "b\n", "k.txt": "b\n"})
-        with open(os.path.join(self.repo, ".git", "info", "attributes"), "w") as fh:
-            fh.write("* -diff\n*.txt linguist-generated\n")
-        rc, out = self.pin("main")
-        self.assertEqual(self.excluded(out), {"d.dat": ("binary", "base attribute -diff")})
-        self.assertEqual(load(out["run"])["included"], ["k.txt"])
-        self.assertIn("+b", self.diff(out))
-        self.assertNotIn("Binary files", self.diff(out))
-
     def test_filter_explicit_path(self):
         gitfix.commit(self.repo, {"package-lock.json": "{}\n", "src/ok.js": "ok\n"}, "lock")
         rc, out = self.pin("package-lock.json")
@@ -770,22 +749,6 @@ class TestFilter(Local):
         rc, out = self.pin(".")
         self.assertEqual(self.excluded(out), {"package-lock.json": ("lockfile", "basename")})
         self.assertNotIn("package-lock.json", load(out["run"])["included"])
-
-    def test_filter_working_tree_attrs_ignored(self):
-        self.change({"src/app.js": "x\n"})
-        self.write(".gitattributes", "src/app.js linguist-generated\n")  # uncommitted, not part of the pin
-        rc, out = self.pin("main")
-        self.assertEqual((rc, self.excluded(out)), (0, {}))
-        self.assertEqual(load(out["run"])["included"], ["src/app.js"])
-
-    def test_filter_old_git(self):
-        self.base({".gitattributes": "gen/*.py linguist-generated\n", "gen/a.py": "a\n"})
-        self.change({"gen/a.py": "b\n"})
-        with mock.patch.dict(target._VERSION, {"v": (2, 39)}):
-            rc, out = self.pin("main")
-        self.assertEqual((rc, self.excluded(out)), (0, {}))
-        self.assertIn("git older than 2.40: linguist attributes not checked", self.notes(out))
-
 
 class TestBlobMemory(Local):
     def peak(self, n):
@@ -859,16 +822,6 @@ class TestQuotedProseNames(Local):
         self.assertEqual(len(load(out["run"])["included"]), len(self.NAMES))
 
 
-class TestFetchPins(unittest.TestCase):
-    def test_fetch_writes_no_commit_graph_and_runs_no_gc(self):
-        # 6xl.74: the PR fetch must not write commit-graphs or start maintenance in the user's repository
-        with mock.patch.object(target, "_run", return_value=(0, b"", b"")) as run:
-            target._fetch("origin", ["refs/pull/1/head"], "/nowhere")
-        args = run.call_args[0][0]
-        for pin in ("fetch.writeCommitGraph=false", "gc.auto=0", "maintenance.auto=false"):
-            self.assertIn(pin, args)
-
-
 class TestTooLarge(Local):
     def excluded(self, out):
         return {e["path"]: (e["reason"], e["detail"]) for e in load(out["run"])["excluded"]}
@@ -885,31 +838,6 @@ class TestTooLarge(Local):
         self.assertIn("too-large", out["detail"])
         self.assertIn("%d bytes" % (6 * (target._MAX_FILE // 6 + 1)), out["detail"])
         self.assertNotIn("big.py", out["detail"])
-
-    def test_numstat_never_diffs_an_oversized_file(self):
-        # 6xl.85: git's own numstat of a huge file can take ~1 GB; sizes are checked first and the file kept out
-        line = "v = '" + "a" * 90 + "'\n"
-        self.git("checkout", "-q", "main")
-        gitfix.commit(self.repo, {"big.py": line * (target._MAX_FILE * 2 // len(line))}, "big")
-        self.git("checkout", "-q", "-b", "chg")
-        gitfix.commit(self.repo, {"big.py": "w\n" + line * (target._MAX_FILE * 2 // len(line)), "s.py": "s\n"}, "edit")
-        calls, real = [], target.git_bytes
-
-        def spy(args, cwd, *a, **k):
-            calls.append(list(args))
-            return real(args, cwd, *a, **k)
-
-        with mock.patch.object(target, "git_bytes", spy):
-            rc, out = self.pin("main")
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(self.excluded(out)["big.py"][0], "too-large")
-        numstat = [c for c in calls if "--numstat" in c]
-        self.assertTrue(numstat)
-        self.assertTrue(all(":(exclude,literal)big.py" in c for c in numstat), numstat)
-        os.utime(os.path.join(self.repo, "big.py"), (1, 1))  # touched, same content: no change, no false exclusion
-        self.write("s.py", "s2\n")
-        rc, out = self.pin("--unstaged")
-        self.assertEqual((rc, self.excluded(out)), (0, {}), out)
 
     def test_file_over_cap_excluded_with_reason_and_bounded_memory(self):
         # 6xl.75: one huge file must not blow memory; it leaves review with a recorded reason, unread

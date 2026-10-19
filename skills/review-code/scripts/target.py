@@ -25,24 +25,12 @@ import sanitize
 
 STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number", "run",
                "included_count", "excluded_count", "untracked_count", "candidates"}
-# No hooks, no fsmonitor program; check-out family subcommands are never run.
-# core.quotePath=false: diff headers carry names as text, so escape_for_code covers them like content.
-_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
-        "-c", "core.attributesFile=/dev/null",  # a user's global `* -diff` must not make files "binary" (6xl.62)
-        # config-only knobs that would change parsed output (6xl.61); flags pin the rest
-        "-c", "color.ui=never", "-c", "diff.suppressBlankEmpty=false", "-c", "diff.noprefix=false",
-        "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false", "-c", "grep.column=false",
-        "-c", "grep.lineNumber=false", "-c", "log.showSignature=false",
-        "-c", "i18n.logOutputEncoding=UTF-8"]  # 6xl.81: commit text always arrives as UTF-8
-# Environment that would inject options or config past the pins above.
-_ENV_DROP = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS", "GIT_ATTR_SOURCE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
-             "GIT_ICASE_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_LITERAL_PATHSPECS")  # 6xl.74
+# No hook or fsmonitor program from the repository runs (SC5); names arrive unquoted, so escape_for_code covers them.
+_GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
 _WIDE = "--unified=999999"
-# Every option a user's diff.* or color.* setting could change, pinned (6xl.61); the diffs run as plumbing.
-# --text: binary files are already excluded by the base-only rule, so no attribute may hide a kept file (6xl.69).
-_DIFF_FLAGS = ["-p", "-M", "-l1000", "--full-index", "--text", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/",
-               "--dst-prefix=b/", "--submodule=short", "--ignore-submodules=none", "--diff-algorithm=myers",
-               "--inter-hunk-context=0", "--indent-heuristic", "-O/dev/null"]
+# --text: a .gitattributes `-diff` cannot turn hunks into "Binary files differ".
+_DIFF_FLAGS = ["-p", "-M", "--text", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-color", "--submodule=short", "--src-prefix=a/",
+               "--dst-prefix=b/"]
 SKIP_REASONS = {"empty-diff", "no-files", "only-excluded", "closed", "merged", "draft", "locked"}
 _LOCKFILES = frozenset((
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "npm-shrinkwrap.json", "Cargo.lock",
@@ -67,35 +55,12 @@ class Refuse(Exception):
         self.detail = detail
 
 
-_FILTERS: dict = {}
-
-
-def _env(cwd: Optional[str] = None) -> dict:
-    e = {k: v for k, v in os.environ.items()
-         if k not in _ENV_DROP and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
-    e.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
-    if cwd is not None:  # 6xl.74: no configured clean/smudge/process filter runs; config pairs go via the env,
-        pins = _filter_pins(cwd, e)  # so a driver name with any character needs no -c quoting
-        e["GIT_CONFIG_COUNT"] = str(len(pins))
-        for i, (k, v) in enumerate(pins):
-            e["GIT_CONFIG_KEY_%d" % i], e["GIT_CONFIG_VALUE_%d" % i] = k, v
-    return e
-
-
-def _filter_pins(cwd: str, e: dict) -> List[Tuple[str, str]]:
-    """(key, value) pairs emptying every filter driver the user's config defines, cached per cwd."""
-    if cwd not in _FILTERS:
-        p = subprocess.run(_GIT + ["config", "-z", "--get-regexp", r"^filter\."], cwd=cwd, env=e,
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        names = {k[7:].rpartition(".")[0] for k in (r.split(b"\n", 1)[0].decode("utf-8", "surrogateescape")
-                                                    for r in p.stdout.split(b"\0") if r) if "." in k[7:]}
-        _FILTERS[cwd] = [("filter.%s.%s" % (n, f), v) for n in sorted(names)
-                         for f, v in (("clean", ""), ("smudge", ""), ("process", ""), ("required", "false"))]
-    return _FILTERS[cwd]
+def _env() -> dict:
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")  # no prompt, no index write
 
 
 def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None):
-    p = subprocess.run(_GIT + list(args), cwd=cwd, env=_env(cwd), input=stdin,
+    p = subprocess.run(_GIT + list(args), cwd=cwd, env=_env(), input=stdin,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return p.returncode, p.stdout, p.stderr
 
@@ -395,9 +360,7 @@ def _view_mr(cand: dict, cwd: str) -> dict:
 
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
-    rc, _, _ = _run(["-c", "transfer.fsckObjects=true", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
-                     "-c", "fetch.writeCommitGraph=false",
-                     "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
+    rc, _, _ = _run(["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
                      "--", remote] + refspecs, cwd)
     if rc != 0:
         raise Refuse("fetch-failed", "git could not fetch the pull request objects")
@@ -407,10 +370,8 @@ def _have(oid: str, cwd: str) -> bool:
     return _run(["cat-file", "-e", oid + "^{commit}"], cwd)[0] == 0
 
 
-# Changed-file listing: plumbing at the top level, so no diff.* setting (relative, ignoreSubmodules, renames)
-# and no subdirectory cwd can narrow it; --numstat is content-based, so a stat-only touch is no change (6xl.62).
-_NAME_FLAGS = ["-r", "-z", "-M", "-l1000", "--numstat", "--no-ext-diff", "--no-textconv", "--submodule=short",
-               "--ignore-submodules=none"]
+# Changed-file listing: plumbing at the top level, so no subdirectory cwd narrows it.
+_NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv"]
 
 
 def read_working(path: str, limit: int) -> Tuple[str, object]:
@@ -450,53 +411,14 @@ def _special(path: str) -> bool:
     return not (stat.S_ISREG(m) or stat.S_ISLNK(m) or stat.S_ISDIR(m))
 
 
-def _oversized(sub: str, revs: List[str], top: str) -> List[str]:
-    """Names git must not diff: a side over _MAX_FILE, from a `--raw -z` listing and blob sizes (6xl.85), since
-    git's own numstat of a huge file can take far more memory than the file, or a special working-copy entry."""
-    raw = git_bytes([sub, "-r", "-z", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none"] + revs + ["--"],
-                    top).split(b"\0")
-    rows, oids = [], set()
-    for meta, path in zip(raw[0::2], raw[1::2]):
-        f = meta.split()
-        if len(f) == 5 and f[0].startswith(b":"):
-            sides = [(m, o.decode()) for m, o in ((f[0][1:], f[2]), (f[1], f[3])) if m != b"160000"]
-            rows.append((path.decode("utf-8", "surrogateescape"), sides))
-            oids |= {o for _, o in sides if o.strip("0")}
-    sizes = {}
-    if oids:
-        out = git_bytes(["cat-file", "--batch-check"], top, stdin="".join(o + "\n" for o in sorted(oids)).encode())
-        for ln in out.split(b"\n"):
-            f = ln.split()
-            if len(f) == 3 and f[2].isdigit():
-                sizes[f[0].decode()] = int(f[2])
-    big = []
-    for name, sides in rows:
-        size = max([sizes.get(o, 0) for _, o in sides if o.strip("0")] or [0])
-        work = any(m != b"000000" and not o.strip("0") for m, o in sides)  # the working-tree side has no object yet
-        if work and _special(os.path.join(top, name)):
-            big.append(name)
-            continue
-        if work:
-            try:
-                size = max(size, os.lstat(os.path.join(top, name)).st_size)
-            except OSError:
-                pass
-        if size > _MAX_FILE and work:  # a touched but unchanged file is no change: git hashes it streaming
-            old = [o for _, o in sides if o.strip("0")]
-            if old and git(["hash-object", "--no-filters", "--", name], top, check=False).strip() == old[0]:
-                continue
-        if size > _MAX_FILE:
-            big.append(name)
-    return big
-
-
 def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
-    """(changed names, {new name: old name} for renames) from `git <sub> --numstat -z`, with files over the
-    size cap listed without git diffing them (they leave review as too-large)."""
-    big = _oversized(sub, revs, top)
-    keep_out = ["."] + [":(exclude,literal)" + n for n in big] if big else []
+    """(changed names, {new name: old name} renames) from `git <sub> --numstat -z`. A changed working-copy
+    FIFO, socket or device is listed but kept out of the numstat run: git cannot hash it."""
+    odd = [] if sub == "diff-tree" else [n for n in _split(git_bytes([sub, "-z", "--name-only"] + revs + ["--"], top))
+                                          if _special(os.path.join(top, n))]
+    keep_out = ["."] + [":(exclude,literal)" + n for n in odd] if odd else []
     raw = git_bytes([sub] + _NAME_FLAGS + revs + ["--"] + keep_out, top).decode("utf-8", "surrogateescape").split("\0")
-    names, renames, i = list(big), {}, 0
+    names, renames, i = odd, {}, 0
     while i < len(raw):
         f = raw[i].split("\t", 2)  # "added<TAB>deleted<TAB>path": a TAB inside the path stays in it (6xl.72)
         if len(f) == 3 and f[2] == "" and i + 2 < len(raw):  # a rename: "added<TAB>deleted<TAB>" NUL old NUL new
@@ -581,27 +503,11 @@ def _plan_commit(rev: str, cwd: str) -> dict:
     return plan
 
 
-_BASE_VERSION = (2, 40)  # git --attr-source and check-attr --source
 _MINIFIED = (".min.js", ".min.css", ".map")
 _PB_NAMES = (".pb.go", "_pb2.py", ".snap")
 _MARKER = re.compile(r"@generated|do not edit|auto-generated|automatically generated", re.I)
 _LONG_LINE = 1000
 _LONG_EXT = (".js", ".mjs", ".css", ".json")  # only these can be minified; a long line in .py is real source
-_VERSION: dict = {}
-
-
-def _git_version(cwd: str) -> tuple:
-    if "v" not in _VERSION:
-        m = re.search(r"(\d+)\.(\d+)", git(["--version"], cwd, check=False))
-        _VERSION["v"] = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-    return _VERSION["v"]
-
-
-def _attr_source(mb: str, cwd: str) -> List[str]:
-    """Top-level git options that read attributes from the pinned base, not the working tree the change may own."""
-    return ["--attr-source=" + mb] if _git_version(cwd) >= _BASE_VERSION else []
-
-
 def _scan(data: bytes) -> tuple:
     """(has NUL in the first 8000 bytes, longest line in characters, first ten lines, size in bytes)."""
     lines = data.split(b"\n")
@@ -621,7 +527,7 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool,
     with tempfile.TemporaryFile() as fh:
         fh.write(b"".join(ln + b"\n" for ln in lines))
         fh.seek(0)
-        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(cwd), stdin=fh,
+        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(), stdin=fh,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         finished = False
         try:
@@ -697,45 +603,11 @@ def _files(names: List[str], top: str) -> dict:
     return out
 
 
-def _base_attrs(mb: str, names: List[str], top: str) -> dict:
-    """{path: "generated"|"vendored"|"binary"} from the merge base's .gitattributes only (6xl.69).
-
-    check-attr runs in a private git dir that borrows the object store through objects/info/alternates: it
-    has no info/attributes and no local config, so neither unversioned repo-local attributes nor the
-    working copy can change which files leave review. `binary` means the base unsets `diff` (e.g. `binary`)."""
-    objs = os.path.join(top, git(["rev-parse", "--git-path", "objects"], top).strip())
-    fmt = git(["rev-parse", "--show-object-format"], top, check=False).strip() or "sha1"
-    with tempfile.TemporaryDirectory() as view:
-        os.makedirs(os.path.join(view, "objects", "info"))
-        os.makedirs(os.path.join(view, "refs"))
-        with open(os.path.join(view, "HEAD"), "w") as fh:
-            fh.write("ref: refs/heads/view\n")
-        with open(os.path.join(view, "objects", "info", "alternates"), "w") as fh:
-            fh.write(os.path.abspath(objs) + "\n")
-        with open(os.path.join(view, "config"), "w") as fh:
-            fh.write("[core]\n\trepositoryformatversion = %d\n\tbare = true\n" % (fmt != "sha1")
-                     + ("[extensions]\n\tobjectFormat = %s\n" % fmt if fmt != "sha1" else ""))
-        raw = git_bytes(["--git-dir=" + view, "check-attr", "--source=" + mb, "-z", "--stdin", "linguist-generated",
-                         "linguist-vendored", "diff"], top,
-                        stdin=b"".join(n.encode("utf-8", "surrogateescape") + b"\0" for n in names), check=False)
-    f = raw.split(b"\0")
-    out = {}
-    for i in range(0, len(f) - 2, 3):
-        name = f[i].decode("utf-8", "surrogateescape")
-        if f[i + 1] == b"diff":
-            if f[i + 2] == b"unset":
-                out.setdefault(name, "binary")
-        elif f[i + 2] in (b"set", b"true"):
-            out[name] = "generated" if f[i + 1] == b"linguist-generated" else "vendored"
-    return out
-
-
 def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     """(kept, excluded, notes): first matching rule wins; every exclusion carries a reason and a detail.
 
-    Attributes come from the merge base, and header and path rules apply only to files that exist there, so the
-    change cannot hide its own code with a .gitattributes edit, a header marker, a directory name, a
-    minified name or a long line (all kept when the change adds the file; only lockfile names are dropped outright).
+    Header and path rules apply only to files that exist at the base, so the change cannot hide its own code with a
+    header marker, a directory name, a minified name or a long line (only lockfile names are dropped outright).
     """
     kept, excluded, notes, todo = [], [], [], []
     mb, explicit = plan["mb"], plan.get("explicit", ())
@@ -758,10 +630,6 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
             head = _blobs(index_listing(top) if kind == "staged" else tree_listing(plan["head"], top), todo, top)
         # 6xl.88: the base side is what the diff compares against: the index for --unstaged, the merge base else
         base_ls = _blobs(index_listing(top) if kind == "unstaged" else tree_listing(mb, top), todo, top)
-        old = _git_version(top) < _BASE_VERSION
-        if old:
-            notes.append("git older than 2.40: linguist attributes not checked")
-        attrs = {} if old else _base_attrs(mb, todo, top)
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
@@ -782,8 +650,6 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                 hit = ("minified", "name pattern", "minified")
             elif n in head and not nul and longest > _LONG_LINE and base.endswith(_LONG_EXT):
                 hit = ("minified", "longest line %d" % longest, "minified")
-            elif attrs.get(n) in ("generated", "vendored") and not (attrs[n] == "generated" and migration):
-                hit = (attrs[n], "linguist-" + attrs[n], None)
             if hit is None and not migration:
                 lines = base_ls[n][2] if n in base_ls else first
                 mark = next((i for i, l in enumerate(lines, 1) if _MARKER.search(l)), 0)
@@ -799,9 +665,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                         suffix = next((x for x in _PB_NAMES if base.endswith(x)), None)
                         if suffix:
                             hit = ("generated", "path rule *" + suffix, "path")
-            if hit is None and attrs.get(n) == "binary":
-                hit = ("binary", "base attribute -diff", None)
-            elif hit is None and (nul or base_ls.get(n, (False,))[0]):
+            if hit is None and (nul or base_ls.get(n, (False,))[0]):
                 hit = ("binary", "NUL byte", None)  # git's own rule: a NUL in the first 8000 bytes of either side
             if hit is None:
                 kept.append(n)
@@ -822,9 +686,8 @@ def _diff_calls(plan: dict, kept: List[str], narrow: bool, top: str) -> List[Lis
     cmd = plan["diff_cmd"]
     if not cmd:
         return []
-    pre = _attr_source(plan["mb"], top)  # an attributes file the change adds must not turn its files into "binary"
     if not narrow:
-        return [pre + cmd[1:]]
+        return [cmd[1:]]
     skip, ren = set(plan["untracked"]), plan.get("renames", {})
     chunks, cur, size = [], [], 0
     for n in (n for n in kept if n not in skip):
@@ -837,7 +700,7 @@ def _diff_calls(plan: dict, kept: List[str], narrow: bool, top: str) -> List[Lis
         size += w
     if cur:
         chunks.append(cur)
-    return [pre + ["--literal-pathspecs"] + cmd[1:] + c for c in chunks]
+    return [["--literal-pathspecs"] + cmd[1:] + c for c in chunks]
 
 
 _PATH_LINES = (b"diff --git ", b"--- ", b"+++ ", b"rename from ", b"rename to ", b"copy from ", b"copy to ")
@@ -853,7 +716,7 @@ def _diff_line(raw: bytes) -> str:
 def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
     """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
     for args in calls:
-        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(top), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             for raw in p.stdout:
                 yield _diff_line(raw.rstrip(b"\n"))

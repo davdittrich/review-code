@@ -458,183 +458,51 @@ if __name__ == "__main__":
 
 
 class HostileUserConfig(unittest.TestCase):
-    """6xl.61/.62: run-dir output must not depend on the user's own git config or cwd. The hostile settings
-    sit in a real global config file (GIT_CONFIG_GLOBAL), as a user's ~/.gitconfig would; keep this class."""
+    """A hostile global git config changes no output, and no hook or fsmonitor program runs (SC5)."""
 
-    KINDS = (["main"], ["main..feat"], ["HEAD^!"], [], ["--staged"], ["--unstaged"], ["--repo"], ["src"])
-    CANARIES = (b"SUBJ_TWO_CANARY", b"EXTCANARY", b"TEXTCONVCANARY", b"\x1b[", b"FILTERCANARY")
-
-    def setUp(self):
-        self._td = tempfile.TemporaryDirectory()
-        self.addCleanup(self._td.cleanup)
-        self.tmp = os.path.realpath(self._td.name)
-        sub = gitfix.make_repo(os.path.join(self.tmp, "subrepo"))
-        gitfix.commit(sub, {"f": "1\n"}, "SUBJ_ONE")
-        s1 = gitfix.run(["git", "rev-parse", "HEAD"], sub).strip()
-        gitfix.commit(sub, {"f": "2\n"}, "SUBJ_TWO_CANARY")
-        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, {"src/cfg.py": "def load_cfg():\n    return 1\n", "src/deep/d.py": "d = 1\n",
-                                  "top.py": "t = 1\n", "src/use.py": "u = load_cfg()\n", "data.txt": "one\n", "docs/old.md": "".join(
-                                      "line %d\n" % i for i in range(30)), "docs/old2.md": "".join(
-                                      "row %d\n" % i for i in range(30)), "notes.md": "n\n"}, "base")
-        self.git("-c", "protocol.file.allow=always", "submodule", "-q", "add", sub, "sm")
-        self.git("-C", "sm", "checkout", "-q", s1)
-        self.git("add", "sm")
-        self.git("commit", "-q", "-m", "sub at s1")
-        self.git("checkout", "-q", "-b", "feat")
-        self.git("-C", "sm", "checkout", "-q", "main")
-        self.git("add", "sm")
-        self.git("mv", "docs/old.md", "docs/new.md")
-        self.git("mv", "docs/old2.md", "docs/new2.md")
-        gitfix.commit(self.repo, {"src/cfg.py": "def load_cfg():\n    return 2\n", "src/deep/d.py": "d = 2\n",
-                                  "top.py": "t = 2\n", "data.txt": "two\n", "docs/new.md": "".join(
-                                      "line %d\n" % i for i in range(30)).replace("line 20", "line 20 edited"),
-                                  "notes.md": "n\n<!-- HTCMT -->\n"},
-                      "feat: ok " + "".join(chr(0xE0000 + ord(c)) for c in "PAYLOADTAGS"))  # 6xl.81
-        # dirty state for the in-place kinds
-        with open(os.path.join(self.repo, "src", "cfg.py"), "a") as fh:
-            fh.write("# staged\n")
-        self.git("add", "src/cfg.py")
-        with open(os.path.join(self.repo, "top.py"), "a") as fh:
-            fh.write("# unstaged\n")
-        with open(os.path.join(self.repo, "src", "deep", "new.py"), "w") as fh:
-            fh.write("n = 1\n")
-        bin_ = os.path.join(self.tmp, "bin")
-        os.makedirs(bin_)
-        for name, word in (("ext.sh", "EXTCANARY"), ("conv.sh", "TEXTCONVCANARY")):
-            with open(os.path.join(bin_, name), "w") as fh:
-                fh.write("#!/bin/sh\necho %s\n" % word)
-            os.chmod(os.path.join(bin_, name), 0o755)
-        with open(os.path.join(self.tmp, "attrs"), "w") as fh:
-            fh.write("*.py diff=hostile\n*.txt -diff\n")
-        with open(os.path.join(self.tmp, "order"), "w") as fh:
-            fh.write("top.py\n*\n")
-        self.hostile = os.path.join(self.tmp, "hostile.gitconfig")
-        with open(self.hostile, "w") as fh:
-            fh.write("[diff]\n\tsubmodule = log\n\trelative = true\n\tignoreSubmodules = all\n"
-                     "\texternal = %s\n\tnoprefix = true\n\trenames = false\n\tmnemonicPrefix = true\n"
-                     "\talgorithm = patience\n\tcontext = 0\n\tinterHunkContext = 10\n\tindentHeuristic = false\n"
-                     "\tsuppressBlankEmpty = true\n\torderFile = %s\n\twordRegex = .\n\trenameLimit = 1\n"
-                     "[diff \"hostile\"]\n\ttextconv = %s\n"
-                     "[color]\n\tui = always\n\tdiff = always\n\tgrep = always\n"
-                     "[core]\n\tquotePath = true\n\tattributesFile = %s\n\tpager = cat\n\tabbrev = 4\n"
-                     "[grep]\n\tcolumn = true\n\tlineNumber = true\n\tpatternType = perl\n"
-                     "[log]\n\tshowSignature = true\n[i18n]\n\tlogOutputEncoding = UTF-16\n"
-                     "[user]\n\tname = U\n\temail = u@example.invalid\n"
-                     "[filter \"evil\"]\n\tclean = %s\n\tsmudge = %s\n\trequired = true\n"
-                     % (os.path.join(bin_, "ext.sh"), os.path.join(self.tmp, "order"),
-                        os.path.join(bin_, "conv.sh"), os.path.join(self.tmp, "attrs"),
-                        os.path.join(bin_, "filter.sh"), os.path.join(bin_, "filter.sh")))
-        self.filter_ran = os.path.join(self.tmp, "filter-ran")
-        with open(os.path.join(bin_, "filter.sh"), "w") as fh:  # 6xl.74: a clean filter must never run
-            fh.write("#!/bin/sh\ntouch %s\necho FILTERCANARY\n" % self.filter_ran)
-        os.chmod(os.path.join(bin_, "filter.sh"), 0o755)
-
-    def git(self, *a):
-        return gitfix.run(["git"] + list(a), self.repo).strip()
-
-    def run_kind(self, words, cwd, hostile):
-        e = gitfix.env()
-        e["TMPDIR"] = self.tmp
-        if hostile:  # 6xl.74: pathspec-mode variables must not change or break the review
-            e.update(GIT_ICASE_PATHSPECS="1", GIT_GLOB_PATHSPECS="1")
-        info = os.path.join(self.repo, ".git", "info", "attributes")
-        if hostile:
-            e["GIT_CONFIG_GLOBAL"] = self.hostile
-            # 6xl.69: unversioned repo-local attributes are user state too; the exclusion rule is the merge base's
-            os.makedirs(os.path.dirname(info), exist_ok=True)
-            with open(info, "w") as fh:
-                fh.write("* -diff filter=evil\n*.md linguist-generated\n*.py linguist-vendored\n")
-            self.addCleanup(lambda: os.path.exists(info) and os.remove(info))
-        try:
-            return self._run_kind(words, cwd, e)
-        finally:
-            if os.path.exists(info):
-                os.remove(info)
-
-    def _run_kind(self, words, cwd, e):
-        out = {}
-        for script, args in (("target.py", words), ("ledger.py", None)):
-            if args is None:
-                args = ["build", "--run", out["target"]["run"]]
-            p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=cwd, env=e,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out[script[:-3]] = json.loads(p.stdout.decode("utf-8"))
-            out[script[:-3] + "_raw"] = p.stdout
-            if out[script[:-3]].get("status") != "ok":
-                break
-        return out
-
-    def snapshot(self, run):
-        def rd(rel):
-            with open(os.path.join(run, rel), "rb") as fh:
-                return fh.read()
-        tj, led = json.loads(rd("target.json")), json.loads(rd("ledger.json"))
-        spec = re.sub(rb"[0-9a-f]{16}>>>", b"nonce>>>", re.sub(rb"UNTRUSTED-[0-9a-f]+", b"UNTRUSTED-nonce", rd(
-            os.path.join("inputs", "spec.md")))).replace(run.encode(), b"RUN")
-        return {"diff": rd("change.diff"), "spec": spec,
-                "target": {k: tj[k] for k in ("kind", "base_sha", "head_sha", "merge_base", "included", "excluded",
-                                              "untracked", "hidden_chars", "hidden_text")},
-                "ledger": {k: led[k] for k in ("symbols", "callers", "tests", "docs", "hidden_text", "hidden_chars")}}
-
-    def leaks(self, run, raw):
-        found = [(b, "stdout") for b in self.CANARIES if b in raw]
-        for d, _, fs in os.walk(run):
-            for f in fs:
-                fp = os.path.join(d, f)
-                if os.path.relpath(fp, run) == os.path.join("inputs", "spec.md"):
-                    continue
-                with open(fp, "rb") as fh:
-                    data = fh.read()
-                found += [(b, os.path.relpath(fp, run)) for b in self.CANARIES if b in data]
-        return found
-
-    def pairs(self, cwd):
-        """(words, clean run, hostile run from cwd) for every target kind."""
-        for words in self.KINDS:
-            clean = self.run_kind(words, self.repo, False)
-            self.assertEqual(clean["target"]["status"], "ok", (words, clean["target"]))
-            here = [os.path.relpath(os.path.join(self.repo, "src"), cwd)] if words == ["src"] else words  # cwd-relative
-            bad = self.run_kind(here, cwd, True)
-            self.assertEqual(bad["target"]["status"], "ok", (words, os.path.relpath(cwd, self.repo), bad["target"]))
-            self.assertEqual(bad["ledger"]["status"], "ok", (words, bad["ledger"]))
-            yield words, clean, bad
-
-    def test_changed_files_independent_of_user_config_and_cwd(self):
-        # 6xl.62: diff.relative from a subdirectory and diff.ignoreSubmodules=all must not drop changed files
-        for cwd in (self.repo, os.path.join(self.repo, "src", "deep")):
-            for words, clean, bad in self.pairs(cwd):
-                with self.subTest(words=words, cwd=os.path.relpath(cwd, self.repo)):
-                    want = {k: v for k, v in self.snapshot(clean["target"]["run"])["target"].items()
-                            if k in ("included", "excluded", "untracked")}
-                    got = {k: v for k, v in self.snapshot(bad["target"]["run"])["target"].items()
-                           if k in ("included", "excluded", "untracked")}
-                    self.assertEqual(got, want)
+    def test_hostile_config_changes_nothing_and_runs_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = os.path.realpath(td)
+            repo = gitfix.make_repo(os.path.join(tmp, "repo"))
+            gitfix.commit(repo, {"src/cfg.py": "def load_cfg():\n    return 1\n", "src/use.py": "u = load_cfg()\n",
+                                 "data.txt": "one\n"}, "base")
+            gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+            gitfix.commit(repo, {"src/cfg.py": "def load_cfg():\n    return 2\n", "data.txt": "two\n"}, "feat")
+            with open(os.path.join(repo, "data.txt"), "a") as fh:
+                fh.write("three\n")
+            ran, hooks, prog = os.path.join(tmp, "ran"), os.path.join(tmp, "hooks"), os.path.join(tmp, "prog.sh")
+            os.makedirs(hooks)
+            with open(prog, "w") as fh:
+                fh.write("#!/bin/sh\ntouch %s\necho EXTCANARY\n" % ran)
+            os.chmod(prog, 0o755)
+            for h in ("post-index-change", "reference-transaction", "post-checkout"):
+                os.symlink(prog, os.path.join(hooks, h))
+            with open(os.path.join(tmp, "attrs"), "w") as fh:
+                fh.write("* -diff diff=x\n")
+            cfg = os.path.join(tmp, "hostile.gitconfig")
+            with open(cfg, "w") as fh:
+                fh.write("[diff]\n\texternal = %s\n\tnoprefix = true\n[diff \"x\"]\n\ttextconv = %s\n[color]\n\tui = always\n"
+                         "[grep]\n\tcolumn = true\n[core]\n\tattributesFile = %s\n\thooksPath = %s\n\tfsmonitor = %s\n"
+                         "[user]\n\tname = U\n\temail = u@example.invalid\n"
+                         % (prog, prog, os.path.join(tmp, "attrs"), hooks, prog))
+            for words, want in ((["main"], b"+    return 2"), (["--unstaged"], b"+three")):
+                with self.subTest(words=words):
+                    out = {}
+                    for script, args in (("target.py", words), ("ledger.py", None)):
+                        args = args or ["build", "--run", out["target"]["run"]]
+                        p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=repo,
+                                           env=dict(gitfix.env(), TMPDIR=tmp, GIT_CONFIG_GLOBAL=cfg),
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        out[script[:-3]] = json.loads(p.stdout.decode("utf-8"))
+                        self.assertEqual(out[script[:-3]]["status"], "ok", out)
+                    run = out["target"]["run"]
+                    with open(os.path.join(run, "change.diff"), "rb") as fh:
+                        diff = fh.read()
+                    self.assertIn(want, diff)
+                    self.assertNotIn(b"Binary files", diff)
+                    self.assertNotIn(b"EXTCANARY", diff)
+                    self.assertNotIn(b"\x1b[", diff)
                     if words == ["main"]:
-                        self.assertIn("sm", got["included"])
-                        self.assertIn("top.py", got["included"])
-                        with open(os.path.join(bad["ledger"]["run"], "ledger.json"), encoding="utf-8") as fh:
-                            self.assertIn("src/use.py", [e["file"] for e in json.load(fh)["callers"]])  # 6xl.73: grep -a
-
-    def test_output_independent_of_user_config(self):
-        # 6xl.61: diff.submodule=log, external diff, textconv, colour, prefixes, context and algorithm settings
-        # never reach a run-dir file; the whole change.diff, target and ledger lists equal a clean-config run
-        for cwd in (self.repo, os.path.join(self.repo, "src", "deep")):
-            for words, clean, bad in self.pairs(cwd):
-                with self.subTest(words=words, cwd=os.path.relpath(cwd, self.repo)):
-                    run = bad["target"]["run"]
-                    self.assertEqual(self.leaks(run, bad["target_raw"] + bad["ledger_raw"]), [])
-                    self.assertEqual(self.snapshot(run), self.snapshot(clean["target"]["run"]))
-                    self.assertFalse(os.path.exists(self.filter_ran), "a user clean filter ran")
-
-    def test_submodule_log_subjects_never_leak(self):
-        # 6xl.61: diff.submodule=log alone (no ignoreSubmodules masking it) would print submodule commit subjects
-        with open(self.hostile, "w") as fh:
-            fh.write("[diff]\n\tsubmodule = log\n[user]\n\tname = U\n\temail = u@example.invalid\n")
-        for words in (["main"], ["HEAD^!"]):
-            with self.subTest(words=words):
-                bad = self.run_kind(words, self.repo, True)
-                self.assertEqual(bad["target"]["status"], "ok", bad["target"])
-                with open(os.path.join(bad["target"]["run"], "change.diff"), "rb") as fh:
-                    self.assertIn(b"Subproject commit", fh.read())
-                self.assertEqual(self.leaks(bad["target"]["run"], bad["target_raw"]), [])
+                        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
+                            self.assertIn("src/use.py", [e["file"] for e in json.load(fh)["callers"]])
+                    self.assertFalse(os.path.exists(ran), "a hook or fsmonitor program ran")

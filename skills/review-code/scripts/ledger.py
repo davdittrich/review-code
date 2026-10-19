@@ -103,7 +103,7 @@ def _blobs(repo: str, oids) -> Dict[str, bytes]:
 def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool = False,
           pathspec: Optional[str] = None) -> List[tuple]:
     """git grep -w -F: [(path, line)] or, with names_only, [(path, 0)]. Exit 1 (no match) yields nothing."""
-    args = ["--literal-pathspecs", "grep", "-z", "-a", "--no-color", "-w", "-F", "-l" if names_only else "-n"]
+    args = ["--literal-pathspecs", "grep", "-z", "-a", "--no-color", "--no-column", "-w", "-F", "-l" if names_only else "-n"]
     for p in patterns:
         args += ["-e", p]
     raw = target.git_bytes(args + ([rev] if rev else []) + ["--"] + ([pathspec] if pathspec else []), repo,
