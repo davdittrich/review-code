@@ -100,11 +100,13 @@ Bare URLs still autolink.
 | `digest-mismatch` | The payload hash is not the digest given | Run build again and confirm the new preview |
 | `payload-mismatch` | The payload does not belong to this target and head | Run build again |
 | `post-failed` | The forge refused the create, event or publish call, or the create's answer was lost | Check `detail`; nothing was left pending unless `cleanup-failed` follows |
+| `post-partial` | GitLab's publish call failed after publishing some drafts: `detail` is `published n of m` (your new notes that carry this payload's markers, of the drafts made), or `published unknown` when the notes could not be listed | The review is public but incomplete; the drafts left are deleted. Re-run build: it skips the findings already posted |
 | `verify-failed` | What the forge stored differs from the payload: count, path, commit id, marker line, or position (line and side on GitLab) | Nothing is posted; the plugin's own pending objects are deleted |
 | `cleanup-failed` | A delete after a failure did not work; `detail` names the review or drafts left, or is `pending review unknown` when the listing after a failed GitHub create did not work | Delete them by hand; for `pending review unknown`, check the PR for a pending review of yours that ends with the review marker |
 
 ## GitLab specifics and not covered
 
+- Whether GitLab's publish call is atomic is not known. After a failed publish, submit lists your notes and refuses `post-partial` when any note of this payload is public, so the outcome is never reported as not posted.
 - MR posting is untested against a live GitLab. `glab` was not available, so every GitLab path is proven only against a fake forge in the test suite. A first live run may find differences; `verify-failed` and `post-failed` refuse safely.
 - The reviewer state after publish is undocumented (OQ7). No approval or request-changes call exists; whether publishing marks you as having reviewed is not known.
 - Race: a draft you add in the GitLab UI during submit is published with the review if it lands after the last draft count and before the publish call. The pre-check refuses drafts that exist before submit, and verify and the count right before publish refuse `verify-failed` for one added earlier; the window left is one request.

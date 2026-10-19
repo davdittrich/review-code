@@ -1436,6 +1436,34 @@ class GitLabSafety(GitLabBase):
         self.assertEqual(len(self.deletes()), 3)
         self.assertEqual((self.fake.drafts, self.fake.notes), ([], []))
 
+    def publish_one_then_fail(self, also=None):
+        real = self.fake.route
+
+        def route(m, p, q, b):
+            if (m, p) != ("POST", MR + "/draft_notes/bulk_publish"):
+                return real(m, p, q, b)
+            d = self.fake.drafts.pop(0)  # GitLab published the summary draft, then failed on the next
+            self.fake.notes.append({"id": d["id"], "body": d["note"], "author": d["author"], "position": d["position"]})
+            if also:
+                also()
+            return self.fake.fail(500)
+
+        self.fake.route = route
+
+    def test_a_publish_that_fails_part_way_reports_what_is_public(self):
+        self.fake.notes.append({"id": 1, "body": "an earlier note of mine\n" + post.REVIEW_MARK % self.fake.head,
+                                "author": {"id": 42}})  # same head, an earlier review: not counted
+        digest = self.confirmed()
+        self.publish_one_then_fail()
+        self.refused(self.submit(digest), "post-partial", "published 1 of 3")
+        self.assertEqual(self.fake.drafts, [])  # the drafts left of this payload are deleted
+        self.assertEqual(len(self.fake.notes), 2)
+
+    def test_a_publish_failure_with_no_note_listing_is_unknown(self):
+        digest = self.confirmed()
+        self.publish_one_then_fail(also=lambda: self.fake.fail_map.update({"GET " + MR + "/notes": 500}))
+        self.refused(self.submit(digest), "post-partial", "published unknown")
+
     def test_failed_delete_names_the_drafts_and_the_next_build_refuses(self):
         digest = self.confirmed()
         self.fake.fail_map["POST " + MR + "/draft_notes/bulk_publish"] = 500

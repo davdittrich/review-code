@@ -275,6 +275,7 @@ class GitLab:
         self.i = info
         self.mr = "projects/%s/merge_requests/%d" % (urllib.parse.quote(info["repo"], safe=""), info["number"])
         self.created, self.marks = [], (set(), None)  # draft ids this call made; the marker lines that identify them
+        self.uid, self.seen = None, set()  # the user existing() checked; the ids of their notes it saw
 
     def _call(self, method: str, endpoint: str, body=None):
         return _api("glab", self.i["host"], method, endpoint, body, self.i["run"])
@@ -344,10 +345,11 @@ class GitLab:
         ids already posted: whole-line markers in notes whose author id is `me`, never in anyone else's."""
         if self._drafts():
             raise Refuse("pending-drafts-exist")
-        ids = set()
+        ids, self.uid, self.seen = set(), me, set()
         for n in self._pages("/notes"):
             a = n.get("author") if isinstance(n, dict) else None
             if isinstance(a, dict) and a.get("id") == me and isinstance(n.get("body"), str):
+                self.seen.add(n.get("id"))
                 ids.update(MARK_RE.findall(n["body"].replace("\r\n", "\n")))
         return ids
 
@@ -413,7 +415,17 @@ class GitLab:
         try:
             self._call("POST", self.mr + "/draft_notes/bulk_publish")
         except Refuse as r:
-            raise Refuse("post-failed", r.detail) if r.reason == "glab-failed" else r
+            raise self._published(r.detail) if r.reason == "glab-failed" else r
+
+    def _published(self, detail: str) -> Refuse:
+        """The refusal for a failed publish call, which may have published some drafts before it failed: the notes of
+        `me` that were not there at existing() and carry a marker line of this payload are public."""
+        try:
+            n = sum(1 for x in self._pages("/notes") if isinstance(x, dict) and x.get("id") not in self.seen
+                    and (x.get("author") or {}).get("id") == self.uid and self._ours({"id": x.get("id"), "note": x.get("body")}))
+        except Refuse:
+            return Refuse("post-partial", "published unknown")
+        return Refuse("post-partial", "published %d of %d" % (n, 1 + len(self.marks[0]))) if n else Refuse("post-failed", detail)
 
     def _ours(self, d) -> bool:
         ids, review = self.marks
