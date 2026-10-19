@@ -760,6 +760,12 @@ class Serial(Lanes):
         for need in ("mode: serial", "tier: quick", "lost guarantee: no independent verifier", "lost guarantee: no repro"):
             self.assertIn(need, text)
 
+    def test_serial_cap_bounds_the_self_scored_batch(self):  # IN-04: documented in lanes.md, not dropped
+        write_plan(self.run_dir, mode="serial", caps={"max_verifier_calls": 1})
+        out = self.lane("defects", mc(2), mc(5, severity="blocking", category="security"))
+        self.assertEqual((len(out["ids"]), out["capped"]), (1, 1))
+        self.assertIn("verifier-cap", [i["reason"] for i in self.doc()["unverifiable"]])
+
     def test_unrecognised_mode_and_malformed_fields_default(self):
         write_plan(self.run_dir, mode="SERIAL", lost_guarantees="x", tier=3)
         self.confirm_all()

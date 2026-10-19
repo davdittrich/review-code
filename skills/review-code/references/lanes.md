@@ -45,7 +45,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 
 | Cap | Meaning | Bounds |
 |-----|---------|--------|
-| `max_verifier_calls` | Verifier plus spec-verifier calls per run; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
+| `max_verifier_calls` | Verifier plus spec-verifier calls per run; in serial mode, where the preview shows 0 verifier calls, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `wave_size` | Agent calls issued in one message: 10, half the default limit of 20 concurrent subagents | fixed |
