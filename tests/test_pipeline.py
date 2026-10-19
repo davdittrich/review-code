@@ -333,24 +333,11 @@ class Tracer(Fixture):
         self.assertEqual(rc, 0)
         self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"BRKCANARY" in self.raw(p)], [])
 
-    def test_github_hidden_constructs_stripped_everywhere(self):
-        # 6xl.80: every construct GitHub renders as nothing, in .md, .markdown and .html, in the PR text too
-        sys.path.insert(0, os.path.join(HERE))
-        from test_sanitize import GH_HIDDEN  # noqa: E402
-        doc = "".join(GH_HIDDEN.values())
-        self.feature({"src/cfg.py": "def load():\n    return 2\n", "a.md": doc, "b.markdown": doc, "c.html": doc},
-                     message="feat: x\n\n" + doc)
-        rc, t = self.pin("main")
-        self.assertEqual((rc, t["status"]), (0, "ok"), t)
-        rc, _ = self.build(t["run"])
-        self.assertEqual(rc, 0)
-        self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"GHCANARY" in self.raw(p)], [])
-
     def test_battery_hidden_constructs_reach_no_sink(self):
         # 6xl.87: every GitHub-hidden battery construct leaves tree/, change.diff, hidden-names/, conventions/, spec.md
         sys.path.insert(0, HERE)
-        from test_battery import BATTERY, KEPT, token  # noqa: E402
-        hidden = [(n, t) for n, t, visible in BATTERY if not visible and n not in KEPT]
+        from test_battery import BATTERY  # noqa: E402
+        hidden = [(n, t.replace("TOK", "BAT%02d" % k)) for k, (n, t) in enumerate(BATTERY) if n != "tags_run"]
         doc = "\n\n".join(t for _, t in hidden) + "\n"
         self.git("checkout", "-q", "main")
         gitfix.commit(self.repo, {"CLAUDE.md": doc}, "rules")
@@ -364,8 +351,8 @@ class Tracer(Fixture):
         self.assertEqual(rc, 0)
         sinks = [p for p in self.lane_files(t["run"])]
         self.assertTrue(any("hidden-names" in p for p in sinks) and any("conventions" in p for p in sinks))
-        for n, _ in hidden:
-            tok = token(n).encode()
+        for k, (n, _) in enumerate(hidden):
+            tok = b"BAT%02d" % k
             self.assertEqual([os.path.relpath(p, t["run"]) for p in sinks if tok in self.raw(p)], [], n)
 
     def test_canary_hidden_text_in_conventions(self):

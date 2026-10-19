@@ -1,375 +1,112 @@
 """Untrusted-text helpers: stdlib only, Python 3.9 grammar.
 
-Prose from the change author is stripped (sanitize_prose); code, file names and branch names are
-escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
-`_invisible` predicate: Default_Ignorable_Code_Point plus general categories Cf, Cc, Zl, Zp, all from embedded
-Unicode 18.0 tables (the same set on every interpreter), no NFKC folding.
-Markdown link and image destinations become an ellipsis (the link text stays); definitions go whole (6xl.87).
-Change-author files that reach the main thread are treated per type. Prose and markup files (every linguist
-Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff, deny by default
-(6xl.87): comments and every `<!`, `<?` and bogus `</` form, every link and footnote definition, reference labels,
-inline titles, unknown tags, every attribute but a URL-shaped href or src, alt text and hidden elements each
-become a one-line `[hidden-KIND removed: N chars]` marker, every newline kept so line numbers and diff anchors
-hold, and each removal is returned as {line, kind, length} (never the payload) for ledger.json `hidden_text`.
-Nothing is protected inside code fences or code spans: a fence can sit inside an HTML block or a comment, so a
-fence is no proof of visibility; examples of comments in fenced docs are over-stripped and flagged. Source code
-files are never touched by this (their comments are the content); invisible and bidi characters are escaped in
-all files (escape_for_code) and a run of plane-14 default-ignorables (Tags spell ASCII) collapses to `<TAGS:n>`.
-Not covered by the strip: link destinations (reviewable content), entity-encoded markup (a renderer shows it as
-text), `<script>`/`<style>` bodies (GitHub shows them as text), comments written in other markup (rst `..`, org),
-and hiding by CSS classes or external style sheets.
-Not detected: homoglyphs, base64, plain-language injection. The defence is structural: PR text
-reaches only the Spec input (02-07) and lanes run without execution tools (02-01, 02-08).
+Prose from the change author is stripped (sanitize_prose); code, file names and branch names are escaped,
+never deleted (escape_for_code), so hidden characters become findings. Prose and markup files (is_prose_file)
+go through strip_hidden / strip_hidden_diff: HTML comments, markdown comment lines (`[//]: # (x)`), image alt
+text and hidden elements each become a `[hidden-KIND removed: N chars]` marker, every newline kept so line
+numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload.
+Not covered: attributes, link titles and definitions, entity-encoded markup, homoglyphs, base64 and
+plain-language injection. The defence there is structural: PR text reaches only the Spec input and lanes run
+without execution tools.
 """
-import bisect
-import html
 import re
 import unicodedata
 from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
-# Not Cf/Cc but invisible or blank: variation selectors, CGJ, blank letters, braille blank.
-_EXTRA = {0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800}
-_ROUNDS = 10
-_MARK = " [sanitizer: markup removed]"
-# Comments, CDATA, doctype and processing instructions; an unterminated comment runs to the end.
-_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![A-Za-z][^>]*>|<\?[^>]*>", re.DOTALL)
-# Code that a reader sees verbatim: fenced blocks (an unterminated fence runs to the end) and spans.
-_FENCE = re.compile(r"^ {0,3}(`{3,})[^`\n]*(?:\n.*?)?(?:^ {0,3}\1`*[ \t]*$|\Z)"
-                    r"|^ {0,3}(~{3,})[^\n]*(?:\n.*?)?(?:^ {0,3}\2~*[ \t]*$|\Z)", re.DOTALL | re.MULTILINE)
-# A span cannot cross a blank line, and a backtick fence's info string cannot hold a backtick.
-_SPAN = re.compile(r"(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\n).)+?)(?<!`)\1(?!`)", re.DOTALL)
-_TOKEN = re.compile("\ue000(\\d+)\ue001")
-# `[//]: # (text)` and friends render nothing on GitHub.
-_REFCOMMENT = re.compile(r"^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"[^\"]*\"|'[^']*')[ \t]*$",
-                         re.DOTALL | re.MULTILINE)
-_BRACKET = r"\[(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])*\]"  # one nesting level
-_ALT = re.compile("!" + _BRACKET)
-_TITLE = r"(?:\"[^\"]*\"|'[^']*')"
-# A link or image destination (and its title) renders as a hover target or not at all, yet the Spec lane reads
-# it; the link text stays and the destination becomes an ellipsis.
-_DEST = r"(?:<[^<>\n]*>|(?:\\.|[^()\s\\]|\([^()\s]*\))+)"
-_INLINE_DEST = re.compile(r"\]\([ \t]*(?:" + _DEST + r")?(?:\s+" + _TITLE + r")?\s*\)")
-_REFDEF_DEST = re.compile(r"(^ {0,3}\[[^\]\n]+\]:[ \t]*)(?:<[^<>\n]*>|\S+)(?:\s+(?:" + _TITLE + r"|\([^()\n]*\)))?[ \t]*$",
-                          re.MULTILINE)
-_DOTS = "\u2026"
-_HIDING_STYLE = re.compile(r"display:none|visibility:hidden|font-size:0|opacity:0")
-_OPAQUE = frozenset("script style template noscript".split())
-_VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
-# Names treated as markup; any other `<x>` (Vec<T>) is prose and is kept as written.
-_ELEMENTS = _VOID | _OPAQUE | frozenset((
-    "a abbr address article aside audio b bdi bdo big blockquote body button canvas caption center cite code "
-    "colgroup data datalist dd del details dfn dialog div dl dt em fieldset figcaption figure font footer form "
-    "h1 h2 h3 h4 h5 h6 head header hgroup html i iframe ins kbd label legend li main map mark marquee math menu "
-    "meter nav object ol optgroup option output p picture pre progress q rp rt ruby s samp search section select "
-    "slot small span strike strong sub summary sup svg table tbody td textarea tfoot th thead time title tr tt u "
-    "ul var video").split())
-
-
-# Default_Ignorable_Code_Point, embedded because unicodedata has no property lookup and its version
-# follows the interpreter (Python 3.9: Unicode 13). Source: DerivedCoreProperties-18.0.0.txt
-# (https://www.unicode.org/Public/UCD/latest/ucd/), 4174 code points; adjacent ranges merged.
-_DI = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
-       (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
-       (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
-# General_Category Cf, embedded for the same reason (Python 3.9 misses U+0890, U+0891, U+13439..1343F).
-# Source: extracted/DerivedGeneralCategory-18.0.0.txt, 170 code points. Cc, Zl, Zp are stable and listed whole.
-_CF = ((0x00AD, 0x00AD), (0x0600, 0x0605), (0x061C, 0x061C), (0x06DD, 0x06DD), (0x070F, 0x070F), (0x0890, 0x0891),
-       (0x08E2, 0x08E2), (0x180E, 0x180E), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F),
-       (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
-       (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F))
-_CTRL = ((0x0000, 0x001F), (0x007F, 0x009F), (0x2028, 0x2029), (0xD800, 0xDFFF))  # + surrogates (Cs, 6xl.60)
-
-
-def _merge(ranges) -> Tuple[Tuple[int, int], ...]:
-    out: List[Tuple[int, int]] = []
-    for a, b in sorted(ranges):
-        if out and a <= out[-1][1] + 1:
-            out[-1] = (out[-1][0], max(out[-1][1], b))
-        else:
-            out.append((a, b))
-    return tuple(out)
-
-
-# Every code point _invisible flags, independent of the interpreter's unicodedata version (6xl.58).
-_INVIS = _merge(_DI + _CF + _CTRL + tuple((o, o) for o in _EXTRA))
-_INVIS_LO = tuple(a for a, _ in _INVIS)
+# Invisible beyond categories Cf, Cc, Cs, Zl, Zp: default-ignorable letters and marks, variation selectors,
+# unassigned default-ignorables, plane 14 (Tags) and the blank braille pattern.
+_EXTRA = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2060, 0x206F),
+          (0x2800, 0x2800), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
+          (0xE0000, 0xE0FFF))
+_BREAK = re.compile(r"\r\n|\r|\n")  # CommonMark line ends
 
 
 def _invisible(ch: str) -> bool:
-    o = ord(ch)
     if ch in "\t\n\r":
         return False
-    i = bisect.bisect_right(_INVIS_LO, o) - 1
-    return i >= 0 and o <= _INVIS[i][1]
+    o = ord(ch)
+    return unicodedata.category(ch) in ("Cf", "Cc", "Cs", "Zl", "Zp") or any(a <= o <= b for a, b in _EXTRA)
 
 
-# Markdown: every extension and filename github-linguist languages.yml maps to Markdown (.scd is also
-# SuperCollider; over-stripping its code is the safe side), the Markdown-based MDX, R Markdown and Quarto
-# (6xl.60), then HTML, plain text and reStructuredText. Other markup keeps its own hidden syntax (see the doc).
+def _run_kind(ch: str) -> Optional[str]:
+    """Characters that can spell a payload one per byte: escaped as a counted run, never named."""
+    o = ord(ch)
+    if 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180D or o == 0x180F:
+        return "VS"
+    if 0xE0000 <= o <= 0xE0FFF:
+        return "TAGS"
+    if 0xD800 <= o <= 0xDFFF:
+        return "BYTES"  # undecodable name bytes (surrogateescape)
+    return None
+
+
 _PROSE_EXT = (".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd",
               ".workbook", ".mdx", ".rmd", ".qmd", ".html", ".htm", ".txt", ".rst")
-_PROSE_NAMES = ("contents.lr",)
 
 
 def is_prose_file(path: str) -> bool:
     p = path.lower()
-    return p.endswith(_PROSE_EXT) or p.rpartition("/")[2] in _PROSE_NAMES
+    return p.endswith(_PROSE_EXT) or p.rpartition("/")[2] == "contents.lr"
 
 
 def strip_invisible(text: str) -> str:
     return "".join(c for c in text if not _invisible(c))
 
 
-class _TextOnly(HTMLParser):
-    """Keeps text a rendered page shows. Known elements vanish with their attributes (alt, title,
-    data-*); text under script/style/template/noscript, `hidden` or an invisible inline style is
-    dropped. An unclosed hiding element hides to the end: over-stripping is the safe side."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.out: List[str] = []
-        self.stack: List[Tuple[str, bool]] = []
-        self.hidden = 0
-
-    def _emit(self, s: str) -> None:
-        if not self.hidden:
-            self.out.append(s)
-
-    def handle_starttag(self, tag, attrs):
-        if tag not in _ELEMENTS:
-            text = self.get_starttag_text() or ""
-            # 6xl.87: a real unknown tag renders as nothing; an autolink or `Vec<T, U>` (no tag) stays as written
-            if _AUTOLINK.fullmatch(text) or not _OPENTAG.fullmatch(text):
-                self._emit(text)
-            return
-        if tag in _VOID:
-            return
-        a = {k: v or "" for k, v in attrs}
-        style = "".join((a.get("style") or "").lower().split())
-        hide = tag in _OPAQUE or "hidden" in a or bool(_HIDING_STYLE.search(style))
-        self.stack.append((tag, hide))
-        self.hidden += hide
-
-    handle_startendtag = handle_starttag  # HTML ignores the slash on non-void elements
-
-    def handle_endtag(self, tag):
-        if tag not in _ELEMENTS:
-            return  # an unknown end tag renders as nothing
-        for i in range(len(self.stack) - 1, -1, -1):
-            if self.stack[i][0] == tag:  # unbalanced input: pop to the nearest match
-                self.hidden -= sum(h for _, h in self.stack[i:])
-                del self.stack[i:]
-                return
-
-    def handle_data(self, data):
-        self._emit(data)
-
-
-def _cut(s: str, spans) -> str:
-    """s without the given spans; a span inside an earlier one goes with it."""
-    out, pos = [], 0
-    for a, b, _ in sorted(spans, key=lambda x: (x[0], -x[1])):
-        if a >= pos:
-            out.append(s[pos:a])
-            pos = b
-        elif b > pos:
-            pos = b
-    return "".join(out) + s[pos:]
-
-
-def _round(s: str) -> str:
-    s = strip_invisible(s)
-    store: List[str] = []
-
-    def stash(m):
-        store.append(m.group(0))
-        return "\ue000%d\ue001" % (len(store) - 1)
-
-    s = _SPAN.sub(stash, _FENCE.sub(stash, s))
-    while True:
-        t = _COMMENT.sub("", s)
-        if t == s:
-            break
-        s = t
-    s = _cut(s, _deny_spans(s))  # 6xl.87: definitions, reference labels, inline titles
-    s = _REFCOMMENT.sub("", s)
-    s = _ALT.sub("![]", s)
-    s = _REFDEF_DEST.sub(lambda m: m.group(1) + _DOTS, _INLINE_DEST.sub(lambda m: "](" + _DOTS + ")" if m.group(0).strip("]() \t\r\n") else m.group(0), s))
-    p = _TextOnly()
-    p.feed(s)
-    p.close()
-    return _TOKEN.sub(lambda m: store[int(m.group(1))] if int(m.group(1)) < len(store) else "", "".join(p.out))
-
-
-def sanitize_prose(text: Optional[str]) -> str:
-    """Reduce change-author prose to what a reader of the rendered page sees. Each round can expose
-    work for the next (entity decoding rebuilds comments, removed tags rejoin `<!` and `--`), so rounds
-    repeat to a fixpoint. Past the cap, all `<`, `>` and `&` go: no markup left to reassemble."""
-    s = _BREAK.sub("\n", text or "")  # 6xl.71: CR and CRLF end lines too; spec.md keeps LF only
-    for _ in range(_ROUNDS + 1):
-        t = _round(s)
-        if t == s:
-            return s
-        s = t
-    s = re.sub(r"[<>&]", "", s)
-    while True:  # markup-free text only shrinks, so this ends
-        t = _round(s)
-        if t == s:
-            return s + _MARK
-        s = t
-
-
-def _is_tag(c: str) -> bool:
-    """Plane-14 default-ignorables other than selectors: Tags spell ASCII, E0080..E00FF the bytes 0x80..0xFF."""
-    o = ord(c)
-    return 0xE0000 <= o <= 0xE0FFF and not 0xE0100 <= o <= 0xE01EF
-
-
-def _is_vs(c: str) -> bool:
-    """Variation_Selector: FE00..FE0F, E0100..E01EF and the Mongolian free variation selectors."""
-    o = ord(c)
-    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180D or o == 0x180F
-
-
-def _is_surrogate(c: str) -> bool:
-    """A lone surrogate: an undecodable name byte (surrogateescape gives U+DC80..DCFF), one byte each."""
-    return 0xD800 <= ord(c) <= 0xDFFF
-
-
 def escape_for_code(text: str) -> Tuple[str, List[dict]]:
-    """Replace each invisible character with `<U+XXXX>`; lines split on newline only, so line
-    numbers never shift. A run of plane-14 default-ignorables (Tags U+E0000..E007F spell ASCII,
-    U+E0080..E0FFF more bytes) becomes one `<TAGS:n>`, and a run of variation selectors (one byte
-    each) one `<VS:n>` that never names a selector, and a run of lone surrogates (undecodable name bytes)
-    one `<BYTES:n>`, so the escaped text never carries the payload. A single U+FE0F right after a
-    symbol (category So: the emoji presentation selector) stays as written. Returns the text and
+    """Replace each invisible character with `<U+XXXX>`, and a run of variation selectors, Tags or lone
+    surrogates with one `<VS:n>`, `<TAGS:n>` or `<BYTES:n>`, so the escape never carries the payload. A single
+    U+FE0F after a symbol (an emoji) stays. Lines split on LF only. Returns the text and
     `[{"line": n, "codepoints": [...]}]`."""
     out, hits = [], []
     for n, line in enumerate(text.split("\n"), 1):
-        cps = []
-        if any(_invisible(c) for c in line):
-            buf, i = [], 0
-            while i < len(line):
-                c = line[i]
-                test = _is_tag if _is_tag(c) else _is_vs if _is_vs(c) else _is_surrogate if _is_surrogate(c) else None
-                if test is not None:
-                    j = i
-                    while j < len(line) and test(line[j]):
-                        j += 1
-                    if test is _is_vs and j == i + 1 and c == "\ufe0f" and i \
-                            and unicodedata.category(line[i - 1]) == "So":
-                        buf.append(c)
-                    else:
-                        lab = "%s:%d" % ({_is_tag: "TAGS", _is_vs: "VS"}.get(test, "BYTES"), j - i)
-                        cps.append(lab)
-                        buf.append("<%s>" % lab)
-                    i = j
-                    continue
-                if _invisible(c):
-                    cps.append("U+%04X" % ord(c))
-                    buf.append("<U+%04X>" % ord(c))
-                else:
-                    buf.append(c)
-                i += 1
-            line = "".join(buf)
-        out.append(line)
+        cps, buf, i = [], [], 0
+        while i < len(line):
+            c, kind = line[i], _run_kind(line[i])
+            j = i + 1
+            while kind and j < len(line) and _run_kind(line[j]) == kind:
+                j += 1
+            emoji = c == "️" and j == i + 1 and i > 0 and unicodedata.category(line[i - 1]) == "So"
+            if kind and not emoji:
+                cps.append("%s:%d" % (kind, j - i))
+            elif not kind and _invisible(c):
+                cps.append("U+%04X" % ord(c))
+            else:
+                buf.append(line[i:j])
+                i = j
+                continue
+            buf.append("<%s>" % cps[-1])
+            i = j
+        out.append("".join(buf))
         if cps:
             hits.append({"line": n, "codepoints": cps})
     return "\n".join(out), hits
 
 
-# ---- hidden text in prose and markup files (CTX-04) -------------------------------------------------
-_ALTBODY = r"(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])+"
+# Comments, markdown comment lines and image alt text (one bracket nesting level). A line start or end is
+# any line break, so CR-only files match too.
 _HIDDEN = re.compile(
-    r"(?P<comment><!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![^>]*(?:>|\Z)|</(?![A-Za-z])[^>]*(?:>|\Z)"
-    r"|<\?[^>]*(?:>|\Z))"
-    r"|(?P<refc>^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"[^\"]*\"|'[^']*')[ \t]*(?=\r?$))"
-    r"|!\[(?P<alt>" + _ALTBODY + r")\]", re.DOTALL | re.MULTILINE)
+    r"(?P<comment><!--.*?(?:-->|\Z)"
+    r"|(?<![^\r\n])[ \t]*\[[^\]\r\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\([^\r\n]*\)|\"[^\"\r\n]*\"|'[^'\r\n]*')[ \t]*(?![^\r\n]))"
+    r"|!\[(?P<alt>(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])+)\]", re.DOTALL)
 _MARKER = re.compile(r"\[hidden-[a-z-]+ removed: \d+ chars\]\Z")
 _ALTATTR = re.compile(r"""(?<![\w:-])alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
-# 6xl.87, deny by default. Every attribute goes except an href or src whose value is URL-shaped; GitHub shows
-# no attribute as text.
-_ATTRTOK = re.compile(r"""([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""")
-_OPENTAG = re.compile(r"""<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*"""
-                      r"""\s*/?>""")
-_AUTOLINK = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+)>")
-_ENDTAG = re.compile(r"</([A-Za-z][A-Za-z0-9-]*)([^>]*)>")
-
-
-def _url_ok(value: str) -> bool:
-    """http, https or relative, no whitespace or control character (entities decoded first, as a browser would)."""
-    v = html.unescape(value)
-    if not v or re.search(r"[\s\x00-\x1f\x7f]", v):
-        return False
-    return bool(re.match(r"(?i)https?://", v)) or not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", v)
-
-
-# Every link and footnote definition goes, inside any blockquote or list too, with its lazy and indented
-# continuation (over-stripping accepted): a definition renders as nothing, used or not.
-_CONTAINER = r"(?:[ \t]*(?:>[ \t]?|[-+*][ \t]+|\d{1,9}[.)][ \t]+))*[ \t]*"
-# A footnote definition takes its lazy continuation lines and indented paragraphs (over-stripping accepted).
-_FOOTDEF = re.compile(r"^(" + _CONTAINER + r")(\[\^(?:\\.|[^\]\\\n])+\]:[^\n]*(?:\n(?![ \t]*(?:\n|\Z))[^\n]*)*"
-                      r"(?:\n[ \t]*\n(?: {4}|\t)[^\n]*(?:\n(?![ \t]*(?:\n|\Z))[^\n]*)*)*)", re.MULTILINE)
-# A link definition is its line, plus the next line when that holds the destination or a title, plus the lines
-# of a title still open (CommonMark: the destination may follow the colon on the next line).
-_LINKDEF = re.compile(r"^(" + _CONTAINER + r")(\[(?!\^)(?:\\.|[^\]\\\n])+\]:)([^\n]*)", re.MULTILINE)
-
-
-def _linkdef_end(view: str, m) -> int:
-    end, rest = m.end(), m.group(3)
-    nxt = lambda e: (view.find("\n", e + 1) if view.find("\n", e + 1) >= 0 else len(view))
-    if not rest.strip() and end < len(view) and view[end + 1:nxt(end)].strip():  # destination on the next line
-        end = nxt(end)
-        rest = view[m.end() + 1:end]
-    line = view[end + 1:nxt(end)] if end < len(view) else ""
-    if line.lstrip()[:1] in ("\"", "'", "(") and line.strip():  # title on the next line
-        end, rest = nxt(end), rest + " " + line
-    for opener, closer in (("\"", "\""), ("'", "'"), ("(", ")")):  # a title still open runs on to its closer
-        t = rest.split(opener, 1)
-        if len(t) == 2 and closer not in t[1]:
-            while end < len(view):
-                line = view[end + 1:nxt(end)]
-                if not line.strip():
-                    break
-                end = nxt(end)
-                if closer in line:
-                    break
-            break
-    return end
-
-
-_REFC = re.compile(r"\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(|\"|')")
-# Reference label text never renders: the second bracket of `[t][label]` / `![a][label]`, and `[^label]`.
-_LABEL = re.compile(r"(?<=\])\[(?!hidden-[a-z-]+ removed: \d+ chars\])(?:\\.|[^\]\\\n])+\]|\[\^(?:\\.|[^\]\\\n])+\]")
-# An inline link or image title shows only on hover.
-_INLINE_TITLE = re.compile(r"\]\([ \t]*(?:<[^<>\n]*>|(?:\\.|[^()\s\\]|\([^()\s]*\))+)[ \t\n]+"
-                           r"(\"[^\"]*\"|'[^']*'|\([^()]*\))[ \t\n]*\)")
-
-
-def _deny_spans(view: str) -> List[Tuple[int, int, str]]:
-    """Markdown spans GitHub never shows as text: definitions, reference labels, inline titles."""
-    out = [(m.start(2), m.end(2), "footnote") for m in _FOOTDEF.finditer(view)]
-    for m in _LINKDEF.finditer(view):
-        out.append((m.start(2), _linkdef_end(view, m), "comment" if _REFC.match(view, m.start(2)) else "link-def"))
-    out += [(m.start(), m.end(), "label") for m in _LABEL.finditer(view)]
-    out += [(m.start(1), m.end(1), "title") for m in _INLINE_TITLE.finditer(view)]
-    return out
+_HIDING_STYLE = re.compile(r"display:none|visibility:hidden|font-size:0|opacity:0")
+_VOID = frozenset("area base br col embed hr img input link meta source track wbr".split())
 
 
 class _Spans(HTMLParser):
-    """Offsets of elements a page hides and of `<img alt>` values, over text whose other hidden spans
-    are blanked. An unclosed hiding element hides to the end. `<script>` and `<style>` are code here."""
+    """(start, end, kind) of `<img alt>` values and of elements with `hidden` or a hiding inline style,
+    content included; an unclosed one hides to the end (over-stripping is the safe side)."""
 
     def __init__(self, text: str) -> None:
         super().__init__(convert_charrefs=False)
-        self.text = text
-        self.starts = [0]
+        self.text, self.starts = text, [0]
         for ln in text.split("\n"):
             self.starts.append(self.starts[-1] + len(ln) + 1)
         self.spans: List[Tuple[int, int, str]] = []
-        self.stack: List[Tuple[str, bool]] = []
-        self.hidden, self.open_at = 0, 0
+        self.stack: List[Tuple[str, int]] = []  # (tag, start offset if it hides, else -1)
 
     def _at(self) -> int:
         line, col = self.getpos()
@@ -377,100 +114,52 @@ class _Spans(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         at, raw = self._at(), self.get_starttag_text() or ""
-        if _AUTOLINK.fullmatch(raw) or not _OPENTAG.fullmatch(raw):
-            return  # an autolink, or text such as `Vec<T, U>` that is no tag and renders as written
-        if tag not in _ELEMENTS:  # 6xl.87: GitHub drops an unknown tag; its text stays
-            self.spans.append((at, at + len(raw), "tag"))
-            return
-        pos = 1 + len(tag)
-        for m in _ATTRTOK.finditer(raw, pos, len(raw) - 1):
-            name, value = m.group(1).lower(), next((g for g in m.groups()[1:] if g is not None), None)
-            if name in ("href", "src") and value is not None and _url_ok(value):
-                continue
-            kind = "alt-text" if (tag, name) == ("img", "alt") else "attribute"
-            self.spans.append((at + m.start(), at + m.end(), kind))
-        if tag not in _ELEMENTS:
-            return
         a = {k: v or "" for k, v in attrs}
-        hide = "hidden" in a or bool(_HIDING_STYLE.search("".join((a.get("style") or "").lower().split())))
+        if tag == "img":
+            for m in _ALTATTR.finditer(raw):
+                g = next(i for i in (1, 2, 3) if m.group(i) is not None)
+                if m.group(g) and not _MARKER.match(m.group(g)):
+                    self.spans.append((at + m.start(g), at + m.end(g), "alt-text"))
+        hide = "hidden" in a or bool(_HIDING_STYLE.search("".join(a.get("style", "").lower().split())))
         if tag in _VOID:
-            if hide and not self.hidden:
+            if hide:
                 self.spans.append((at, at + len(raw), "element"))
-            return
-        self.stack.append((tag, hide))
-        if hide and not self.hidden:
-            self.open_at = at
-        self.hidden += hide
+        else:
+            self.stack.append((tag, at if hide else -1))
 
-    handle_startendtag = handle_starttag  # HTML ignores the slash on non-void elements
+    handle_startendtag = handle_starttag  # HTML ignores the slash on a non-void element
 
     def handle_endtag(self, tag):
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:
-                was = self.hidden
-                self.hidden -= sum(h for _, h in self.stack[i:])
+                opened = [s for _, s in self.stack[i:] if s >= 0]
+                if opened:
+                    end = self.text.find(">", self._at())
+                    self.spans.append((opened[0], len(self.text) if end < 0 else end + 1, "element"))
                 del self.stack[i:]
-                if was and not self.hidden:
-                    at = self._at()
-                    end = self.text.find(">", at)
-                    self.spans.append((self.open_at, len(self.text) if end < 0 else end + 1, "element"))
                 return
 
     def finish(self) -> List[Tuple[int, int, str]]:
         self.close()
-        if self.hidden:
-            self.spans.append((self.open_at, len(self.text), "element"))
-        return self.spans
+        return self.spans + [(s, len(self.text), "element") for _, s in self.stack if s >= 0][:1]
 
 
-# One line-break definition (6xl.71): CRLF, a lone CR and LF each end a line, as in CommonMark. NEL, LS, PS,
-# VT and FF do not; they are invisible characters, escaped or removed like the others.
-_BREAK = re.compile(r"\r\n|\r|\n")
-
-
-def _line_view(text: str) -> Tuple[str, List[int]]:
-    """(view, dropped): text with every line break as one LF (CRLF loses its CR), for anchored matching, and
-    the view positions whose LF lost a CR, to map spans back (_orig)."""
-    dropped, out, pos, shift = [], [], 0, 0
-    for m in re.finditer(r"\r\n?", text):
-        out.append(text[pos:m.start()])
-        out.append("\n")
-        if m.end() - m.start() == 2:
-            dropped.append(m.start() - shift)
-            shift += 1
-        pos = m.end()
-    return "".join(out) + text[pos:], dropped
-
-
-def _orig(a: int, b: int, dropped: List[int]) -> Tuple[int, int]:
-    """A view span as the original text's span (each dropped CR before a position shifts it by one)."""
-    return a + bisect.bisect_right(dropped, a), b + bisect.bisect_left(dropped, b)
-
-
-def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
-    """(text, [(first line, last line, kind, length)]) with each hidden span replaced by a marker plus the
-    span's line breaks, kept as written. Matching runs on _line_view, so a CR-only file is anchored too."""
+def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int, int]]]:
+    """(text, [(first line, last line, kind, length, offset)]): each hidden span becomes a marker plus the
+    span's line breaks."""
     spans, blank, pos = [], [], 0
-    view, dropped = _line_view(text)
-    spans += _deny_spans(view)
-    for m in _HIDDEN.finditer(view):
-        g = m.lastgroup
+    for m in _HIDDEN.finditer(text):
+        g = "alt" if m.group("alt") is not None else "comment"
         a, b = m.span(g)
-        if g == "alt" and (not m.group(g).strip() or _MARKER.match(m.group(g).rstrip("\n"))):
+        if g == "alt" and (not m.group(g).strip() or _MARKER.match(m.group(g).rstrip("\r\n"))):
             continue
         spans.append((a, b, "alt-text" if g == "alt" else "comment"))
-        blank += [view[pos:a], re.sub(r"[^\n]", " ", view[a:b])]
+        blank += [text[pos:a], re.sub(r"[^\r\n]", " ", text[a:b])]
         pos = b
-    blanked = "".join(blank) + view[pos:]
-    for m in _ENDTAG.finditer(blanked):  # 6xl.87: end-tag attributes and unknown end tags render as nothing
-        if m.group(1).lower() not in _ELEMENTS:
-            spans.append((m.start(), m.end(), "tag"))
-        elif m.group(2).strip():
-            spans.append((m.start(2), m.end(2), "attribute"))
+    blanked = ("".join(blank) + text[pos:]).replace("\r", "\n")  # same length, so offsets hold
     p = _Spans(blanked)
     p.feed(blanked)
     spans += p.finish()
-    spans = [_orig(a, b, dropped) + (k,) for a, b, k in spans]
     out, info, pos, line, last = [], [], 0, 1, 0
     for a, b, kind in sorted(spans, key=lambda s: (s[0], -s[1])):
         if a < last:
@@ -484,12 +173,16 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
 
 
 def strip_hidden(text: str) -> Tuple[str, List[dict]]:
-    """Remove hidden text from a prose or markup file; see the module docstring. Returns the text and
-    `[{"line", "kind", "length"}]` (kind: comment, alt-text, element, footnote, link-def, attribute), never the
-    payload."""
+    """Remove hidden text from a prose or markup file. Returns the text and `[{"line", "kind", "length"}]`
+    (kind: comment, alt-text, element), never the payload; a line ends at LF, CR or CRLF."""
     out, info = _strip(text)
-    # 6xl.84: the line a reader counts, by the one line-break rule (a CR ends a line too)
     return out, [{"line": 1 + len(_BREAK.findall(text, 0, at)), "kind": k, "length": n} for _, _, k, n, at in info]
+
+
+def sanitize_prose(text: Optional[str]) -> str:
+    """Change-author prose for spec.md: line breaks as LF, invisible characters and hidden text removed. The
+    markers stay, so no removal can join the pieces around it into new markup."""
+    return _strip(strip_invisible(_BREAK.sub("\n", text or "")))[0]
 
 
 def _walk(diff: str):

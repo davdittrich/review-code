@@ -831,7 +831,7 @@ class Spec(Base):
         self.assertNotIn(ZWSP, spec)
         self.assertNotIn("HIDDEN-COMMENT", spec)
         self.assertNotIn("HIDDEN-ALT", spec)
-        self.assertIn("ok  visible ![](" + chr(0x2026) + ") done", spec)  # what a reader of the rendered page sees
+        self.assertIn("ok [hidden-comment removed: 23 chars] visible ![[hidden-alt-text removed: 10 chars]](u) done", spec)
 
     def test_spec_sources_ids_only(self):
         _, led = self.run_pr()
@@ -1009,7 +1009,7 @@ class Spec(Base):
             self.run_pr(pr=pr, issues={n: {"title": "", "body": evil} for n in (12, 13)})
         spec = self.read("inputs/spec.md")
         found, outside = blocks(spec)
-        self.assertEqual(len(found), spec.count("<<<UNTRUSTED-"))
+        self.assertEqual(len(found), spec.count("<<<UNTRUSTED-" + NONCE))
         self.assertEqual(spec.count(NONCE), 2 * len(found))
         self.assertEqual(len(found), 5)  # pr, two commits, two issues: one block each
         self.assertNotIn("evil", outside)

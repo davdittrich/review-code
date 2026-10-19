@@ -32,27 +32,10 @@ PROSE_EXT = (".md", ".markdown", ".html")
 
 def hidden(rng):
     """A hidden construct carrying the canary, as a list of lines (each renders as nothing on GitHub)."""
-    k = rng.randrange(19)
     return [["<!-- %s -->" % CANARY],
             ["<!--", "%s %d" % (CANARY, rng.randrange(99)), "more", "-->"],
             ["", "[//]: # (%s)" % CANARY, ""],
-            ['<div hidden>%s</div>' % CANARY],
-            ["", "<!DOCTYPE html %s>" % CANARY, ""],
-            ["", "[^fn%d]: %s" % (rng.randrange(9), CANARY), ""],
-            ["", "[def%d]: http://x.y/%s \"%s\"" % (rng.randrange(9), CANARY, CANARY), ""],
-            ['a <input value="%s"> b' % CANARY],
-            ['a <span title=%s data-x="%s">t</span> b' % (CANARY, CANARY)],
-            ["", "<![CDATA[%s]]>" % CANARY, ""],
-            ["", "<?pi %s ?>" % CANARY, ""],
-            # 6xl.87: the eight constructs the seventh verification's scratch copy added
-            ["see `[^c%d]`" % k, "", "[^c%d]: %s" % (k, CANARY), ""],
-            ["<!-- [rc%d] -->" % k, "", "[rc%d]: http://e.com \"%s\"" % (k, CANARY), ""],
-            ["", "> [^q1]: %s" % CANARY, ""],
-            ["", "- [rl]: http://e.com \"%s\"" % CANARY, ""],
-            ["", "[rn]:", "http://e.com/%s" % CANARY, ""],
-            ["<div>", "<!1%s>" % CANARY, "</div>"],
-            ['<p %s lang="%s">x</p>' % (CANARY, CANARY)],
-            ["a [here][%s] b" % CANARY, "", "[%s]: http://e.com" % CANARY, ""]][k]
+            ['<div hidden>%s</div>' % CANARY]][rng.randrange(4)]
 
 
 def long_comment(n):
