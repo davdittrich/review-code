@@ -14,7 +14,7 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 | standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 6 | 4 |
 | deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 12 | 9 |
 
-The verifier runs on a different model from the finders (LANE-07). If your settings give both the same model, the report lists "verifier not on a different tier" among the lost guarantees. The plugin cannot see settings `env` entries: when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` or `CLAUDE_CODE_EFFORT_LEVEL` is set in the script's environment, the report says per-lane models or effort are ignored (a heuristic: the script may not see them).
+The verifier runs on a different model from the finders (LANE-07). If your settings give both the same model name, the report lists "verifier not on a different tier" among the lost guarantees. Only two different plain aliases (`opus`, `sonnet`, `haiku`, `fable`) count as different tiers: with `inherit` or a full model ID on either side the plugin cannot tell, and the report lists "verifier tier not checked". The plugin cannot see settings `env` entries: when `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` or `CLAUDE_CODE_EFFORT_LEVEL` is set in the script's environment, the report says per-lane models or effort are ignored (a heuristic: the script may not see them).
 
 `--sota` adds the SOTA lane to any tier and `--no-sota` removes it; `--ai` loads the `llm-generated-code` pack (the deep tier loads it too). Giving two tier flags, or the same flag twice, is refused.
 

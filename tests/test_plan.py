@@ -128,6 +128,7 @@ class Overrides(Fixture):
 
 
 DIFFERENT_TIER = "verifier not on a different tier: finders and verifier both run on "
+UNCHECKED = "verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are compared"
 
 
 class Tiers(Fixture):
@@ -162,6 +163,17 @@ class Tiers(Fixture):
         _, p = self.lanes(stdin="verifier_model=OPUS\n")
         self.assertEqual(len(p["lost_guarantees"]), 1)
         _, p = self.lanes(stdin="verifier_model=haiku\n")
+        self.assertEqual(p["lost_guarantees"], [])
+
+    def test_models_that_cannot_be_compared_lose_the_guarantee(self):  # CR-06
+        for cfg, fm, vm in (("verifier_model=claude-opus-4-5\n", "opus", "claude-opus-4-5"),
+                            ("finder_model=inherit\nverifier_model=sonnet\n", "inherit", "sonnet"),
+                            ("finder_model=claude-sonnet-4-5\n", "claude-sonnet-4-5", "sonnet")):
+            _, p = self.lanes(stdin=cfg)
+            self.assertEqual(p["lost_guarantees"], [UNCHECKED % (fm, vm)], cfg)
+        _, p = self.lanes(stdin="finder_model=claude-opus-4-5\nverifier_model=claude-opus-4-5\n")
+        self.assertEqual(p["lost_guarantees"], [DIFFERENT_TIER + "claude-opus-4-5"])
+        _, p = self.lanes(stdin="finder_model=fable\n")
         self.assertEqual(p["lost_guarantees"], [])
 
     def test_environment_forcing_is_recorded_as_heuristic(self):

@@ -45,6 +45,7 @@ LANE_AGENT = {"defects": "review-code:finder", "standards": "review-code:standar
 # Ceilings, not per-tier values: maxTurns is frontmatter-only (sub-agents doc), so a call cannot lower it.
 MAX_TURNS = {"finder": 40, "standards": 40, "spec": 30, "sota": 20, "verifier": 12, "spec-verifier": 12}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
 CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_shards": (1, 50), "max_packs": (1, 9)}
 CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort"} | set(CAP_BOUNDS)
@@ -407,9 +408,13 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     else:
         if not spec_none and "spec" not in lanes:  # the report must not show a clean Spec axis that never ran
             skipped.append({"what": "spec", "why": "tier " + tier})
-        # shortcut: aliases and full IDs of one model compare unequal; upgrade when a model registry ships.
+        # shortcut: only two distinct plain aliases prove different tiers; inherit or a full ID is unknown, upgrade
+        # when a model registry ships.
         if fm.lower() == vm.lower():
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
+        elif not {fm.lower(), vm.lower()} <= set(ALIASES):
+            lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
+                        "compared" % (fm, vm))
         lost += _env_lost()
     lines = _scan_lines(run, tj)
     inventory = _inventory(lines) if "sota" in lanes else []
