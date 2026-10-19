@@ -460,7 +460,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
            "shards": shards, "skipped": skipped, "lost_guarantees": lost,
            "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
-           "effective_overrides": {k: v for k, v in sorted(cfg.items()) if k != "default_tier" or not flag_tier}}
+           "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
+                                   if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc)

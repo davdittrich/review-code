@@ -89,6 +89,12 @@ class Overrides(Fixture):
         self.assertEqual(out["tier"], "quick")
         self.assertNotIn("default_tier", self.plan_json()["effective_overrides"])
 
+    def test_declared_default_tier_is_not_an_override(self):  # IN-06: plugin.json declares default standard
+        self.run_plan([("default_tier", "standard")])
+        self.assertEqual(self.plan_json()["effective_overrides"], {})
+        self.run_plan([("default_tier", "deep")])
+        self.assertEqual(self.plan_json()["effective_overrides"], {"default_tier": "deep"})
+
     def test_caps(self):
         self.run_plan([("max_verifier_calls", "5"), ("max_packs", "9")])
         caps = self.plan_json()["caps"]
