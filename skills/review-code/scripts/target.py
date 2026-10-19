@@ -319,40 +319,36 @@ def _oid_ok(value: object) -> bool:
 
 def _view_pr(cand: dict, cwd: str) -> dict:
     j = gh_json(["pr", "view", cand["url"] or str(cand["number"]), "--json", _PR_FIELDS], cwd)
-    if not isinstance(j, dict):
-        raise Refuse("gh-failed", "gh printed an unexpected document")
-    state = j.get("state")
-    if state not in ("OPEN", "CLOSED", "MERGED"):
-        raise Refuse("gh-failed", "gh reported an unknown pull request state")
+    try:
+        state, m = j["state"], _PR_URL.fullmatch(j["url"])
+        ok = (state in ("OPEN", "CLOSED", "MERGED") and m and j["number"] == cand["number"]
+              and _oid_ok(j["baseRefOid"]) and _oid_ok(j["headRefOid"]) and _branch_ok(j["baseRefName"], cwd))
+    except (KeyError, TypeError):
+        ok = False
+    if not ok:  # the reason reaches stdout, so it never comes from the forge's own text
+        raise Refuse("gh-failed", "gh reported invalid pull request fields")
     if state != "OPEN":
         raise Refuse(state.lower(), "the pull request is " + state.lower())
     if j.get("isDraft"):
         raise Refuse("draft", "the author must mark it ready for review")
-    m = _PR_URL.fullmatch(j.get("url") if isinstance(j.get("url"), str) else "")
-    if (not m or j.get("number") != cand["number"] or not _oid_ok(j.get("baseRefOid"))
-            or not _oid_ok(j.get("headRefOid")) or not _branch_ok(j.get("baseRefName"), cwd)):
-        raise Refuse("gh-failed", "gh reported invalid pull request fields")
     return {"base": j["baseRefOid"], "head": j["headRefOid"], "branch": j["baseRefName"], "url": j["url"],
-            "key": _forge_key(m.group(1), m.group(2)), "ref": "refs/pull/%d/head" % cand["number"],
-            "notes": []}
+            "key": _forge_key(m.group(1), m.group(2)), "ref": "refs/pull/%d/head" % cand["number"], "notes": []}
 
 
 def _view_mr(cand: dict, cwd: str) -> dict:
     j = glab_json(["mr", "view", cand["url"] or str(cand["number"]), "-F", "json"], cwd)
-    if not isinstance(j, dict):
-        raise Refuse("glab-failed", "glab printed an unexpected document")
-    state = j.get("state")
-    if state not in ("opened", "closed", "merged", "locked"):
-        raise Refuse("glab-failed", "glab reported an unknown merge request state")
+    try:
+        state, refs, m = j["state"], j["diff_refs"], _MR_URL.fullmatch(j["web_url"])
+        ok = (state in ("opened", "closed", "merged", "locked") and m and j["iid"] == cand["number"]
+              and _oid_ok(refs["base_sha"]) and _oid_ok(refs["head_sha"]) and _branch_ok(j["target_branch"], cwd))
+    except (KeyError, TypeError):
+        ok = False
+    if not ok:
+        raise Refuse("glab-failed", "glab reported invalid merge request fields")
     if state != "opened":
         raise Refuse(state, "the merge request is " + state)
     if j.get("draft") or j.get("work_in_progress"):
         raise Refuse("draft", "the author must mark it ready for review")
-    refs = j.get("diff_refs") if isinstance(j.get("diff_refs"), dict) else {}
-    m = _MR_URL.fullmatch(j.get("web_url") if isinstance(j.get("web_url"), str) else "")
-    if (not m or j.get("iid") != cand["number"] or not _oid_ok(refs.get("base_sha"))
-            or not _oid_ok(refs.get("head_sha")) or not _branch_ok(j.get("target_branch"), cwd)):
-        raise Refuse("glab-failed", "glab reported invalid merge request fields")
     return {"base": refs["base_sha"], "head": refs["head_sha"], "branch": j["target_branch"], "url": j["web_url"],
             "key": _forge_key(m.group(1), m.group(2)), "ref": "refs/merge-requests/%d/head" % cand["number"],
             "notes": ["merge request reading is untested against a live glab"]}

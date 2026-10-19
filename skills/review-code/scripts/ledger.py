@@ -413,17 +413,13 @@ def _forge(tj: dict) -> Optional[dict]:
                                tj["repo"])
         else:
             j = target.glab_json(["mr", "view", ident, "-F", "json"], tj["repo"])
-    except target.Refuse:
+        mr = tj["kind"] == "mr"
+        closing = {c["number"] for c in j.get("closingIssuesReferences") or []}  # forge JSON is untrusted shape too
+        return {"title": _clean(j.get("title")), "body": _clean(j.get("description" if mr else "body")),
+                "branch": str(j.get("source_branch" if mr else "headRefName") or ""),
+                "closing": {n for n in closing if type(n) is int and 0 < n < 10 ** 9}}
+    except (target.Refuse, AttributeError, KeyError, TypeError):
         return None
-    if not isinstance(j, dict):
-        return None
-    mr = tj["kind"] == "mr"
-    refs = j.get("closingIssuesReferences")  # 6xl.85: forge JSON is untrusted shape too
-    closing = [c.get("number") for c in (refs if isinstance(refs, list) else []) if isinstance(c, dict)]
-    br = j.get("source_branch" if mr else "headRefName")
-    return {"title": _clean(j.get("title")), "body": _clean(j.get("description" if mr else "body")),
-            "branch": br if isinstance(br, str) else "",
-            "closing": {n for n in closing if isinstance(n, int) and not isinstance(n, bool) and 0 < n < 10 ** 9}}
 
 
 def _repo_args(tj: dict) -> List[str]:
@@ -439,11 +435,9 @@ def _issue_text(tj: dict, n: int) -> Optional[str]:
             j = target.glab_json(["issue", "view", str(n), "-F", "json"] + _repo_args(tj), tj["repo"])
         else:
             j = target.gh_json(["issue", "view", str(n), "--json", "title,body"] + _repo_args(tj), tj["repo"])
-    except target.Refuse:
+        return _clean(j.get("title")) + "\n\n" + _clean(j.get("description" if tj["kind"] == "mr" else "body"))
+    except (target.Refuse, AttributeError):
         return None
-    if not isinstance(j, dict):
-        return None
-    return _clean(j.get("title")) + "\n\n" + _clean(j.get("description" if tj["kind"] == "mr" else "body"))
 
 
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> Dict[str, str]:
