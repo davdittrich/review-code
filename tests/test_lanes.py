@@ -8,8 +8,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "skills", "review-code", "scripts"))
+sys.path.insert(0, HERE)
 
 import report  # noqa: E402
+import test_plan as tp  # noqa: E402  (module import: its test classes are not collected twice)
+from test_report import lines  # noqa: E402
 
 
 def parts(name):
@@ -61,6 +64,65 @@ class Finder(unittest.TestCase):
 
     def test_default_model(self):
         self.assertIn("model: opus", self.fm)
+
+
+STD_BASE = "def load():\n    return 1\n"
+STD_FEAT = STD_BASE + "\n\ndef addNumbers(a, b):\n    return a + b\n"  # line 5 breaks the fixture rule
+
+
+class Standards(tp.Fixture):
+    base_files = {"src/calc.py": STD_BASE, "CLAUDE.md": "# Rules\n- Function names use snake_case.\n"}
+    feat_files = {"src/calc.py": STD_FEAT}
+
+    def setUp(self):
+        super().setUp()
+        self.fm, self.body = parts("standards")
+        self.text = "\n".join(self.body)
+
+    def test_candidate_line_has_exactly_the_lane_keys(self):
+        o = first(self.body, '{"path"')
+        self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
+                                     + report.LANE_OPTIONAL["standards"]))
+        self.assertEqual(o["category"], "convention")
+
+    def test_inspected_line(self):
+        self.assertEqual(list(first(self.body, '{"inspected"')), ["inspected"])
+
+    def test_lane_categories_only(self):
+        for w in report.LANE_CATEGORIES["standards"]:
+            self.assertIn("`%s`" % w, self.text)
+        for w in set(report.CATEGORIES) - set(report.LANE_CATEGORIES["standards"]):
+            self.assertNotIn("`%s`" % w, self.text)
+
+    def test_spec_input_only_ever_forbidden(self):
+        for line in self.body:
+            if "inputs/spec.md" in line:
+                self.assertIn("never", line.lower())
+        for doc in ("docs/ponytail.md", "docs/ccr.md"):
+            self.assertNotIn(doc, self.text)
+
+    def test_ponytail_checks_folded_in(self):
+        low = self.text.lower()
+        for item in ("needless code", "reimplement", "over-engineering", "stale", "do not flag"):
+            self.assertIn(item, low)
+
+    def test_no_internal_labels(self):  # D-14
+        low = self.text.lower()
+        for w in ("slop", "laziness"):
+            self.assertNotIn(w, low)
+
+    def test_frontmatter(self):
+        for line in ("tools: Read, Grep, Glob", "model: opus", "maxTurns: 40"):
+            self.assertIn(line, self.fm)
+
+    def test_example_line_ingests_on_a_real_run_dir(self):
+        ex = [line for line in self.body if line.startswith(("{\"path\"", "{\"inspected\""))]
+        rule = json.loads(ex[0])["rule"]
+        with open(os.path.join(self.run_dir, "conventions", "CLAUDE.md"), encoding="utf-8") as fh:
+            self.assertIn(rule, fh.read())
+        out = self.ingest_lane("standards", *ex)
+        self.assertEqual((out["status"], len(out["ids"]), out["dropped"]["invalid"]), ("ok", 1, 0), out)
+        self.assertEqual(out["lanes"], {"standards": "complete"})
 
 
 class Verifier(unittest.TestCase):
