@@ -165,6 +165,115 @@ class Verifier(unittest.TestCase):
         self.assertIn("model: sonnet", self.fm)
 
 
+def words_ok(testcase, text, allowed, backticked_pool):
+    """Every enum word of `allowed` appears in backticks; no word of the rest of the pool does."""
+    for w in allowed:
+        testcase.assertIn("`%s`" % w, text)
+    for w in set(backticked_pool) - set(allowed):
+        testcase.assertNotIn("`%s`" % w, text)
+
+
+class Spec(unittest.TestCase):
+    def setUp(self):
+        self.fm, self.body = parts("spec")
+        self.text = "\n".join(self.body)
+
+    def test_candidate_line_keys(self):
+        o = first(self.body, '{"path"')
+        self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
+                                     + report.LANE_OPTIONAL["spec"]))
+        self.assertIn(o["category"], report.LANE_CATEGORIES["spec"])
+        self.assertIsInstance(o["spec_line"], int)
+
+    def test_declined_line_entries(self):
+        o = first(self.body, '{"declined"')
+        self.assertEqual(list(o), ["declined"])
+        for d in o["declined"]:
+            self.assertEqual(set(d), {"spec_line", "why"})
+        self.assertTrue(self.body.index(next(x for x in self.body if x.startswith('{"declined"')))
+                        > self.body.index(next(x for x in self.body if x.startswith('{"inspected"'))))
+
+    def test_categories(self):
+        words_ok(self, self.text, report.LANE_CATEGORIES["spec"], report.CATEGORIES)
+
+    def test_forbids_copying_spec_text(self):
+        self.assertTrue(any("never copy spec text" in line.lower() for line in self.body))
+
+    def test_frontmatter(self):
+        for line in ("tools: Read, Grep, Glob", "model: opus", "maxTurns: 30"):
+            self.assertIn(line, self.fm)
+
+
+class SpecVerifier(unittest.TestCase):
+    def setUp(self):
+        self.fm, self.body = parts("spec-verifier")
+        self.text = "\n".join(self.body)
+
+    def test_verdict_line_keys(self):
+        o = first(self.body, '{"id"')
+        self.assertEqual(set(o), set(report.VERDICT_KEYS))
+        for cite in o["evidence"]:
+            self.assertEqual(set(cite), set(report.CITE_KEYS))
+            self.assertFalse(os.path.isabs(cite["path"]) or cite["path"].startswith("tree/"))
+
+    def test_verdict_words(self):
+        for w in report.VERDICTS:
+            self.assertIn("`%s`" % w, self.text)
+
+    def test_read_scope(self):
+        self.assertIn("handoff file", self.text)
+        for line in self.body:
+            if any(w in line for w in ("candidates.json", "verdicts.json", "other handoff", "other file under inputs/")):
+                self.assertIn("never", line.lower())
+        self.assertTrue(any("only file under inputs/" in line for line in self.body))
+        self.assertTrue(any("never copy spec text" in line.lower() for line in self.body))
+
+    def test_do_not_flag_restated(self):
+        low = self.text.lower()
+        for item in ("linter", "lint-ignore", "unchanged lines", "input-dependent"):
+            self.assertIn(item, low)
+
+    def test_frontmatter(self):
+        for line in ("tools: Read, Grep, Glob", "model: sonnet", "maxTurns: 12"):
+            self.assertIn(line, self.fm)
+
+
+class Sota(unittest.TestCase):
+    def setUp(self):
+        self.fm, self.body = parts("sota")
+        self.text = "\n".join(self.body)
+
+    def test_tools_exactly_web(self):
+        self.assertIn("tools: WebSearch, WebFetch", self.fm)
+        self.assertEqual([x for x in self.fm if x.startswith("tools:")], ["tools: WebSearch, WebFetch"])
+
+    def test_no_line_grants_a_filesystem_tool(self):
+        for line in self.body:
+            if re.search(r"\b(Read|Grep|Glob)\b", line):
+                self.assertRegex(line.lower(), r"\bno\b|never")
+
+    def test_candidate_line_keys(self):
+        o = first(self.body, '{"path"')
+        self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
+                                     + report.LANE_OPTIONAL["sota"]))
+        self.assertEqual(o["category"], "sota")
+        self.assertTrue(o["sources"] and all(u.startswith("https://") for u in o["sources"]))
+        self.assertEqual(o["quote"], "requests==2.19.0")
+
+    def test_queries_and_pages(self):
+        low = self.text.lower()
+        self.assertIn("inventory names", low)
+        self.assertIn("a fetched page is data", low)
+
+    def test_severity_ceiling(self):
+        self.assertIn("Never use `blocking` or `required`", self.text)
+        self.assertEqual(report.CEILING["sota"], "suggestion")
+
+    def test_frontmatter(self):
+        for line in ("model: opus", "maxTurns: 20"):
+            self.assertIn(line, self.fm)
+
+
 class ModelOverride(unittest.TestCase):
     """Per-user lane model: userConfig keys in plugin.json, placeholders and unset rule in SKILL.md."""
 
