@@ -54,8 +54,8 @@ Repository-derived text can ping people, trigger forge commands or hide markup, 
 
 - Fixed labels (`**Trigger:**`, `**Evidence:**`, `**Fix:**`) start each field, so no posted line starts with `/` or `<!--`.
 - Prose is one line. `@name`, `@org/team`, `#123` and `!123` go in backticks; `\` is doubled, then `<` becomes `&lt;` and `[` becomes `\[`.
-- The quoted code sits in a fence longer than any backtick run inside it, each line prefixed with its line number.
-- The line guard refuses `unsafe-text` for any line, outside the fence prefix, that starts with `/` or `<!--` and is not one of the marker lines.
+- The quoted code sits in a fence longer than any backtick run inside it, each line prefixed with its line number. A CRLF in the quote becomes LF and a lone CR becomes the visible text `<U+000D>`, so no quote text can start a line of its own.
+- The line guard refuses `unsafe-text` for any CR in a body, and for any line, outside the fence prefix, that starts with `/` or `<!--` and is not one of the marker lines.
 
 Bare URLs still autolink.
 
@@ -90,7 +90,7 @@ Bare URLs still autolink.
 | `pending-review-exists` | You already have a pending review on this PR (never deleted: it may hold your work) | Submit or delete it, then re-run |
 | `pending-drafts-exist` | You already have draft notes on this MR (the publish call would send them too; never deleted) | Publish or delete them, then re-run |
 | `too-large` | A body is over 60000 characters | Review a smaller change |
-| `unsafe-text` | A line would run as a command or hide as markup | Report it; nothing was posted |
+| `unsafe-text` | A body holds a CR, or a line would run as a command or hide as markup | Report it; nothing was posted |
 | `secret-found` | A secret rule matches in an outgoing body: at submit time, or at build time in text the per-field redaction did not cover (a path) | At submit: re-run build, which redacts. At build: report it; nothing was posted |
 | `scan-failed` | The secret scanner raised | Report it; nothing was posted |
 | `no-payload` | `post/payload.json` is missing | Run build first |

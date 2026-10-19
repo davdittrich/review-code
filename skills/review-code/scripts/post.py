@@ -32,7 +32,7 @@ MARK = "<!-- review-code:finding %s v1 -->"
 REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
 REVIEW_RE = re.compile(r"<!-- review-code:review v1 head=[0-9a-f]{40}(?:[0-9a-f]{24})? -->")
-_LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders; wider than this only makes the guard stricter
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab path holding one could forge a diff header
 _REF = re.compile(r"[@#!](?=\w)[\w./-]*")  # @name, @org/team, #123, !123: each would ping or link
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
 # A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
@@ -455,8 +455,11 @@ def _redact(text: str):
 
 
 def _guard(text: str) -> None:
-    """Refuse a line a forge or bot could run as a command or hide as markup, unless it is exactly one of our marker lines."""
-    for ln in _LINE_BREAK.split(text):
+    """Refuse a line a forge or bot could run as a command or hide as markup, unless it is exactly one of our marker lines.
+    A CR refuses outright: a forge that turns it into a line break would start a line no `N: ` prefix covers."""
+    if "\r" in text:
+        raise Refuse("unsafe-text")
+    for ln in text.split("\n"):
         if re.match(r"\s*(?:/|<!--)", ln) and not (MARK_RE.fullmatch(ln) or REVIEW_RE.fullmatch(ln)):
             raise Refuse("unsafe-text")
 
@@ -482,7 +485,7 @@ def _render(f: dict, where: Optional[str] = None):
         rules += got
     if "private-key" in rules:  # key material may sit in any field, with or without the marker line next to it
         raw = {k: "[REDACTED:private-key]" for k in raw}
-    quote = sanitize.escape_for_code(raw["quote"])[0].split("\n")
+    quote = sanitize.escape_for_code(raw["quote"].replace("\r\n", "\n").replace("\r", "<U+000D>"))[0].split("\n")
     quote = ["%d: %s" % (f["line"] + n, ln) for n, ln in enumerate(quote)]
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)
     out = ["**%s** (%s, %s) - %s" % (LABEL[f["severity"]], _prose(f["axis"]), _prose(f["category"]), _prose(raw["title"]))]
