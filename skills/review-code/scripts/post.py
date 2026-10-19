@@ -431,9 +431,9 @@ def _anchors(diff_text: str) -> dict:
 
 
 def _prose(s) -> str:
-    """One line of repository-derived text that pings, links and renders nothing: references in backticks, `<` and `[`
-    escaped. `\\` is doubled first, or a backslash in the input would escape the escape and revive the link."""
-    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'").replace("\\", "\\\\")
+    """One line of repository-derived text that pings, links and renders nothing: references in backticks, `&`, `<` and
+    `[` escaped. `&` goes first, or `&commat;x` would render `@x`; `\\` is doubled, or it would escape the escape."""
+    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'").replace("&", "&amp;").replace("\\", "\\\\")
     return _REF.sub(lambda m: "`" + m.group() + "`", t).replace("<", "&lt;").replace("[", "\\[")
 
 

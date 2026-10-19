@@ -53,7 +53,7 @@ Limits: regex only. There is no entropy check and no decoding, so an encoded, sp
 Repository-derived text can ping people, trigger forge commands or hide markup, so every field is rewritten.
 
 - Fixed labels (`**Trigger:**`, `**Evidence:**`, `**Fix:**`) start each field, so no posted line starts with `/` or `<!--`.
-- Prose is one line. `@name`, `@org/team`, `#123` and `!123` go in backticks; `\` is doubled, then `<` becomes `&lt;` and `[` becomes `\[`.
+- Prose is one line. `@name`, `@org/team`, `#123` and `!123` go in backticks; `&` becomes `&amp;` (so `&commat;x` cannot render `@x`), `\` is doubled, then `<` becomes `&lt;` and `[` becomes `\[`.
 - The quoted code sits in a fence longer than any backtick run inside it, each line prefixed with its line number. A CRLF in the quote becomes LF and a lone CR becomes the visible text `<U+000D>`, so no quote text can start a line of its own.
 - The line guard refuses `unsafe-text` for any CR in a body, and for any line, outside the fence prefix, that starts with `/` or `<!--` and is not one of the marker lines.
 

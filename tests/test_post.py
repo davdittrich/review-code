@@ -864,6 +864,16 @@ class LoneCR(Base):
         self.assertEqual(self.fake.calls, [])
 
 
+class Entities(Base):
+    def test_a_named_entity_cannot_spell_a_mention_or_a_reference(self):
+        self.review(20, fix="ping &commat;octocat about &num;12 and &excl;3, or &#64;x and &#x40;y")
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        fix = [ln for ln in self.payload()[1]["comments"][0]["body"].split("\n") if ln.startswith("**Fix:**")][0]
+        self.assertIsNone(re.search(r"&(?!amp;)", fix), fix)
+        self.assertIn("&amp;commat;octocat", fix)
+
+
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
 
