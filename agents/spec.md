@@ -57,23 +57,24 @@ tree/ that exists; the spec cite is `spec_line` alone.
 
 ## Output
 
-One JSON object per line, nothing else. Each finding uses exactly these keys:
+One line per finding, nothing else. A line is a JSON array of [key, value] pairs, never an object, with exactly these keys:
 
-{"path": "src/calc.py", "line": 5, "end_line": 5, "severity": "required", "category": "spec-wrong", "title": "Subtraction replaces the addition the spec asks for", "trigger": "add(2, 3) returns -1 where the requirement expects 5", "quote": "return a - b", "fix": "Return a + b", "spec_line": 30}
+[["path", "src/calc.py"], ["line", 5], ["end_line", 5], ["severity", "required"], ["category", "spec-wrong"], ["title", "Subtraction replaces the addition the spec asks for"], ["trigger", "add(2, 3) returns -1 where the requirement expects 5"], ["quote", "return a - b"], ["fix", "Return a + b"], ["spec_line", 30]]
 
 - path is relative to tree/; line and end_line are 1-based; end_line and fix may be left out.
 - quote is copied verbatim from the cited lines in tree/, never from inputs/spec.md.
 - spec_line is a line inside an UNTRUSTED block of inputs/spec.md; no other line is accepted.
 - Never copy spec text into title, trigger, fix or any other field.
+- In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Then one line listing every file you read, relative to tree/:
 
-{"inspected": ["src/calc.py"]}
+[["inspected", ["src/calc.py"]]]
 
 Last, one line with each requirement you looked at and chose not to report, `why` in your own words
 (at most 300 characters, no spec text):
 
-{"declined": [{"spec_line": 33, "why": "needs a deployment the change does not touch"}]}
+[["declined", [[["spec_line", 33], ["why", "needs a deployment the change does not touch"]]]]]
 
 With no findings, output only the inspected line and the declined line. Return findings only; never offer options or next steps.

@@ -1,14 +1,18 @@
 """Turn finder and verifier JSON lines into one schema v1 review document.
 
+Wire form (g1x.10): every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace
+(Claude Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair
+element or a non-string key, and the retired object form (a line starting with a brace), is invalid.
+
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
 `render`, which prints the report):
 
     report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N]
-                                   candidate lines + one {"inspected": [path, ...]} line; additive per lane (key
+                                   candidate lines + one ["inspected", [path, ...]] pair line; additive per lane (key
                                    <lane>, or <lane>@N for shard N, a plan.json shard id: cites are checked in
                                    <run>/shards/N/tree, conventions in <run>/shards/N/conventions; else bad-shard)
-    report.py verdicts --run DIR   {"id", "verdict", "evidence": [{"path","line","quote"}], "reason"} lines
+    report.py verdicts --run DIR   id, verdict, evidence (a list of path, line, quote), reason pair-array lines
     report.py render   --run DIR [--format text|json|sarif]
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
@@ -26,7 +30,7 @@ cut by the same budget; SOTA candidates are in neither), dropped, handoff, cappe
 unverifiable with reason verifier-cap.
 
 Spec lane (CTX-03): a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
-UNTRUSTED block; spec text is never copied into any output. A `{"declined": [{spec_line, why}]}` trailer (spec lane
+UNTRUSTED block; spec text is never copied into any output. A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
 and sources (SOTA). SOTA (path, line, quote = item name) must match plan.json sota_inventory, with 1 to 5 https
 `sources`; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
@@ -124,12 +128,28 @@ def _load(run, name):
     return obj
 
 
+def _wire(v):
+    """A lane line is a JSON array of [key, value] pairs (the Bash guard denies a brace then a quote in a here-document).
+    Every list whose items are all 2-item lists with a string first becomes a dict, recursively; other lists stay lists.
+    ValueError on a repeated key."""
+    if not isinstance(v, list):
+        return v
+    if v and all(isinstance(p, list) and len(p) == 2 and isinstance(p[0], str) for p in v):
+        d = {p[0]: _wire(p[1]) for p in v}
+        if len(d) != len(v):
+            raise ValueError("repeated key")
+        return d
+    return [_wire(x) for x in v]
+
+
 def _objects(text):
-    """Every `{` line of the stream: the parsed object, or None when it is not a JSON object. Prose is skipped."""
+    """Every wire line of the stream (`[[` or, for the retired object form, `{`): the parsed dict, or None when it is not
+    a valid pair array. Prose is skipped."""
     for ln in text.split("\n"):
-        if ln.lstrip().startswith("{"):
+        if re.match(r"\s*(\{|\[\s*\[)", ln):
             try:
                 o = json.loads(ln)
+                o = _wire(o) if isinstance(o, list) else None
             except (ValueError, RecursionError):
                 o = None
             yield o if isinstance(o, dict) else None

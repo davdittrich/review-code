@@ -43,8 +43,9 @@ Try to refute the claim. Answer each question by reading, not names or comments:
 
 ## Output
 
-Exactly one JSON line, nothing else. Cite paths are relative to tree/; reason is one sentence about the code:
+Exactly one line, nothing else: a JSON array of [key, value] pairs, never an object; a list of cites is a list of such arrays. Cite paths are relative to tree/; reason is one sentence about the code:
 
-{"id": "F-0123456789", "verdict": "confirmed", "evidence": [{"path": "src/calc.py", "line": 5, "quote": "return a - b"}], "reason": "add subtracts, so the requirement at the named spec line is not met by any path in this module."}
+[["id", "F-0123456789"], ["verdict", "confirmed"], ["evidence", [[["path", "src/calc.py"], ["line", 5], ["quote", "return a - b"]]]], ["reason", "add subtracts, so the requirement at the named spec line is not met by any path in this module."]]
 
+In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
 Never add a score, confidence or evidence class: the skill derives them.

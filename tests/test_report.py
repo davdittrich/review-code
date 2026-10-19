@@ -33,8 +33,15 @@ def cli(script, args, cwd, tmp, stdin=""):
     return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
 
 
+def wire(o):
+    """dict -> [[key, value], ...], recursively: the brace-free wire form (g1x.10, the Bash guard denies a brace and a quote)."""
+    if isinstance(o, dict):
+        return [[k, wire(v)] for k, v in o.items()]
+    return [wire(v) for v in o] if isinstance(o, list) else o
+
+
 def lines(*objs):
-    return "\n".join(o if isinstance(o, str) else json.dumps(o) for o in objs) + "\n"
+    return "\n".join(o if isinstance(o, str) else json.dumps(wire(o)) for o in objs) + "\n"
 
 
 def fid(path, category, quote):
@@ -239,7 +246,7 @@ class Derivation(Base):
                           cand(Q_ADD, 8, path="nope.py"), cand("x", 1, path="link.py"), cand("not on the line", 8),
                           cand(Q_ADD, 99), cand(Q_ADD, True), cand(Q_ADD, 8, severity="fatal"),
                           cand(Q_ADD, 8, category="style"), "{broken", "[1]", "{}")
-        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 12))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 12))  # [1] is prose, a brace line is the old form
 
     def test_candidate_self_rating_is_ignored(self):
         self.ingest(dict(cand(Q_ADD, 8), id="F-0000000000", score=100, evidence_class="reproduced",
@@ -810,6 +817,47 @@ class DoNotFlag(Lanes):
             body = self.handoff([pk])
             self.assertNotIn("do-not-flag", body, pk)
             self.assertNotIn("OUTSIDE-TEXT", body)
+
+
+class WireForm(Base):
+    """g1x.10: a lane line is a JSON array of [key, value] pairs; the old brace object form is invalid, not silently dropped."""
+
+    def test_nested_pairs_and_unicode_escaped_brace(self):
+        raw = json.dumps(wire(dict(CAND, title="uses { in text"))).replace("{", "\\u007b")  # how a lane writes a brace
+        self.assertNotIn("{", raw)
+        out = self.ingest(raw, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"], out["lanes"]), (1, 0, {"defects": "complete"}))
+        v = self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        self.assertEqual(v["confirmed"], out["ids"])
+
+    def test_old_object_form_is_invalid(self):
+        out = self.ingest(json.dumps(CAND), json.dumps({"inspected": ["src/calc.py"]}))
+        self.assertEqual((out["ids"], out["dropped"]["invalid"]), ([], 2))  # the trailer is invalid too
+        self.assertEqual(out["lanes"], {"defects": "incomplete"})
+
+    def test_malformed_pair_arrays_are_invalid(self):
+        pairs = wire(CAND)
+        bad = [pairs + [["line", 6]],                    # duplicate key
+               pairs + [["extra"]],                      # element that is not a pair
+               pairs + [["a", 1, 2]],                    # three-element element
+               [[1, "x"]] + pairs,                       # non-string key
+               [["path", "src/calc.py"], "line"],        # string element
+               ]
+        out = self.ingest(*[json.dumps(b) for b in bad])
+        self.assertEqual((out["ids"], out["dropped"]["invalid"]), ([], len(bad)))
+
+    def test_duplicate_key_in_a_nested_pair_array_invalidates_the_line(self):
+        (fid_,) = self.ingest(CAND)["ids"]
+        good = wire({"id": fid_, "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        bad = good[:2] + [["evidence", [wire(CITE) + [["line", 5]]]], ["reason", "r"]]
+        self.assertEqual(self.verdicts(json.dumps(bad))["confirmed"], [])
+        self.assertEqual(self.verdicts(json.dumps(good))["confirmed"], [fid_])
+
+    def test_wire_pairs_to_dicts(self):
+        self.assertEqual(report._wire([["a", [["b", 1]]], ["c", ["x", "y"]], ["d", [[["k", 1]], [["k", 2]]]]]),
+                         {"a": {"b": 1}, "c": ["x", "y"], "d": [{"k": 1}, {"k": 2}]})
+        with self.assertRaises(ValueError):
+            report._wire([["a", [["b", 1], ["b", 2]]]])
 
 
 if __name__ == "__main__":

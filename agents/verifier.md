@@ -46,8 +46,9 @@ The handoff may carry more blocks:
 
 ## Output
 
-Exactly one JSON line, nothing else. Cite paths are relative to tree/; reason is one sentence:
+Exactly one line, nothing else: a JSON array of [key, value] pairs, never an object; a list of cites is a list of such arrays. Cite paths are relative to tree/; reason is one sentence:
 
-{"id": "F-0123456789", "verdict": "confirmed", "evidence": [{"path": "src/calc.py", "line": 41, "quote": "return sum(xs) / len(xs)"}], "reason": "mean([]) passes the empty list straight to the division, and no caller checks for it."}
+[["id", "F-0123456789"], ["verdict", "confirmed"], ["evidence", [[["path", "src/calc.py"], ["line", 41], ["quote", "return sum(xs) / len(xs)"]]]], ["reason", "mean([]) passes the empty list straight to the division, and no caller checks for it."]]
 
+In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
 Never add a score, confidence or evidence class: the skill derives them.

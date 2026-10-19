@@ -38,17 +38,18 @@ Severity is `suggestion` or `noted`. Never use `blocking` or `required`. Categor
 
 ## Output
 
-One JSON object per line, nothing else. Each finding uses exactly these keys:
+One line per finding, nothing else. A line is a JSON array of [key, value] pairs, never an object, with exactly these keys:
 
-{"path": "requirements.txt", "line": 3, "end_line": 3, "severity": "suggestion", "category": "sota", "title": "requests 2.19.0 has a published advisory", "trigger": "the advisory covers releases before 2.20.0", "quote": "requests", "fix": "Upgrade to a release with the fix", "sources": ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]}
+[["path", "requirements.txt"], ["line", 3], ["end_line", 3], ["severity", "suggestion"], ["category", "sota"], ["title", "requests 2.19.0 has a published advisory"], ["trigger", "the advisory covers releases before 2.20.0"], ["quote", "requests"], ["fix", "Upgrade to a release with the fix"], ["sources", ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]]]
 
 - path, line and quote come from one inventory item: path and line as given, quote equal to its name.
   end_line, when present, equals line.
 - sources lists one to five https URLs you actually read.
+- In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Last, one line listing the inventory paths you checked:
 
-{"inspected": ["requirements.txt"]}
+[["inspected", ["requirements.txt"]]]
 
 With no findings, output only the inspected line. Return findings only; never offer options or next steps.

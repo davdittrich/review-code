@@ -67,7 +67,7 @@ Reproduction covers your own code only. For a confirmed finding, the skill write
 
 Limits: there is no network or filesystem isolation (a test can read host files by absolute path), dependencies are not installed in the fresh worktree, and user-site packages and HOME-based configuration are not visible.
 
-Known limit: in a headless `claude -p` run, the Claude Code 2.1.302 Bash guard denies a here-document body with `{` followed by a quote, so `report.py ingest` and `verdicts` are refused there. Interactive behaviour is unprobed.
+Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, never objects, because the Claude Code 2.1.302 Bash guard denies a here-document body holding a brace followed by a quote. A reproduction test source with a dict literal can still trip that guard; headless runs skip reproduction.
 
 ## Run directory
 

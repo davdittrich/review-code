@@ -25,8 +25,13 @@ def parts(name):
     return lines[1:end], lines[end + 1:]
 
 
+def raw(body, prefix):
+    return next(line for line in body if line.startswith(prefix))
+
+
 def first(body, prefix):
-    return json.loads(next(line for line in body if line.startswith(prefix)))
+    """The first body line with this prefix, as a dict (the wire form is a pair array)."""
+    return report._wire(json.loads(raw(body, prefix)))
 
 
 class Finder(unittest.TestCase):
@@ -35,11 +40,11 @@ class Finder(unittest.TestCase):
         self.text = "\n".join(self.body)
 
     def test_candidate_line_has_exactly_the_candidate_keys(self):
-        self.assertEqual(set(first(self.body, '{"path"')),
+        self.assertEqual(set(first(self.body, '[["path"')),
                          set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL))
 
     def test_inspected_line(self):
-        o = first(self.body, '{"inspected"')
+        o = first(self.body, '[["inspected"')
         self.assertEqual(list(o), ["inspected"])
         self.assertIsInstance(o["inspected"], list)
 
@@ -87,13 +92,13 @@ class Standards(tp.Fixture):
         self.text = "\n".join(self.body)
 
     def test_candidate_line_has_exactly_the_lane_keys(self):
-        o = first(self.body, '{"path"')
+        o = first(self.body, '[["path"')
         self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
                                      + report.LANE_OPTIONAL["standards"]))
         self.assertEqual(o["category"], "convention")
 
     def test_inspected_line(self):
-        self.assertEqual(list(first(self.body, '{"inspected"')), ["inspected"])
+        self.assertEqual(list(first(self.body, '[["inspected"')), ["inspected"])
 
     def test_lane_categories_only(self):
         for w in report.LANE_CATEGORIES["standards"]:
@@ -123,8 +128,8 @@ class Standards(tp.Fixture):
             self.assertIn(line, self.fm)
 
     def test_example_line_ingests_on_a_real_run_dir(self):
-        ex = [line for line in self.body if line.startswith(("{\"path\"", "{\"inspected\""))]
-        rule = json.loads(ex[0])["rule"]
+        ex = [line for line in self.body if line.startswith(('[["path"', '[["inspected"'))]
+        rule = first(self.body, '[["path"')["rule"]
         with open(os.path.join(self.run_dir, "conventions", "CLAUDE.md"), encoding="utf-8") as fh:
             self.assertIn(rule, fh.read())
         out = self.ingest_lane("standards", *ex)
@@ -138,7 +143,7 @@ class Verifier(unittest.TestCase):
         self.text = "\n".join(self.body)
 
     def test_verdict_line_has_exactly_the_verdict_and_cite_keys(self):
-        o = first(self.body, '{"id"')
+        o = first(self.body, '[["id"')
         self.assertEqual(set(o), set(report.VERDICT_KEYS))
         self.assertTrue(o["evidence"])
         for cite in o["evidence"]:
@@ -162,7 +167,7 @@ class Verifier(unittest.TestCase):
             self.assertIn(item, low)
 
     def test_cites_relative_to_tree(self):
-        for cite in first(self.body, '{"id"')["evidence"]:
+        for cite in first(self.body, '[["id"')["evidence"]:
             self.assertFalse(os.path.isabs(cite["path"]) or cite["path"].startswith("tree/"))
 
     def test_tools_read_only(self):
@@ -191,19 +196,19 @@ class Spec(unittest.TestCase):
         self.text = "\n".join(self.body)
 
     def test_candidate_line_keys(self):
-        o = first(self.body, '{"path"')
+        o = first(self.body, '[["path"')
         self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
                                      + report.LANE_OPTIONAL["spec"]))
         self.assertIn(o["category"], report.LANE_CATEGORIES["spec"])
         self.assertIsInstance(o["spec_line"], int)
 
     def test_declined_line_entries(self):
-        o = first(self.body, '{"declined"')
+        o = first(self.body, '[["declined"')
         self.assertEqual(list(o), ["declined"])
         for d in o["declined"]:
             self.assertEqual(set(d), {"spec_line", "why"})
-        self.assertTrue(self.body.index(next(x for x in self.body if x.startswith('{"declined"')))
-                        > self.body.index(next(x for x in self.body if x.startswith('{"inspected"'))))
+        self.assertTrue(self.body.index(next(x for x in self.body if x.startswith('[["declined"')))
+                        > self.body.index(next(x for x in self.body if x.startswith('[["inspected"'))))
 
     def test_categories(self):
         words_ok(self, self.text, report.LANE_CATEGORIES["spec"], report.CATEGORIES)
@@ -222,7 +227,7 @@ class SpecVerifier(unittest.TestCase):
         self.text = "\n".join(self.body)
 
     def test_verdict_line_keys(self):
-        o = first(self.body, '{"id"')
+        o = first(self.body, '[["id"')
         self.assertEqual(set(o), set(report.VERDICT_KEYS))
         for cite in o["evidence"]:
             self.assertEqual(set(cite), set(report.CITE_KEYS))
@@ -265,7 +270,7 @@ class Sota(unittest.TestCase):
                 self.assertRegex(line.lower(), r"\bno\b|never")
 
     def test_candidate_line_keys(self):
-        o = first(self.body, '{"path"')
+        o = first(self.body, '[["path"')
         self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
                                      + report.LANE_OPTIONAL["sota"]))
         self.assertEqual(o["category"], "sota")
@@ -284,6 +289,41 @@ class Sota(unittest.TestCase):
     def test_frontmatter(self):
         for line in ("model: opus", "maxTurns: 20"):
             self.assertIn(line, self.fm)
+
+
+class BraceFree(unittest.TestCase):
+    """g1x.10: Claude Code's Bash guard denies a here-document body holding a brace followed by a quote, so no wire
+    example may carry one. REPRO_TEST (test source) is exempt and stays guard-sensitive."""
+    GUARD = re.compile(r'\{\s*"')
+
+    def test_no_wire_example_has_a_brace_then_a_quote(self):
+        paths = [os.path.join(ROOT, "agents", f) for f in sorted(os.listdir(os.path.join(ROOT, "agents")))]
+        paths.append(os.path.join(ROOT, "skills", "review-code", "SKILL.md"))
+        seen = 0
+        for path in paths:
+            with open(path, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    if line.startswith('[["'):
+                        seen += 1
+                        self.assertNotRegex(line, self.GUARD, "%s:%d" % (path, n))
+                        self.assertNotIn("{", line, "%s:%d" % (path, n))
+        self.assertGreaterEqual(seen, 8)  # every agent example line was reached
+
+    def test_skill_here_document_bodies_are_clean(self):
+        with open(os.path.join(ROOT, "skills", "review-code", "SKILL.md"), encoding="utf-8") as f:
+            bodies = re.findall(r"<<'REVIEW_(?:FINDINGS|VERDICTS)'\n(.*?)\n\s*REVIEW_", f.read(), re.S)
+        self.assertEqual(len(bodies), 1)  # the verdicts step points back at this one
+        for b in bodies:
+            self.assertNotRegex(b, self.GUARD)
+
+    def test_no_agent_shows_the_old_object_form(self):
+        for f in sorted(os.listdir(os.path.join(ROOT, "agents"))):
+            with open(os.path.join(ROOT, "agents", f), encoding="utf-8") as fh:
+                self.assertEqual([ln for ln in fh if ln.startswith("{")], [], f)
+
+    def test_every_producer_says_how_to_write_a_brace(self):
+        for name in plan.MAX_TURNS:
+            self.assertIn("\\u007b", "\n".join(parts(name)[1]), name)
 
 
 class TurnCeilings(unittest.TestCase):
@@ -333,7 +373,7 @@ class WireContract(tp.Fixture):
 
     def ingest_examples(self, agent, lane, *prefixes):
         _, body = parts(agent)
-        out = self.ingest_lane(lane, *[first(body, p) for p in prefixes])
+        out = self.ingest_lane(lane, *[raw(body, p) for p in prefixes])  # the prompt's own text, not a re-encoding
         self.assertEqual(out["dropped"]["invalid"], 0, out)
         self.assertEqual(out["lanes"][lane], "complete", out)
         return out
@@ -342,13 +382,13 @@ class WireContract(tp.Fixture):
         # the example cites src/calc.py:41 and tests/test_calc.py
         src = "".join("x%d = %d\n" % (i, i) for i in range(1, 41)) + "def mean(xs):\n    return sum(xs) / len(xs)\n"
         self.fixture(tr.BASE, {"src/calc.py": src, "tests/test_calc.py": "import src.calc\n"})
-        out = self.ingest_examples("finder", "defects", '{"path"', '{"inspected"')
+        out = self.ingest_examples("finder", "defects", '[["path"', '[["inspected"')
         self.assertEqual(len(out["ids"]), 1)
 
     def test_standards_example_ingests(self):
         feat = {"src/calc.py": "x = 1\n\n\n\ndef addNumbers(a, b):\n    return a + b\n"}
         self.fixture(dict(tr.BASE, **{"CLAUDE.md": "# Rules\n- Function names use snake_case.\n"}), feat)
-        out = self.ingest_examples("standards", "standards", '{"path"', '{"inspected"')
+        out = self.ingest_examples("standards", "standards", '[["path"', '[["inspected"')
         self.assertEqual(len(out["ids"]), 1)
 
     def test_spec_example_and_declined_line_ingest(self):
@@ -357,7 +397,7 @@ class WireContract(tp.Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir)
         self.assertEqual((rc, out["status"]), (0, "ok"))
         self.assertIn("spec", [c["lane"] for c in self.plan_json()["calls"]])
-        out = self.ingest_examples("spec", "spec", '{"path"', '{"inspected"', '{"declined"')
+        out = self.ingest_examples("spec", "spec", '[["path"', '[["inspected"', '[["declined"')
         self.assertEqual((len(out["ids"]), len(out["spec_ids"])), (0, 1))
 
     def test_sota_example_ingests_against_the_inventory(self):
@@ -365,9 +405,9 @@ class WireContract(tp.Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
         self.assertEqual(rc, 0, out)
         _, body = parts("sota")
-        ex = first(body, '{"path"')
+        ex = first(body, '[["path"')
         self.assertIn({"path": ex["path"], "line": ex["line"], "name": ex["quote"]}, self.plan_json()["sota_inventory"])
-        out = self.ingest_examples("sota", "sota", '{"path"', '{"inspected"')
+        out = self.ingest_examples("sota", "sota", '[["path"', '[["inspected"')
         self.assertEqual((out["ids"], out["spec_ids"]), ([], []))
 
 
