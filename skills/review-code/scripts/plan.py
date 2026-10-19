@@ -285,12 +285,17 @@ def _build_shard(run, tj, i, files, trust, packs):
     return d
 
 
-# SOTA inventory: dependency, import and library names and pinned versions only, so the web lane never sees
-# repository text.
+# SOTA inventory: dependency, import, library and called API names and pinned versions only, so the web lane never
+# sees repository text.
 INVENTORY_MAX = 50  # keeps the task message small and bounds the lane's search budget
 NAME_RE = re.compile(r"[A-Za-z0-9@/._-]{1,100}")
 VERSION_RE = re.compile(r"[0-9][0-9A-Za-z.+_-]{0,39}")
-KINDS = ("dependency", "import")  # inventory order: manifest pins outrank imports under the cap
+KINDS = ("dependency", "import", "api")  # inventory order: manifest pins outrank imports and calls under the cap
+_CALL = re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\(")
+# Call roots kept without an import in the change: modules whose algorithm or API choices age (weak hashes, unsafe
+# deserialisers, non-crypto randomness). shortcut: a fixed list, Python and JS only; extend when a lane misses one.
+KNOWN_ROOTS = frozenset(("hashlib", "hmac", "random", "pickle", "marshal", "shelve", "ssl", "crypt", "tempfile",
+                         "subprocess", "os", "yaml", "xml", "datetime", "telnetlib", "ftplib", "Math", "crypto"))
 _V = r"""([^\s,;"')\]=]+)"""  # a candidate version, kept only when VERSION_RE matches all of it
 _PIN_PY = re.compile(r"(?<![<>!~=])===?\s*" + _V)  # an exact pin; ranges and wildcards carry no version
 _PIN_NPM = re.compile(r':\s*"=?v?' + _V + '"')
@@ -337,11 +342,15 @@ def _inventory(lines):
     first, at most INVENTORY_MAX."""
     seen, out = set(), []
     for path in sorted(lines):
-        for n, text in lines[path]:
-            for kind, name, ver in _names(path, text):
-                if (kind, name, ver) not in seen and NAME_RE.fullmatch(name):
-                    seen.add((kind, name, ver))
-                    out.append(dict({"kind": kind, "name": name, "path": path, "line": n}, **({"version": ver} if ver else {})))
+        found = [(n, x) for n, text in lines[path] for x in _names(path, text)]
+        roots = KNOWN_ROOTS | {x[1] for _, x in found if x[0] == "import"} if path.endswith((".py",) + _JS_EXT) else ()
+        for n, text in lines[path]:  # a call is code only: the comment after # or // is cut first
+            body = text.split("#" if path.endswith(".py") else "//")[0]
+            found += [(n, ("api", c, None)) for c in _CALL.findall(body) if c.split(".")[0] in roots]
+        for n, (kind, name, ver) in found:
+            if (kind, name, ver) not in seen and NAME_RE.fullmatch(name):
+                seen.add((kind, name, ver))
+                out.append(dict({"kind": kind, "name": name, "path": path, "line": n}, **({"version": ver} if ver else {})))
     out.sort(key=lambda i: KINDS.index(i["kind"]))  # stable: path and line order within a kind
     return out[:INVENTORY_MAX]
 

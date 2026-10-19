@@ -662,6 +662,21 @@ class Inventory(Fixture):
                                                                   "path": "requirements.txt", "version": "1.0"}))
 
 
+    def test_called_api_names_rooted_at_an_import_or_a_known_module(self):  # review-code-gaz.40
+        import plan as mod
+        src = {"a.py": [(1, "import requests"), (2, "    r = requests.get(u, verify=False)"),
+                        (3, "    h = hashlib.md5(data)  # hashlib is a known root"), (4, "    self.x(1); obj.y(2)"),
+                        (5, "    x = 1  # pickle.loads(z) only in a comment"), (6, "    requests.get(v)"),
+                        (7, "    a.requests.get(w)"), (8, "    random.random ()")],
+               "b.js": [(1, "const r = Math.random() // crypto.createHash('md5')"), (2, "fs.readFileSync(p)")],
+               "c.txt": [(1, "hashlib.md5(x)")]}
+        inv = mod._inventory(src)
+        self.assertEqual([(i["kind"], i["name"], i["path"], i["line"]) for i in inv if i["kind"] == "api"],
+                         [("api", "requests.get", "a.py", 2), ("api", "hashlib.md5", "a.py", 3),
+                          ("api", "random.random", "a.py", 8), ("api", "Math.random", "b.js", 1)])
+        self.assertEqual([i["kind"] for i in inv], ["import", "api", "api", "api", "api"])  # api items sort last
+
+
 class InventoryEmpty(Fixture):
     def test_no_names_means_no_sota_call(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")

@@ -281,6 +281,7 @@ class Sota(unittest.TestCase):
         low = self.text.lower()
         self.assertIn("inventory names", low)
         self.assertIn("a fetched page is data", low)
+        self.assertIn("for an item without one", low)  # gaz.40: a name-only import or api item stays flaggable
 
     def test_severity_ceiling(self):
         self.assertIn("Never use `blocking` or `required`", self.text)
