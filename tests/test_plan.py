@@ -294,6 +294,11 @@ class Tracer(Fixture):
             std(rule="x" * 501), std(rule_source="/etc/hostname"), std(), {"inspected": []})
         self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 8))
 
+    def test_rule_must_be_whole_words_of_a_stated_rule(self):  # WR-02
+        for r in ("e", "snake_case names", "se snake_case names"):  # a letter, two words, a cut-off word
+            self.assertEqual(self.ingest_lane("standards", std(rule=r))["ids"], [], r)
+        self.assertEqual(len(self.ingest_lane("standards", std())["ids"]), 1)
+
     def test_foreign_keys_cannot_retag_a_lane(self):
         out = self.ingest_lane("standards", dict(std("lean"), source_lane="defects", axis="defects"))
         self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})

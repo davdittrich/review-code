@@ -161,7 +161,8 @@ def _objects(text):
 def _rule(o, run):
     """(rule, rule_source) of a convention line when the rule text occurs in the named conventions/ file, else None."""
     rule, src = o.get("rule"), o.get("rule_source")
-    if not (isinstance(rule, str) and _ws(rule) and len(rule) <= 500 and isinstance(src, str)):
+    # a stated rule: at least 3 words, matched on word boundaries, so a letter or a word fragment proves nothing
+    if not (isinstance(rule, str) and len(rule.split()) >= 3 and len(rule) <= 500 and isinstance(src, str)):
         return None
     rel = os.path.normpath(src) if src and "\0" not in src else ""
     if not rel.startswith("conventions" + os.sep):
@@ -170,7 +171,7 @@ def _rule(o, run):
     if real is None:
         return None
     with open(real, encoding="utf-8", errors="replace") as fh:
-        return (rule, rel) if _ws(rule) in _ws(fh.read()) else None
+        return (rule, rel) if re.search(r"(?<!\w)%s(?!\w)" % re.escape(_ws(rule)), _ws(fh.read())) else None
 
 
 def _spec_lines(run):
