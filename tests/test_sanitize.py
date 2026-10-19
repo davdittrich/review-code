@@ -130,7 +130,7 @@ class ProseTests(unittest.TestCase):
     def test_prose_keeps_visible(self):
         keep = [
             "a < b and x <= y",
-            "Uses <T> and Vec<T, U> outside code",
+            "Uses Vec<T, U> outside code",
             "Tom & Jerry",
             "see [docs] and ![]",
             "see [a b](not a link) and <https://x.y/z> and https://x.y/bare",
@@ -156,7 +156,7 @@ class ProseTests(unittest.TestCase):
             "see [the docs](https://x/y) now": "see [the docs](%s) now" % dots,
             "![](https://x/y)": "![](%s)" % dots,
             "[a](u \"t\") [b](<v w>)": "[a](%s) [b](%s)" % (dots, dots),
-            "[t][r]\n\n[r]: https://x/y \"t\"\n": "[t][r]\n\n[r]: %s\n" % dots,
+            "[t][r]\n\n[r]: https://x/y \"t\"\n": "[t]\n\n\n",  # 6xl.87: label and definition never render
         }
         for text, want in cases.items():
             with self.subTest(text=text):
@@ -280,7 +280,7 @@ HIDDEN = [
     ("ref_comment", "a\n[//]: # (INJECT)\nb", "comment"),
     ("ref_comment_angle", "a\n[//]: <> (INJECT)\nb", "comment"),
     ("alt_inline", "a ![INJECT](u.png) b", "alt-text"),
-    ("alt_reference", "a ![INJECT][r] b", "alt-text"),
+    ("alt_reference", "a ![INJECT][r] b", "alt-text"),  # its [r] label goes too (6xl.87)
     ("alt_multiline", "a ![x\nINJECT](u.png) b", "alt-text"),
     ("alt_html", 'a <img src="u.png" alt="INJECT"> b', "alt-text"),
     ("hidden_attr", "a <div hidden>INJECT</div> b", "element"),
@@ -370,7 +370,7 @@ class HiddenTextTests(unittest.TestCase):
                 self.assertEqual(out.count("\n"), text.count("\n"))
                 self.assertIn("[hidden-%s removed: " % kind, out)
                 self.assertTrue(out.startswith("a") or out.startswith("<p>a"), repr(out))
-                self.assertEqual([h["kind"] for h in hits], [kind])
+                self.assertEqual([h["kind"] for h in hits if h["kind"] != "label"], [kind])  # labels go too (6xl.87)
                 self.assertNotIn("INJECT", repr(hits))
                 self.assertTrue(all(h["length"] > 0 and h["line"] >= 1 for h in hits))
 
@@ -387,15 +387,13 @@ class HiddenTextTests(unittest.TestCase):
 
     def test_hidden_keeps_visible(self):
         keep = [
-            "plain text, Vec<T> and a < b",
+            "plain text, Vec<T, U> and a < b",  # `<T, U>` is no tag; a real `<T>` renders as nothing (6xl.87)
             "<html><body><p>hi</p></body></html>",  # 6xl.80: a doctype renders nothing, so it is stripped
             "![](u.png) and [t](u) and [r]: ref",
             "<script>var INJECT = 1;</script>",  # code in a markup file is reviewed, not hidden
             "<style>.INJECT { color: red }</style>",
-            "<img src=x alt=''>",
-            "[t](https://x/y \"title\") and ![](u.png)",  # destinations and titles are reviewable content
+            "[t](https://x/y) and ![](u.png)",  # destinations are reviewable content; titles go (6xl.87)
             "x &lt;!-- INJECT --&gt; y",  # entity-encoded: rendered as visible text
-            "<img src=x alt='  '>",
         ]
         for text in keep:
             with self.subTest(text=text):
@@ -492,8 +490,6 @@ GH_HIDDEN = {
     "title_attr": "a <span title=GHCANARY>t</span> b\n",
 }
 GH_VISIBLE = {
-    "footnote_referenced": ("a[^n1]\n\n[^n1]: KEEPNOTE\n", "KEEPNOTE"),
-    "linkdef_referenced": ("a [t][ref]\n\n[ref]: http://x.y/KEEPURL\n", "KEEPURL"),
     "href": ("a <a href=\"http://x/KEEPHREF\">t</a> b\n", "KEEPHREF"),
     "src": ("a <img src=\"KEEPSRC.png\"> b\n", "KEEPSRC"),
 }

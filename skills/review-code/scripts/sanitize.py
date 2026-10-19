@@ -4,23 +4,25 @@ Prose from the change author is stripped (sanitize_prose); code, file names and 
 escaped, never deleted (escape_for_code), so hidden characters become findings. Both use one
 `_invisible` predicate: Default_Ignorable_Code_Point plus general categories Cf, Cc, Zl, Zp, all from embedded
 Unicode 18.0 tables (the same set on every interpreter), no NFKC folding.
-Markdown link and image destinations (inline and `[r]: url`) become an ellipsis; the link text stays.
+Markdown link and image destinations become an ellipsis (the link text stays); definitions go whole (6xl.87).
 Change-author files that reach the main thread are treated per type. Prose and markup files (every linguist
-Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff: HTML comments, markdown
-`[//]: #` comments, markdown and `<img>` alt text and elements hidden by `hidden` or an invisible inline style
+Markdown extension, .html .htm .txt .rst; is_prose_file) go through strip_hidden / strip_hidden_diff, deny by default
+(6xl.87): comments and every `<!`, `<?` and bogus `</` form, every link and footnote definition, reference labels,
+inline titles, unknown tags, every attribute but a URL-shaped href or src, alt text and hidden elements each
 become a one-line `[hidden-KIND removed: N chars]` marker, every newline kept so line numbers and diff anchors
 hold, and each removal is returned as {line, kind, length} (never the payload) for ledger.json `hidden_text`.
 Nothing is protected inside code fences or code spans: a fence can sit inside an HTML block or a comment, so a
 fence is no proof of visibility; examples of comments in fenced docs are over-stripped and flagged. Source code
 files are never touched by this (their comments are the content); invisible and bidi characters are escaped in
 all files (escape_for_code) and a run of plane-14 default-ignorables (Tags spell ASCII) collapses to `<TAGS:n>`.
-Not covered by the strip: link destinations and titles (reviewable content), entity-encoded markup (a renderer
-shows it as text), `<script>`/`<style>` bodies (code), comments written in other markup (rst `..`, org), and
-hiding by CSS classes or external style sheets.
-Not detected: homoglyphs, base64, plain-language injection, valueless attribute words of unlisted tags. The defence is structural: PR text
+Not covered by the strip: link destinations (reviewable content), entity-encoded markup (a renderer shows it as
+text), `<script>`/`<style>` bodies (GitHub shows them as text), comments written in other markup (rst `..`, org),
+and hiding by CSS classes or external style sheets.
+Not detected: homoglyphs, base64, plain-language injection. The defence is structural: PR text
 reaches only the Spec input (02-07) and lanes run without execution tools (02-01, 02-08).
 """
 import bisect
+import html
 import re
 import unicodedata
 from html.parser import HTMLParser
@@ -137,9 +139,9 @@ class _TextOnly(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag not in _ELEMENTS:
             text = self.get_starttag_text() or ""
-            # `<foo bar='x'>` is no prose and renders as nothing, so its attribute values go; an autolink or
-            # `Vec<T, U>` has no spaced `name=value` pair and stays as written.
-            self._emit("<%s>" % tag if any(v is not None for _, v in attrs) and re.search(r"\s", text) else text)
+            # 6xl.87: a real unknown tag renders as nothing; an autolink or `Vec<T, U>` (no tag) stays as written
+            if _AUTOLINK.fullmatch(text) or not _OPENTAG.fullmatch(text):
+                self._emit(text)
             return
         if tag in _VOID:
             return
@@ -153,8 +155,7 @@ class _TextOnly(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag not in _ELEMENTS:
-            self._emit("</%s>" % tag)
-            return
+            return  # an unknown end tag renders as nothing
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i][0] == tag:  # unbalanced input: pop to the nearest match
                 self.hidden -= sum(h for _, h in self.stack[i:])
@@ -163,6 +164,18 @@ class _TextOnly(HTMLParser):
 
     def handle_data(self, data):
         self._emit(data)
+
+
+def _cut(s: str, spans) -> str:
+    """s without the given spans; a span inside an earlier one goes with it."""
+    out, pos = [], 0
+    for a, b, _ in sorted(spans, key=lambda x: (x[0], -x[1])):
+        if a >= pos:
+            out.append(s[pos:a])
+            pos = b
+        elif b > pos:
+            pos = b
+    return "".join(out) + s[pos:]
 
 
 def _round(s: str) -> str:
@@ -179,8 +192,7 @@ def _round(s: str) -> str:
         if t == s:
             break
         s = t
-    for a, b, _ in sorted(_unused_defs(s), reverse=True):  # 6xl.80: definitions nothing references
-        s = s[:a] + s[b:]
+    s = _cut(s, _deny_spans(s))  # 6xl.87: definitions, reference labels, inline titles
     s = _REFCOMMENT.sub("", s)
     s = _ALT.sub("![]", s)
     s = _REFDEF_DEST.sub(lambda m: m.group(1) + _DOTS, _INLINE_DEST.sub(lambda m: "](" + _DOTS + ")" if m.group(0).strip("]() \t\r\n") else m.group(0), s))
@@ -270,33 +282,78 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
 # ---- hidden text in prose and markup files (CTX-04) -------------------------------------------------
 _ALTBODY = r"(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])+"
 _HIDDEN = re.compile(
-    r"(?P<comment><!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![A-Za-z][^>]*(?:>|\Z)"
+    r"(?P<comment><!--.*?(?:-->|\Z)|<!\[CDATA\[.*?(?:\]\]>|\Z)|<![^>]*(?:>|\Z)|</(?![A-Za-z])[^>]*(?:>|\Z)"
     r"|<\?[^>]*(?:>|\Z))"
     r"|(?P<refc>^[ \t]*\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(.*?\)|\"[^\"]*\"|'[^']*')[ \t]*(?=\r?$))"
     r"|!\[(?P<alt>" + _ALTBODY + r")\]", re.DOTALL | re.MULTILINE)
 _MARKER = re.compile(r"\[hidden-[a-z-]+ removed: \d+ chars\]\Z")
 _ALTATTR = re.compile(r"""(?<![\w:-])alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
-# 6xl.80: GitHub drops every attribute value from view; these few carry what a reader sees or follows.
-_ATTRVAL = re.compile(r"""(?<![\w:-])([A-Za-z_:][-\w:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
-_SHOWN_ATTRS = frozenset("href src srcset width height align valign colspan rowspan start dir lang open border".split())
-# Footnote and link reference definitions render nothing on GitHub unless something references them.
-_FOOTDEF = re.compile(r"^ {0,3}\[\^([^\]\n]+)\]:[^\n]*(?:\n(?![ \t]*\n)(?! {0,3}\[[^\]\n]+\]:)[^\n]*)*"
-                      r"(?:\n[ \t]*\n(?: {4}|\t)[^\n]*(?:\n(?![ \t]*\n)[^\n]*)*)*", re.MULTILINE)
-_LINKDEF = re.compile(r"^ {0,3}\[([^\]\n^][^\]\n]*)\]:[ \t]*(?!#|<>)\S[^\n]*(?:\n[ \t]*(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\))[ \t]*$)?",
-                      re.MULTILINE)
+# 6xl.87, deny by default. Every attribute goes except an href or src whose value is URL-shaped; GitHub shows
+# no attribute as text.
+_ATTRTOK = re.compile(r"""([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""")
+_OPENTAG = re.compile(r"""<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*"""
+                      r"""\s*/?>""")
+_AUTOLINK = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+)>")
+_ENDTAG = re.compile(r"</([A-Za-z][A-Za-z0-9-]*)([^>]*)>")
 
 
-def _unused_defs(view: str) -> List[Tuple[int, int, str]]:
-    """Spans of footnote and link definitions whose label nothing else in the text references (case-insensitive;
-    with no other occurrence of `[label]` / `[^label]` the definition is all GitHub would keep, and shows nothing)."""
-    low, out = view.lower(), []
-    for rx, kind, pre in ((_FOOTDEF, "footnote", "[^"), (_LINKDEF, "link-def", "[")):
-        found = list(rx.finditer(view))
-        for m in found:
-            key = pre + m.group(1).lower() + "]"
-            defs = sum(1 for d in found if (pre + d.group(1).lower() + "]") == key)
-            if low.count(key) <= defs:
-                out.append((m.start(), m.end(), kind))
+def _url_ok(value: str) -> bool:
+    """http, https or relative, no whitespace or control character (entities decoded first, as a browser would)."""
+    v = html.unescape(value)
+    if not v or re.search(r"[\s\x00-\x1f\x7f]", v):
+        return False
+    return bool(re.match(r"(?i)https?://", v)) or not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", v)
+
+
+# Every link and footnote definition goes, inside any blockquote or list too, with its lazy and indented
+# continuation (over-stripping accepted): a definition renders as nothing, used or not.
+_CONTAINER = r"(?:[ \t]*(?:>[ \t]?|[-+*][ \t]+|\d{1,9}[.)][ \t]+))*[ \t]*"
+# A footnote definition takes its lazy continuation lines and indented paragraphs (over-stripping accepted).
+_FOOTDEF = re.compile(r"^(" + _CONTAINER + r")(\[\^(?:\\.|[^\]\\\n])+\]:[^\n]*(?:\n(?![ \t]*(?:\n|\Z))[^\n]*)*"
+                      r"(?:\n[ \t]*\n(?: {4}|\t)[^\n]*(?:\n(?![ \t]*(?:\n|\Z))[^\n]*)*)*)", re.MULTILINE)
+# A link definition is its line, plus the next line when that holds the destination or a title, plus the lines
+# of a title still open (CommonMark: the destination may follow the colon on the next line).
+_LINKDEF = re.compile(r"^(" + _CONTAINER + r")(\[(?!\^)(?:\\.|[^\]\\\n])+\]:)([^\n]*)", re.MULTILINE)
+
+
+def _linkdef_end(view: str, m) -> int:
+    end, rest = m.end(), m.group(3)
+    nxt = lambda e: (view.find("\n", e + 1) if view.find("\n", e + 1) >= 0 else len(view))
+    if not rest.strip() and end < len(view) and view[end + 1:nxt(end)].strip():  # destination on the next line
+        end = nxt(end)
+        rest = view[m.end() + 1:end]
+    line = view[end + 1:nxt(end)] if end < len(view) else ""
+    if line.lstrip()[:1] in ("\"", "'", "(") and line.strip():  # title on the next line
+        end, rest = nxt(end), rest + " " + line
+    for opener, closer in (("\"", "\""), ("'", "'"), ("(", ")")):  # a title still open runs on to its closer
+        t = rest.split(opener, 1)
+        if len(t) == 2 and closer not in t[1]:
+            while end < len(view):
+                line = view[end + 1:nxt(end)]
+                if not line.strip():
+                    break
+                end = nxt(end)
+                if closer in line:
+                    break
+            break
+    return end
+
+
+_REFC = re.compile(r"\[[^\]\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\(|\"|')")
+# Reference label text never renders: the second bracket of `[t][label]` / `![a][label]`, and `[^label]`.
+_LABEL = re.compile(r"(?<=\])\[(?!hidden-[a-z-]+ removed: \d+ chars\])(?:\\.|[^\]\\\n])+\]|\[\^(?:\\.|[^\]\\\n])+\]")
+# An inline link or image title shows only on hover.
+_INLINE_TITLE = re.compile(r"\]\([ \t]*(?:<[^<>\n]*>|(?:\\.|[^()\s\\]|\([^()\s]*\))+)[ \t\n]+"
+                           r"(\"[^\"]*\"|'[^']*'|\([^()]*\))[ \t\n]*\)")
+
+
+def _deny_spans(view: str) -> List[Tuple[int, int, str]]:
+    """Markdown spans GitHub never shows as text: definitions, reference labels, inline titles."""
+    out = [(m.start(2), m.end(2), "footnote") for m in _FOOTDEF.finditer(view)]
+    for m in _LINKDEF.finditer(view):
+        out.append((m.start(2), _linkdef_end(view, m), "comment" if _REFC.match(view, m.start(2)) else "link-def"))
+    out += [(m.start(), m.end(), "label") for m in _LABEL.finditer(view)]
+    out += [(m.start(1), m.end(1), "title") for m in _INLINE_TITLE.finditer(view)]
     return out
 
 
@@ -320,12 +377,18 @@ class _Spans(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         at, raw = self._at(), self.get_starttag_text() or ""
-        for m in _ATTRVAL.finditer(raw):  # 6xl.80: attribute values a page never shows, on any element
-            name = m.group(1).lower()
-            a, b = m.span(m.lastindex)
-            if name in _SHOWN_ATTRS or not raw[a:b].strip() or _MARKER.match(raw[a:b].rstrip("\n")):
+        if _AUTOLINK.fullmatch(raw) or not _OPENTAG.fullmatch(raw):
+            return  # an autolink, or text such as `Vec<T, U>` that is no tag and renders as written
+        if tag not in _ELEMENTS:  # 6xl.87: GitHub drops an unknown tag; its text stays
+            self.spans.append((at, at + len(raw), "tag"))
+            return
+        pos = 1 + len(tag)
+        for m in _ATTRTOK.finditer(raw, pos, len(raw) - 1):
+            name, value = m.group(1).lower(), next((g for g in m.groups()[1:] if g is not None), None)
+            if name in ("href", "src") and value is not None and _url_ok(value):
                 continue
-            self.spans.append((at + a, at + b, "alt-text" if (tag, name) == ("img", "alt") else "attribute"))
+            kind = "alt-text" if (tag, name) == ("img", "alt") else "attribute"
+            self.spans.append((at + m.start(), at + m.end(), kind))
         if tag not in _ELEMENTS:
             return
         a = {k: v or "" for k, v in attrs}
@@ -365,17 +428,31 @@ class _Spans(HTMLParser):
 _BREAK = re.compile(r"\r\n|\r|\n")
 
 
-def _line_view(text: str) -> str:
-    """Same-length copy in which every CR reads as LF (CRLF as an empty line, which no hidden-text pattern
-    minds), so `^` and `$` anchor after any line break."""
-    return text.replace("\r", "\n")
+def _line_view(text: str) -> Tuple[str, List[int]]:
+    """(view, dropped): text with every line break as one LF (CRLF loses its CR), for anchored matching, and
+    the view positions whose LF lost a CR, to map spans back (_orig)."""
+    dropped, out, pos, shift = [], [], 0, 0
+    for m in re.finditer(r"\r\n?", text):
+        out.append(text[pos:m.start()])
+        out.append("\n")
+        if m.end() - m.start() == 2:
+            dropped.append(m.start() - shift)
+            shift += 1
+        pos = m.end()
+    return "".join(out) + text[pos:], dropped
+
+
+def _orig(a: int, b: int, dropped: List[int]) -> Tuple[int, int]:
+    """A view span as the original text's span (each dropped CR before a position shifts it by one)."""
+    return a + bisect.bisect_right(dropped, a), b + bisect.bisect_left(dropped, b)
 
 
 def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
     """(text, [(first line, last line, kind, length)]) with each hidden span replaced by a marker plus the
     span's line breaks, kept as written. Matching runs on _line_view, so a CR-only file is anchored too."""
-    spans, blank, pos, view = [], [], 0, _line_view(text)
-    spans += _unused_defs(view)
+    spans, blank, pos = [], [], 0
+    view, dropped = _line_view(text)
+    spans += _deny_spans(view)
     for m in _HIDDEN.finditer(view):
         g = m.lastgroup
         a, b = m.span(g)
@@ -384,9 +461,16 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int]]]:
         spans.append((a, b, "alt-text" if g == "alt" else "comment"))
         blank += [view[pos:a], re.sub(r"[^\n]", " ", view[a:b])]
         pos = b
-    p = _Spans("".join(blank) + view[pos:])
-    p.feed("".join(blank) + view[pos:])
+    blanked = "".join(blank) + view[pos:]
+    for m in _ENDTAG.finditer(blanked):  # 6xl.87: end-tag attributes and unknown end tags render as nothing
+        if m.group(1).lower() not in _ELEMENTS:
+            spans.append((m.start(), m.end(), "tag"))
+        elif m.group(2).strip():
+            spans.append((m.start(2), m.end(2), "attribute"))
+    p = _Spans(blanked)
+    p.feed(blanked)
     spans += p.finish()
+    spans = [_orig(a, b, dropped) + (k,) for a, b, k in spans]
     out, info, pos, line, last = [], [], 0, 1, 0
     for a, b, kind in sorted(spans, key=lambda s: (s[0], -s[1])):
         if a < last:

@@ -346,6 +346,28 @@ class Tracer(Fixture):
         self.assertEqual(rc, 0)
         self.assertEqual([os.path.relpath(p, t["run"]) for p in self.lane_files(t["run"]) if b"GHCANARY" in self.raw(p)], [])
 
+    def test_battery_hidden_constructs_reach_no_sink(self):
+        # 6xl.87: every GitHub-hidden battery construct leaves tree/, change.diff, hidden-names/, conventions/, spec.md
+        sys.path.insert(0, HERE)
+        from test_battery import BATTERY, KEPT, token  # noqa: E402
+        hidden = [(n, t) for n, t, visible in BATTERY if not visible and n not in KEPT]
+        doc = "\n\n".join(t for _, t in hidden) + "\n"
+        self.git("checkout", "-q", "main")
+        gitfix.commit(self.repo, {"CLAUDE.md": doc}, "rules")
+        self.git("checkout", "-q", "feat")
+        self.git("rebase", "-q", "main")
+        self.feature({"src/cfg.py": "def load():\n    return 2\n", "docs/leak.md": doc, "docs/leak.html": doc,
+                      "docs/z\u200bw.md": doc, "docs/spec-feat.md": doc}, message="feat: x\n\n" + doc)
+        rc, t = self.pin("main")
+        self.assertEqual((rc, t["status"]), (0, "ok"), t)
+        rc, _ = self.build(t["run"], ["--spec", "docs/spec-feat.md"])
+        self.assertEqual(rc, 0)
+        sinks = [p for p in self.lane_files(t["run"])]
+        self.assertTrue(any("hidden-names" in p for p in sinks) and any("conventions" in p for p in sinks))
+        for n, _ in hidden:
+            tok = token(n).encode()
+            self.assertEqual([os.path.relpath(p, t["run"]) for p in sinks if tok in self.raw(p)], [], n)
+
     def test_canary_hidden_text_in_conventions(self):
         # 6xl.45: the base review rules the standards lane reads lose hidden text too, for every kind
         self.git("checkout", "-q", "main")
