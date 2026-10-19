@@ -14,6 +14,8 @@ PR and MR titles and bodies, commit messages, issue text, spec files, file and b
 | File and symbol names | `target.json`, `ledger.json`, `inputs/*.md`, `change.diff` headers | Escaped, then JSON-quoted. A hidden-character name is listed in `hidden_chars` (`name: true`) and its file is never copied into `tree/` (`tree.skipped`: `hidden-name`) |
 | Branch names and the target words | `target.json` (`arg`), stdout (`reading`) | Escaped, then JSON-quoted |
 | Review rules (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING`, `REVIEW.md`) | `conventions/` | Read from the merge base only; treated by file type as above |
+| Finder and verifier replies | `candidates.json`, `verdicts.json` (via `report.py ingest` and `verdicts`) | Paths must stay inside `tree/`; every quote is re-checked against `tree/`; every string is escaped on text render |
+| One candidate for its verifier | `handoff/<id>.md` | Claim and trigger only, inside a per-run nonce fence; no sibling candidates |
 
 ## Sanitizer
 
@@ -29,7 +31,7 @@ The run directory is `review-code.XXXXXX` (mode 0700) under `git rev-parse --git
 
 ## Trust
 
-The skill asks once per run whether the code is the user's own. The first answer wins; any other outcome (dismissed, no answer, headless) records `external`. Nothing of the target runs in this version. A future step that would run a target command must first get `{"status": "confirm"}` from `ledger.py trust gate`, which refuses unless `own` was stored, then show the exact command to the user. The user's words (target, `--spec` path) are untrusted too: `target.py --stdin` and `ledger.py build --spec -` read them from a quoted here-document, so no shell parses them. `--spec` reads only files under the repository root.
+The skill asks once per run whether the code is the user's own. The first answer wins; any other outcome (dismissed, no answer, headless) records `external`. Target code runs only through step 7 of the skill: trust must be `own`, the user must confirm after seeing the exact command and the full test source, and `repro.py` re-checks the trust gate itself before it runs anything. `repro.py` is not pre-approved in `allowed-tools`, so the harness permission prompt also applies. The user's words (target, `--spec` path) are untrusted too: `target.py --stdin` and `ledger.py build --spec -` read them from a quoted here-document, so no shell parses them. `--spec` reads only files under the repository root.
 
 ## Known limits
 
@@ -41,3 +43,6 @@ The skill asks once per run whether the code is the user's own. The first answer
 - For working-tree kinds the change's own `.gitignore` decides which untracked files exist.
 - A lane with Read can read host files by absolute path; the run directory is not a sandbox. Claude Code may inject helper tools into subagents and loads a checked-out head's CLAUDE.md; the ledger notes it.
 - The trust gate is a choke point the orchestrator must call, not a sandbox.
+- The verifier's isolation from sibling candidates is instruction-level only: its task text is one handoff path and it is told never to open other handoff files, `candidates.json` or `verdicts.json`, but its Read and Glob tools could reach them.
+- Reproduction has no network or filesystem isolation: the test can read host files by absolute path. Dependencies are not installed in the fresh worktree, and user-site packages and HOME-based configuration are not visible.
+- In-place targets reproduce against HEAD plus the tracked diff; untracked files are not carried.
