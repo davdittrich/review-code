@@ -814,6 +814,383 @@ class InlineCap(Base):
         self.assertEqual(len(payload["comments"]), 32)
 
 
+MR_URL = "https://gitlab.example.com/g/sub/r/-/merge_requests/5"
+MR = "projects/g%2Fsub%2Fr/merge_requests/5"
+
+
+class FakeGitLab:
+    """Callable as post._cli(tool, args, cwd, stdin=None); records (method, endpoint without query, parsed body).
+    Drafts are private to the user (id 42), as on GitLab; publishing moves every draft to the notes."""
+
+    def __init__(self, run):
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            self.head = json.load(fh)["head_sha"]
+        with open(os.path.join(run, "change.diff"), encoding="utf-8") as fh:
+            self.diff = fh.read()
+        self.entries = []
+        for chunk in re.split(r"(?m)^(?=diff --git )", self.diff):
+            m = re.match(r"diff --git a/(\S+) b/(\S+)", chunk)
+            if m:
+                self.entries.append({"old_path": m.group(1), "new_path": m.group(2), "diff": chunk[chunk.index("@@ "):],
+                                     "new_file": False, "renamed_file": False, "deleted_file": False,
+                                     "collapsed": False, "too_large": False})
+        self.context = {(p, n) for _, p, tag, _, n, _, _ in sanitize._walk(self.diff) if p and tag == " "}
+        self.calls, self.drafts, self.notes, self.me_id, self.next_id = [], [], [], 42, 100
+        self.fail_map = {}  # "METHOD endpoint-prefix" -> HTTP status
+        self.mr_reads, self.moves_after, self.base_moves_after = 0, None, None  # the head or base moves after this many MR reads
+        self.mr_state, self.draft, self.refs_empty = "opened", False, False
+        self.drop_old_line, self.inject_foreign, self.fail_create_after = False, False, None
+        self.creates, self.injected = 0, False
+
+    def live_refs(self, reads):
+        moved = self.moves_after is not None and reads >= self.moves_after
+        base = self.base_moves_after is not None and reads >= self.base_moves_after
+        return {"base_sha": "c" * 40 if base else "a" * 40, "start_sha": "a" * 40, "head_sha": "f" * 40 if moved else self.head}
+
+    def writes(self):
+        return [c for c in self.calls if c[0] in ("POST", "PUT", "DELETE")]
+
+    def add_draft(self, note, author=42):
+        d = {"id": self.next_id, "note": note, "position": None, "author": {"id": author}}
+        self.next_id += 1
+        self.drafts.append(d)
+        return d
+
+    @staticmethod
+    def ok(obj):
+        return 0, json.dumps(obj).encode(), b""
+
+    @staticmethod
+    def fail(code):
+        return 1, b"", ("glab: %s (HTTP %d)" % (CANARY, code)).encode()
+
+    @staticmethod
+    def page(items, query):
+        q = dict(kv.split("=") for kv in query.split("&") if kv)
+        size, no = int(q.get("per_page", 30)), int(q.get("page", 1))
+        return items[(no - 1) * size:no * size]
+
+    def __call__(self, tool, args, cwd, stdin=None):
+        assert tool == "glab", tool
+        assert args[:4] == ["api", "--hostname", "gitlab.example.com", "-X"], args  # never the cwd remote or :fullpath
+        method, endpoint = args[4], args[5]
+        assert endpoint.startswith("projects/g%2Fsub%2Fr/") or endpoint.startswith("user"), endpoint
+        assert args[6:] == (["--input", "-"] if stdin is not None else []), args
+        body = json.loads(stdin.decode("utf-8")) if stdin is not None else None
+        assert "reviewer_state" not in json.dumps(body), body
+        path, _, query = endpoint.partition("?")
+        self.calls.append((method, path, body))
+        for key, code in self.fail_map.items():
+            m, _, prefix = key.partition(" ")
+            if method == m and path.startswith(prefix):
+                return self.fail(code)
+        return self.route(method, path, query, body)
+
+    def route(self, method, path, query, body):
+        if (method, path) == ("GET", "user"):
+            return self.ok({"id": self.me_id})
+        if (method, path) == ("GET", MR):
+            reads, self.mr_reads = self.mr_reads, self.mr_reads + 1
+            return self.ok({"state": self.mr_state, "draft": self.draft, "sha": self.live_refs(reads)["head_sha"],
+                            "diff_refs": None if self.refs_empty else self.live_refs(reads)})
+        if (method, path) == ("GET", MR + "/diffs"):
+            return self.ok(self.page(self.entries, query))
+        if (method, path) == ("GET", MR + "/notes"):
+            return self.ok(self.page(self.notes, query))
+        if (method, path) == ("GET", MR + "/draft_notes"):
+            if self.inject_foreign and self.creates and not self.injected:
+                self.injected = True
+                self.add_draft("foreign draft, no marker")
+            return self.ok(self.page(self.drafts, query))
+        if (method, path) == ("POST", MR + "/draft_notes"):
+            if self.fail_create_after is not None and self.creates >= self.fail_create_after:
+                return self.fail(404)
+            self.creates += 1
+            pos = dict(body["position"]) if body.get("position") else None
+            if pos and self.drop_old_line:
+                pos.pop("old_line", None)
+            d = self.add_draft(body["note"])
+            d.update(position=pos, commit_id=body.get("commit_id"))
+            return self.ok(d)
+        if (method, path) == ("POST", MR + "/draft_notes/bulk_publish"):
+            assert body is None, body  # no note and no review state
+            for d in self.drafts:
+                p = d["position"]
+                if p and (p["new_path"], p["new_line"]) in self.context and "old_line" not in p:
+                    return self.fail(500)  # GitLab accepts the draft and fails at publish
+            self.notes += [{"id": d["id"], "body": d["note"], "author": d["author"], "position": d["position"]}
+                           for d in self.drafts]
+            self.drafts = []
+            return 0, b"", b""
+        m = re.fullmatch(re.escape(MR) + r"/draft_notes/(\d+)", path)
+        if m and method == "DELETE":
+            found = [d for d in self.drafts if d["id"] == int(m.group(1))]
+            if not found:
+                return self.fail(404)
+            self.drafts.remove(found[0])
+            return 0, b"", b""
+        return self.fail(404)
+
+
+class GitLabBase(Base):
+    """The run of Base, retargeted to a merge request and served by FakeGitLab."""
+
+    def ingest(self, cands, cites, unverifiable=()):
+        ids = super().ingest(cands, cites, unverifiable)
+        self.retarget(kind="mr", url=MR_URL, number=5)
+        self.fake = FakeGitLab(self.run_dir)
+        return ids
+
+    def submit(self, digest):
+        return self.call("submit", "--run", self.run_dir, "--digest", digest)
+
+    def confirmed(self):
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        self.fake.calls[:] = []
+        self.fake.mr_reads = 0
+        return st["digest"]
+
+    def refused(self, res, reason, detail=None):
+        rc, out, st = res
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", reason), out)
+        if detail is not None:
+            self.assertEqual(st.get("detail"), detail)
+        self.assertNotIn("digest", st)
+        return st
+
+    def deletes(self):
+        return [c for c in self.fake.calls if c[0] == "DELETE"]
+
+    def published(self):
+        return [c for c in self.fake.calls if c[1].endswith("/bulk_publish")]
+
+
+class GitLabTracer(GitLabBase):
+    def setUp(self):
+        super().setUp()
+        self.ids = self.review(2, (19, "test"), 20)  # 2: outside every hunk; 19: unchanged context row; 20: added row
+
+    def test_build_then_submit(self):
+        rc, out, st = self.build()
+        raw, payload = self.payload()
+        self.assertEqual((rc, st["status"], st["inline"], st["in_body"]), (0, "ok", 2, 1), out)
+        self.assertEqual(self.fake.writes(), [])
+        self.assertTrue(all(m == "GET" for m, _, _ in self.fake.calls))
+        seen = len(self.fake.calls)
+        rc, out, st = self.submit(st["digest"])
+        self.assertEqual((rc, st["status"], st["posted"], st["in_body"]), (0, "ok", 2, 1), out)
+        tail = self.fake.calls[seen:]
+        creates = [b for m, e, b in tail if (m, e) == ("POST", MR + "/draft_notes")]
+        self.assertEqual(len(creates), 3)
+        summary, context, added = creates
+        self.assertEqual(sorted(summary), ["note"])  # no position
+        self.assertIn(post.MARK % self.ids[2], summary["note"])
+        refs = self.fake.live_refs(0)
+        base = dict(refs, position_type="text", old_path="src/calc.py", new_path="src/calc.py")
+        self.assertEqual(context["position"], dict(base, new_line=19, old_line=19))  # an unchanged row needs both lines
+        self.assertEqual(added["position"], dict(base, new_line=20))  # an added row has no old line
+        self.assertEqual((context["commit_id"], added["commit_id"]), (self.fake.head, self.fake.head))
+        self.assertEqual([(m, e) for m, e, _ in tail[-3:]],
+                         [("GET", MR + "/draft_notes"), ("GET", MR), ("POST", MR + "/draft_notes/bulk_publish")])
+        self.assertIsNone(tail[-1][2])  # publish carries no body
+        self.assertNotIn("reviewer_state", json.dumps(self.fake.calls))
+        self.assertEqual(self.fake.drafts, [])
+        notes = [n["body"] for n in self.fake.notes]
+        self.assertEqual(len(notes), 3)
+        for i in self.ids.values():
+            self.assertEqual(sum(post.MARK % i in n for n in notes), 1)
+        self.assertEqual(json.loads(out.splitlines()[-1])["review_id"], self.fake.notes[0]["id"])
+
+    def test_preview_names_anchor_lines(self):
+        rc, out, st = self.build()
+        _, payload = self.payload()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(payload["diff_refs"], self.fake.live_refs(0))
+        self.assertEqual((payload["forge"], payload["repo"], payload["number"]), ("gitlab", "g/sub/r", 5))
+        for k, line in ((1, 19), (2, 20)):
+            self.assertIn("== inline %d/2: src/calc.py:%d (RIGHT) ==" % (k, line), out)
+
+
+class GitLabSafety(GitLabBase):
+    """Refusals, races, own-draft cleanup and quick-action safety (Task 2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = self.review(2, (19, "test"), 20)
+
+    def test_a_users_own_draft_blocks_build_and_is_never_deleted(self):
+        d = self.fake.add_draft("my own work in progress")
+        self.refused(self.build(), "pending-drafts-exist")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(self.fake.drafts, [d])
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_a_draft_appearing_after_build_refuses_submit_before_any_write(self):
+        digest = self.confirmed()
+        d = self.fake.add_draft("started after the build")
+        self.refused(self.submit(digest), "pending-drafts-exist")
+        self.assertEqual(self.fake.writes(), [])
+        self.assertEqual(self.fake.drafts, [d])
+
+    def test_empty_diff_refs_refuse_pending(self):
+        self.fake.refs_empty = True
+        self.refused(self.build(), "diff-refs-pending")
+        self.assertEqual(self.fake.calls, [("GET", MR, None)])
+
+    def test_closed_merged_locked_and_draft_merge_requests_refuse(self):
+        for state, draft, reason in (("closed", False, "closed"), ("merged", False, "merged"),
+                                     ("locked", False, "locked"), ("opened", True, "draft")):
+            with self.subTest(reason):
+                self.fake.mr_state, self.fake.draft = state, draft
+                self.refused(self.build(), reason)
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_glab_missing(self):
+        with mock.patch.object(post.subprocess, "run", side_effect=FileNotFoundError):
+            self.refused(self.call("build", "--run", self.run_dir, cli=False), "glab-missing")
+
+    def test_head_or_base_moved_at_a_before_the_diff(self):
+        self.fake.moves_after = 0
+        self.refused(self.build(), "head-moved")
+        self.assertEqual(self.fake.calls, [("GET", MR, None)])
+
+    def test_head_or_base_moved_at_b_after_the_reads(self):
+        for hook in ("moves_after", "base_moves_after"):
+            with self.subTest(hook):
+                self.fake.mr_reads = 0
+                setattr(self.fake, hook, 1)
+                self.refused(self.build(), "head-moved")
+                setattr(self.fake, hook, None)
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_head_or_base_moved_at_c_before_the_first_write(self):
+        digest = self.confirmed()
+        for hook in ("moves_after", "base_moves_after"):
+            with self.subTest(hook):
+                self.fake.mr_reads = 0
+                setattr(self.fake, hook, 0)
+                self.refused(self.submit(digest), "head-moved")
+                setattr(self.fake, hook, None)
+                self.assertEqual(self.fake.writes(), [])
+
+    def test_head_or_base_moved_at_d_deletes_only_this_payloads_drafts(self):
+        digest = self.confirmed()
+        for hook in ("moves_after", "base_moves_after"):
+            with self.subTest(hook):
+                self.fake.mr_reads, self.fake.calls[:] = 0, []
+                setattr(self.fake, hook, 1)
+                self.refused(self.submit(digest), "head-moved")
+                setattr(self.fake, hook, None)
+                self.assertEqual(len(self.deletes()), 3)
+                self.assertEqual(self.published(), [])
+                self.assertEqual(self.fake.drafts, [])
+
+    def test_a_foreign_draft_between_create_and_verify_refuses_and_stays(self):
+        digest = self.confirmed()
+        self.fake.inject_foreign = True
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(self.deletes()), 3)
+        self.assertEqual([d["note"] for d in self.fake.drafts], ["foreign draft, no marker"])
+        self.assertEqual(self.published(), [])
+
+    def test_a_context_draft_stored_without_old_line_never_reaches_publish(self):
+        digest = self.confirmed()
+        self.fake.drop_old_line = True
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(self.published(), [])
+        self.assertEqual(self.fake.drafts, [])
+
+    def test_publish_error_reports_the_status_and_deletes_the_drafts(self):
+        digest = self.confirmed()
+        self.fake.fail_map["POST " + MR + "/draft_notes/bulk_publish"] = 500
+        self.refused(self.submit(digest), "post-failed", "HTTP 500")
+        self.assertEqual(len(self.deletes()), 3)
+        self.assertEqual((self.fake.drafts, self.fake.notes), ([], []))
+
+    def test_failed_delete_names_the_drafts_and_the_next_build_refuses(self):
+        digest = self.confirmed()
+        self.fake.fail_map["POST " + MR + "/draft_notes/bulk_publish"] = 500
+        self.fake.fail_map["DELETE " + MR + "/draft_notes/"] = 500
+        self.refused(self.submit(digest), "cleanup-failed", "drafts 100,101,102")
+        self.assertEqual(len(self.fake.drafts), 3)
+        self.fake.fail_map.clear()
+        self.refused(self.build(), "pending-drafts-exist")
+
+    def test_draft_notes_unavailable_leaves_nothing(self):
+        digest = self.confirmed()
+        self.fake.fail_map["POST " + MR + "/draft_notes"] = 404
+        self.refused(self.submit(digest), "draft-notes-unavailable")
+        self.assertEqual(self.fake.drafts, [])
+        del self.fake.fail_map["POST " + MR + "/draft_notes"]
+        self.fake.fail_create_after = 1  # the summary draft exists when the next create is refused
+        self.refused(self.submit(digest), "draft-notes-unavailable")
+        self.assertEqual(self.fake.drafts, [])
+        self.assertEqual(len(self.deletes()), 1)
+
+    def test_diffs_404_refuses_diff_unavailable(self):
+        self.fake.fail_map["GET " + MR + "/diffs"] = 404
+        self.refused(self.build(), "diff-unavailable")
+
+    def test_collapsed_and_too_large_files_go_to_the_summary(self):
+        for flag in ("collapsed", "too_large"):
+            with self.subTest(flag):
+                self.fake.entries[0][flag] = True
+                rc, out, st = self.build()
+                _, payload = self.payload()
+                self.assertEqual((rc, st["inline"], st["in_body"]), (0, 0, 3), out)
+                self.assertEqual(sorted(post.MARK_RE.findall(payload["body"])), sorted(self.ids.values()))
+                self.fake.entries[0][flag] = False
+
+    def test_a_path_with_a_line_break_is_skipped(self):
+        evil = {"old_path": "src/x\ny.py", "new_path": "src/x\ny.py", "diff": "@@ -1 +1 @@\n-a\n+b\n", "new_file": False,
+                "renamed_file": False, "deleted_file": False, "collapsed": False, "too_large": False}
+        self.fake.entries.insert(0, evil)
+        with mock.patch.object(post, "_cli", self.fake):
+            text = post.GitLab(post._target(self.run_dir)).diff()
+        self.assertNotIn("y.py", text)
+        self.assertIn("diff --git a/src/calc.py b/src/calc.py\n--- a/src/calc.py\n+++ b/src/calc.py\n@@ -17,9 +17,9 @@", text)
+
+    def test_every_call_names_the_host_and_the_encoded_project(self):
+        digest = self.confirmed()
+        self.assertEqual(self.submit(digest)[0], 0)  # the fake asserts --hostname and the project path on every call
+
+    def test_a_note_by_another_author_does_not_skip(self):
+        self.fake.notes.append({"id": 1, "body": post.MARK % self.ids[20], "author": {"id": 7}})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"], st["inline"]), (0, 0, 2), out)
+        self.fake.notes.append({"id": 2, "body": post.MARK % self.ids[20], "author": {"id": 42}})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["skipped"], st["inline"]), (0, 1, 1), out)
+
+    def test_after_a_full_publish_build_and_submit_add_nothing(self):
+        rc, out, st = self.build()
+        self.assertEqual(self.submit(st["digest"])[0], 0)
+        before = (len(self.fake.notes), len(self.fake.writes()))
+        self.refused(self.build(), "already-posted")
+        self.refused(self.submit(st["digest"]), "already-posted")
+        self.assertEqual((len(self.fake.notes), len(self.fake.writes())), before)
+
+
+class GitLabQuickActions(GitLabBase):
+    """GitLab runs a note line that starts with a slash as a command when the review is published."""
+
+    inject = {20: "/merge", 21: "/submit_review approve"}
+
+    def test_a_quick_action_never_starts_a_note_line(self):
+        cand = {"path": "src/calc.py", "line": 20, "end_line": 21, "severity": "required", "category": "bug",
+                "title": "/approve", "trigger": "/submit_review approve", "fix": "/merge now",
+                "quote": "/merge\n/submit_review approve"}
+        self.ingest([cand], {20: (20, "/merge")})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        self.assertEqual(self.submit(st["digest"])[0], 0)
+        self.assertEqual(len(self.fake.notes), 2)
+        for n in self.fake.notes:
+            self.assertNotRegex(n["body"], r"(?m)^\s*/")
+        self.assertIn("20: /merge", self.fake.notes[1]["body"])  # quoted behind its line-number prefix
+
+
 class EventConstant(unittest.TestCase):
     def test_no_other_review_event_in_any_string_constant(self):
         with open(os.path.join(SCRIPTS, "post.py"), encoding="utf-8") as fh:
@@ -823,6 +1200,14 @@ class EventConstant(unittest.TestCase):
         for s in strings:
             self.assertIsNone(re.search(r"approve|request[ _]?changes?|requested[ _]changes", s, re.I), s)
         self.assertEqual(post.EVENT, "COMMENT")
+
+    def test_no_review_state_or_quick_action_in_any_string_constant(self):
+        with open(os.path.join(SCRIPTS, "post.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                self.assertNotIn("reviewer_state", n.value)
+                self.assertIsNone(re.search(r"/(?:un)?approve\b|/merge\b", n.value), n.value)
 
 
 if __name__ == "__main__":
