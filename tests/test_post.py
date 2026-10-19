@@ -1428,6 +1428,20 @@ class GitLabSafety(GitLabBase):
         self.assertEqual(self.published(), [])
         self.assertEqual([d["note"] for d in self.fake.drafts], ["typed in the GitLab UI during submit"])
 
+    def test_drafts_stored_with_crlf_still_verify(self):
+        digest = self.confirmed()
+        real = self.fake.route
+
+        def route(m, p, q, b):
+            if (m, p) == ("GET", MR + "/draft_notes"):
+                for d in self.fake.drafts:
+                    d["note"] = d["note"].rstrip("\r\n").replace("\r\n", "\n").replace("\n", "\r\n") + "\r\n"
+            return real(m, p, q, b)
+
+        self.fake.route = route
+        rc, out, st = self.submit(digest)
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+
     def test_a_context_draft_stored_without_old_line_never_reaches_publish(self):
         digest = self.confirmed()
         self.fake.drop_old_line = True

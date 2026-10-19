@@ -400,7 +400,7 @@ class GitLab:
                 ok = not pos and "summary" not in seen
                 seen.add("summary")
             else:
-                found = MARK_RE.findall(note)
+                found = MARK_RE.findall(note.replace("\r\n", "\n"))
                 c = want.get(found[0]) if len(found) == 1 else None
                 ok = c is not None and found[0] not in seen and isinstance(pos, dict) and all(
                     pos.get(k) == v for k, v in dict(payload["diff_refs"], position_type="text", old_path=c["old_path"],
