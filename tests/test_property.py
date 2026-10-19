@@ -162,5 +162,30 @@ class SeededNames(unittest.TestCase):
                     self.assertEqual(found, [])
 
 
+class ShuffledReport(unittest.TestCase):
+    """The JSON document is a function of the finding set: line order and lane ingest order do not change a byte."""
+
+    def test_json_is_byte_identical_for_shuffled_lines_and_lanes(self):
+        import test_report as tr
+        for seed in SEEDS:
+            rng = random.Random(seed)
+            by_lane = {"defects": [tr.mc(n, "bug", severity=rng.choice(("required", "suggestion"))) for n in (2, 4, 7)],
+                       "standards": [tr.mc(n, c) for n, c in ((2, "lean"), (3, "lean"), (5, "smell"))]}
+            outs = []
+            for _ in range(4):
+                case = tr.MultiLane("test_lane_without_an_inspected_line_is_incomplete")
+                case.setUp()
+                try:
+                    for lane in rng.sample(sorted(by_lane), 2):
+                        objs = rng.sample(by_lane[lane], len(by_lane[lane])) + [{"inspected": ["src/calc.py"]}]
+                        case.lane(lane, *objs)
+                    outs.append(case.rep("render", extra=["--format", "json"])[1])
+                finally:
+                    case.doCleanups()
+            self.assertEqual(len(set(outs)), 1, seed)
+            axes = [f["axis"] for f in json.loads(outs[0])["unverifiable"]]
+            self.assertEqual(axes, sorted(axes, key=tr.report.AXES.index))
+
+
 if __name__ == "__main__":
     unittest.main()

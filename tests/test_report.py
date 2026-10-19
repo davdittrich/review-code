@@ -355,6 +355,129 @@ class AxisIds(Base):
             self.assertEqual((json.loads(o)["dropped"]["invalid"], json.loads(o)["ids"]), (n, []), lane)  # dropped sums lanes
 
 
+ROWS = ["    %s = a - %d" % (n, i) for i, n in enumerate("xyzwvu", 1)]  # lines 2 to 7 of src/calc.py
+MQ = {i + 2: r.strip() for i, r in enumerate(ROWS)}
+MQ[8] = "return x"
+MBASE = {"src/calc.py": "def f(a):\n    return a\n"}
+MFEAT = {"src/calc.py": "def f(a):\n" + "\n".join(ROWS) + "\n    return x\n"}
+
+
+def mc(line, category="bug", **kw):
+    return dict(CAND, line=line, quote=MQ[line], category=category, **kw)
+
+
+def node(lane, line, severity="required", category="lean", axis="standards", trigger="t"):
+    return {"id": "F-%s%s%d" % (lane, category, line), "axis": axis, "source_lane": lane, "path": "p.py", "line": line,
+            "end_line": line, "severity": severity, "category": category, "trigger": trigger}
+
+
+class MultiLane(Base):
+    base_files, feat_files = MBASE, MFEAT
+
+    def lane(self, name, *objs, **kw):
+        rc, out = self.rep("ingest", lines(*objs), extra=["--lane", name])
+        self.assertEqual(rc, kw.get("rc", 0), out)
+        return json.loads(out)
+
+    def set_cap(self, n):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": n}}, fh)
+
+    def test_dedupe_merges_the_more_severe_and_names_the_other_lane(self):
+        got, merged = report._dedupe([node("sota", 5, "suggestion"), node("standards", 6, "required")])
+        (s,) = got
+        self.assertEqual((merged, s["source_lane"], s["also_found_by"]), (1, "standards", ["sota"]))
+
+    def test_dedupe_ties_prefer_longer_trigger_then_smaller_id(self):
+        (s,), _ = report._dedupe([node("a", 5, trigger="x"), node("b", 6, trigger="longer")])
+        self.assertEqual(s["source_lane"], "b")
+        (s,), _ = report._dedupe([node("b", 5), node("a", 6)])
+        self.assertEqual(s["source_lane"], "a")  # F-alean6 < F-blean5
+
+    def test_dedupe_cluster_grows_while_next_start_is_within_two(self):
+        got, merged = report._dedupe([node("x", n) for n in (1, 3, 5)])
+        self.assertEqual((len(got), merged), (1, 2))
+        got, merged = report._dedupe([node("x", n) for n in (1, 4)])
+        self.assertEqual((len(got), merged), (2, 0))
+
+    def test_dedupe_keeps_other_categories_and_other_axes(self):
+        got, merged = report._dedupe([node("x", 5), node("x", 5, category="smell"),
+                                      node("d", 5, category="bug", axis="defects"),
+                                      dict(node("x", 5), path="q.py")])
+        self.assertEqual((len(got), merged), (4, 0))
+
+    def test_ingest_merges_inside_a_lane_and_counts(self):
+        out = self.lane("defects", mc(2, severity="suggestion"), mc(3, severity="blocking"), mc(6))
+        self.assertEqual((len(out["ids"]), out["merged"]), (2, 1))
+        self.verdicts(*[{"id": i, "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"}
+                        for i in out["ids"]])
+        d = self.doc()
+        self.assertEqual(d["merged"], 1)
+        self.assertEqual({f["line"] for f in d["findings"] + d["unverifiable"]}, {3, 6})
+        self.assertEqual(d["findings"][0]["also_found_by"], [])
+
+    def test_same_line_on_two_axes_keeps_both(self):
+        self.lane("defects", mc(2))
+        out = self.lane("standards", mc(2, "lean"))
+        self.assertEqual((len(out["ids"]), out["merged"]), (2, 0))
+
+    def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
+        self.set_cap(1)
+        out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
+        self.assertEqual((len(out["ids"]), out["capped"]), (1, 1))
+        kept = out["ids"][0]
+        self.assertEqual(sorted(os.listdir(out["handoff"])), [kept + ".md"])
+        by = {i["reason"]: i["id"] for i in self.doc()["unverifiable"]}
+        self.assertEqual(sorted(by), ["no-verdict", "verifier-cap"])
+        self.assertEqual(by["no-verdict"], kept)
+        cite = [dict(CITE, line=5, quote=MQ[5])]
+        v = self.verdicts({"id": kept, "verdict": "confirmed", "evidence": cite, "reason": "r"},
+                          {"id": by["verifier-cap"], "verdict": "confirmed", "evidence": cite, "reason": "r"})
+        self.assertEqual(v["confirmed"], [kept])  # a cut candidate never reached a verifier, so a verdict for it is noise
+        d = self.doc()
+        self.assertEqual([i["id"] for i in d["findings"]], [kept])
+        self.assertEqual([(i["id"], i["reason"]) for i in d["unverifiable"]], [(by["verifier-cap"], "verifier-cap")])
+
+    def test_cap_order_is_severity_axis_path_line_id(self):
+        self.set_cap(3)
+        self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="required"))
+        out = self.lane("standards", mc(3, "lean", severity="required"), mc(6, "smell", severity="suggestion"))
+        self.assertEqual((len(out["ids"]), out["capped"]), (3, 1))
+        (cut,) = [i for i in self.doc()["unverifiable"] if i["reason"] == "verifier-cap"]
+        self.assertEqual((cut["axis"], cut["line"]), ("standards", 6))
+        self.assertEqual([self.doc()["unverifiable"][k]["line"] for k in range(3)], [2, 5, 3])  # axis first
+
+    def test_no_plan_json_means_no_cap_and_a_bad_plan_refuses(self):
+        out = self.lane("defects", mc(2), mc(5), mc(8))
+        self.assertEqual((len(out["ids"]), out["capped"]), (3, 0))
+        for caps in ({"max_verifier_calls": 0}, {"max_verifier_calls": True}, {"max_verifier_calls": "3"}, {}):
+            with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+                json.dump({"caps": caps}, fh)
+            self.assertEqual(self.lane("defects", mc(2), rc=1)["reason"], "bad-plan", caps)
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            fh.write("[1]")
+        self.assertEqual(self.lane("defects", mc(2), rc=1)["reason"], "bad-plan")
+
+    def test_lane_without_an_inspected_line_is_incomplete(self):
+        out = self.lane("defects", mc(2), {"inspected": ["src/calc.py"]})
+        self.assertEqual(out["lanes"], {"defects": "complete"})
+        out = self.lane("standards", mc(2, "lean"))
+        self.assertEqual(out["lanes"], {"defects": "complete", "standards": "incomplete"})
+        out = self.lane("defects")  # an empty reply is not a clean review
+        self.assertEqual(out["lanes"], {"defects": "incomplete", "standards": "incomplete"})
+        self.assertEqual(self.doc()["lanes"], out["lanes"])
+        rc, text = self.rep("render")
+        for n in ("defects", "standards"):
+            self.assertIn("lane %s incomplete: reply had no inspected line" % n, text)
+
+    def test_reingest_replaces_only_that_lane(self):
+        self.lane("defects", mc(2))
+        self.lane("standards", mc(3, "lean"))
+        out = self.lane("standards", mc(5, "smell"))
+        self.assertEqual(len(out["ids"]), 2)
+        self.assertEqual(sorted(os.listdir(out["handoff"])), sorted(i + ".md" for i in out["ids"]))
+
+
 class RepoTarget(Base):
     pin_args = ["--repo"]
 

@@ -17,6 +17,10 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
+Document also: lanes{lane: complete|incomplete} (incomplete = the reply had no `inspected` line), merged (candidates
+folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
+cut at plan.json caps.max_verifier_calls), dropped, handoff, capped, lanes, merged; cut ids render as unverifiable
+with reason verifier-cap.
 """
 import sys
 
@@ -177,10 +181,45 @@ def _handoff(c, run, nonce):
     return out + ("rule:\n%s\n" % ledger._block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
+def _dedupe(cands):
+    """(survivors, merged count). Per axis, candidates on one path and category whose ranges lie within 2 lines merge;
+    the more severe survives, then the longer trigger, then the smaller id. A wrong merge hides a finding and a missed
+    one shows two, so categories and axes never merge."""
+    out, merged = [], 0
+    ordered = sorted(cands, key=lambda c: (c["axis"], c["path"], c["category"], c["line"], c["end_line"], c["id"]))
+    i = 0
+    while i < len(ordered):
+        j, end = i + 1, ordered[i]["end_line"]
+        while (j < len(ordered) and ordered[j]["axis"] == ordered[i]["axis"] and ordered[j]["path"] == ordered[i]["path"]
+               and ordered[j]["category"] == ordered[i]["category"] and ordered[j]["line"] <= end + 2):
+            end, j = max(end, ordered[j]["end_line"]), j + 1
+        group = ordered[i:j]
+        win = min(group, key=lambda c: (SEVERITIES.index(c["severity"]), -len(c["trigger"]), c["id"]))
+        out.append(dict(win, also_found_by=sorted({c["source_lane"] for c in group} - {win["source_lane"]})))
+        merged, i = merged + len(group) - 1, j
+    return sorted(out, key=lambda c: c["id"]), merged
+
+
+def _cap_of(run):
+    """caps.max_verifier_calls of plan.json, None when there is no plan.json (no cap)."""
+    try:
+        plan = _load(run, "plan.json")
+    except target.Refuse as r:
+        if r.reason == "no-plan":
+            return None
+        raise
+    caps = plan.get("caps")
+    n = caps.get("max_verifier_calls") if isinstance(caps, dict) else None
+    if not _int(n) or n < 1:
+        raise target.Refuse("bad-plan", "plan.json caps.max_verifier_calls is not a positive integer")
+    return n
+
+
 def _read_lane(text, lane, tree, run):
-    kept, areas, invalid, ignored = {}, [], 0, 0
+    kept, areas, invalid, ignored, complete = {}, [], 0, 0, False
     for o in _objects(text):
         if o is not None and "inspected" in o and "path" not in o:
+            complete = True
             areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
             continue
         c = _candidate(o, tree, lane, run) if o is not None else None
@@ -190,7 +229,7 @@ def _read_lane(text, lane, tree, run):
             ignored += 1
         else:
             kept[c["id"]] = c
-    return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas,
+    return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
             "dropped": {"invalid": invalid, "do_not_flag": ignored}}
 
 
@@ -203,8 +242,11 @@ def ingest(run, text, lane="defects"):
     except target.Refuse:
         lanes = None
     lanes = lanes if isinstance(lanes, dict) else {}
+    cap = _cap_of(run)
     lanes[lane] = _read_lane(text, lane, tree, run)  # re-ingesting a lane replaces only that lane
-    cands = sorted((c for n in sorted(lanes) for c in lanes[n]["candidates"]), key=lambda c: c["id"])
+    cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
+    queue = sorted(cands, key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
+    queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
@@ -212,18 +254,20 @@ def ingest(run, text, lane="defects"):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700)
-    for c in cands:
+    for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce))
+    state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     target.write_private(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
-         "lanes": lanes}, sort_keys=True, indent=2))
-    return {"status": "ok", "ids": [c["id"] for c in cands], "dropped": dropped, "handoff": hand}
+         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut)}, sort_keys=True, indent=2))
+    return {"status": "ok", "ids": [c["id"] for c in queue], "dropped": dropped, "handoff": hand, "capped": len(cut),
+            "lanes": state, "merged": merged}
 
 
 def verdicts(run, text):
     cand = _load(run, "candidates.json")
     tree = os.path.realpath(os.path.join(run, "tree"))
-    ids = {c["id"] for c in cand["candidates"]}
+    ids = {c["id"] for c in cand["candidates"]} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     got = {}
     for o in _objects(text):
         if o is None or o.get("id") not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
@@ -272,6 +316,7 @@ def build(run):
         for _, p, tag, _, n, _, _ in sanitize._walk(fh.read()):
             if tag == "+":
                 added.setdefault(p, set()).add(n)
+    capped = set(cand.get("capped_ids", []))
     items, dropped = [], dict(cand["dropped"], refuted=0)
     for c in cand["candidates"]:
         v = ver.get(c["id"], {})
@@ -283,7 +328,8 @@ def build(run):
             cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else "no-verdict"
+            reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else (
+                "verifier-cap" if c["id"] in capped else "no-verdict")
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
@@ -316,6 +362,7 @@ def build(run):
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped,
+            "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
 
@@ -360,6 +407,8 @@ def _text(doc):
         mine = [i for i in fs if i["axis"] == ax]
         out.append("%s: %d finding%s, worst %s" % (ax, len(mine), "" if len(mine) == 1 else "s", min(
             (i["severity"] for i in mine), key=SEVERITIES.index, default="none")))
+    out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
+            if v == "incomplete"]
     out.append("")
 
     def section(head, rows):
