@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 from typing import List, Optional
 
 import report
@@ -123,6 +124,8 @@ def _target(run: str) -> dict:
 
 
 class GitHub:
+    refs = None  # GitLab only: the diff refs read by the last state()
+
     def __init__(self, info: dict):
         self.i = info
         self.pr = "repos/%s/pulls/%d" % (info["repo"], info["number"])
@@ -209,13 +212,189 @@ class GitHub:
 
     def cleanup(self, handle: int) -> None:
         """Delete the pending review this run's own create returned; nothing else is ever listed or deleted."""
-        self._call("DELETE", "%s/reviews/%d" % (self.pr, handle))
+        try:
+            self._call("DELETE", "%s/reviews/%d" % (self.pr, handle))
+        except Refuse:
+            raise Refuse("cleanup-failed", "pending review %d" % handle)
+
+
+class GitLab:
+    """A merge request review as draft notes: a position-less summary draft, one positioned draft per inline finding, then
+    one publish call that takes no body. The user's own drafts block posting, because that call publishes every draft."""
+
+    _REFS = ("base_sha", "start_sha", "head_sha")
+    refs = None  # {base_sha, start_sha, head_sha} read by the last state()
+
+    def __init__(self, info: dict):
+        self.i = info
+        self.mr = "projects/%s/merge_requests/%d" % (urllib.parse.quote(info["repo"], safe=""), info["number"])
+        self.created, self.marks = [], (set(), None)  # draft ids this call made; the marker lines that identify them
+
+    def _call(self, method: str, endpoint: str, body=None):
+        return _api("glab", self.i["host"], method, endpoint, body, self.i["run"])
+
+    def _pages(self, suffix: str) -> list:
+        return _pages("glab", self.i["host"], self.mr + suffix, self.i["run"])
+
+    def _drafts(self) -> list:
+        try:
+            return self._pages("/draft_notes")
+        except Refuse as r:
+            raise Refuse("draft-notes-unavailable") if r.detail == "HTTP 404" else r
+
+    def state(self) -> str:
+        """The live head commit of the merge request; the three diff refs are kept in `refs`."""
+        try:
+            got = self._call("GET", self.mr)
+            state, draft, refs = got["state"], got.get("draft"), got.get("diff_refs")
+        except (KeyError, TypeError, AttributeError):
+            raise Refuse("glab-failed")
+        if state == "closed":
+            raise Refuse("closed")
+        if state == "merged":
+            raise Refuse("merged")
+        if state == "locked":
+            raise Refuse("locked")
+        if state != "opened":
+            raise Refuse("glab-failed")
+        if draft is True:
+            raise Refuse("draft")
+        if not (isinstance(refs, dict) and all(isinstance(refs.get(k), str) and target._OID.fullmatch(refs[k]) for k in self._REFS)):
+            raise Refuse("diff-refs-pending")  # GitLab has not computed them yet
+        self.refs = {k: refs[k] for k in self._REFS}
+        return self.refs["head_sha"]
+
+    def diff(self) -> str:
+        """The merge request's own diff as one unified diff: git headers built from each file's paths, then its hunks."""
+        try:
+            entries = self._pages("/diffs")
+        except Refuse as r:
+            raise Refuse("diff-unavailable") if r.detail == "HTTP 404" else r
+        out = []
+        for e in entries:
+            if not isinstance(e, dict) or e.get("collapsed") or e.get("too_large"):
+                continue  # not anchorable
+            old, new, hunks = e.get("old_path"), e.get("new_path"), e.get("diff")
+            if not all(isinstance(x, str) and x and not _LINE_BREAK.search(x) for x in (old, new)) or not isinstance(hunks, str):
+                continue  # a path with a line break could forge a header line
+            out.append("diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n%s" % (old, new, old, new, hunks if hunks.endswith("\n") else hunks + "\n"))
+        return "".join(out)
+
+    def me(self) -> int:
+        try:
+            uid = self._call("GET", "user")["id"]
+        except Refuse as r:
+            if r.reason != "glab-failed":
+                raise
+            raise Refuse("no-identity")
+        except (KeyError, TypeError):
+            raise Refuse("no-identity")
+        if not isinstance(uid, int) or isinstance(uid, bool):
+            raise Refuse("no-identity")
+        return uid
+
+    def existing(self, me: int) -> set:
+        """Refuse when the user already has any draft (never deleted: the publish call would send it too); else the finding
+        ids already posted: whole-line markers in notes whose author id is `me`, never in anyone else's."""
+        if self._drafts():
+            raise Refuse("pending-drafts-exist")
+        ids = set()
+        for n in self._pages("/notes"):
+            a = n.get("author") if isinstance(n, dict) else None
+            if isinstance(a, dict) and a.get("id") == me and isinstance(n.get("body"), str):
+                ids.update(MARK_RE.findall(n["body"].replace("\r\n", "\n")))
+        return ids
+
+    def _draft(self, body: dict) -> int:
+        try:
+            got = self._call("POST", self.mr + "/draft_notes", body)
+        except Refuse as r:
+            if r.reason != "glab-failed":
+                raise
+            raise Refuse("draft-notes-unavailable") if r.detail == "HTTP 404" else Refuse("post-failed", r.detail)
+        did = got.get("id") if isinstance(got, dict) else None
+        if not isinstance(did, int) or isinstance(did, bool):
+            raise Refuse("post-failed")
+        self.created.append(did)
+        return did
+
+    def create(self, payload: dict) -> int:
+        """Create the summary draft, then one draft per inline finding; a failure part way deletes the drafts made so far."""
+        self.marks = ({c["id"] for c in payload["comments"]}, REVIEW_MARK % payload["head_sha"])
+        try:
+            first = self._draft({"note": payload["body"]})
+            for c in payload["comments"]:
+                pos = dict(payload["diff_refs"], position_type="text", old_path=c["old_path"], new_path=c["path"], new_line=c["line"])
+                if c["old_line"] is not None:  # an unchanged row needs both lines, or the publish call fails with HTTP 500
+                    pos["old_line"] = c["old_line"]
+                self._draft({"note": c["body"], "commit_id": payload["head_sha"], "position": pos})
+        except BaseException:
+            self.cleanup(None)
+            raise
+        return first
+
+    def verify(self, payload: dict, handle: int) -> None:
+        """Every draft the user now has must be one of ours, at the position we sent."""
+        drafts = self._drafts()
+        want = {c["id"]: c for c in payload["comments"]}
+        if len(drafts) != 1 + len(want) or {d.get("id") if isinstance(d, dict) else None for d in drafts} != set(self.created):
+            raise Refuse("verify-failed")
+        review, seen = self.marks[1], set()
+        for d in drafts:
+            note, pos = d.get("note"), d.get("position")
+            if not isinstance(note, str):
+                raise Refuse("verify-failed")
+            if review in note.replace("\r\n", "\n").split("\n"):
+                ok = not pos and "summary" not in seen
+                seen.add("summary")
+            else:
+                found = MARK_RE.findall(note)
+                c = want.get(found[0]) if len(found) == 1 else None
+                ok = c is not None and found[0] not in seen and isinstance(pos, dict) and all(
+                    pos.get(k) == v for k, v in dict(payload["diff_refs"], position_type="text", old_path=c["old_path"],
+                                                     new_path=c["path"], new_line=c["line"], old_line=c["old_line"]).items())
+                seen.add(found[0] if c else None)
+            if not ok:
+                raise Refuse("verify-failed")
+
+    def finish(self, handle: int) -> None:
+        """Publish every draft in one call that carries no body: no review state, no note."""
+        try:
+            self._call("POST", self.mr + "/draft_notes/bulk_publish")
+        except Refuse as r:
+            raise Refuse("post-failed", r.detail) if r.reason == "glab-failed" else r
+
+    def _ours(self, d) -> bool:
+        ids, review = self.marks
+        if not (isinstance(d, dict) and isinstance(d.get("id"), int) and isinstance(d.get("note"), str)):
+            return False
+        note = d["note"].replace("\r\n", "\n")
+        return review in note.split("\n") or any(i in ids for i in MARK_RE.findall(note))
+
+    def cleanup(self, handle) -> None:
+        """Delete the drafts that hold a whole-line marker of this payload; the user's other drafts are never touched."""
+        try:
+            mine = [d["id"] for d in self._drafts() if self._ours(d)]
+        except Refuse:
+            mine = list(self.created)  # the listing failed: fall back to what this call made
+        left = []
+        for i in mine:
+            try:
+                self._call("DELETE", "%s/draft_notes/%d" % (self.mr, i))
+            except Refuse:
+                left.append(i)
+        if left:
+            raise Refuse("cleanup-failed", "drafts " + ",".join(str(i) for i in left))
 
 
 def _forge(info: dict):
-    if info["forge"] != "github":
-        raise Refuse("not-a-forge-target")  # merge request posting arrives with the GitLab adapter
-    return GitHub(info)
+    return GitHub(info) if info["forge"] == "github" else GitLab(info)
+
+
+def _live(adapter, head: str, refs) -> None:
+    """The live head must be the pinned head and the diff refs (None on GitHub) must be those the diff was read at."""
+    if adapter.state() != head or adapter.refs != refs:
+        raise Refuse("head-moved")
 
 
 def _anchors(diff_text: str) -> dict:
@@ -313,12 +492,12 @@ def build(run: str) -> dict:
         raise Refuse("nothing-to-post")
     gh = _forge(info)
     head = info["head_sha"]
-    if gh.state() != head:  # check (a): the diff below belongs to the pinned head
+    if gh.state() != head:  # check (a): the diff below belongs to the pinned head; the refs are read here, then held
         raise Refuse("head-moved")
+    refs = gh.refs
     anchors = _anchors(gh.diff())
     posted = gh.existing(gh.me())
-    if gh.state() != head:  # check (b): nothing moved while the reads ran
-        raise Refuse("head-moved")
+    _live(gh, head, refs)  # check (b): nothing moved while the reads ran
     fresh = [f for f in doc["findings"] if f["id"] not in posted]
     if not fresh:
         raise Refuse("already-posted")
@@ -343,6 +522,8 @@ def build(run: str) -> dict:
                "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head), "comments": comments,
                "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
                "skipped": [f["id"] for f in doc["findings"] if f["id"] in posted]}
+    if refs:
+        payload["diff_refs"] = refs
     texts = [payload["body"]] + [c["body"] for c in comments]
     if any(len(t) > MAX_BODY for t in texts):
         raise Refuse("too-large")
@@ -375,22 +556,17 @@ def submit(run: str, digest: str) -> dict:
         raise Refuse("payload-mismatch")
     _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
-    if gh.state() != info["head_sha"]:  # check (c): before the first write
-        raise Refuse("head-moved")
+    _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (c): before the first write
     posted = gh.existing(gh.me())  # fresh: a pending review made since build would be stacked on or confused with ours
     if posted & ({c["id"] for c in payload["comments"]} | set(payload["in_body"])):
         raise Refuse("already-posted")  # a retry after a timeout, or a first submit that died after its event call
     handle = gh.create(payload)
     try:
         gh.verify(payload, handle)
-        if gh.state() != info["head_sha"]:  # check (d): before the event
-            raise Refuse("head-moved")
+        _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (d): before the event
         gh.finish(handle)
     except BaseException:  # any failure, an interrupt too, withdraws the review this call created
-        try:
-            gh.cleanup(handle)
-        except Refuse:
-            raise Refuse("cleanup-failed", "pending review %d" % handle)
+        gh.cleanup(handle)  # names what it could not remove
         raise
     out = {"status": "ok", "posted": len(payload["comments"]), "in_body": len(payload["in_body"]), "review_id": handle}
     target.write_private(os.path.join(run, "post", "result.json"), json.dumps(out, sort_keys=True))
