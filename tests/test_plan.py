@@ -11,6 +11,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import test_packs as tp  # noqa: E402
 import test_report as tr  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import CAND, CITE, cand, cli, fid, verdict  # noqa: E402
 
@@ -229,7 +230,7 @@ class Tracer(Fixture):
         self.assertEqual(p["calls"][1]["prompt"], "Standards lane. Input: " + p["calls"][1]["input"])
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
         self.assertEqual(p["caps"]["max_verifier_calls"], 25)
-        self.assertEqual((p["mode"], p["confirm"], p["packs"], p["shards"]), ("parallel", False, [], []))
+        self.assertEqual((p["mode"], p["confirm"], [x["name"] for x in p["packs"]], p["shards"]), ("parallel", False, ["python"], []))
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.run_dir, "plan.json")).st_mode), 0o600)
 
     def test_default_tier_is_standard(self):
@@ -335,6 +336,126 @@ class Tracer(Fixture):
     def test_python_39_grammar(self):
         with open(os.path.join(SCRIPTS, "plan.py"), encoding="utf-8") as fh:
             ast.parse(fh.read(), feature_version=(3, 9))
+
+
+SQL_TEXT = "ALTER TABLE t DROP COLUMN c;\n"
+SQL_CAND = cand("ALTER TABLE t DROP COLUMN c;", 1, path="migrations/001_add.sql")
+OTHER_PACKS = ("r", "js-ts", "concurrency", "api-compat", "security-owasp", "llm-generated-code")
+
+
+class Packs(Fixture):
+    feat_files = {"src/calc.py": tr.FEAT, "migrations/001_add.sql": SQL_TEXT}
+
+    def read(self, rel):
+        with open(os.path.join(self.run_dir, rel), encoding="utf-8") as fh:
+            return fh.read()
+
+    def run_plan(self, *args, stdin=""):
+        rc, out = self.plan("plan", "--run", self.run_dir, *args, stdin=stdin)
+        self.assertEqual(rc, 0, out)
+        return self.plan_json()
+
+    @staticmethod
+    def names(p):
+        return [x["name"] for x in p["packs"]]
+
+    def test_py_and_sql_select_exactly_their_packs(self):
+        p = self.run_plan()
+        self.assertEqual(self.names(p), ["python", "sql", "data-migrations"])
+        self.assertEqual({x["name"]: x["files"] for x in p["packs"]},
+                         {"python": ["src/calc.py"], "sql": ["migrations/001_add.sql"],
+                          "data-migrations": ["migrations/001_add.sql"]})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "inputs", "packs"))),
+                         ["data-migrations.md", "python.md", "sql.md"])
+        for lane in ("defects", "standards"):
+            text = self.read("inputs/%s.md" % lane)
+            self.assertIn("## Domain packs", text)
+            self.assertIn("packs/python.md", text)
+            for gone in OTHER_PACKS:
+                self.assertNotIn("packs/%s.md" % gone, text)
+        self.assertIn("## Smells", self.read("inputs/standards.md"))
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "inputs", "smells.md")))
+
+    def test_pack_cap_keeps_the_ranked_first_and_lists_the_rest(self):
+        p = self.run_plan("--tier", "quick")
+        self.assertEqual(self.names(p), ["python", "sql"])
+        self.assertIn({"what": "pack data-migrations", "why": "pack cap"}, p["skipped"])
+        self.assertNotIn("data-migrations", self.read("inputs/defects.md"))
+
+    def test_llm_pack_loads_only_on_ai_flag_or_deep(self):
+        for args, want in ((["--tier", "standard"], False), (["--tier", "quick"], False),
+                           (["--tier", "standard", "--ai"], True), (["--tier", "deep"], True)):
+            self.assertEqual("llm-generated-code" in self.names(self.run_plan(*args)), want, args)
+
+    def test_rerun_leaves_one_section(self):
+        self.run_plan()
+        self.run_plan()
+        self.assertEqual(self.read("inputs/defects.md").count("## Domain packs"), 1)
+        std_text = self.read("inputs/standards.md")
+        self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
+
+    def test_no_match_writes_none(self):
+        with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["included"] = ["README.txt"]
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        self.assertEqual(self.run_plan()["packs"], [])
+        self.assertTrue(self.read("inputs/defects.md").rstrip().endswith("## Domain packs\n\nnone"))
+
+    def test_every_pack_key_has_a_file(self):
+        import plan as mod
+        self.assertEqual({row[0] for row in mod.PACKS}, set(tp.PACK_NAMES))
+        for row in mod.PACKS:
+            self.assertTrue(os.path.isfile(tp.pack_path(row[0])), row[0])
+
+    def test_pack_files_are_private(self):
+        self.run_plan()
+        mode = os.stat(os.path.join(self.run_dir, "inputs", "packs", "python.md")).st_mode
+        self.assertEqual(stat.S_IMODE(mode), 0o600)
+
+    def test_handoff_carries_the_matching_do_not_flag(self):
+        self.run_plan()
+        py_dnf = tp.sections(tp.read(tp.pack_path("python")))["Do not flag"]
+        sql_dnf = tp.sections(tp.read(tp.pack_path("sql")))["Do not flag"]
+        mig_dnf = tp.sections(tp.read(tp.pack_path("data-migrations")))["Do not flag"]
+        first = lambda lines: next(x for x in lines if x.strip())[:40]  # noqa: E731
+        i = self.ingest_lane("defects", CAND)["ids"][0]
+        body = self.handoff(i)
+        self.assertIn(first(py_dnf), body)
+        self.assertNotIn(first(sql_dnf), body)
+        j = self.ingest_lane("defects", SQL_CAND)["ids"][0]
+        body = self.handoff(j)
+        self.assertIn(first(sql_dnf), body)
+        self.assertIn(first(mig_dnf), body)
+        self.assertNotIn(first(py_dnf), body)
+
+
+class SecurityPack(Fixture):
+    """security-owasp loads for an added subprocess call, not for the same call on an unchanged line."""
+    CALL = "import subprocess\nsubprocess.run(['ls'])\n"
+    ADD = "\ndef add(a, b):\n    return a - b\n"
+
+    def names(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        return [x["name"] for x in self.plan_json()["packs"]]
+
+
+class SecurityPackUnchanged(SecurityPack):
+    base_files = {"src/calc.py": tr.BASE["src/calc.py"] + SecurityPack.CALL}
+    feat_files = {"src/calc.py": tr.BASE["src/calc.py"] + SecurityPack.CALL + SecurityPack.ADD}
+
+    def test_unchanged_call_does_not_load(self):
+        self.assertEqual(self.names(), ["python"])
+
+
+class SecurityPackAdded(SecurityPack):
+    base_files = {"src/calc.py": tr.BASE["src/calc.py"]}
+    feat_files = {"src/calc.py": tr.BASE["src/calc.py"] + SecurityPack.CALL}
+
+    def test_added_call_loads(self):
+        self.assertEqual(self.names(), ["python", "security-owasp"])
 
 
 if __name__ == "__main__":

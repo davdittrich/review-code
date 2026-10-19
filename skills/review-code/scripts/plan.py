@@ -17,12 +17,15 @@ if sys.version_info < (3, 9):
     print('{"reason": "python-too-old", "status": "refuse"}')
     sys.exit(1)
 
+import fnmatch
 import json
 import os
 import re
+import shutil
 
 import ledger
 import report
+import sanitize
 import target
 
 STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees"}
@@ -50,9 +53,15 @@ MAX_STDIN = 65536
 WAVE_SIZE = 10
 
 
-def _target_exists(run):
-    if not os.path.isfile(os.path.join(run, "target.json")):
+def _load_target(run):
+    try:
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            tj = json.load(fh)
+    except (OSError, ValueError):
         raise target.Refuse("no-target", "the run directory has no target.json")
+    if not isinstance(tj, dict) or not isinstance(tj.get("included"), list) or not isinstance(tj.get("kind"), str):
+        raise target.Refuse("bad-target", "target.json is malformed")
+    return tj
 
 
 def parse_config(text):
@@ -88,6 +97,102 @@ def _read_config():
         raise target.Refuse("bad-config", "config input too large")
     return parse_config(text)
 
+# Domain packs. Row: (name, file globs, content regex, content rule applies only to files matching these globs).
+# A file matches by glob (on the path or its base name) or by the regex over its scanned lines: the added lines of
+# change.diff for a change target, the first SCAN_BYTES of its tree/ copy for path and repo targets. Heuristics: a
+# hit loads a pack for the lane to read, it is never a finding. llm-generated-code loads only through the ai flag
+# or the deep tier (ccr-contract: authorship is not knowable from a diff). Names come from this table only.
+LLM_PACK = "llm-generated-code"
+PACKS = (
+    ("python", ("*.py", "pyproject.toml"), None, None),
+    ("r", ("*.R", "*.r", "DESCRIPTION", "NAMESPACE"), None, None),
+    ("js-ts", ("*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs", "package.json"), None, None),
+    ("sql", ("*.sql",), None, None),
+    ("data-migrations", ("migrations/*", "*/migrations/*", "migrate/*", "*/migrate/*"),
+     re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.I), ("*.sql",)),
+    ("security-owasp", (), re.compile(
+        r"\bsubprocess\b|\beval\(|\bexec\(|innerHTML|\bpickle\b|yaml\.load\b|os\.system\b"
+        r"|\b(?:select|insert\s+into|update|delete\s+from)\b[^\n]*(?:[\"']\s*(?:%|\+)|\.format\(|\{[^}]*\})", re.I), None),
+    ("concurrency", (), re.compile(
+        r"\b(?:[Tt]hread\w*|asyncio|await|\w*Lock|[Mm]utex|goroutine|Promise\.all|multiprocessing)\b"), None),
+    ("api-compat", ("__init__.py", "index.ts", "index.js", "openapi*", "*.proto", "NAMESPACE", "package.json"), None, None),
+    (LLM_PACK, (), None, None),
+)
+SCAN_BYTES = 65536  # per file read for content rules
+LINE_MAX = 2000  # per line, so the regexes above stay cheap on a minified line
+REFS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "references")
+
+
+def _glob(path, globs):
+    base = path.rpartition("/")[2]
+    return any(fnmatch.fnmatchcase(path, g) or fnmatch.fnmatchcase(base, g) for g in globs)
+
+
+def _scan_lines(run, tj):
+    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each tree/ copy."""
+    inc, out = set(tj["included"]), {}
+    if tj["kind"] in ("path", "repo"):
+        tree = os.path.realpath(os.path.join(run, "tree"))
+        for p in sorted(inc):
+            fp = os.path.realpath(os.path.join(tree, p))
+            if not fp.startswith(tree + os.sep):
+                continue
+            try:
+                with open(fp, "rb") as fh:
+                    data = fh.read(SCAN_BYTES)
+            except OSError:
+                continue
+            out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(data.decode("utf-8", "replace").split("\n"), 1)]
+        return out
+    with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
+        diff, used = fh.read(), {}
+    for _, path, tag, _, n, body, _ in sanitize._walk(diff):
+        if tag == "+" and path in inc and used.get(path, 0) < SCAN_BYTES:
+            used[path] = used.get(path, 0) + len(body) + 1
+            out.setdefault(path, []).append((n, body[:LINE_MAX]))
+    return out
+
+
+def _match_packs(files, lines, with_llm):
+    """[(pack name, sorted matching files)] ranked by file count descending, then PACKS order."""
+    found = []
+    for name, globs, rx, only in PACKS:
+        if name == LLM_PACK:
+            hit = list(files) if with_llm else []
+        else:
+            hit = [p for p in files if _glob(p, globs) or (rx is not None and (only is None or _glob(p, only))
+                                                          and any(rx.search(t) for _, t in lines.get(p, ())))]
+        if hit:
+            found.append((name, sorted(hit)))
+    return sorted(found, key=lambda f: -len(f[1]))  # stable: PACKS order breaks ties
+
+
+def _ref(*parts):
+    with open(os.path.join(REFS, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _put_sections(path, sections):
+    """Replace or append `## head` sections at the end of a run input file; a rerun never doubles one."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    for head, _ in sections:
+        text = re.sub(r"^## %s\n.*?(?=^## |\Z)" % re.escape(head), "", text, flags=re.M | re.S)
+    target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections))
+
+
+def _install_packs(run, packs):
+    """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs."""
+    inp = os.path.join(run, "inputs")
+    shutil.rmtree(os.path.join(inp, "packs"), ignore_errors=True)
+    for name, _ in packs:
+        ledger._write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
+    ledger._write(os.path.join(inp, "smells.md"), _ref("smells.md"))
+    listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
+    _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed)])
+    _put_sections(os.path.join(inp, "standards.md"), [
+        ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md")))])
+
 
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
               "--ai": ("ai", True)}
@@ -109,7 +214,7 @@ def _env_lost():
 
 
 def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
-    _target_exists(run)
+    tj = _load_target(run)
     led = ledger._load(run)
     spec = led.get("spec")
     spec_none = not isinstance(spec, dict) or spec.get("status") == "none"
@@ -132,6 +237,11 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         if fm.lower() == vm.lower():
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
         lost += _env_lost()
+    lines = _scan_lines(run, tj)
+    ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
+    packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
+    skipped += [{"what": "pack " + n, "why": "pack cap"} for n, _ in dropped]
+    _install_packs(run, packs)
     for lane in lanes:
         if lane == "spec" and spec_none:
             skipped.append({"what": "spec", "why": "no spec"})
@@ -147,7 +257,9 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
            "verifier": dict(ver, agent="review-code:verifier"),
            "spec_verifier": dict(ver, agent="review-code:spec-verifier"),
            "caps": dict(caps, wave_size=WAVE_SIZE),
-           "max_turns": dict(MAX_TURNS), "packs": [], "shards": [], "skipped": skipped, "lost_guarantees": lost,
+           "max_turns": dict(MAX_TURNS),
+           "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
+           "shards": [], "skipped": skipped, "lost_guarantees": lost,
            "sota_inventory": inventory, "preview": [], "confirm": False, "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items()) if k != "default_tier" or not flag_tier}}
     if serial:
