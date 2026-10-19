@@ -96,3 +96,5 @@ The plugin root is the repository root, so every tracked file ships to installer
 ## Licence
 
 MIT, see `LICENSE`. Upstream attribution (Matt Pocock; Posit, Garrick Aden-Buie and Ziad Hassan for the secondary source) and the owner's licence ruling for the v1.3 additions are in `NOTICE`.
+
+<!-- live-check: throwaway PR for the phase 5 posting check; not for merge -->
