@@ -489,7 +489,12 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> D
         if text is not None:
             out[p] = text
     if spec:
-        rel = posixpath.normpath(spec)
+        if not os.path.isabs(spec):  # 6xl.92: relative to the current directory first, like a path target
+            here = os.path.normpath(os.path.join(os.path.realpath(os.getcwd()), spec))
+            top = os.path.realpath(repo)
+            if here.startswith(top + os.sep) and os.path.lexists(here):
+                spec = os.path.relpath(here, top)
+        rel = posixpath.normpath(spec.replace(os.sep, "/"))
         try:
             if not os.path.isabs(spec) and rel in reg:
                 data = _blobs(repo, [reg[rel]]).get(reg[rel])

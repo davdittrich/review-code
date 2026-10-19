@@ -891,6 +891,18 @@ class Spec(Base):
         self.assertIn("inside the repository", cm.exception.detail)
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "inputs", "spec.md")))
 
+    def test_spec_path_relative_to_cwd(self):
+        # 6xl.92: a relative --spec, like a path target, is read against the current directory
+        self.base({"README.md": "r\n", "src/a.py": "a = 1\n"})
+        self.branch({"docs/feat.md": "SPECFROMCWD\n", "src/a.py": "a = 2\n"})
+        old = os.getcwd()
+        os.chdir(os.path.join(self.repo, "src"))
+        self.addCleanup(os.chdir, old)
+        self.build(spec="../docs/feat.md")
+        self.assertIn("SPECFROMCWD", self.read("inputs/spec.md"))
+        self.build(spec="docs/feat.md")  # a top-relative path still works when the cwd has no such file
+        self.assertIn("SPECFROMCWD", self.read("inputs/spec.md"))
+
     def test_spec_none(self):
         self.base({"README.md": "r\n"})
         self.g("checkout", "-q", "-b", "wip")
