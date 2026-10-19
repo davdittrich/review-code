@@ -2,7 +2,7 @@
 
 Wire form (g1x.10): every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace
 (Claude Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair
-element or a non-string key, and the retired object form (a line starting with a brace), is invalid.
+element or a non-string key, and a raw JSON object at any depth (the retired object form), is invalid.
 
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
@@ -145,13 +145,17 @@ def _wire(v):
     return [_wire(x) for x in v]
 
 
+def _no_object(pairs):
+    raise ValueError("raw JSON object")  # the wire form has none at any depth, so a repeated key cannot hide in one
+
+
 def _objects(text):
     """Every wire line of the stream (`[[` or, for the retired object form, `{`): the parsed dict, or None when it is not
     a valid pair array. Prose is skipped."""
     for ln in text.split("\n"):
         if re.match(r"\s*(\{|\[\s*\[)", ln):
             try:
-                o = json.loads(ln)
+                o = json.loads(ln, object_pairs_hook=_no_object)
                 o = _wire(o) if isinstance(o, list) else None
             except (ValueError, RecursionError):
                 o = None

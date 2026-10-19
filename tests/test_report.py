@@ -913,6 +913,14 @@ class WireForm(Base):
         self.assertEqual(self.verdicts(json.dumps(bad))["confirmed"], [])
         self.assertEqual(self.verdicts(json.dumps(good))["confirmed"], [fid_])
 
+    def test_a_nested_raw_object_invalidates_the_line(self):  # IN-03
+        (fid_,) = self.ingest(CAND)["ids"]
+        good = wire({"id": fid_, "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        bad = json.dumps(good[:2] + [["evidence", [CITE]], ["reason", "r"]])  # evidence item as a raw object
+        dup = bad.replace('"path": "src/calc.py"', '"path": "x", "path": "src/calc.py"')  # a repeated key in it
+        for line in (bad, dup):
+            self.assertEqual(self.verdicts(line)["confirmed"], [], line)
+
     def test_wire_pairs_to_dicts(self):
         self.assertEqual(report._wire([["a", [["b", 1]]], ["c", ["x", "y"]], ["d", [[["k", 1]], [["k", 2]]]]]),
                          {"a": {"b": 1}, "c": ["x", "y"], "d": [{"k": 1}, {"k": 2}]})
