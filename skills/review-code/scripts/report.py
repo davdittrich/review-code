@@ -4,8 +4,10 @@ Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this scri
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
 `render`, which prints the report):
 
-    report.py ingest   --run DIR [--lane defects|standards|spec|sota]
-                                   candidate lines + one {"inspected": [path, ...]} line; additive per lane
+    report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N]
+                                   candidate lines + one {"inspected": [path, ...]} line; additive per lane (key
+                                   <lane>, or <lane>@N for shard N, a plan.json shard id: cites are checked in
+                                   <run>/shards/N/tree, conventions in <run>/shards/N/conventions; else bad-shard)
     report.py verdicts --run DIR   {"id", "verdict", "evidence": [{"path","line","quote"}], "reason"} lines
     report.py render   --run DIR [--format text|json|sarif]
 
@@ -19,8 +21,18 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
 Document also: lanes{lane: complete|incomplete} (incomplete = the reply had no `inspected` line), merged (candidates
 folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
-cut at plan.json caps.max_verifier_calls), dropped, handoff, capped, lanes, merged; cut ids render as unverifiable
-with reason verifier-cap.
+cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
+cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged; cut ids render as
+unverifiable with reason verifier-cap.
+
+Spec lane (CTX-03): a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
+UNTRUSTED block; spec text is never copied into any output. A `{"declined": [{spec_line, why}]}` trailer (spec lane
+only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
+and sources (SOTA). SOTA (path, line, quote = item name) must match plan.json sota_inventory, with 1 to 5 https
+`sources`; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
+plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
+lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}. A handoff for a file listed by a plan.json pack
+(path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
 """
 import sys
 
@@ -181,7 +193,7 @@ def _sources(x):
     return x
 
 
-def _candidate(o, tree, lane, run, ctx=None):
+def _candidate(o, tree, lane, base, ctx=None):
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None
@@ -204,7 +216,7 @@ def _candidate(o, tree, lane, run, ctx=None):
     if c["rows"] is None:
         return None
     if c["category"] == "convention":
-        r = _rule(o, run)
+        r = _rule(o, base)
         if r is None:
             return None
         c["rule"], c["rule_source"] = r
@@ -217,11 +229,13 @@ def _candidate(o, tree, lane, run, ctx=None):
     return c
 
 
-def _handoff(c, run, nonce):
+def _handoff(c, run, nonce, packs=()):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger._block(c["title"], nonce), json.dumps(loc),
-        ledger._block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree")))
+        ledger._block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
+                                                         os.path.join(run, "shards", str(c["shard"]), "tree")))
+    out += "".join("do-not-flag:\n%s\n" % ledger._block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
@@ -260,6 +274,26 @@ def _plan(run):
         raise
 
 
+def _tree(run, shard=None):
+    return os.path.realpath(os.path.join(run, "tree") if shard is None else os.path.join(run, "shards", str(shard), "tree"))
+
+
+def _packs(run):
+    """[(files, Do not flag text)] of plan.json packs whose file lies inside <run>/inputs/packs and has that section."""
+    packs, root, out = _plan(run).get("packs"), os.path.realpath(os.path.join(run, "inputs", "packs")), []
+    for pk in packs if isinstance(packs, list) else []:
+        if not (isinstance(pk, dict) and isinstance(pk.get("path"), str) and isinstance(pk.get("files"), list)):
+            continue
+        real = os.path.realpath(os.path.join(run, pk["path"]))  # an absolute path replaces run
+        if not real.startswith(root + os.sep) or not os.path.isfile(real):
+            continue
+        with open(real, encoding="utf-8", errors="replace") as fh:
+            m = re.search(r"^## Do not flag[ \t]*\n(.*?)(?=^## |\Z)", fh.read(), re.MULTILINE | re.DOTALL)
+        if m and m.group(1).strip():
+            out.append(({os.path.normpath(f) for f in pk["files"] if isinstance(f, str)}, m.group(1).strip()[:4000]))  # shortcut: 4000 chars, raise if packs outgrow it
+    return out
+
+
 def _cap_of(run):
     """caps.max_verifier_calls of plan.json, None when there is no plan.json (no cap)."""
     plan = _plan(run)
@@ -282,32 +316,37 @@ def _declined(o, ctx):
     return good, len(o["declined"]) - len(good)
 
 
-def _read_lane(text, lane, tree, run):
+def _read_lane(text, lane, tree, run, shard=None):
     kept, areas, invalid, ignored, complete, declined = {}, [], 0, 0, False, []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
+    base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     for o in _objects(text):
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
-                areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
+                areas += [a for a in o["inspected"] if _real(tree, a)] if isinstance(o["inspected"], list) else []
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx)
                 declined, invalid = declined + good, invalid + bad
             continue
-        c = _candidate(o, tree, lane, run, ctx) if o is not None else None
+        c = _candidate(o, tree, lane, base, ctx) if o is not None else None
         if c is None or c["id"] in kept:
             invalid += 1
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
         else:
-            kept[c["id"]] = c
+            kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
             "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}}
 
 
-def ingest(run, text, lane="defects"):
+def ingest(run, text, lane="defects", shard=None):
     _load(run, "target.json")
-    tree = os.path.realpath(os.path.join(run, "tree"))
+    if shard is not None:
+        sh = _plan(run).get("shards")
+        if not any(isinstance(x, dict) and x.get("id") == shard and _int(x["id"]) for x in (sh if isinstance(sh, list) else [])):
+            raise target.Refuse("bad-shard", "--shard is not a shard id of plan.json")
+    tree = _tree(run, shard)
     nonce = secrets.token_hex(8)
     try:
         lanes = _load(run, "candidates.json").get("lanes")
@@ -315,7 +354,7 @@ def ingest(run, text, lane="defects"):
         lanes = None
     lanes = lanes if isinstance(lanes, dict) else {}
     cap = _cap_of(run)
-    lanes[lane] = _read_lane(text, lane, tree, run)  # re-ingesting a lane replaces only that lane
+    lanes[lane if shard is None else "%s@%d" % (lane, shard)] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
     queue = sorted((c for c in cands if c["category"] != "sota"),  # SOTA is advisory: no verifier call
                    key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
@@ -327,8 +366,9 @@ def ingest(run, text, lane="defects"):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700)
+    packs = _packs(run)
     for c in queue:
-        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce))
+        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     target.write_private(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
@@ -340,7 +380,7 @@ def ingest(run, text, lane="defects"):
 
 def verdicts(run, text):
     cand = _load(run, "candidates.json")
-    tree = os.path.realpath(os.path.join(run, "tree"))
+    trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     got = {}
     for o in _objects(text):
@@ -348,7 +388,7 @@ def verdicts(run, text):
             continue
         ev = o.get("evidence")
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
-                 and _cited(tree, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
+                 and _cited(trees[o["id"]], e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")
         got[o["id"]] = {"verdict": o["verdict"], "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
@@ -383,7 +423,6 @@ def build(run):
         if r.reason != "no-verdicts":
             raise
         ver = {}
-    tree = os.path.realpath(os.path.join(run, "tree"))
     whole = tj["kind"] in WHOLE
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         added = {}
@@ -428,9 +467,15 @@ def build(run):
     label = ("Needs changes" if "blocking" in rank else
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
              or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
-    areas = sorted({a for a in cand["inspected"] if _real(tree, a)})
+    areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
+    done = sorted({int(n.split("@")[1]) for n in cand.get("lane_state", {}) if "@" in n})
+    sh = plan.get("shards") if isinstance(plan.get("shards"), list) else []
+    count = {x["id"]: len(x["files"]) if isinstance(x.get("files"), list) else x.get("files") for x in sh
+             if isinstance(x, dict) and _int(x.get("id"))}
+    shards = {"reviewed": done, "files": {str(n): count[n] for n in done if _int(count.get(n))},
+              "skipped": [x for x in skipped if str(x.get("what", "")).startswith("shard")]}
     spec = led.get("spec")
     if (not isinstance(spec, dict) or spec.get("status") == "none") and not any(s.get("what") == "spec" for s in skipped):
         skipped.append({"what": "spec", "why": "no spec"})
@@ -441,7 +486,7 @@ def build(run):
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
-            "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
+            "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
             if isinstance(plan.get("lost_guarantees"), list) else [],
             "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
@@ -492,6 +537,10 @@ def _text(doc):
         mine = [i for i in fs if i["axis"] == ax]
         out.append("%s: %d finding%s, worst %s" % (ax, len(mine), "" if len(mine) == 1 else "s", min(
             (i["severity"] for i in mine), key=SEVERITIES.index, default="none")))
+    sh = doc["shards"]
+    out += ["shards reviewed: " + ", ".join("%d (%s files)" % (n, sh["files"].get(str(n), "?")) for n in sh["reviewed"])] if sh["reviewed"] else []
+    out += ["shard skipped: %s (%s)%s" % (e(x.get("what")), e(x.get("why")), " %s files" % x["files"] if _int(x.get("files")) else "")
+            for x in sh["skipped"]]
     out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "incomplete"]
     out.append("")
@@ -532,7 +581,7 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] | verdicts --run DIR | render --run DIR [--format text|json|sarif]")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR | render --run DIR [--format text|json|sarif]")
 
 
 def main(argv):
@@ -546,11 +595,16 @@ def main(argv):
                 raise _usage()
             sys.stdout.write(render(run, tail[1] if tail else "text"))
             return 0
-        lane = tail[1] if sub == "ingest" and len(tail) == 2 and tail[0] == "--lane" and tail[1] in LANE_AXIS else None
-        if tail and lane is None:
+        opts = {}
+        while sub == "ingest" and len(tail) >= 2 and tail[0] in ("--lane", "--shard") and tail[0] not in opts:
+            opts[tail[0]], tail = tail[1], tail[2:]
+        lane = opts.get("--lane", "defects")
+        if tail or lane not in LANE_AXIS:
             raise _usage()
+        if "--shard" in opts and not re.fullmatch(r"[1-9][0-9]{0,8}", opts["--shard"]):
+            raise target.Refuse("bad-shard", "--shard is not a positive integer")
         text = sys.stdin.buffer.read().decode("utf-8", "replace")
-        out = ingest(run, text, lane or "defects") if sub == "ingest" else verdicts(run, text)
+        out = ingest(run, text, lane, int(opts["--shard"]) if "--shard" in opts else None) if sub == "ingest" else verdicts(run, text)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -697,6 +698,118 @@ class Serial(Lanes):
         self.confirm_all()
         d = self.doc()
         self.assertEqual((d["mode"], d["tier"], d["lost_guarantees"]), ("parallel", None, []))
+
+
+class Shards(Lanes):
+    def setUp(self):
+        super().setUp()
+        for n in (1, 2):
+            shutil.copytree(os.path.join(self.run_dir, "tree"), os.path.join(self.run_dir, "shards", str(n), "tree"))
+        with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
+            fh.write("def f(a):\n    return a\n")  # shard 2 lacks the flagged lines
+        with open(os.path.join(self.run_dir, "shards", "1", "tree", "src", "only.py"), "w") as fh:
+            fh.write("x = 1\ny = 2\n")
+        write_plan(self.run_dir, shards=[{"id": 1, "run": "shards/1", "files": ["src/calc.py", "src/only.py"], "risk": 3},
+                                         {"id": 2, "run": "shards/2", "files": ["src/calc.py"], "risk": 1}],
+                   skipped=[{"what": "shard 3", "why": "over the shard cap", "files": 7}, {"what": "pack x", "why": "cap"}])
+
+    def shard(self, n, *objs, lane="defects", rc=0):
+        r, out = self.rep("ingest", lines(*objs), extra=["--lane", lane, "--shard", str(n)])
+        self.assertEqual(r, rc, out)
+        return json.loads(out)
+
+    def test_cite_is_checked_in_the_shard_tree(self):
+        self.assertEqual(self.shard(1, mc(3))["dropped"]["invalid"], 0)
+        out = self.shard(2, mc(3))
+        self.assertEqual(out["dropped"]["invalid"], 1)  # dropped sums lanes: shard 1 had none
+        self.assertEqual(out["lanes"], {"defects@1": "incomplete", "defects@2": "incomplete"})
+
+    def test_bad_shard_refuses_with_one_json_line(self):
+        for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):
+            rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "defects", "--shard", bad],
+                               self.repo, self.tmp, lines(mc(3)))
+            self.assertEqual((rc, json.loads(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
+
+    def test_shard_without_plan_refuses(self):
+        os.remove(os.path.join(self.run_dir, "plan.json"))
+        self.assertEqual(self.shard(1, mc(3), rc=1)["reason"], "bad-shard")
+
+    def test_handoff_and_verdict_use_the_shard_tree(self):
+        o = dict(mc(3), path="src/only.py", line=2, quote="y = 2", category="bug")
+        out = self.shard(1, o)
+        (i,) = out["ids"]
+        with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
+            self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), fh.read())
+        self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "y = 2"}], "reason": "r"})
+        d = self.doc()
+        (f,) = d["findings"]
+        self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))  # src/only.py is absent from the main tree
+
+    def test_two_shards_flagging_the_same_range_merge(self):
+        with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
+            with open(os.path.join(self.run_dir, "tree", "src", "calc.py")) as src:
+                fh.write(src.read())
+        self.shard(1, mc(3))
+        out = self.shard(2, mc(3))
+        self.assertEqual((len(out["ids"]), out["merged"]), (1, 1))
+
+    def test_render_lists_reviewed_and_skipped_shards(self):
+        self.shard(1, mc(3), {"inspected": ["src/only.py", "gone.py"]})
+        d = self.doc()
+        self.assertEqual(d["shards"], {"reviewed": [1], "files": {"1": 2},
+                                       "skipped": [{"what": "shard 3", "why": "over the shard cap", "files": 7}]})
+        self.assertEqual(d["inspected"]["areas"], ["src/only.py"])
+        rc, text = self.rep("render")
+        self.assertIn("shards reviewed: 1 (2 files)", text)
+        self.assertIn("shard skipped: shard 3 (over the shard cap) 7 files", text)
+
+    def test_no_shards_means_empty_lists(self):
+        os.remove(os.path.join(self.run_dir, "plan.json"))
+        self.lane("defects", mc(3))
+        self.assertEqual(self.doc()["shards"], {"reviewed": [], "files": {}, "skipped": []})
+
+    def test_shard_conventions_come_from_the_shard_dir(self):
+        cdir = os.path.join(self.run_dir, "shards", "1", "conventions")
+        os.makedirs(cdir)
+        with open(os.path.join(cdir, "CLAUDE.md"), "w") as fh:
+            fh.write("Never subtract operands.\n")
+        c = dict(mc(3, "convention", severity="required"), rule="Never subtract operands.", rule_source="conventions/CLAUDE.md")
+        self.assertEqual(self.shard(1, c, lane="standards")["dropped"]["invalid"], 0)
+        self.assertEqual(self.lane("standards", c)["dropped"]["invalid"], 1)  # the parent run has no such file
+
+
+class DoNotFlag(Lanes):
+    PACK = "# Python\n\n## Rules\n\n- r\n\n## Do not flag\n\n- PACK-DNF-TEXT one\n- two\n\n## Sources\n\n- SRC-NOT-INCLUDED\n"
+
+    def setUp(self):
+        super().setUp()
+        d = os.path.join(self.run_dir, "inputs", "packs")
+        os.makedirs(d)
+        with open(os.path.join(d, "python.md"), "w") as fh:
+            fh.write(self.PACK)
+        with open(os.path.join(self.run_dir, "..", "outside-pack.md"), "w") as fh:
+            fh.write("## Do not flag\n\n- OUTSIDE-TEXT\n")
+        self.addCleanup(os.remove, os.path.join(self.run_dir, "..", "outside-pack.md"))
+
+    def handoff(self, packs):
+        write_plan(self.run_dir, packs=packs)
+        out = self.lane("defects", mc(3))
+        with open(os.path.join(out["handoff"], out["ids"][0] + ".md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_matching_file_gets_a_fenced_block(self):
+        body = self.handoff([{"name": "python", "path": "inputs/packs/python.md", "files": ["src/calc.py"]}])
+        self.assertRegex(body, r"do-not-flag:\n<<<UNTRUSTED-([0-9a-f]+)\n- PACK-DNF-TEXT one\n- two\n\1>>>\n")
+        self.assertNotIn("SRC-NOT-INCLUDED", body)
+
+    def test_other_file_or_escaping_path_gets_nothing(self):
+        for pk in ({"name": "python", "path": "inputs/packs/python.md", "files": ["other.py"]},
+                   {"name": "x", "path": "../outside-pack.md", "files": ["src/calc.py"]},
+                   {"name": "x", "path": os.path.join(self.run_dir, "..", "outside-pack.md"), "files": ["src/calc.py"]},
+                   {"name": "x", "path": "inputs/packs/missing.md", "files": ["src/calc.py"]}, "junk"):
+            body = self.handoff([pk])
+            self.assertNotIn("do-not-flag", body, pk)
+            self.assertNotIn("OUTSIDE-TEXT", body)
 
 
 if __name__ == "__main__":
