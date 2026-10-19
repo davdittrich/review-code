@@ -63,7 +63,7 @@ Bare URLs still autolink.
 
 ## Refusals
 
-`build` and `submit` print one JSON line. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn` or a handle, never forge text).
+`build` and `submit` print one JSON line. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
@@ -75,8 +75,8 @@ Bare URLs still autolink.
 | `bad-target-url` | The URL, host, repository, number or head in `target.json` is malformed | Re-run the review |
 | `gh-missing` | `gh` is not installed | Install `gh` |
 | `glab-missing` | `glab` is not installed | Install `glab` |
-| `gh-failed` | A `gh` call exited non-zero or returned unusable JSON | Check `gh auth status` and network; `detail` may hold `HTTP nnn` |
-| `glab-failed` | The same for `glab` | Check `glab auth status` and network |
+| `gh-failed` | A `gh` call exited non-zero, ran over 120 seconds (`detail` `timeout`) or returned unusable JSON | Check `gh auth status` and network; `detail` may hold `HTTP nnn` |
+| `glab-failed` | The same for `glab` (a call over 120 seconds gives `detail` `timeout`) | Check `glab auth status` and network |
 | `no-identity` | `GET /user` did not return a login or id (a GitHub App token has none) | Use a user token |
 | `closed` | The PR or MR is closed | Reopen it or stop |
 | `merged` | The PR or MR is merged | Stop |

@@ -596,6 +596,12 @@ class Safety(Base):
         with mock.patch.object(post.subprocess, "run", side_effect=FileNotFoundError):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
 
+    def test_a_hung_tool_times_out(self):
+        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], post.CLI_TIMEOUT))
+        with mock.patch.object(post.subprocess, "run", hung):
+            self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
+        self.assertEqual(hung.call_args.kwargs["timeout"], post.CLI_TIMEOUT)
+
     def test_closed_merged_and_draft_pull_requests_refuse(self):
         for state, merged, draft, reason in (("closed", False, False, "closed"), ("closed", True, False, "merged"),
                                              ("open", False, True, "draft")):
