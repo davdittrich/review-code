@@ -877,6 +877,15 @@ class TestTooLarge(Local):
         self.git("checkout", "-q", "-b", "chg", "main")
         return gitfix.commit(self.repo, files, "change")
 
+    def test_only_oversized_file_reports_its_size(self):
+        # 6xl.89: a run whose one file is over the cap says so, with the size (no name on stdout)
+        self.change({"big.py": "v = 1\n" * (target._MAX_FILE // 6 + 1)})
+        rc, out = self.pin("main")
+        self.assertEqual((rc, out["reason"]), (1, "only-excluded"))
+        self.assertIn("too-large", out["detail"])
+        self.assertIn("%d bytes" % (6 * (target._MAX_FILE // 6 + 1)), out["detail"])
+        self.assertNotIn("big.py", out["detail"])
+
     def test_numstat_never_diffs_an_oversized_file(self):
         # 6xl.85: git's own numstat of a huge file can take ~1 GB; sizes are checked first and the file kept out
         line = "v = '" + "a" * 90 + "'\n"

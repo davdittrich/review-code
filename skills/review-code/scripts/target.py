@@ -907,8 +907,13 @@ def pin(candidate: dict, cwd: str) -> dict:
                      "the target has no files" if kind in ("path", "repo") else "the change has no differences")
     names, excluded, fnotes = filter_files(kind, plan, names, top)
     if not names:
-        raise Refuse("only-excluded", "every changed file is a lockfile, generated, vendored, minified, binary or "
-                                      "too large")
+        counts = {}
+        for e in excluded:
+            counts[e["reason"]] = counts.get(e["reason"], 0) + 1
+        sizes = [e["detail"].split(" bytes")[0] for e in excluded if e["reason"] == "too-large"]
+        raise Refuse("only-excluded", "every changed file is excluded: " + ", ".join(  # 6xl.89: sizes, never names
+            "%d %s" % (n, r) + (" (%s bytes, over %d)" % (", ".join(sizes), _MAX_FILE) if r == "too-large" else "")
+            for r, n in sorted(counts.items())))
     run = new_run_dir(cwd)
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
