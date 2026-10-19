@@ -289,8 +289,9 @@ class GitHubTracer(Base):
         tail = [(m, e) for m, e, _ in self.fake.calls[seen:]]
         at = tail.index(("POST", PR + "/reviews"))
         self.assertEqual(tail[at:], [("POST", PR + "/reviews"), ("GET", PR + "/reviews/100/comments"),
-                                     ("GET", "diff"), ("GET", PR), ("POST", PR + "/reviews/100/events")])
-        # create, read back, the diff for the positions, head, event
+                                     ("GET", "diff"), ("GET", PR), ("GET", PR + "/reviews/100/comments"),
+                                     ("POST", PR + "/reviews/100/events")])
+        # create, read back, the diff for the positions, head, recount, event
         create = next(b for m, e, b in self.fake.calls[seen:] if (m, e) == ("POST", PR + "/reviews"))
         self.assertEqual(sorted(create), ["body", "comments", "commit_id"])  # no event key
         self.assertEqual(create["commit_id"], self.fake.head)
@@ -492,6 +493,20 @@ class Safety(Base):
         digest = self.confirmed()
         self.lose_create_answer(self.fake.fail(502), also=lambda: self.fake.fail_map.update({"GET " + PR + "/reviews": 500}))
         self.refused(self.submit(digest), "cleanup-failed", "pending review unknown")
+
+    def test_a_comment_added_after_verify_refuses_before_the_event(self):
+        digest = self.confirmed()
+        listings = []
+
+        def stored(comments):  # the user adds a comment in the web UI; it joins their one pending review
+            listings.append(len(comments))
+            return comments if len(listings) == 1 else comments + [dict(comments[0], body="typed in the web UI")]
+
+        self.fake.stored_override = stored
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(len(listings), 2)
+        self.assertFalse(any(c[1].endswith("/events") for c in self.fake.calls))
+        self.assertEqual(self.fake.pending(), [])
 
     def test_stored_comments_differ_deletes_the_review(self):
         digest = self.confirmed()
@@ -1280,8 +1295,9 @@ class GitLabTracer(GitLabBase):
         self.assertEqual(context["position"], dict(base, new_line=19, old_line=19))  # an unchanged row needs both lines
         self.assertEqual(added["position"], dict(base, new_line=20))  # an added row has no old line
         self.assertEqual((context["commit_id"], added["commit_id"]), (self.fake.head, self.fake.head))
-        self.assertEqual([(m, e) for m, e, _ in tail[-3:]],
-                         [("GET", MR + "/draft_notes"), ("GET", MR), ("POST", MR + "/draft_notes/bulk_publish")])
+        self.assertEqual([(m, e) for m, e, _ in tail[-4:]],  # verify, head, recount, publish
+                         [("GET", MR + "/draft_notes"), ("GET", MR), ("GET", MR + "/draft_notes"),
+                          ("POST", MR + "/draft_notes/bulk_publish")])
         self.assertIsNone(tail[-1][2])  # publish carries no body
         self.assertNotIn("reviewer_state", json.dumps(self.fake.calls))
         self.assertEqual(self.fake.drafts, [])
@@ -1382,6 +1398,22 @@ class GitLabSafety(GitLabBase):
         self.assertEqual(len(self.deletes()), 3)
         self.assertEqual([d["note"] for d in self.fake.drafts], ["foreign draft, no marker"])
         self.assertEqual(self.published(), [])
+
+    def test_a_draft_added_after_verify_refuses_before_publish(self):
+        digest = self.confirmed()
+        real, listings = self.fake.route, []
+
+        def route(m, p, q, b):
+            if (m, p) == ("GET", MR + "/draft_notes") and self.fake.creates:
+                listings.append(p)
+                if len(listings) == 2:
+                    self.fake.add_draft("typed in the GitLab UI during submit")
+            return real(m, p, q, b)
+
+        self.fake.route = route
+        self.refused(self.submit(digest), "verify-failed")
+        self.assertEqual(self.published(), [])
+        self.assertEqual([d["note"] for d in self.fake.drafts], ["typed in the GitLab UI during submit"])
 
     def test_a_context_draft_stored_without_old_line_never_reaches_publish(self):
         digest = self.confirmed()

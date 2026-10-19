@@ -243,6 +243,12 @@ class GitHub:
         row, pos = anchors.get((w["path"], w["line"])), c.get("position")
         return row is not None and isinstance(pos, int) and not isinstance(pos, bool) and pos == row[3]
 
+    def recount(self, payload: dict, handle: int) -> None:
+        """Right before the event: a comment the user starts in the web UI joins their one pending review, so a changed
+        count refuses. This narrows the window after verify to one listing; it cannot close it."""
+        if len(_pages("gh", self.i["host"], "%s/reviews/%d/comments" % (self.pr, handle), self.i["run"])) != len(payload["comments"]):
+            raise Refuse("verify-failed")
+
     def finish(self, handle: int) -> None:
         try:
             self._call("POST", "%s/reviews/%d/events" % (self.pr, handle), {"event": EVENT})
@@ -395,6 +401,11 @@ class GitLab:
                 seen.add(found[0] if c else None)
             if not ok:
                 raise Refuse("verify-failed")
+
+    def recount(self, payload: dict, handle: int) -> None:
+        """Right before publish: the publish call sends every draft, so one the user added after verify refuses."""
+        if len(self._drafts()) != 1 + len(payload["comments"]):
+            raise Refuse("verify-failed")
 
     def finish(self, handle: int) -> None:
         """Publish every draft in one call that carries no body: no review state, no note."""
@@ -654,6 +665,7 @@ def submit(run: str, digest: str) -> dict:
     try:
         gh.verify(payload, handle)
         _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (d): before the event
+        gh.recount(payload, handle)  # the last read: nothing joined the review since verify
         gh.finish(handle)
     except BaseException:  # any failure, an interrupt too, withdraws the review this call created
         gh.cleanup(handle)  # names what it could not remove
