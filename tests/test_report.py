@@ -624,6 +624,23 @@ class SpecAxis(Base):
             self.assertNotIn(CANARY, self.rep("render", extra=["--format", fmt])[1])
         self.assertEqual(len(self.ingest(dict(CAND, title=copy))["ids"]), 1)  # Defects never reads the spec: no check
 
+    def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
+        rows, inner, _, _ = self.spec_rows()
+        self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
+        out = self.lane(self.spec(inner), {"inspected": []})
+        self.verdicts({"id": out["spec_ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir, "--serial"], self.repo, self.tmp)[0], 0)
+        rc, o = self.rep("discard")
+        self.assertEqual((rc, json.loads(o)), (0, {"status": "ok"}))
+        for f in ("candidates.json", "verdicts.json", "handoff", "repro"):
+            self.assertFalse(os.path.exists(os.path.join(self.run_dir, f)), f)
+        self.assertEqual(self.rep("discard")[0], 0)  # nothing left to remove is fine
+        self.assertEqual(self.ingest({"inspected": []})["spec_ids"], [])
+        d = self.doc()
+        self.assertEqual((d["mode"], d["findings"], d["unverifiable"], sorted(d["lanes"])), ("serial", [], [], ["defects"]))
+        self.assertEqual(self.rep("discard", extra=["--x"])[0], 1)
+
     def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
         rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
         os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))

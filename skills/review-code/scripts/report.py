@@ -14,6 +14,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
                                    <run>/shards/N/tree, conventions in <run>/shards/N/conventions; else bad-shard)
     report.py verdicts --run DIR   id, verdict, evidence (a list of path, line, quote), reason pair-array lines
     report.py render   --run DIR [--format text|json|sarif]
+    report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/ and repro/ (a re-plan starts clean)
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
   schema_version, target{kind, head_sha, merge_base, label, not_a_change}, trust (own|external), verdict,
@@ -451,6 +452,17 @@ def verdicts(run, text):
     return {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
 
 
+def discard(run):
+    """Drop every lane result, so a serial re-plan never renders lanes from the parallel attempt (SKILL step 7)."""
+    _load(run, "target.json")
+    for d in ("handoff", "repro"):
+        shutil.rmtree(os.path.join(run, d), ignore_errors=True)
+    for f in ("candidates.json", "verdicts.json"):
+        if os.path.exists(os.path.join(run, f)):
+            os.remove(os.path.join(run, f))
+    return {"status": "ok"}
+
+
 def _cap(cls, category):
     """Strongest severity the evidence class allows (VERI-03)."""
     if cls in ("reproduced", "traced"):
@@ -635,19 +647,24 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR | render --run DIR [--format text|json|sarif]")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR | render --run DIR [--format text|json|sarif] | discard --run DIR")
 
 
 def main(argv):
     try:
         sub, rest = (argv[0], argv[1:]) if argv else ("", [])
-        if sub not in ("ingest", "verdicts", "render") or rest[:1] != ["--run"] or len(rest) < 2:
+        if sub not in ("ingest", "verdicts", "render", "discard") or rest[:1] != ["--run"] or len(rest) < 2:
             raise _usage()
         run, tail = rest[1], rest[2:]
         if sub == "render":
             if tail not in ([], ["--format", "text"], ["--format", "json"], ["--format", "sarif"]):
                 raise _usage()
             sys.stdout.write(render(run, tail[1] if tail else "text"))
+            return 0
+        if sub == "discard":
+            if tail:
+                raise _usage()
+            print(json.dumps(discard(run), sort_keys=True))
             return 0
         opts = {}
         while sub == "ingest" and len(tail) >= 2 and tail[0] in ("--lane", "--shard") and tail[0] not in opts:

@@ -58,7 +58,7 @@ Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from
 
 ## Serial mode
 
-Serial mode runs when the Agent tool is unavailable, when you pass `--serial`, or when an Agent call fails with a nesting-depth or concurrent-limit error (the skill then re-plans with `--serial` and does not ask the cost question again). The main thread reads the Defects and Standards inputs itself, writes the finding lines, then self-scores all candidates in one batch.
+Serial mode runs when the Agent tool is unavailable, when you pass `--serial`, or when an Agent call fails with a nesting-depth or concurrent-limit error (the skill then re-plans with `--serial`, runs `report.py discard` so no parallel lane result survives, and does not ask the cost question again). The main thread reads the Defects and Standards inputs itself, writes the finding lines, then self-scores all candidates in one batch.
 
 Lost guarantees, stated in the report as `mode: serial`:
 

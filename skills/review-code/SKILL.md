@@ -159,8 +159,8 @@ before treating it as unavailable; it is unavailable only when that load fails o
 
    Serial mode starts when the Agent tool is unavailable, when the user passed `--serial`, or when an
    Agent call fails with a nesting-depth or concurrent-limit error. After such a failure re-run step 5
-   with `--serial` (same flags, no new question), discard the lane results so far, and start this step
-   again. In serial mode the main thread is the lane: for each call, read its `input` file, the files
+   with `--serial` (same flags, no new question), discard the lane results so far with
+   `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py discard --run <run>`, and start this step again. In serial mode the main thread is the lane: for each call, read its `input` file, the files
    that file lists and `tree/`; write finding lines (pair arrays, a `{` inside a string written as `\u007b`) in the format of the lane's agent file under
    `${CLAUDE_SKILL_DIR}/../../agents/` (`finder.md` for lane defects, `standards.md` for lane
    standards, chosen by the call's `lane`, never by its `agent` value); ingest them per lane as above.
