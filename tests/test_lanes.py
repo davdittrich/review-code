@@ -270,7 +270,7 @@ class Sota(unittest.TestCase):
                                      + report.LANE_OPTIONAL["sota"]))
         self.assertEqual(o["category"], "sota")
         self.assertTrue(o["sources"] and all(u.startswith("https://") for u in o["sources"]))
-        self.assertEqual(o["quote"], "requests==2.19.0")
+        self.assertEqual(o["quote"], "requests")
 
     def test_queries_and_pages(self):
         low = self.text.lower()
