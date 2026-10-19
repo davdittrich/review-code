@@ -312,6 +312,18 @@ _DESC = re.compile(r"^(?:Imports:\s*|\s+)([A-Za-z][A-Za-z0-9.]*)\s*(?:\([^)]*\))
 _JS_EXT = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 
 
+def _code(text, marker):
+    """The line without its comment. shortcut: a marker inside a string also cuts the line (a URL before an import
+    loses it); a block comment is dropped when it opens or continues the line."""
+    t = text.lstrip()
+    return "" if t.startswith(("/*", "*")) else re.sub(r"/\*.*?\*/", "", text).split(marker)[0]
+
+
+def _bare(code, start):
+    """True when no quote opens before `start`: the match is code, not text inside a string."""
+    return not re.search("[\'\"`]", code[:start])
+
+
 def _names(path, text):
     """[(kind, name, version or None)] of one line: imports, or a manifest entry with its exact pinned version."""
     base = path.rpartition("/")[2]
@@ -322,11 +334,14 @@ def _names(path, text):
         if m.group(1):
             return [("import", m.group(1).split(".")[0], None)]
         return [("import", x.split()[0].split(".")[0], None) for x in m.group(2).split(",") if x.split()]
-    if base.endswith(_JS_EXT):
+    if base.endswith(_JS_EXT):  # T-04-21: comment text and string text are not code, so neither becomes a name
+        code = _code(text, "//")
         return [("import", "/".join(n.split("/")[:2]) if n.startswith("@") else n.split("/")[0], None)
-                for n in _JS_IMPORT.findall(text) if not n.startswith((".", "/"))]
+                for m in _JS_IMPORT.finditer(code) if _bare(code, m.start()) for n in m.groups()
+                if not n.startswith((".", "/"))]
     if base.endswith((".R", ".r")):
-        return [("import", n, None) for n in _R_LIB.findall(text)]
+        code = _code(text, "#")
+        return [("import", m.group(1), None) for m in _R_LIB.finditer(code) if _bare(code, m.start())]
     rx, pin = ((_REQ, _PIN_PY) if fnmatch.fnmatchcase(base, "requirements*.txt") else
                (_TOML_DEP, _PIN_PY) if base == "pyproject.toml" else (_PKG_JSON, _PIN_NPM) if base == "package.json"
                else (_DESC, _PIN_R) if base == "DESCRIPTION" else (None, None))

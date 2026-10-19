@@ -630,6 +630,17 @@ class Inventory(Fixture):
                          ["@scope/pkg", "cli", "dplyr", "express", "ggplot2", "httpx", "left-pad", "numpy", "os",
                           "pandas", "pytest", "rlang"])
 
+    def test_comment_and_string_text_never_becomes_an_inventory_name(self):  # T-04-21
+        import plan as mod
+        src = {"a.js": [(1, "// see import 'internal-codename-x9'"), (2, 'const s = "msg from \'secret_token_abc\'";'),
+                        (3, "/* require('commented-out') */"), (4, " * from 'doc-block-name'"),
+                        (5, "const ok = require('real-js')"), (6, "import x from 'real-es'"),
+                        (7, "import {a} from 'real-named'; // trailing note import 'zzz'")],
+               "b.R": [(1, "# library(confidentialpkg)"), (2, 'x <- "library(strpkg)"'), (3, "library(realr)")],
+               "c.py": [(1, "import real_py  # import hidden_py")]}
+        self.assertEqual(sorted(i["name"] for i in mod._inventory(src)),
+                         ["real-es", "real-js", "real-named", "real_py", "realr"])
+
     def test_unsafe_overlong_and_surplus_names_are_dropped(self):
         import plan as mod
         src = {"a.js": [(1, "require('bad;name')"), (2, "require('" + "a" * 101 + "')"), (3, "require('good')"),
