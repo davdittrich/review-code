@@ -27,6 +27,7 @@ class Procedure(unittest.TestCase):
     """03-04: lanes, verdicts, reproduction and render, and a pre-approval that leaves repro.py to the harness."""
 
     REPRO_CALL = "python3 /x/skills/review-code/scripts/repro.py run --run r --id F-0123456789 --test t.py -- python3 t.py"
+    SUBMIT_CALL = "python3 /x/skills/review-code/scripts/post.py submit --run r --digest " + "0" * 64
 
     def setUp(self):
         with open(SKILL, encoding="utf-8") as fh:
@@ -38,10 +39,10 @@ class Procedure(unittest.TestCase):
         self.assertIsNotNone(m, "allowed-tools must be a YAML list")
         return [ln.strip()[2:].strip() for ln in m.group(1).splitlines()]
 
-    def test_allowed_tools_names_four_scripts_not_repro(self):
+    def test_allowed_tools_names_five_scripts_not_repro_or_submit(self):
         items = self.allowed()
-        self.assertEqual(len(items), 4, items)
-        for name in ("target.py", "ledger.py", "report.py", "plan.py"):
+        self.assertEqual(len(items), 5, items)
+        for name in ("target.py", "ledger.py", "report.py", "plan.py", "post.py"):
             self.assertTrue(any(name in i for i in items), name)
         for i in items:
             self.assertNotIn("repro", i)
@@ -50,7 +51,8 @@ class Procedure(unittest.TestCase):
             self.assertIsNotNone(pat, i)
             rx = ".*".join(re.escape(p) for p in pat.group(1).replace("${CLAUDE_SKILL_DIR}", "/x/skills/review-code")
                            .split("*"))
-            self.assertIsNone(re.fullmatch(rx, self.REPRO_CALL), i)
+            for call in (self.REPRO_CALL, self.SUBMIT_CALL):
+                self.assertIsNone(re.fullmatch(rx, call), (i, call))
 
     def test_steps_in_order(self):
         steps = ["review-code:finder", "report.py ingest", "review-code:verifier", "report.py verdicts",
@@ -133,6 +135,39 @@ class Phase4Procedure(unittest.TestCase):
         self.assertIn("## Verification gate", head)
         self.assertIn(DESCRIPTION, self.text)
         self.assertRegex(self.text, r"(?m)^compatibility: Claude Code >= 2\.1\.292")
+
+
+class Phase5Procedure(unittest.TestCase):
+    """05-01: --comment, the SCOPE-05 stop and the confirmed post in step 11."""
+
+    def setUp(self):
+        with open(SKILL, encoding="utf-8") as fh:
+            self.text = fh.read()
+        self.flat = " ".join(self.text.split())
+
+    def test_steps_in_order(self):  # --run keeps post.py build out of the allowed-tools frontmatter entry
+        steps = ["report.py render", "post.py build --run", "post.py submit --run"]
+        at = [self.text.find(s) for s in steps]
+        self.assertNotIn(-1, at, dict(zip(steps, at)))
+        self.assertEqual(at, sorted(at), dict(zip(steps, at)))
+
+    def test_comment_flag_and_confirmation_words(self):
+        for s in ("--comment", "Post as COMMENT", "Do not post", "applies only to PR and MR targets",
+                  "not posted: confirmation needs an interactive session"):
+            self.assertIn(s, self.flat)
+        self.assertNotIn("Never post to a PR", self.flat)
+        self.assertIn("never post except through step 11", self.flat)
+
+    def test_comment_is_removed_in_step_1_and_checked_before_any_lane(self):
+        step1 = self.text.split("\n1. Target.", 1)[1].split("\n2. Ledger.", 1)[0]
+        self.assertIn("`--comment`", step1)
+        self.assertIn("applies only to PR and MR targets", step1)
+
+    def test_submit_is_not_pre_approved(self):
+        fm = self.text.split("\n---", 1)[0]
+        self.assertIn("post.py build *", fm)
+        self.assertNotIn("post.py submit", fm)
+        self.assertNotIn("post.py *", fm)
 
 
 if __name__ == "__main__":
