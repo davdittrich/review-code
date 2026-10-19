@@ -6,6 +6,7 @@ import re
 import stat
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -15,6 +16,7 @@ from test_report import CAND, CITE, cand, cli, fid, verdict  # noqa: E402
 
 SCRIPTS = tr.SCRIPTS
 RULE = "Use snake_case names"
+ENV_VARS = ("CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_SUBAGENT_MODEL")
 CONV = {"rule": RULE, "rule_source": "conventions/CLAUDE.md"}
 
 
@@ -31,8 +33,12 @@ class Fixture(tr.Base):
     base_files = {"src/calc.py": tr.BASE["src/calc.py"], "CLAUDE.md": "# Rules\n- %s\n" % RULE}
     feat_files = {"src/calc.py": tr.FEAT}
 
-    def plan(self, *args):
-        rc, out, err = cli("plan.py", list(args), self.repo, self.tmp)
+    def plan(self, *args, stdin="", env=None):
+        with mock.patch.dict(os.environ):  # host forcing variables must not leak into a plan
+            for k in ENV_VARS:
+                os.environ.pop(k, None)
+            os.environ.update(env or {})
+            rc, out, err = cli("plan.py", list(args), self.repo, self.tmp, stdin)
         self.assertEqual(err, "")
         return rc, json.loads(out)
 
@@ -50,9 +56,79 @@ class Fixture(tr.Base):
             return fh.read()
 
 
+class Overrides(Fixture):
+    def run_plan(self, cfg, *args):
+        rc, out = self.plan("plan", "--run", self.run_dir, *args, stdin="".join(k + "=" + v + "\n" for k, v in cfg))
+        return rc, out
+
+    def test_finder_override_reaches_every_finder_call(self):
+        rc, out = self.run_plan([("finder_model", "sonnet"), ("finder_effort", "high")])
+        self.assertEqual(rc, 0)
+        p = self.plan_json()
+        self.assertEqual({(c["model"], c["effort"]) for c in p["calls"]}, {("sonnet", "high")})
+        self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
+        self.assertEqual(p["effective_overrides"], {"finder_effort": "high", "finder_model": "sonnet"})
+
+    def test_verifier_override_reaches_both_verifiers(self):
+        self.run_plan([("verifier_model", "opus"), ("verifier_effort", "low")])
+        p = self.plan_json()
+        for v in (p["verifier"], p["spec_verifier"]):
+            self.assertEqual((v["model"], v["effort"]), ("opus", "low"))
+        self.assertEqual({c["model"] for c in p["calls"]}, {"opus"})  # finders untouched
+
+    def test_unset_references_are_ignored(self):
+        rc, out = self.run_plan([("verifier_model", "${user_config.verifier_model}"), ("max_shards", ""),
+                                 ("default_tier", "${user_config.default_tier}")])
+        p = self.plan_json()
+        self.assertEqual((rc, out["tier"], p["effective_overrides"], p["caps"]["max_shards"]), (0, "standard", {}, 6))
+
+    def test_flag_beats_default_tier(self):
+        self.assertEqual(self.run_plan([("default_tier", "deep")])[1]["tier"], "deep")
+        rc, out = self.run_plan([("default_tier", "deep")], "--tier", "quick")
+        self.assertEqual(out["tier"], "quick")
+        self.assertNotIn("default_tier", self.plan_json()["effective_overrides"])
+
+    def test_caps(self):
+        self.run_plan([("max_verifier_calls", "5"), ("max_packs", "9")])
+        caps = self.plan_json()["caps"]
+        self.assertEqual((caps["max_verifier_calls"], caps["max_packs"], caps["max_shards"]), (5, 9, 6))
+
+    def test_bad_config_refuses_and_never_echoes(self):
+        bad = [("bogus", "1"), ("finder_effort", "turbo"), ("finder_model", "a b"), ("finder_model", "$(id)"),
+               ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "0"), ("max_verifier_calls", "2.5"),
+               ("max_verifier_calls", "201"), ("default_tier", "huge"), ("max_packs", "\u00b2")]
+        for kv in bad:
+            rc, out = self.run_plan([kv])
+            self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "bad-config"), kv)
+            self.assertNotIn(kv[1], json.dumps(out), kv)
+            if kv[0] != "bogus":
+                self.assertIn(kv[0], out["detail"])
+        rc, out = self.plan("plan", "--run", self.run_dir, stdin="no equals sign\n")
+        self.assertEqual((rc, out["reason"]), (1, "bad-config"))
+
+    def test_oversized_stdin_refuses(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, stdin="finder_model=x\n" * 5000)
+        self.assertEqual((rc, out["reason"]), (1, "bad-config"))
+
+    def test_plugin_json_keys(self):
+        with open(os.path.join(HERE, "..", ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)["userConfig"]
+        self.assertEqual(set(cfg["default_tier"]), {"type", "title", "description", "default", "options"})
+        self.assertEqual((cfg["default_tier"]["default"], cfg["default_tier"]["options"]),
+                         ("standard", ["quick", "standard", "deep"]))
+        for k in ("finder_effort", "verifier_effort"):
+            self.assertEqual(cfg[k]["type"], "string")
+            for lvl in ("low", "medium", "high", "xhigh", "max"):
+                self.assertIn(lvl, cfg[k]["description"])
+        import plan as mod
+        for k, (lo, hi) in mod.CAP_BOUNDS.items():
+            self.assertEqual((cfg[k]["type"], cfg[k]["min"], cfg[k]["max"]), ("number", lo, hi))
+        self.assertEqual(set(cfg), mod.CONFIG_KEYS)
+
+
 class Tracer(Fixture):
     KEYS = {"version", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
-            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm"}
+            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides"}
 
     def test_standard_tier_without_spec(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "standard")

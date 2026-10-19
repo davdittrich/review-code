@@ -22,6 +22,48 @@
       "type": "string",
       "title": "Verifier model",
       "description": "Model for the verifier lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the default (sonnet)."
+    },
+    "default_tier": {
+      "type": "string",
+      "title": "Default tier",
+      "description": "Tier used when no --tier flag is given: quick, standard or deep.",
+      "default": "standard",
+      "options": [
+        "quick",
+        "standard",
+        "deep"
+      ]
+    },
+    "finder_effort": {
+      "type": "string",
+      "title": "Finder effort",
+      "description": "Effort for every finder lane. Levels: low, medium, high, xhigh, max. Leave empty for the tier's value."
+    },
+    "verifier_effort": {
+      "type": "string",
+      "title": "Verifier effort",
+      "description": "Effort for the verifier lanes. Levels: low, medium, high, xhigh, max. Leave empty for the tier's value."
+    },
+    "max_verifier_calls": {
+      "type": "number",
+      "title": "Max verifier calls",
+      "description": "Cap on verifier calls per run, 1 to 200. Leave empty for the tier's value.",
+      "min": 1,
+      "max": 200
+    },
+    "max_shards": {
+      "type": "number",
+      "title": "Max shards",
+      "description": "Cap on shards per run, 1 to 50. Leave empty for the tier's value.",
+      "min": 1,
+      "max": 50
+    },
+    "max_packs": {
+      "type": "number",
+      "title": "Max packs",
+      "description": "Cap on packs per run, 1 to 9. Leave empty for the tier's value.",
+      "min": 1,
+      "max": 9
     }
   }
 }
