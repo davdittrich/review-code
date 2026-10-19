@@ -50,8 +50,8 @@ MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
 CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_shards": (1, 50), "max_packs": (1, 9)}
 CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort"} | set(CAP_BOUNDS)
 MAX_STDIN = 65536
-# Half the default limit of 20 concurrent subagents, so other subagents in the session are not refused.
-WAVE_SIZE = 10
+# The harness refuses a 9th concurrent subagent ("You can run 8 subagents at once", live run 2026-10-19), so a wave stops at 8.
+WAVE_SIZE = 8
 
 
 def _load_target(run):

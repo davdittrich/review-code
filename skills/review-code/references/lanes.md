@@ -48,7 +48,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 | `max_verifier_calls` | Verifier plus spec-verifier calls per run; in serial mode, where the preview shows 0 verifier calls, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
-| `wave_size` | Agent calls issued in one message: 10, half the default limit of 20 concurrent subagents | fixed |
+| `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
 Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 12, spec-verifier 12. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls`, each at most its ceiling in turns.
 

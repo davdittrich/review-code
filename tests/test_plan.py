@@ -95,6 +95,11 @@ class Overrides(Fixture):
         self.run_plan([("default_tier", "deep")])
         self.assertEqual(self.plan_json()["effective_overrides"], {"default_tier": "deep"})
 
+    def test_wave_size_stays_under_the_live_concurrent_subagent_limit(self):
+        # review-code-gaz.41: a live run refused the 9th call of a wave ("You can run 8 subagents at once")
+        self.run_plan([])
+        self.assertLessEqual(self.plan_json()["caps"]["wave_size"], 8)
+
     def test_caps(self):
         self.run_plan([("max_verifier_calls", "5"), ("max_packs", "9")])
         caps = self.plan_json()["caps"]
