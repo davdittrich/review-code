@@ -12,6 +12,7 @@ sys.path.insert(0, HERE)
 
 import plan  # noqa: E402
 import report  # noqa: E402
+import test_report as tr  # noqa: E402
 import test_plan as tp  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import lines  # noqa: E402
 
@@ -315,6 +316,59 @@ class ModelOverride(unittest.TestCase):
         for key in ("finder_model", "verifier_model"):
             self.assertIn("${user_config.%s}" % key, text)
         self.assertIn("starts with `${`", text)
+
+
+class WireContract(tp.Fixture):
+    """04-08: the first example line of every lane agent goes through the real target, ledger, plan and ingest scripts."""
+
+    def fixture(self, base, feat, spec=None):
+        self.base_files, self.feat_files = base, feat  # instance attributes shadow the class ones
+        tr.Base.setUp(self)
+        if spec is not None:
+            os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+            with open(os.path.join(self.repo, "docs", "spec.md"), "w", encoding="utf-8") as fh:
+                fh.write(spec)
+            rc, out, _ = tr.cli("ledger.py", ["build", "--run", self.run_dir, "--spec", "docs/spec.md"], self.repo, self.tmp)
+            self.assertEqual(json.loads(out)["spec_status"], "found")
+
+    def ingest_examples(self, agent, lane, *prefixes):
+        _, body = parts(agent)
+        out = self.ingest_lane(lane, *[first(body, p) for p in prefixes])
+        self.assertEqual(out["dropped"]["invalid"], 0, out)
+        self.assertEqual(out["lanes"][lane], "complete", out)
+        return out
+
+    def test_finder_example_ingests(self):
+        # the example cites src/calc.py:41 and tests/test_calc.py
+        src = "".join("x%d = %d\n" % (i, i) for i in range(1, 41)) + "def mean(xs):\n    return sum(xs) / len(xs)\n"
+        self.fixture(tr.BASE, {"src/calc.py": src, "tests/test_calc.py": "import src.calc\n"})
+        out = self.ingest_examples("finder", "defects", '{"path"', '{"inspected"')
+        self.assertEqual(len(out["ids"]), 1)
+
+    def test_standards_example_ingests(self):
+        feat = {"src/calc.py": "x = 1\n\n\n\ndef addNumbers(a, b):\n    return a + b\n"}
+        self.fixture(dict(tr.BASE, **{"CLAUDE.md": "# Rules\n- Function names use snake_case.\n"}), feat)
+        out = self.ingest_examples("standards", "standards", '{"path"', '{"inspected"')
+        self.assertEqual(len(out["ids"]), 1)
+
+    def test_spec_example_and_declined_line_ingest(self):
+        spec = "".join("Line %d of the spec.\n" % i for i in range(1, 11))  # inputs/spec.md lines 27 to 36
+        self.fixture(tr.BASE, {"src/calc.py": tr.FEAT}, spec)
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual((rc, out["status"]), (0, "ok"))
+        self.assertIn("spec", [c["lane"] for c in self.plan_json()["calls"]])
+        out = self.ingest_examples("spec", "spec", '{"path"', '{"inspected"', '{"declined"')
+        self.assertEqual((len(out["ids"]), len(out["spec_ids"])), (0, 1))
+
+    def test_sota_example_ingests_against_the_inventory(self):
+        self.fixture(tr.BASE, {"src/calc.py": tr.FEAT, "requirements.txt": "flask==2.0\nclick\nrequests==2.19.0\n"})
+        rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
+        self.assertEqual(rc, 0, out)
+        _, body = parts("sota")
+        ex = first(body, '{"path"')
+        self.assertIn({"path": ex["path"], "line": ex["line"], "name": ex["quote"]}, self.plan_json()["sota_inventory"])
+        out = self.ingest_examples("sota", "sota", '{"path"', '{"inspected"')
+        self.assertEqual((out["ids"], out["spec_ids"]), ([], []))
 
 
 if __name__ == "__main__":
