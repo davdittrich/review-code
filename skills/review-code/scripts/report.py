@@ -25,6 +25,7 @@ if sys.version_info < (3, 9):
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 
@@ -44,6 +45,8 @@ BLOCKING = CATEGORIES[:6]
 VERDICTS = ("confirmed", "refuted", "unverifiable")
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
+LINT_IGNORE = re.compile(r"noqa|type: ?ignore|pylint: ?disable|eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOSONAR|"
+                         r"rubocop: ?disable|#\[allow\(|@SuppressWarnings|nosec", re.IGNORECASE)
 WHOLE = ("path", "repo")  # targets that are not a change: every finding is `existing`
 
 
@@ -117,7 +120,8 @@ def _candidate(o, tree):
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
         return None
     c["path"] = os.path.normpath(c["path"])
-    if _cited(tree, c["path"], c["line"], end, c["quote"]) is None:
+    c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
+    if c["rows"] is None:
         return None
     c["id"] = "F-" + hashlib.sha256("\0".join((c["path"], c["category"], _ws(c["quote"]))).encode(
         "utf-8", "surrogatepass")).hexdigest()[:10]
@@ -135,7 +139,7 @@ def ingest(run, text):
     _load(run, "target.json")
     tree = os.path.realpath(os.path.join(run, "tree"))
     nonce = secrets.token_hex(8)
-    kept, areas, invalid = {}, [], 0
+    kept, areas, invalid, ignored = {}, [], 0, 0
     for o in _objects(text):
         if o is not None and "inspected" in o and "path" not in o:
             areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
@@ -143,6 +147,8 @@ def ingest(run, text):
         c = _candidate(o, tree) if o is not None else None
         if c is None or c["id"] in kept:
             invalid += 1
+        elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
+            ignored += 1
         else:
             kept[c["id"]] = c
     for stale in ("handoff", "repro"):
@@ -153,7 +159,7 @@ def ingest(run, text):
     os.makedirs(hand, mode=0o700)
     for c in kept.values():
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce))
-    dropped = {"invalid": invalid, "do_not_flag": 0}
+    dropped = {"invalid": invalid, "do_not_flag": ignored}
     target.write_private(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "dropped": dropped, "inspected": areas},
         sort_keys=True, indent=2))
@@ -180,6 +186,23 @@ def verdicts(run, text):
     return {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
 
 
+def _cap(cls, category):
+    """Strongest severity the evidence class allows (VERI-03)."""
+    if cls in ("reproduced", "traced"):
+        return "blocking" if category in BLOCKING else "required"
+    if cls == "inferred":
+        return "required" if category == "accessibility" else "suggestion"
+    return "noted"
+
+
+def _repro(run, fid):
+    try:
+        with open(os.path.join(run, "repro", fid + ".json"), encoding="utf-8") as fh:
+            return json.load(fh).get("outcome")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def build(run):
     tj, led, cand = _load(run, "target.json"), ledger._load(run), _load(run, "candidates.json")
     try:
@@ -195,23 +218,39 @@ def build(run):
         for _, p, tag, _, n, _, _ in sanitize._walk(fh.read()):
             if tag == "+":
                 added.setdefault(p, set()).add(n)
-    findings = []
+    items, dropped = [], dict(cand["dropped"], refuted=0)
     for c in cand["candidates"]:
         v = ver.get(c["id"], {})
-        cites = v.get("cites", [])
-        if not (v.get("verdict") == "confirmed" and cites):
+        cites, kind = v.get("cites", []), v.get("verdict")
+        if kind == "refuted":
+            dropped["refuted"] += 1
             continue
+        if kind == "confirmed" and cites:
+            cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
+        else:
+            cls = "inferred" if cites else "speculative"
+            reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else "no-verdict"
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        findings.append(dict(c, evidence=cites, evidence_class="traced", score=SCORE["traced"], verified=True,
-                             origin=origin, reason=v["reason"], source_lane="defects"))
+        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])))]
+        if origin == "pre-existing" and sev in SEVERITIES[2:]:  # VERI-05; Blocking and Required stay (VERI-06)
+            dropped["do_not_flag"] += 1
+            continue
+        items.append(dict(c, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
+                          verified=cls in ("reproduced", "traced"), origin=origin, reason=reason,
+                          source_lane="defects"))
+    items.sort(key=lambda i: (SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
+    findings = [i for i in items if i["verified"]]
+    unverifiable = [i for i in items if not i["verified"]]
+    rank = {i["severity"] for i in findings}
+    label = ("Needs changes" if "blocking" in rank else
+             "Needs discussion" if "required" in rank or unverifiable else "No blocking findings")
     areas = sorted({a for a in cand["inspected"] if _real(tree, a)})
     return {"schema_version": SCHEMA_VERSION,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
-            "verdict": "No blocking findings", "findings": findings, "unverifiable": [],
-            "dropped": {"refuted": 0, "do_not_flag": 0, "invalid": cand["dropped"]["invalid"]},
+            "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped,
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
 

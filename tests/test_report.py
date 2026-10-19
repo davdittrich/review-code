@@ -1,5 +1,6 @@
 """report.py on real target.py and ledger.py run dirs: finder line -> verdict -> schema v1 document."""
 import ast
+import hashlib
 import json
 import os
 import re
@@ -35,17 +36,22 @@ def lines(*objs):
     return "\n".join(o if isinstance(o, str) else json.dumps(o) for o in objs) + "\n"
 
 
+def fid(path, category, quote):
+    return "F-" + hashlib.sha256("\0".join((path, category, " ".join(quote.split()))).encode()).hexdigest()[:10]
+
+
 class Base(unittest.TestCase):
     pin_args = ["main"]
+    base_files, feat_files = BASE, {"src/calc.py": FEAT}
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
         self.tmp = os.path.realpath(self._td.name)
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, BASE, "base")
+        gitfix.commit(self.repo, self.base_files, "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
-        gitfix.commit(self.repo, {"src/calc.py": FEAT}, "feat")
+        gitfix.commit(self.repo, self.feat_files, "feat")
         self.run_dir = self.pin(self.pin_args)
 
     def pin(self, args):
@@ -103,6 +109,159 @@ class Tracer(Base):
                          (fid, "traced", 75, True, "introduced"))
         self.assertEqual(d["inspected"]["areas"], ["src/calc.py"])
         self.assertEqual(d["unverifiable"], [])
+
+
+# Lines 1 to 5 exist on main; lines 6 to 20 are added on the branch. Line 17 carries a lint-ignore marker.
+BASE2 = {"src/calc.py": "def load():\n    return 1\n\ndef old(x):\n    return x / 0\n"}
+FEAT2 = (BASE2["src/calc.py"] + "\ndef add(a, b):\n    return a - b\n\ndef mul(a, b):\n    return a * b\n"
+         "\ndef neg(a):\n    return -a\n\ndef sq(x):\n    return x * x  # noqa\n\ndef inc(a):\n    return a + 1\n")
+Q_OLD, Q_ADD, Q_MUL, Q_NEG, Q_SQ, Q_INC = ("return x / 0", "return a - b", "return a * b", "return -a", "return x * x",
+                                           "return a + 1")
+
+
+def cand(quote, line, **kw):
+    c = dict(CAND, quote=quote, line=line)
+    c.update(kw)
+    return c
+
+
+def verdict(path_quote_line, kind="confirmed", **kw):
+    quote, line = path_quote_line
+    return dict({"id": fid("src/calc.py", "bug", quote), "verdict": kind, "reason": "r",
+                 "evidence": [{"path": "src/calc.py", "line": line, "quote": quote}]}, **kw)
+
+
+class Derivation(Base):
+    base_files, feat_files = BASE2, {"src/calc.py": FEAT2}
+
+    def items(self, which="findings"):
+        return {i["id"]: i for i in self.doc()[which]}
+
+    def test_verdict_outcomes(self):
+        self.ingest(cand(Q_ADD, 8), cand(Q_MUL, 11), cand(Q_NEG, 14), cand(Q_INC, 20), {"inspected": ["src/calc.py"]})
+        a, m, n, o = (fid("src/calc.py", "bug", q) for q in (Q_ADD, Q_MUL, Q_NEG, Q_INC))
+        v = self.verdicts(verdict((Q_ADD, 8), "refuted"), verdict((Q_MUL, 11), "unverifiable", reason="needs runtime"),
+                          verdict((Q_NEG, 14), "confirmed", evidence=[{"path": "src/calc.py", "line": 14, "quote": "nope"}]))
+        self.assertEqual((v["confirmed"], v["refuted"], v["unverifiable"]), ([], [a], sorted([m, n, o])))
+        d = self.doc()
+        self.assertEqual(d["findings"], [])
+        self.assertEqual(d["dropped"], {"refuted": 1, "do_not_flag": 0, "invalid": 0})
+        un = {i["id"]: i for i in d["unverifiable"]}
+        self.assertNotIn(a, un)
+        self.assertEqual((un[m]["reason"], un[m]["evidence_class"], un[m]["score"], un[m]["verified"]),
+                         ("needs runtime", "inferred", 50, False))
+        self.assertEqual((un[n]["reason"], un[n]["evidence_class"]), ("no-valid-cite", "speculative"))
+        self.assertEqual((un[o]["reason"], un[o]["evidence_class"], un[o]["score"]), ("no-verdict", "speculative", 25))
+
+    def test_first_verdict_wins_and_unknown_id_ignored(self):
+        self.ingest(cand(Q_ADD, 8))
+        self.verdicts("{broken", verdict((Q_ADD, 8), "refuted"), verdict((Q_ADD, 8)),
+                      dict(verdict((Q_MUL, 11)), id="F-0000000000"))
+        d = self.doc()
+        self.assertEqual((d["findings"], d["dropped"]["refuted"]), ([], 1))
+
+    def test_severity_cap_and_score(self):
+        self.ingest(cand(Q_ADD, 8, severity="blocking"),
+                    cand(Q_MUL, 11, severity="blocking", category="security"),
+                    cand(Q_NEG, 14, severity="blocking", category="accessibility"),
+                    cand(Q_INC, 20, severity="suggestion", category="security"))
+        ids = {q: fid("src/calc.py", c, q) for q, c in ((Q_ADD, "bug"), (Q_MUL, "security"),
+                                                         (Q_NEG, "accessibility"), (Q_INC, "security"))}
+        self.verdicts(verdict((Q_ADD, 8)), dict(verdict((Q_MUL, 11)), id=ids[Q_MUL]),
+                      dict(verdict((Q_NEG, 14), "unverifiable"), id=ids[Q_NEG]),
+                      dict(verdict((Q_INC, 20)), id=ids[Q_INC]))
+        f = self.items()
+        self.assertEqual((f[ids[Q_ADD]]["severity"], f[ids[Q_ADD]]["evidence_class"]), ("required", "traced"))
+        self.assertEqual(f[ids[Q_MUL]]["severity"], "blocking")
+        self.assertEqual(f[ids[Q_INC]]["severity"], "suggestion")  # the finder's weaker rating stands
+        self.assertEqual(self.items("unverifiable")[ids[Q_NEG]]["severity"], "required")  # accessibility, inferred
+
+    def test_inferred_and_speculative_caps(self):
+        self.ingest(cand(Q_ADD, 8, severity="blocking"), cand(Q_MUL, 11, severity="blocking"))
+        self.verdicts(verdict((Q_ADD, 8), "unverifiable"))
+        u = self.items("unverifiable")
+        self.assertEqual(u[fid("src/calc.py", "bug", Q_ADD)]["severity"], "suggestion")
+        self.assertEqual(u[fid("src/calc.py", "bug", Q_MUL)]["severity"], "noted")
+
+    def test_repro_record_upgrades_class_only_when_reproduced(self):
+        self.ingest(cand(Q_ADD, 8), cand(Q_MUL, 11), cand(Q_NEG, 14))
+        a, m, n = (fid("src/calc.py", "bug", q) for q in (Q_ADD, Q_MUL, Q_NEG))
+        self.verdicts(verdict((Q_ADD, 8)), verdict((Q_MUL, 11)), verdict((Q_NEG, 14), "unverifiable"))
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        for i, outcome in ((a, "reproduced"), (m, "not-reproduced"), (n, "reproduced")):
+            with open(os.path.join(self.run_dir, "repro", i + ".json"), "w") as fh:
+                json.dump({"outcome": outcome, "exit": 1}, fh)
+        f = self.items()
+        self.assertEqual((f[a]["evidence_class"], f[a]["score"], f[a]["verified"]), ("reproduced", 100, True))
+        self.assertEqual(f[m]["evidence_class"], "traced")
+        self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
+
+    def test_do_not_flag_unchanged_lines(self):
+        self.ingest(cand(Q_OLD, 5, severity="suggestion", category="security"),
+                    cand("return 1", 2, severity="blocking", category="security"),
+                    cand(Q_ADD, 8, severity="required"), cand(Q_MUL, 11, severity="required"))
+        old, one, add, mul = (fid("src/calc.py", c, q) for q, c in ((Q_OLD, "security"), ("return 1", "security"),
+                                                                    (Q_ADD, "bug"), (Q_MUL, "bug")))
+        self.verdicts(dict(verdict((Q_OLD, 5)), id=old), dict(verdict(("return 1", 2)), id=one),
+                      verdict((Q_ADD, 8)), verdict((Q_MUL, 11), "unverifiable"))
+        d = self.doc()
+        got = {i["id"]: i for i in d["findings"]}
+        self.assertNotIn(old, got)  # pre-existing Suggestion: dropped
+        self.assertEqual((got[one]["severity"], got[one]["origin"]), ("blocking", "pre-existing"))  # Blocking stays
+        self.assertEqual(got[add]["origin"], "introduced")
+        self.assertEqual(d["dropped"]["do_not_flag"], 1)
+        self.assertEqual([i["id"] for i in d["unverifiable"]], [mul])  # introduced noted/suggestion is kept
+
+    def test_pre_existing_inferred_and_speculative_are_dropped(self):
+        self.ingest(cand(Q_OLD, 5, severity="required"), cand("return 1", 2, severity="required"))
+        self.verdicts(verdict((Q_OLD, 5), "unverifiable"))
+        d = self.doc()
+        self.assertEqual((d["findings"], d["unverifiable"], d["dropped"]["do_not_flag"]), ([], [], 2))
+
+    def test_origin_spans_the_cited_range(self):
+        self.ingest(cand(Q_OLD, 5, end_line=7))
+        self.verdicts(verdict((Q_OLD, 5)))
+        self.assertEqual(self.doc()["findings"][0]["origin"], "introduced")  # lines 6 and 7 are added
+
+    def test_lint_ignore_line_is_dropped_at_ingest(self):
+        out = self.ingest(cand(Q_SQ, 17), cand(Q_ADD, 8))
+        self.assertEqual((len(out["ids"]), out["dropped"]), (1, {"invalid": 0, "do_not_flag": 1}))
+        self.assertEqual(self.doc()["dropped"]["do_not_flag"], 1)
+        for marker in ("noqa", "type: ignore", "pylint: disable", "eslint-disable", "@ts-ignore", "@ts-expect-error",
+                       "nolint", "NOSONAR", "rubocop:disable", "#[allow(dead_code)]", "@SuppressWarnings", "nosec"):
+            self.assertRegex("x = 1  // " + marker.upper(), report.LINT_IGNORE, marker)
+
+    def test_invalid_candidates_are_counted_and_prose_is_not(self):
+        os.symlink("/etc/hostname", os.path.join(self.run_dir, "tree", "link.py"))
+        good = cand(Q_ADD, 8)
+        out = self.ingest("prose", good, dict(good), cand(Q_ADD, 8, path="../x"), cand(Q_ADD, 8, path="/etc/hostname"),
+                          cand(Q_ADD, 8, path="nope.py"), cand("x", 1, path="link.py"), cand("not on the line", 8),
+                          cand(Q_ADD, 99), cand(Q_ADD, True), cand(Q_ADD, 8, severity="fatal"),
+                          cand(Q_ADD, 8, category="style"), "{broken", "[1]", "{}")
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 12))
+
+    def test_candidate_self_rating_is_ignored(self):
+        self.ingest(dict(cand(Q_ADD, 8), id="F-0000000000", score=100, evidence_class="reproduced",
+                         origin="pre-existing", verified=False, confidence=100))
+        self.verdicts(verdict((Q_ADD, 8)))
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["id"], f["score"], f["evidence_class"], f["origin"], f["verified"]),
+                         (fid("src/calc.py", "bug", Q_ADD), 75, "traced", "introduced", True))
+
+    def test_order_is_severity_path_line_id(self):
+        self.ingest(cand(Q_MUL, 11, severity="suggestion"), cand(Q_ADD, 8, severity="required"),
+                    cand(Q_NEG, 14, severity="blocking", category="security"))
+        self.verdicts(verdict((Q_MUL, 11)), verdict((Q_ADD, 8)),
+                      dict(verdict((Q_NEG, 14)), id=fid("src/calc.py", "security", Q_NEG)))
+        self.assertEqual([(i["severity"], i["line"]) for i in self.doc()["findings"]],
+                         [("blocking", 14), ("required", 8), ("suggestion", 11)])
+
+    def test_ingest_resets_review_state(self):
+        self.ingest(cand(Q_ADD, 8))
+        self.verdicts(verdict((Q_ADD, 8)))
+        self.ingest(cand(Q_ADD, 8))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+        self.assertEqual(self.doc()["findings"], [])
 
 
 if __name__ == "__main__":
