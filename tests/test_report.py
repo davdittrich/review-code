@@ -791,6 +791,18 @@ class Shards(Lanes):
         self.assertEqual(r, rc, out)
         return json.loads(out)
 
+    def test_one_id_from_two_shards_at_distant_lines_merges(self):  # IN-05: ledger copies a sibling's caller file
+        for n in (1, 2):
+            with open(os.path.join(self.run_dir, "shards", str(n), "tree", "src", "only.py"), "w") as fh:
+                fh.write("a = 1\nb = 2\nc = 3\nd = 4\na = 1\n")  # the same text at lines 1 and 5
+        q = dict(CAND, path="src/only.py", quote="a = 1")
+        self.shard(1, dict(q, line=1))
+        out = self.shard(2, dict(q, line=5, severity="blocking", category="bug"))
+        self.assertEqual((len(out["ids"]), out["merged"]), (1, 1))
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual((c["line"], c["shard"], c["severity"]), (5, 2, "blocking"))
+
     def test_cite_is_checked_in_the_shard_tree(self):
         self.assertEqual(self.shard(1, mc(3))["dropped"]["invalid"], 0)
         out = self.shard(2, mc(3))

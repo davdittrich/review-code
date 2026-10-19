@@ -300,9 +300,16 @@ def _handoff(c, run, nonce, packs=()):
 def _dedupe(cands):
     """(survivors, merged count). Per axis, candidates on one path and category whose ranges lie within 2 lines merge;
     the more severe survives, then the longer trigger, then the smaller id. A wrong merge hides a finding and a missed
-    one shows two, so categories and axes never merge."""
-    out, merged = [], 0
-    ordered = sorted(cands, key=lambda c: (c["axis"], c["path"], c["category"], c["line"], c["end_line"], c["id"]))
+    one shows two, so categories and axes never merge. One id (shards whose trees share a referenced file) always
+    merges first, wherever its lines are: the more severe, then the longer trigger, then the lower line and shard."""
+    best, merged = {}, 0
+    for c in sorted(cands, key=lambda c: (SEVERITIES.index(c["severity"]), -len(c["trigger"]), c["line"],
+                                          c.get("shard") or 0)):
+        k = (c["axis"], c["path"], c["category"], c["id"])  # the id is a 40-bit hash: never merge across its inputs
+        merged += k in best
+        best.setdefault(k, c)
+    out = []
+    ordered = sorted(best.values(), key=lambda c: (c["axis"], c["path"], c["category"], c["line"], c["end_line"], c["id"]))
     i = 0
     while i < len(ordered):
         j, end = i + 1, ordered[i]["end_line"]
