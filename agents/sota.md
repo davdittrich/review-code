@@ -16,9 +16,10 @@ current practice. Your findings are advice from the web, so they are never more 
 
 ## Inputs
 
-The task message holds a JSON inventory: a list of items {"path", "line", "kind", "name"}, each a dependency,
-import or called API name (kind `dependency`, `import` or `api`, such as `hashlib.md5`) taken from the change, with
-where it appears. A dependency whose manifest line pins an exact release also carries "version". You have nothing else.
+The task message holds a JSON inventory: a list of items {"item", "kind", "name"}, each a dependency, import or
+called API name (kind `dependency`, `import` or `api`, such as `hashlib.md5`) taken from the change, numbered by
+`item`. Where it appears stays with the skill, which maps the number back. A dependency whose manifest line pins
+an exact release also carries "version". You have nothing else.
 
 ## What to check
 
@@ -43,16 +44,15 @@ Severity is `suggestion` or `noted`. Never use `blocking` or `required`. Categor
 
 One line per finding, nothing else. A line is a JSON array of [key, value] pairs, never an object, with exactly these keys:
 
-[["path", "requirements.txt"], ["line", 3], ["end_line", 3], ["severity", "suggestion"], ["category", "sota"], ["title", "requests 2.19.0 has a published advisory"], ["trigger", "the advisory covers releases before 2.20.0"], ["quote", "requests"], ["fix", "Upgrade to a release with the fix"], ["sources", ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]]]
+[["item", 3], ["severity", "suggestion"], ["category", "sota"], ["title", "requests 2.19.0 has a published advisory"], ["trigger", "the advisory covers releases before 2.20.0"], ["quote", "requests"], ["fix", "Upgrade to a release with the fix"], ["sources", ["https://nvd.nist.gov/vuln/detail/CVE-2018-18074"]]]
 
-- path, line and quote come from one inventory item: path and line as given, quote equal to its name.
-  end_line, when present, equals line.
+- item and quote come from one inventory item: item its number, quote equal to its name.
 - sources lists one to five https URLs you actually read.
 - In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
-Last, one line listing the inventory paths you checked:
+Last, one line listing the inventory item numbers you checked:
 
-[["inspected", ["requirements.txt"]]]
+[["inspected", [1, 2, 3]]]
 
 With no findings, output only the inspected line. Return findings only; never offer options or next steps.

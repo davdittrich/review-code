@@ -25,7 +25,7 @@ The verifier runs on a different model from the finders (LANE-07). If your setti
 | defects | `review-code:finder` | Defects | `inputs/defects.md`, `tree/` | Bugs, with a concrete trigger |
 | standards | `review-code:standards` | Standards | `inputs/standards.md`, `conventions/`, `tree/` | Documented repo conventions and baseline smells. The Ponytail checks (needless code, reimplemented stdlib or helpers, over-engineering, stale or restating comments) are folded in here, category `lean`, so there is one Standards call per shard |
 | spec | `review-code:spec` | Spec | `inputs/spec.md` | The only reader of the spec text; lists what it declined to judge; skipped with a stated reason when there is no spec or the tier has no Spec lane (quick) |
-| sota | `review-code:sota` | advisory | an inventory of names and pinned versions in its prompt | Web research on library, algorithm and API choices; 1 to 5 https sources per item; never verified, never counts toward the verdict |
+| sota | `review-code:sota` | advisory | a numbered inventory of names and pinned versions in its prompt; paths and lines stay in `plan.json` | Web research on library, algorithm and API choices; 1 to 5 https sources per item; never verified, never counts toward the verdict |
 
 The axes are reported side by side and never merged or reranked. Duplicates are folded within an axis only. Defects and Standards candidates go to `review-code:verifier`; Spec candidates go to `review-code:spec-verifier`, the second reader of `inputs/spec.md`. The main thread never opens `inputs/spec.md`, in either mode.
 

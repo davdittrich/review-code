@@ -269,10 +269,10 @@ class Sota(unittest.TestCase):
             if re.search(r"\b(Read|Grep|Glob)\b", line):
                 self.assertRegex(line.lower(), r"\bno\b|never")
 
-    def test_candidate_line_keys(self):
-        o = first(self.body, '[["path"')
-        self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
-                                     + report.LANE_OPTIONAL["sota"]))
+    def test_candidate_line_keys(self):  # gaz.33: an inventory item number stands in for path and line
+        o = first(self.body, '[["item"')
+        self.assertEqual(set(o), (set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL + report.LANE_OPTIONAL["sota"])
+                                  - {"path", "line", "end_line"}) | {"item"})
         self.assertEqual(o["category"], "sota")
         self.assertTrue(o["sources"] and all(u.startswith("https://") for u in o["sources"]))
         self.assertEqual(o["quote"], "requests")
@@ -406,11 +406,13 @@ class WireContract(tp.Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
         self.assertEqual(rc, 0, out)
         _, body = parts("sota")
-        ex = first(body, '[["path"')
-        self.assertIn({"kind": "dependency", "path": ex["path"], "line": ex["line"], "name": ex["quote"], "version": "2.19.0"},
-                      self.plan_json()["sota_inventory"])
-        out = self.ingest_examples("sota", "sota", '[["path"', '[["inspected"')
+        ex = first(body, '[["item"')
+        self.assertIn({"item": ex["item"], "kind": "dependency", "path": "requirements.txt", "line": 3, "name": ex["quote"],
+                       "version": "2.19.0"}, self.plan_json()["sota_inventory"])
+        out = self.ingest_examples("sota", "sota", '[["item"', '[["inspected"')
         self.assertEqual((out["ids"], out["spec_ids"]), ([], []))
+        (i,) = self.doc()["unverifiable"]
+        self.assertEqual((i["path"], i["line"]), ("requirements.txt", 3))
 
 
 if __name__ == "__main__":

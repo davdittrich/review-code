@@ -9,9 +9,10 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
 `render`, which prints the report):
 
     report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N]
-                                   candidate lines + one ["inspected", [path, ...]] pair line; additive per lane (key
-                                   <lane>, or <lane>@N for shard N, a plan.json shard id: cites are checked in
-                                   <run>/shards/N/tree, conventions in <run>/shards/N/conventions; else bad-shard)
+                                   candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers);
+                                   additive per lane (key <lane>, or <lane>@N for shard N, a plan.json shard id:
+                                   cites are checked in <run>/shards/N/tree, conventions in
+                                   <run>/shards/N/conventions; else bad-shard)
     report.py verdicts --run DIR   id, verdict, evidence (a list of path, line, quote), reason pair-array lines
     report.py render   --run DIR [--format text|json|sarif]
     report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/ and repro/ (a re-plan starts clean)
@@ -35,8 +36,9 @@ UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verd
 consecutive words of spec text counts invalid (verdicts: the line is dropped), so no output carries such a run; a
 paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
-and sources (SOTA). SOTA (path, line, quote = item name) must match plan.json sota_inventory, with 1 to 5 https
-`sources`; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
+and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (its path and line come from there;
+any path or line in the line is overwritten), quote = the item name, with 1 to 5 https `sources`, and its inspected
+line lists item numbers; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
 lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
@@ -223,10 +225,11 @@ def _spec_copy(run):
 
 
 def _inventory(run):
-    """{(normalised path, line): name} of plan.json sota_inventory."""
+    """{item: (path, line, name)} of plan.json sota_inventory: the lane names an item, never a path (WR-04)."""
     inv = _plan(run).get("sota_inventory")
-    return {(os.path.normpath(i["path"]), i["line"]): i["name"] for i in (inv if isinstance(inv, list) else [])
-            if isinstance(i, dict) and isinstance(i.get("path"), str) and _int(i.get("line")) and isinstance(i.get("name"), str)}
+    return {i["item"]: (i["path"], i["line"], i["name"]) for i in (inv if isinstance(inv, list) else [])
+            if isinstance(i, dict) and _int(i.get("item")) and isinstance(i.get("path"), str) and _int(i.get("line"))
+            and isinstance(i.get("name"), str)}
 
 
 def _sources(x):
@@ -261,7 +264,7 @@ def _candidate(o, tree, lane, base, ctx=None):
     c["path"] = os.path.normpath(c["path"])
     if lane == "sota":
         src = _sources(o.get("sources"))
-        if src is None or not _int(c["line"]) or _ws(c["quote"]) != _ws(ctx.get((c["path"], c["line"]), "")) or end != c["line"]:
+        if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
             return None
         c["sources"] = src
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
@@ -384,11 +387,16 @@ def _read_lane(text, lane, tree, run, shard=None):
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
-                areas += [a for a in o["inspected"] if _real(tree, a)] if isinstance(o["inspected"], list) else []
+                got = o["inspected"] if isinstance(o["inspected"], list) else []
+                if lane == "sota":  # item numbers, mapped back to their inventory paths
+                    got = [ctx[a][0] for a in got if _int(a) and a in ctx]
+                areas += [a for a in got if _real(tree, a)]
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + bad
             continue
+        if lane == "sota" and o is not None:  # the inventory, never the lane, picks the path and line
+            o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         c = _candidate(o, tree, lane, base, ctx) if o is not None else None
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c = None

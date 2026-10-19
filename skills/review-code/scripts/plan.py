@@ -286,7 +286,7 @@ def _build_shard(run, tj, i, files, trust, packs):
 
 
 # SOTA inventory: dependency, import, library and called API names and pinned versions only, so the web lane never
-# sees repository text.
+# sees repository text. Path and line stay in plan.json; the lane's prompt numbers each item instead (WR-04).
 INVENTORY_MAX = 50  # keeps the task message small and bounds the lane's search budget
 NAME_RE = re.compile(r"[A-Za-z0-9@/._-]{1,100}")
 VERSION_RE = re.compile(r"[0-9][0-9A-Za-z.+_-]{0,39}")
@@ -338,8 +338,8 @@ def _names(path, text):
 
 
 def _inventory(lines):
-    """[{kind, name, path, line[, version]}] of safe names, first location per (kind, name, version), dependencies
-    first, at most INVENTORY_MAX."""
+    """[{item, kind, name, path, line[, version]}] of safe names, first location per (kind, name, version),
+    dependencies first, at most INVENTORY_MAX, item numbered from 1."""
     seen, out = set(), []
     for path in sorted(lines):
         found = [(n, x) for n, text in lines[path] for x in _names(path, text)]
@@ -352,7 +352,7 @@ def _inventory(lines):
                 seen.add((kind, name, ver))
                 out.append(dict({"kind": kind, "name": name, "path": path, "line": n}, **({"version": ver} if ver else {})))
     out.sort(key=lambda i: KINDS.index(i["kind"]))  # stable: path and line order within a kind
-    return out[:INVENTORY_MAX]
+    return [dict(i, item=n) for n, i in enumerate(out[:INVENTORY_MAX], 1)]
 
 
 def _estimate(call):
@@ -464,7 +464,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         elif lane == "sota":
             calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": LANE_AGENT[lane], "model": fm, "effort": fe,
                           "input": None, "shard": None,
-                          "prompt": "SOTA lane. Inventory: " + json.dumps(inventory, sort_keys=True, separators=(",", ":"))})
+                          "prompt": "SOTA lane. Inventory: " + json.dumps([{k: v for k, v in i.items() if k not in ("path", "line")}
+                                                                           for i in inventory], sort_keys=True, separators=(",", ":"))})
         else:
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")

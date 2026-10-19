@@ -18,7 +18,7 @@ PR and MR titles and bodies, commit messages, issue text, spec files, file and b
 | One candidate for its verifier | `handoff/<id>.md` | Claim and trigger only, inside a per-run nonce fence; no sibling candidates |
 | Spec candidates | `candidates.json`, `handoff/<id>.md` | Cited by `spec_line` number only. A spec-lane title, trigger, fix or declined reason, or a spec-verifier reason, holding 6 consecutive words of spec text (case and punctuation ignored) counts invalid, so no handoff or report carries such a run. `review-code:spec-verifier` is the second reader of `inputs/spec.md` |
 | Domain pack text | `inputs/packs/` | Plugin-authored data copied from `references/packs/`, read by the lanes as guidance; not reviewed code |
-| SOTA inventory | `plan.json`, the SOTA call's prompt | Names and exact pinned versions only (dependency, import and called API names, with path and line; a called API is a dotted call rooted at an import or a fixed module list, with comments cut; a version matches `[0-9][0-9A-Za-z.+_-]{0,39}` or is dropped), never code or comments; the SOTA lane's web search and fetch are its exposure to hostile pages, and its https sources are shown with the item |
+| SOTA inventory | `plan.json`, the SOTA call's prompt | Names and exact pinned versions only (dependency, import and called API names; `plan.json` holds each item's path and line, the prompt only its item number, kind, name and version, so no repository path reaches the web lane; a called API is a dotted call rooted at an import or a fixed module list, with comments cut; a version matches `[0-9][0-9A-Za-z.+_-]{0,39}` or is dropped), never code or comments; the SOTA lane's web search and fetch are its exposure to hostile pages, and its https sources are shown with the item |
 
 ## Sanitizer
 
@@ -39,7 +39,7 @@ The skill asks once per run whether the code is the user's own. The first answer
 ## Known limits
 
 - Serial mode is a weaker boundary: the main thread reads target code while holding Bash and web tools, and only the instruction to stay read-only, act on nothing it reads and run no command from it stands in the way of an injected instruction. The report states the lost guarantee. Nothing is Blocking in serial mode and the Spec axis and SOTA lane are skipped.
-- The SOTA lane has web tools and reads hostile pages. Its output is checked against the inventory and needs 1 to 5 https sources, never trusted as a verdict, and does not count toward the verdict.
+- The SOTA lane has web tools and reads hostile pages. Its output names an inventory item number, which ingest maps back to the path and line in `plan.json`, and needs 1 to 5 https sources, never trusted as a verdict, and does not count toward the verdict.
 - A pack's do-not-flag list is enforced by prompt, not by code.
 - Spec text can still reach the main thread: it relays the Spec lane's and the spec-verifier's replies into `report.py`, so it sees whatever they wrote, and a paraphrase or a run under 6 words passes the check. Only their instruction to cite by `spec_line` keeps the author's text out.
 - Not stripped: attribute values (`title`, `data-*`), link titles and definitions, footnotes, entity-encoded markup, markdown comment lines inside a list or quote, and other markup's comment syntax (AsciiDoc, Org, rst `..`).

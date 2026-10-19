@@ -672,20 +672,22 @@ def write_plan(run, **plan):
         json.dump(plan, fh)
 
 
-INV = {"path": "src/calc.py", "line": 3, "name": MQ[3]}
+INV = {"item": 1, "kind": "import", "path": "src/calc.py", "line": 3, "name": MQ[3]}
 
 
 class Sota(Lanes):
-    def sota(self, **kw):
-        return dict(mc(3, "sota", severity="blocking"), **dict({"sources": ["https://example.com/a", "https://example.org/b"]}, **kw))
+    def sota(self, **kw):  # gaz.33: the lane names an inventory item, never a path or line
+        line = {k: v for k, v in mc(3, "sota", severity="blocking").items() if k not in ("path", "line")}
+        return dict(line, **dict({"item": 1, "sources": ["https://example.com/a", "https://example.org/b"]}, **kw))
 
     def setUp(self):
         super().setUp()
         write_plan(self.run_dir, sota_inventory=[INV])
 
     def test_inventory_match_with_https_sources_is_kept_and_not_queued(self):
-        out = self.lane("sota", self.sota(), {"inspected": []})
+        out = self.lane("sota", self.sota(), {"inspected": [1, 7, True, "src/calc.py"]})
         self.assertEqual((out["ids"], out["spec_ids"], out["dropped"]["invalid"]), ([], [], 0))
+        self.assertEqual(self.doc()["inspected"]["areas"], ["src/calc.py"])  # item numbers map back to paths
         self.assertEqual(os.listdir(out["handoff"]), [])
         d = self.doc()
         (i,) = d["unverifiable"]
@@ -703,7 +705,9 @@ class Sota(Lanes):
         bad = [self.sota(sources=s) for s in (["http://example.com"], ["javascript:alert(1)"], ["https://a b"],
                                               ["https://x.com/"] * 6, [], "https://x.com", ["https://"], [5],
                                               ["https://x.com/" + "a" * 300])]
-        bad += [self.sota(sources=ok, line=4, quote=MQ[4]),  # not an inventory line
+        bad += [self.sota(sources=ok, item=2),  # not an inventory item
+                self.sota(sources=ok, item="1"), self.sota(sources=ok, item=True),
+                {k: v for k, v in self.sota().items() if k != "item"},
                 self.sota(sources=ok, quote="y = a"),  # quote is not the item name
                 self.sota(sources=ok, end_line=4),
                 {k: v for k, v in self.sota().items() if k != "sources"}]
@@ -711,8 +715,13 @@ class Sota(Lanes):
         self.assertEqual(out["dropped"]["invalid"], len(bad))
         self.assertEqual(self.doc()["unverifiable"], [])
 
-    def test_unhashable_line_counts_invalid_and_keeps_the_batch(self):  # CR-01
-        out = self.lane("sota", self.sota(), self.sota(line=[3]), {"inspected": []})
+    def test_lane_path_and_line_never_choose_the_target(self):  # gaz.33: the inventory resolves the item
+        self.lane("sota", self.sota(path="evil.py", line=4))
+        (i,) = self.doc()["unverifiable"]
+        self.assertEqual((i["path"], i["line"], i["end_line"]), ("src/calc.py", 3, 3))
+
+    def test_unhashable_item_counts_invalid_and_keeps_the_batch(self):  # CR-01
+        out = self.lane("sota", self.sota(), self.sota(item=[1]), {"inspected": [[1]]})
         self.assertEqual(out["dropped"]["invalid"], 1)
         self.assertEqual(len(self.doc()["unverifiable"]), 1)
 
