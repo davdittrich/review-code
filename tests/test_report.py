@@ -307,7 +307,7 @@ class Renders(Base):
             self.assertEqual(loc["physicalLocation"]["region"], {"startLine": f["line"], "endLine": f["end_line"]})
             self.assertEqual(r["partialFingerprints"], {"reviewCodeId/v1": f["id"]})
             self.assertEqual(r["properties"], {"evidenceClass": f["evidence_class"], "severity": f["severity"],
-                                               "origin": f["origin"], "score": f["score"]})
+                                               "origin": f["origin"], "score": f["score"], "axis": f["axis"]})
         self.assertEqual([r["level"] for r in run["results"]], ["error", "warning"])
 
     def test_text_sections_and_escape(self):
@@ -371,7 +371,7 @@ def node(lane, line, severity="required", category="lean", axis="standards", tri
             "end_line": line, "severity": severity, "category": category, "trigger": trigger}
 
 
-class MultiLane(Base):
+class Lanes(Base):
     base_files, feat_files = MBASE, MFEAT
 
     def lane(self, name, *objs, **kw):
@@ -379,6 +379,8 @@ class MultiLane(Base):
         self.assertEqual(rc, kw.get("rc", 0), out)
         return json.loads(out)
 
+
+class MultiLane(Lanes):
     def set_cap(self, n):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
             json.dump({"caps": {"max_verifier_calls": n}}, fh)
@@ -599,6 +601,102 @@ class SpecAxis(Base):
         self.ingest(CAND)
         rc, text = self.rep("render")
         self.assertRegex(text, r"Spec\nSpec: skipped \(no spec\)")
+
+
+def write_plan(run, **plan):
+    plan.setdefault("caps", {"max_verifier_calls": 50})  # 04-01: a plan.json without caps is bad-plan
+    with open(os.path.join(run, "plan.json"), "w") as fh:
+        json.dump(plan, fh)
+
+
+INV = {"path": "src/calc.py", "line": 3, "name": MQ[3]}
+
+
+class Sota(Lanes):
+    def sota(self, **kw):
+        return dict(mc(3, "sota", severity="blocking"), **dict({"sources": ["https://example.com/a", "https://example.org/b"]}, **kw))
+
+    def setUp(self):
+        super().setUp()
+        write_plan(self.run_dir, sota_inventory=[INV])
+
+    def test_inventory_match_with_https_sources_is_kept_and_not_queued(self):
+        out = self.lane("sota", self.sota(), {"inspected": []})
+        self.assertEqual((out["ids"], out["spec_ids"], out["dropped"]["invalid"]), ([], [], 0))
+        self.assertEqual(os.listdir(out["handoff"]), [])
+        d = self.doc()
+        (i,) = d["unverifiable"]
+        self.assertEqual((d["findings"], i["category"], i["evidence_class"], i["reason"], i["severity"], i["axis"]),
+                         ([], "sota", "inferred", "web-sourced", "suggestion", "standards"))
+        self.assertEqual(i["sources"], ["https://example.com/a", "https://example.org/b"])
+        self.assertEqual(d["verdict"], "No blocking findings")  # advisory: never counts toward the verdict
+        rc, text = self.rep("render")
+        self.assertIn("SOTA (advisory)\n- [%s] src/calc.py:3" % i["id"], text)
+        self.assertIn("    source: https://example.org/b", text)
+        self.assertIn("findings: 0, unverifiable: 0", text)
+
+    def test_bad_sources_or_cites_count_invalid(self):
+        ok = ["https://example.com/a"]
+        bad = [self.sota(sources=s) for s in (["http://example.com"], ["javascript:alert(1)"], ["https://a b"],
+                                              ["https://x.com/"] * 6, [], "https://x.com", ["https://"], [5],
+                                              ["https://x.com/" + "a" * 300])]
+        bad += [self.sota(sources=ok, line=4, quote=MQ[4]),  # not an inventory line
+                self.sota(sources=ok, quote="y = a"),  # quote is not the item name
+                self.sota(sources=ok, end_line=4),
+                {k: v for k, v in self.sota().items() if k != "sources"}]
+        out = self.lane("sota", *bad)
+        self.assertEqual(out["dropped"]["invalid"], len(bad))
+        self.assertEqual(self.doc()["unverifiable"], [])
+
+    def test_sota_does_not_flip_a_verdict_and_ignores_stray_verdicts(self):
+        out = self.lane("sota", self.sota())
+        sid = self.doc()["unverifiable"][0]["id"]
+        v = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"})
+        self.assertEqual((v["confirmed"], v["unverifiable"]), ([], []))
+        (i,) = self.doc()["unverifiable"]
+        self.assertEqual((i["evidence_class"], i["reason"]), ("inferred", "web-sourced"))
+
+
+class Serial(Lanes):
+    def confirm_all(self):
+        out = self.lane("defects", mc(3, "security", severity="blocking"), {"inspected": []})
+        self.verdicts(*[{"id": i, "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"}
+                        for i in out["ids"]])
+        return out["ids"]
+
+    def test_sarif_results_carry_axis(self):
+        self.confirm_all()
+        rc, out = self.rep("render", extra=["--format", "sarif"])
+        self.assertEqual(json.loads(out)["runs"][0]["results"][0]["properties"]["axis"], "defects")
+
+    def test_parallel_default_without_plan(self):
+        self.confirm_all()
+        d = self.doc()
+        self.assertEqual((d["mode"], d["tier"], d["lost_guarantees"], len(d["findings"])), ("parallel", None, [], 1))
+        self.assertEqual(d["findings"][0]["severity"], "blocking")
+        rc, text = self.rep("render")
+        self.assertIn("mode: parallel", text)
+
+    def test_serial_caps_confirmed_at_inferred_and_ignores_repro(self):
+        write_plan(self.run_dir, mode="serial", tier="quick", lost_guarantees=["no independent verifier", "no repro"], skipped=[])
+        (i,) = self.confirm_all()
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        with open(os.path.join(self.run_dir, "repro", i + ".json"), "w") as fh:
+            json.dump({"outcome": "reproduced", "exit": 1}, fh)
+        d = self.doc()
+        (u,) = d["unverifiable"]
+        self.assertEqual((d["findings"], u["evidence_class"], u["reason"], u["verified"]), ([], "inferred", "self-scored", False))
+        self.assertNotEqual(u["severity"], "blocking")
+        self.assertEqual((d["mode"], d["tier"], d["lost_guarantees"]), ("serial", "quick", ["no independent verifier", "no repro"]))
+        rc, text = self.rep("render")
+        for need in ("mode: serial", "tier: quick", "lost guarantee: no independent verifier", "lost guarantee: no repro"):
+            self.assertIn(need, text)
+
+    def test_unrecognised_mode_and_malformed_fields_default(self):
+        write_plan(self.run_dir, mode="SERIAL", lost_guarantees="x", tier=3)
+        self.confirm_all()
+        d = self.doc()
+        self.assertEqual((d["mode"], d["tier"], d["lost_guarantees"]), ("parallel", None, []))
 
 
 if __name__ == "__main__":

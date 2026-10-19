@@ -34,7 +34,7 @@ import os
 import re
 import secrets
 import shutil
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import ledger
 import sanitize
@@ -158,6 +158,29 @@ def _spec_lines(run):
     return ok
 
 
+def _inventory(run):
+    """{(normalised path, line): name} of plan.json sota_inventory."""
+    inv = _plan(run).get("sota_inventory")
+    return {(os.path.normpath(i["path"]), i["line"]): i["name"] for i in (inv if isinstance(inv, list) else [])
+            if isinstance(i, dict) and isinstance(i.get("path"), str) and _int(i.get("line")) and isinstance(i.get("name"), str)}
+
+
+def _sources(x):
+    """x when it is 1 to 5 https URLs without whitespace (at most 300 characters each), else None."""
+    if not (isinstance(x, list) and 1 <= len(x) <= 5):
+        return None
+    for u in x:
+        if not (isinstance(u, str) and len(u) <= 300 and u == "".join(u.split())):
+            return None
+        try:
+            sp = urlsplit(u)
+        except ValueError:
+            return None
+        if sp.scheme != "https" or not sp.netloc:
+            return None
+    return x
+
+
 def _candidate(o, tree, lane, run, ctx=None):
     for k in CANDIDATE_REQUIRED:
         if k not in o:
@@ -172,6 +195,11 @@ def _candidate(o, tree, lane, run, ctx=None):
     if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
         return None
     c["path"] = os.path.normpath(c["path"])
+    if lane == "sota":
+        src = _sources(o.get("sources"))
+        if src is None or _ws(c["quote"]) != _ws(ctx.get((c["path"], c["line"]), "")) or end != c["line"]:
+            return None
+        c["sources"] = src
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
     if c["rows"] is None:
         return None
@@ -180,8 +208,6 @@ def _candidate(o, tree, lane, run, ctx=None):
         if r is None:
             return None
         c["rule"], c["rule_source"] = r
-    if isinstance(o.get("sources"), list) and "sources" in LANE_OPTIONAL[lane]:
-        c["sources"] = [x for x in o["sources"] if isinstance(x, str)]
     if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
         c["spec_line"] = o["spec_line"]
     c["axis"], c["source_lane"] = LANE_AXIS[lane], lane
@@ -224,14 +250,21 @@ def _dedupe(cands):
     return sorted(out, key=lambda c: c["id"]), merged
 
 
-def _cap_of(run):
-    """caps.max_verifier_calls of plan.json, None when there is no plan.json (no cap)."""
+def _plan(run):
+    """plan.json as a dict, {} when the run has none."""
     try:
-        plan = _load(run, "plan.json")
+        return _load(run, "plan.json")
     except target.Refuse as r:
         if r.reason == "no-plan":
-            return None
+            return {}
         raise
+
+
+def _cap_of(run):
+    """caps.max_verifier_calls of plan.json, None when there is no plan.json (no cap)."""
+    plan = _plan(run)
+    if not plan:
+        return None
     caps = plan.get("caps")
     n = caps.get("max_verifier_calls") if isinstance(caps, dict) else None
     if not _int(n) or n < 1:
@@ -251,7 +284,7 @@ def _declined(o, ctx):
 
 def _read_lane(text, lane, tree, run):
     kept, areas, invalid, ignored, complete, declined = {}, [], 0, 0, False, []
-    ctx = _spec_lines(run) if lane == "spec" else None
+    ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     for o in _objects(text):
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
@@ -284,7 +317,8 @@ def ingest(run, text, lane="defects"):
     cap = _cap_of(run)
     lanes[lane] = _read_lane(text, lane, tree, run)  # re-ingesting a lane replaces only that lane
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
-    queue = sorted(cands, key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
+    queue = sorted((c for c in cands if c["category"] != "sota"),  # SOTA is advisory: no verifier call
+                   key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro"):
@@ -307,7 +341,7 @@ def ingest(run, text, lane="defects"):
 def verdicts(run, text):
     cand = _load(run, "candidates.json")
     tree = os.path.realpath(os.path.join(run, "tree"))
-    ids = {c["id"] for c in cand["candidates"]} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
+    ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     got = {}
     for o in _objects(text):
         if o is None or o.get("id") not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
@@ -357,14 +391,20 @@ def build(run):
             if tag == "+":
                 added.setdefault(p, set()).add(n)
     capped = set(cand.get("capped_ids", []))
+    plan = _plan(run)
+    serial = plan.get("mode") == "serial"
     items, dropped = [], dict(cand["dropped"], refuted=0)
     for c in cand["candidates"]:
-        v = ver.get(c["id"], {})
+        v = {} if c["category"] == "sota" else ver.get(c["id"], {})
         cites, kind = v.get("cites", []), v.get("verdict")
         if kind == "refuted":
             dropped["refuted"] += 1
             continue
-        if kind == "confirmed" and cites:
+        if c["category"] == "sota":
+            cls, reason = "inferred", "web-sourced"
+        elif kind == "confirmed" and cites and serial:  # a self-score is not independent verification (VERI-03)
+            cls, reason = "inferred", "self-scored"
+        elif kind == "confirmed" and cites:
             cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
         else:
             cls = "inferred" if cites else "speculative"
@@ -389,10 +429,7 @@ def build(run):
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
              or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
     areas = sorted({a for a in cand["inspected"] if _real(tree, a)})
-    try:
-        skipped = _load(run, "plan.json").get("skipped")
-    except target.Refuse:
-        skipped = None
+    skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
     spec = led.get("spec")
     if (not isinstance(spec, dict) or spec.get("status") == "none") and not any(s.get("what") == "spec" for s in skipped):
@@ -404,6 +441,9 @@ def build(run):
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
+            "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
+            "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
+            if isinstance(plan.get("lost_guarantees"), list) else [],
             "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
@@ -423,7 +463,7 @@ def _sarif(doc):
                                                          "region": {"startLine": f["line"], "endLine": f["end_line"]}}}],
                      "partialFingerprints": {"reviewCodeId/v1": f["id"]},
                      "properties": {"evidenceClass": f["evidence_class"], "severity": f["severity"],
-                                    "origin": f["origin"], "score": f["score"]}} for f in fs]}]}
+                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs]}]}
 
 
 def _text(doc):
@@ -443,7 +483,9 @@ def _text(doc):
         e(t["kind"]), e(t["head_sha"]), e(t["merge_base"]), e(t["label"]))]
     if t["not_a_change"]:
         out.append("Target is not a change: whole-file findings")
-    out += ["findings: %d, unverifiable: %d" % (len(fs), len(doc["unverifiable"])),
+    out += ["mode: " + doc["mode"]] + (["tier: " + e(doc["tier"])] if doc["tier"] else [])
+    out += ["lost guarantee: " + e(g) for g in doc["lost_guarantees"]]
+    out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
     for ax in AXES:
@@ -459,8 +501,9 @@ def _text(doc):
 
     for ax in AXES:
         out.append(ax.capitalize())
-        unv = [i for i in doc["unverifiable"] if i["axis"] == ax]
-        if ax != "defects" and not unv and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
+        sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
+        unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
+        if ax != "defects" and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
             continue
@@ -470,6 +513,11 @@ def _text(doc):
         out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                                        i["evidence_class"], e(i["reason"]))
                                         + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])
+        if sota:
+            out += section("SOTA (advisory)", [x for i in sota for x in (
+                ["- [%s] %s:%d  %s (%s: %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]), i["evidence_class"],
+                                                 e(i["reason"])), "    trigger: " + e(i["trigger"])]
+                + ["    source: " + e(u) for u in i["sources"]])])
         if ax == "spec" and doc["declined"]:
             out += section("Declined", ["- inputs/spec.md:%d: %s" % (d["spec_line"], e(d["why"])) for d in doc["declined"]])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
