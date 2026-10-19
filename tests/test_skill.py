@@ -220,6 +220,14 @@ class PostingDocs(unittest.TestCase):
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
 
+    def test_verify_reads_the_live_diff(self):
+        """`gh pr diff` returns the current head's diff; posting.md and post.py must not say it is the pinned head's."""
+        for text in (self.read(self.REFS, "posting.md"), self.read(self.POST)):
+            flat = " ".join(text.split())
+            self.assertNotIn("diff` for the pinned head", flat)
+            self.assertNotIn("from the pinned head's own diff", flat)
+        self.assertIn("live `gh pr diff`", " ".join(self.read(self.REFS, "posting.md").split()))
+
 
 if __name__ == "__main__":
     unittest.main()

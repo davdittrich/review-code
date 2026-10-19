@@ -218,7 +218,7 @@ class GitHub:
     def verify(self, payload: dict, handle: int) -> None:
         """Every stored comment of the pending review must be one of ours: path and commit id, our marker line in its
         body, and its place. GitHub lists a PENDING review's comments with `line`, `side` and `original_line` null and a
-        diff `position` instead (observed live on PR 1); position is read from the pinned head's own diff. A comment
+        diff `position` instead (observed live on PR 1); position is read from the live diff, whose head check (d) confirms. A comment
         that does carry line and side is compared on those."""
         stored = _pages("gh", self.i["host"], "%s/reviews/%d/comments" % (self.pr, handle), self.i["run"])
         want = list(payload["comments"])
