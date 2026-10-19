@@ -148,7 +148,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
    `review-code:sota`), `prompt` its `prompt` exactly, `model` its `model`, `effort` its `effort` and a short
    `description`. Fan-out rule: issue all calls of a wave in one message; wait until every call of the wave has returned or notified completion before the next step.
    Agent calls may answer "launched" first and deliver the reply later as a notification: do not poll
-   or message the agent. Pass every reply line that starts with `[[` (so no line can equal the delimiter)
+   or message the agent. Pass every reply line that starts with `[` (so no line can equal the delimiter)
    on stdin, with `--lane` the call's `lane` and `--shard` its `shard` when that is not null:
 
    ```
@@ -174,7 +174,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
    same fan-out rule. Serial mode: self-score all ids in one batch: read each handoff file with one Read call per file
    (never a shell loop or other compound command) and the cited lines in `tree/`, and write one verdict line per id in the format of `agents/verifier.md`, trying to
    refute each claim (`unverifiable` when unsure). Pass every reply line that
-   starts with `[[`, from every wave, to `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run>` in ONE quoted
+   starts with `[`, from every wave, to `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run>` in ONE quoted
    `REVIEW_VERDICTS` here-document, as in step 7: each call replaces the previous `verdicts.json`, so a second call drops the first call's verdicts. Skip this step when `ids` and `spec_ids` are empty.
 9. Reproduce, own code only, never in serial mode. Run this step only when `ledger.py trust get`
    reports `effective` `own`, verdicts' `confirmed` is not empty, and `ledger.json` lists tests or

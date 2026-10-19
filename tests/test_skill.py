@@ -60,7 +60,7 @@ class Procedure(unittest.TestCase):
         self.assertEqual(at, sorted(at), dict(zip(steps, at)))
 
     def test_reply_lines_are_pair_arrays_not_objects(self):  # g1x.10: the Bash guard denies a brace then a quote
-        self.assertIn("starts with `[[`", self.text)
+        self.assertIn("starts with `[`", self.text)
         self.assertNotIn("starts with `{`", self.text)
         self.assertIn("\\u007b", self.text)
 

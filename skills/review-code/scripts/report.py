@@ -152,15 +152,19 @@ def _no_object(pairs):
 
 
 def _objects(text):
-    """Every wire line of the stream (`[[` or, for the retired object form, `{`): the parsed dict, or None when it is not
-    a valid pair array. Prose is skipped."""
+    """Every wire line of the stream (`[[`, `["` or, for the retired object form, `{`): the parsed dict, or None when it is
+    not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read as if it had one."""
     for ln in text.split("\n"):
-        if re.match(r"\s*(\{|\[\s*\[)", ln):
-            try:
-                o = json.loads(ln, object_pairs_hook=_no_object)
-                o = _wire(o) if isinstance(o, list) else None
-            except (ValueError, RecursionError):
-                o = None
+        if re.match(r'\s*(\{|\[\s*[\["])', ln):
+            o = None
+            # shortcut: only the dropped-outer-bracket slip is repaired (seen live, review-code-1q1); other damage stays invalid
+            for cand in (ln, "[" + ln + "]"):
+                try:
+                    o = json.loads(cand, object_pairs_hook=_no_object)
+                    o = _wire(o) if isinstance(o, list) else None
+                    break
+                except (ValueError, RecursionError):
+                    o = None
             yield o if isinstance(o, dict) else None
 
 
