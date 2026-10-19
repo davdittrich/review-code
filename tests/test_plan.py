@@ -573,5 +573,115 @@ class Shards(ShardBase):
         self.assertIn("shard skipped: shard 3 (shard cap: 1 files) 1 files", out)
 
 
+class Inventory(Fixture):
+    feat_files = {"src/calc.py": tr.FEAT + "import requests\n", "requirements.txt": "flask==2.0\n"}
+
+    def test_change_yields_names_with_locations_and_the_sota_prompt(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
+        self.assertEqual(rc, 0, out)
+        p = self.plan_json()
+        inv = [{"line": 1, "name": "flask", "path": "requirements.txt"},
+               {"line": 6, "name": "requests", "path": "src/calc.py"}]
+        self.assertEqual(p["sota_inventory"], inv)
+        sota = [c for c in p["calls"] if c["lane"] == "sota"]
+        self.assertEqual([c["prompt"] for c in sota], ["SOTA lane. Inventory: " + json.dumps(inv, sort_keys=True, separators=(",", ":"))])
+        self.assertNotIn({"what": "sota", "why": "no dependency or import names in the change"}, p["skipped"])
+
+    def test_names_by_file_kind(self):
+        import plan as mod
+        src = {"a.py": [(1, "import os, numpy.linalg as la"), (2, "from pandas.io import x"), (3, "from . import rel")],
+               "b.ts": [(1, "import { a } from '@scope/pkg/sub'"), (2, "const m = require('left-pad')"),
+                        (3, "import './local'")],
+               "c.R": [(1, "library(dplyr)"), (2, "x <- require('ggplot2')")],
+               "requirements-dev.txt": [(1, "# comment"), (2, "pytest>=7 ; python_version>'3'"), (3, "-r base.txt")],
+               "pyproject.toml": [(1, '    "httpx[cli]>=0.2",'), (2, 'name = "mine"')],
+               "package.json": [(1, '  "express": "^4.1.0",'), (2, '  "version": "1.0.0",'), (3, '  "name": "mine",')],
+               "DESCRIPTION": [(1, "Imports: cli,"), (2, "    rlang (>= 1.0),"), (3, "Title: Thing")]}
+        self.assertEqual(sorted(i["name"] for i in mod._inventory(src)),
+                         ["@scope/pkg", "cli", "dplyr", "express", "ggplot2", "httpx", "left-pad", "numpy", "os",
+                          "pandas", "pytest", "rlang"])
+
+    def test_unsafe_overlong_and_surplus_names_are_dropped(self):
+        import plan as mod
+        src = {"a.js": [(1, "require('bad;name')"), (2, "require('" + "a" * 101 + "')"), (3, "require('good')"),
+                        (4, "require('has space')"), (5, "require('../up')")],
+               "b.py": [(i, "import m%d" % i) for i in range(1, 80)]}
+        inv = mod._inventory(src)
+        self.assertEqual(len(inv), mod.INVENTORY_MAX)
+        self.assertEqual(inv[0], {"line": 3, "name": "good", "path": "a.js"})
+        self.assertTrue(all(set(i) == {"path", "line", "name"} for i in inv))
+        self.assertEqual(len({i["name"] for i in inv}), len(inv))
+        for i in inv:
+            self.assertRegex(i["name"], r"\A[A-Za-z0-9@/._-]{1,100}\Z")
+
+
+class InventoryEmpty(Fixture):
+    def test_no_names_means_no_sota_call(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
+        p = self.plan_json()
+        self.assertEqual(p["sota_inventory"], [])
+        self.assertNotIn("sota", [c["lane"] for c in p["calls"]])
+        self.assertIn({"what": "sota", "why": "no dependency or import names in the change"}, p["skipped"])
+
+
+def _tree_bytes(d):
+    return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs)
+
+
+class Preview(Fixture):
+    def test_deep_preview_states_calls_caps_and_ceilings(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
+        p = self.plan_json()
+        self.assertEqual((out["confirm"], p["confirm"], out["preview"]), (True, True, p["preview"]))
+        pv = "\n".join(p["preview"])
+        self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
+        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier calls: up to 60, sonnet/high",
+                     "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 12", "Packs: python"):
+            self.assertIn(want, pv)
+        self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")
+        self.assertNotRegex(pv, r"[$]|USD|EUR|price per")
+
+    def test_token_estimate_is_total_bytes_over_four(self):
+        self.plan("plan", "--run", self.run_dir)
+        p = self.plan_json()
+        call = next(c for c in p["calls"] if c["lane"] == "defects")
+        total = (_tree_bytes(os.path.join(self.run_dir, "tree")) + os.path.getsize(call["input"])
+                 + os.path.getsize(os.path.join(self.run_dir, "change.diff")))
+        line = next(x for x in p["preview"] if x.startswith("Call defects:"))
+        self.assertIn("about %d input tokens (estimate)" % ((total + 3) // 4), line)
+
+    def test_confirm_by_tier_and_target(self):
+        for args, want in ((["--tier", "quick"], False), (["--tier", "standard"], False), (["--tier", "deep"], True)):
+            rc, out = self.plan("plan", "--run", self.run_dir, *args)
+            self.assertEqual(out["confirm"], want, args)
+
+    def test_serial_preview_counts_no_agent_calls(self):
+        rc, out = self.plan("plan", "--run", self.run_dir, "--serial")
+        pv = "\n".join(out["preview"])
+        self.assertIn("Agent calls: 0", pv)
+        self.assertIn("main thread", pv)
+
+
+class PreviewShards(ShardBase):
+    base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
+    feat_files = {"auth/login.py": PAD + "other = 2\n"}
+
+    def test_repo_target_confirms_and_shows_shards_without_paths(self):
+        import plan as mod
+        with mock.patch.object(mod, "SHARD_BYTES", 1):
+            out = mod.plan(self.run_dir, "standard", {"max_shards": 2})
+        self.assertTrue(out["confirm"])
+        p = self.plan_json()
+        self.assertIn("Shards: 2 of 3 kept", p["preview"])
+        self.assertIn("Call defects, shard 2:", "\n".join(p["preview"]))
+        tj = self.read_json("target.json")
+        for line in p["preview"]:
+            self.assertNotIn(self.run_dir, line)
+            for path in tj["included"]:
+                self.assertNotIn(path, line)
+                self.assertNotIn(path.split("/")[0], line)
+            self.assertRegex(line, r"\A[A-Za-z0-9 .,:;/()\[\]_-]+\Z")
+
+
 if __name__ == "__main__":
     unittest.main()

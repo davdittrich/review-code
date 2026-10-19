@@ -2,7 +2,7 @@
 
     plan.py plan --run DIR [--tier quick|standard|deep] [--sota|--no-sota] [--serial] [--ai]
                                     stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
-                                    skipped, lost_guarantees)
+                                    skipped, lost_guarantees, confirm, preview)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
@@ -28,7 +28,7 @@ import report
 import sanitize
 import target
 
-STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees"}
+STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview"}
 DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
 # is opus so it differs from the sonnet finder (user's choice b at 04-06 Task 2, LANE-07).
@@ -284,6 +284,88 @@ def _build_shard(run, tj, i, files, trust, packs):
     return d
 
 
+# SOTA inventory: dependency, import and library names only, so the web lane never sees repository text.
+INVENTORY_MAX = 50  # keeps the task message small and bounds the lane's search budget
+NAME_RE = re.compile(r"[A-Za-z0-9@/._-]{1,100}")
+_DEP = r"([A-Za-z0-9][A-Za-z0-9._-]*)"
+_PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import\b|import\s+([A-Za-z_][\w., ]*))")
+_JS_IMPORT = re.compile(r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\s+)['"]([^'"\s]+)['"]""")
+_R_LIB = re.compile(r"""\b(?:library|require)\(\s*["']?([A-Za-z][\w.]*)""")
+_REQ = re.compile(r"^\s*" + _DEP + r"\s*(?:[<>=!~;\[@]|$)")
+# shortcut: a quoted bare word such as a keyword also passes; upgrade to a TOML parse if that noise matters
+_TOML_DEP = re.compile(r"""^\s*["']""" + _DEP + r"""\s*(?:[<>=!~;\[@]|["'])""")
+_PKG_JSON = re.compile(r'^\s*"(@?[A-Za-z0-9][A-Za-z0-9._/-]*)"\s*:\s*"(?:[\^~<>=]*\d|latest|\*)')
+_DESC = re.compile(r"^(?:Imports:\s*|\s+)([A-Za-z][A-Za-z0-9.]*)\s*(?:\([^)]*\))?\s*,?\s*$")
+_JS_EXT = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+
+def _names(path, text):
+    base = path.rpartition("/")[2]
+    if base.endswith(".py"):
+        m = _PY_IMPORT.match(text)
+        if not m:
+            return []
+        if m.group(1):
+            return [m.group(1).split(".")[0]]
+        return [x.split()[0].split(".")[0] for x in m.group(2).split(",") if x.split()]
+    if base.endswith(_JS_EXT):
+        return [("/".join(n.split("/")[:2]) if n.startswith("@") else n.split("/")[0]) for n in _JS_IMPORT.findall(text)
+                if not n.startswith((".", "/"))]
+    if base.endswith((".R", ".r")):
+        return _R_LIB.findall(text)
+    rx = (_REQ if fnmatch.fnmatchcase(base, "requirements*.txt") else _TOML_DEP if base == "pyproject.toml" else
+          _PKG_JSON if base == "package.json" else _DESC if base == "DESCRIPTION" else None)
+    m = rx.match(text) if rx else None
+    return [m.group(1)] if m and m.group(1) not in ("version", "R") else []
+
+
+def _inventory(lines):
+    """[{path, line, name}] of safe dependency and import names, first location per name, at most INVENTORY_MAX."""
+    seen, out = set(), []
+    for path in sorted(lines):
+        for n, text in lines[path]:
+            for name in _names(path, text):
+                if name not in seen and NAME_RE.fullmatch(name):
+                    seen.add(name)
+                    out.append({"path": path, "line": n, "name": name})
+                    if len(out) == INVENTORY_MAX:
+                        return out
+    return out
+
+
+def _estimate(call):
+    """Input tokens, as bytes over 4 (a rough average for English and code): the call's tree, input file and diff."""
+    if call["input"] is None:
+        return (len(call["prompt"].encode("utf-8")) + 3) // 4
+    base = os.path.dirname(os.path.dirname(call["input"]))
+    total = 0
+    for root, _, names in os.walk(os.path.join(base, "tree")):
+        total += sum(os.path.getsize(os.path.join(root, n)) for n in names if os.path.isfile(os.path.join(root, n)))
+    for f in (call["input"], os.path.join(base, "change.diff")):
+        total += os.path.getsize(f) if os.path.isfile(f) else 0
+    return (total + 3) // 4
+
+
+def _preview(doc):
+    """Lines built only from numbers, fixed words, tier, model and effort values, lane and pack names and shard ids."""
+    ver, calls, caps = doc["verifier"], doc["calls"], doc["caps"]
+    agents = sum(1 for c in calls if c["agent"] != "main-thread")
+    verifier_cap = caps["max_verifier_calls"] if doc["mode"] == "parallel" else 0
+    out = ["Tier %s, mode %s" % (doc["tier"], doc["mode"])]
+    if doc["shards"] or any(x["what"].startswith("shard ") for x in doc["skipped"]):
+        out.append("Shards: %d of %d kept" % (len(doc["shards"]), len(doc["shards"]) + sum(
+            1 for x in doc["skipped"] if x["what"].startswith("shard "))))
+    for c in calls:
+        out.append("Call %s%s: %s, about %d input tokens (estimate)" % (
+            c["lane"], ", shard %d" % c["shard"] if c["shard"] else "",
+            "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c)))
+    out.append("Verifier calls: up to %d, %s" % (verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
+    out.append("Agent calls: %d (%d lane calls plus up to %d verifier calls)" % (agents + verifier_cap, agents, verifier_cap))
+    out.append("Turn ceilings: " + ", ".join("%s %d" % kv for kv in sorted(doc["max_turns"].items())))
+    out.append("Packs: " + (", ".join(x["name"] for x in doc["packs"]) or "none"))
+    return out + ["Estimate only: real token use varies; no prices are shown."]
+
+
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
               "--ai": ("ai", True)}
 # Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
@@ -315,7 +397,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     lanes = [x for x in t["lanes"] if x != "sota" or sota is not False]
     if sota and "sota" not in lanes:
         lanes.append("sota")
-    inventory, skipped, calls = [], [], []  # inventory: 04-07 fills it; an empty one drops the sota lane
+    skipped, calls = [], []
     lost = []
     if serial:
         lanes = ["defects", "standards"]
@@ -328,6 +410,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
         lost += _env_lost()
     lines = _scan_lines(run, tj)
+    inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
     skipped += [{"what": "pack " + n, "why": "pack cap"} for n, _ in dropped]
@@ -350,6 +433,10 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             skipped.append({"what": "spec", "why": "no spec"})
         elif lane == "sota" and not inventory:
             skipped.append({"what": "sota", "why": "no dependency or import names in the change"})
+        elif lane == "sota":
+            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": LANE_AGENT[lane], "model": fm, "effort": fe,
+                          "input": None, "shard": None,
+                          "prompt": "SOTA lane. Inventory: " + json.dumps(inventory, sort_keys=True, separators=(",", ":"))})
         else:
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
@@ -365,13 +452,14 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
            "shards": shards, "skipped": skipped, "lost_guarantees": lost,
-           "sota_inventory": inventory, "preview": [], "confirm": False, "ai": ai,
+           "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items()) if k != "default_tier" or not flag_tier}}
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
+    doc["preview"] = _preview(doc)
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
     return {"status": "ok", "tier": tier, "mode": doc["mode"], "calls": len(calls), "skipped": skipped,
-            "lost_guarantees": lost}
+            "lost_guarantees": lost, "confirm": doc["confirm"], "preview": doc["preview"]}
 
 
 def _usage():
