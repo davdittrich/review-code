@@ -72,15 +72,16 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes) -> dic
     wt, home, tmp = (os.path.join(run_dir, p + fid) for p in ("wt-", "repro-home-", "repro-tmp-"))
     try:
         target.git_bytes(["worktree", "add", "--detach", wt, head], repo)
-        wt_real = os.path.realpath(wt)
-        path = os.path.realpath(os.path.join(wt, test))
-        if not path.startswith(wt_real + os.sep):
-            raise target.Refuse("bad-test-path")
         if kind in ledger.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
             args = ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color"]
             diff = target.git_bytes(args + (["--cached"] if kind == "staged" else []) + ["HEAD"], repo)
             if diff:
                 target.git_bytes(["apply", "--binary"], wt, stdin=diff)
+        # after the apply: a symlink the diff creates (directory or last part) is resolved too
+        wt_real = os.path.realpath(wt)
+        path = os.path.realpath(os.path.join(wt, test))
+        if not path.startswith(wt_real + os.sep):
+            raise target.Refuse("bad-test-path")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as fh:
             fh.write(source)

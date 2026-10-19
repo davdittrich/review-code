@@ -151,6 +151,26 @@ class Rules(Base):
         self.assertEqual(os.listdir(outside), [])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "x.py")))
 
+    def test_staged_symlink_escapes_refused(self):
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(self.tmp, "victim.txt")
+        with open(victim, "w") as fh:
+            fh.write("keep\n")
+        os.symlink(outside, os.path.join(self.repo, "link"))  # (a) symlinked directory
+        os.symlink(victim, os.path.join(self.repo, "t.py"))  # (b) symlinked last path part
+        self.git("add", "link", "t.py")
+        for test in ("link/pwn.py", "t.py"):
+            with self.subTest(test=test):
+                run = self.start("--staged")
+                rc, out = self.repro(run, test, [sys.executable, "-c", "print(1)"])
+                self.assertEqual((rc, out), (1, {"status": "refuse", "reason": "bad-test-path"}))
+                self.assert_clean(run)
+                self.assertFalse(os.path.exists(os.path.join(run, "repro")))
+        self.assertEqual(os.listdir(outside), [])
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "keep\n")
+
     def test_timeout_kills_process_group(self):
         run = self.start()
         out = io.StringIO()
