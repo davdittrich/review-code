@@ -546,17 +546,19 @@ class Tree(Base):
         write_target(self.run_dir, self.repo, "repo", head, head, head, names, untracked=names)
         events, real_open, real_put = [], open, ledger._put
 
-        def spy_open(path, mode="r", *a, **k):
-            if "b" in mode and str(path).startswith(self.repo + os.sep):
+        real_read = target.read_working
+
+        def spy_read(path, limit):
+            if str(path).startswith(self.repo + os.sep):
                 events.append(("read", os.path.basename(path)))
-            return real_open(path, mode, *a, **k)
+            return real_read(path, limit)
 
         def spy_put(root, rel, data):
             if root.endswith(os.sep + "tree"):
                 events.append(("put", rel))
             return real_put(root, rel, data)
 
-        with mock.patch("ledger.open", spy_open, create=True), mock.patch("ledger._put", spy_put):
+        with mock.patch.object(target, "read_working", spy_read), mock.patch("ledger._put", spy_put):
             ledger.build(self.run_dir)
         tree_events = [e for e in events if e[1] in names]  # context discovery reads the files first
         self.assertEqual(tree_events[-8:], [(k, n) for n in names for k in ("read", "put")])
@@ -631,6 +633,29 @@ class Tree(Base):
         head = self.g("rev-parse", "HEAD")
         write_target(self.run_dir, self.repo, "repo", head, head, head, ["a.txt", "p.fifo"])
         ledger.build(self.run_dir)
+        self.assertIn({"path": "p.fifo", "reason": "special"}, self.load()["tree"]["skipped"])
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_tree_open_never_trusts_an_earlier_lstat(self):
+        # 6xl.91: the file is judged on the open descriptor (O_NOFOLLOW|O_NONBLOCK, fstat), not on a prior lstat
+        import threading
+        self.base({"a.txt": "x\n"})
+        fifo = os.path.join(self.repo, "p.fifo")
+        os.mkfifo(fifo)
+        head = self.g("rev-parse", "HEAD")
+        write_target(self.run_dir, self.repo, "repo", head, head, head, ["a.txt", "p.fifo"])
+        real_lstat = os.lstat
+        fake = real_lstat(os.path.join(self.repo, "a.txt"))
+
+        def racy_lstat(path, *a, **k):  # the FIFO looked like a regular file a moment ago
+            return fake if str(path).endswith("p.fifo") else real_lstat(path, *a, **k)
+
+        done = []
+        with mock.patch("os.lstat", racy_lstat):
+            th = threading.Thread(target=lambda: done.append(ledger.build(self.run_dir)), daemon=True)
+            th.start()
+            th.join(10)
+        self.assertTrue(done, "ledger.build blocked opening a FIFO")
         self.assertIn({"path": "p.fifo", "reason": "special"}, self.load()["tree"]["skipped"])
 
     def test_tree_hidden_text_in_place_is_scanned(self):

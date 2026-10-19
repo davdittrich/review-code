@@ -9,6 +9,7 @@ if sys.version_info < (3, 9):
     print('{"reason": "python-too-old", "status": "refuse"}')
     sys.exit(1)
 
+import errno
 import json
 import os
 import re
@@ -412,6 +413,33 @@ _NAME_FLAGS = ["-r", "-z", "-M", "-l1000", "--numstat", "--no-ext-diff", "--no-t
                "--ignore-submodules=none"]
 
 
+def read_working(path: str, limit: int) -> Tuple[str, object]:
+    """("ok", bytes) | ("symlink"|"special"|"missing", None) | ("too-large", size) for a working-copy file, judged on
+    the open descriptor (6xl.91): O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from blocking, fstat
+    decides the type and size, and at most limit + 1 bytes are read, so a file swapped after an lstat cannot
+    block, escape or exceed the cap."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as e:
+        return ("symlink" if e.errno == errno.ELOOP else "missing"), None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return "special", None
+        if st.st_size > limit:
+            return "too-large", st.st_size
+        chunks, size = [], 0
+        while size <= limit:
+            b = os.read(fd, min(1 << 20, limit + 1 - size))
+            if not b:
+                break
+            chunks.append(b)
+            size += len(b)
+        return ("too-large", size) if size > limit else ("ok", b"".join(chunks))
+    finally:
+        os.close(fd)
+
+
 def _special(path: str) -> bool:
     """A working-copy entry that is no regular file, symlink or directory (a FIFO, socket or device): git cannot
     diff it and reading it can block, so it is never opened (6xl.90)."""
@@ -657,19 +685,15 @@ def _blobs(listing: dict, names: List[str], top: str) -> dict:
 
 
 def _files(names: List[str], top: str) -> dict:
-    """_scan of regular working-tree files; a symlink or missing file is left out."""
+    """_scan of regular working-tree files, read through read_working; a symlink, special or missing file is
+    left out, and one over the cap gets only its size."""
     out = {}
     for n in names:
-        path = os.path.join(top, n)
-        try:
-            st = os.lstat(path)
-            if stat.S_ISREG(st.st_mode) and st.st_size > _MAX_FILE:  # 6xl.75: never read whole
-                out[n] = (False, 0, [], st.st_size)
-            elif stat.S_ISREG(st.st_mode):
-                with open(path, "rb") as fh:
-                    out[n] = _scan(fh.read())
-        except OSError:
-            pass
+        status, got = read_working(os.path.join(top, n), _MAX_FILE)
+        if status == "ok":
+            out[n] = _scan(got)
+        elif status == "too-large":
+            out[n] = (False, 0, [], got)
     return out
 
 

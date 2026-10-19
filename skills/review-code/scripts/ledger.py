@@ -165,14 +165,10 @@ def _diff_symbols(diff: Iterable[str]) -> Iterator[Tuple[str, str, str]]:
 
 def _file_symbols(repo: str, included: List[str]) -> Iterator[Tuple[str, str, str]]:
     for p in included:
-        fp = os.path.join(repo, p)
-        try:
-            if not stat.S_ISREG(os.lstat(fp).st_mode):  # a symlink is never followed out of the repo
-                continue
-            with open(fp, "rb") as fh:
-                text = fh.read().decode("utf-8", "replace")
-        except OSError:
+        status, got = target.read_working(os.path.join(repo, p), target._MAX_FILE)  # 6xl.91: never a symlink or FIFO
+        if status != "ok":
             continue
+        text = got.decode("utf-8", "replace")
         yield from _def_names((("definition in file", ln) for ln in text.split("\n")), p)
 
 
@@ -402,25 +398,14 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
         top = os.path.realpath(repo) + os.sep
         for p, label, root, rel in jobs:
             fp = os.path.join(repo, p)
-            try:
-                st = os.lstat(fp)
-                if stat.S_ISLNK(st.st_mode):  # a link into the host never enters the run dir
-                    skipped.append({"path": label, "reason": "symlink"})
-                    continue
-                if not stat.S_ISREG(st.st_mode):  # 6xl.90: a FIFO, socket or device is never opened
-                    if not stat.S_ISDIR(st.st_mode):
-                        skipped.append({"path": label, "reason": "special"})
-                    continue
-                if not os.path.realpath(fp).startswith(top):
-                    continue
-                if st.st_size > target._MAX_FILE:  # 6xl.75: never read whole
-                    skipped.append({"path": label, "reason": "too-large"})
-                    continue
-                with open(fp, "rb") as fh:
-                    data = fh.read()
-            except OSError:
-                continue
-            emit(label, data, root, rel)
+            d = os.path.realpath(os.path.dirname(fp)) + os.sep
+            if not d.startswith(top):
+                continue  # a parent directory that leads out of the repository
+            status, got = target.read_working(fp, target._MAX_FILE)  # 6xl.91: judged on the open descriptor
+            if status == "ok":
+                emit(label, got, root, rel)
+            elif status in ("symlink", "special", "too-large"):  # a link into the host never enters the run dir
+                skipped.append({"path": label, "reason": status})
     else:
         want = {}
         for p, label, root, rel in jobs:
@@ -516,8 +501,11 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> D
                 root, fp = os.path.realpath(repo), os.path.realpath(os.path.join(repo, spec))
                 if not fp.startswith(root + os.sep):
                     raise target.Refuse("bad-spec", "the --spec path must be inside the repository")
-                with open(fp, "rb") as fh:
-                    out[os.path.relpath(fp, root).replace(os.sep, "/")] = fh.read().decode("utf-8", "replace")
+                status, got = target.read_working(fp, target._MAX_FILE)  # 6xl.91: no FIFO, bounded read
+                if status != "ok":
+                    raise target.Refuse("bad-spec", "the --spec file is %s" % {
+                        "too-large": "over %d bytes" % target._MAX_FILE}.get(status, "not a readable regular file"))
+                out[os.path.relpath(fp, root).replace(os.sep, "/")] = got.decode("utf-8", "replace")
         except (OSError, KeyError):
             raise target.Refuse("bad-spec", "the --spec file cannot be read")
     return out
