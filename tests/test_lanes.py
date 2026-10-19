@@ -60,5 +60,42 @@ class Finder(unittest.TestCase):
         self.assertIn("tools: Read, Grep, Glob", self.fm)
 
 
+class Verifier(unittest.TestCase):
+    def setUp(self):
+        self.fm, self.body = parts("verifier")
+        self.text = "\n".join(self.body)
+
+    def test_verdict_line_has_exactly_the_verdict_and_cite_keys(self):
+        o = first(self.body, '{"id"')
+        self.assertEqual(set(o), set(report.VERDICT_KEYS))
+        self.assertTrue(o["evidence"])
+        for cite in o["evidence"]:
+            self.assertEqual(set(cite), set(report.CITE_KEYS))
+
+    def test_verdict_words(self):
+        for w in report.VERDICTS:
+            self.assertIn("`%s`" % w, self.text)
+
+    def test_read_scope(self):
+        self.assertIn("handoff file", self.text)
+        self.assertIn("tree/", self.text)
+        for line in self.body:
+            if any(w in line for w in ("candidates.json", "verdicts.json", "inputs/", "other handoff")):
+                self.assertIn("never", line.lower())
+        self.assertNotIn("docs/ccr.md", self.text)
+
+    def test_do_not_flag_restated(self):  # the verifier cannot read finder.md
+        low = self.text.lower()
+        for item in ("linter", "lint-ignore", "unchanged lines", "input-dependent"):
+            self.assertIn(item, low)
+
+    def test_cites_relative_to_tree(self):
+        for cite in first(self.body, '{"id"')["evidence"]:
+            self.assertFalse(os.path.isabs(cite["path"]) or cite["path"].startswith("tree/"))
+
+    def test_tools_read_only(self):
+        self.assertIn("tools: Read, Grep, Glob", self.fm)
+
+
 if __name__ == "__main__":
     unittest.main()
