@@ -406,7 +406,8 @@ class WireContract(tp.Fixture):
         self.assertEqual(rc, 0, out)
         _, body = parts("sota")
         ex = first(body, '[["path"')
-        self.assertIn({"path": ex["path"], "line": ex["line"], "name": ex["quote"]}, self.plan_json()["sota_inventory"])
+        self.assertIn({"kind": "dependency", "path": ex["path"], "line": ex["line"], "name": ex["quote"], "version": "2.19.0"},
+                      self.plan_json()["sota_inventory"])
         out = self.ingest_examples("sota", "sota", '[["path"', '[["inspected"')
         self.assertEqual((out["ids"], out["spec_ids"]), ([], []))
 

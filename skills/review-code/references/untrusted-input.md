@@ -18,7 +18,7 @@ PR and MR titles and bodies, commit messages, issue text, spec files, file and b
 | One candidate for its verifier | `handoff/<id>.md` | Claim and trigger only, inside a per-run nonce fence; no sibling candidates |
 | Spec candidates | `candidates.json`, `handoff/<id>.md` | Cited by `spec_line` number only. A spec-lane title, trigger, fix or declined reason, or a spec-verifier reason, holding 6 consecutive words of spec text (case and punctuation ignored) counts invalid, so no handoff or report carries such a run. `review-code:spec-verifier` is the second reader of `inputs/spec.md` |
 | Domain pack text | `inputs/packs/` | Plugin-authored data copied from `references/packs/`, read by the lanes as guidance; not reviewed code |
-| SOTA inventory | `plan.json`, the SOTA call's prompt | Names only (dependency and import names, with path and line), never code or comments; the SOTA lane's web search and fetch are its exposure to hostile pages, and its https sources are shown with the item |
+| SOTA inventory | `plan.json`, the SOTA call's prompt | Names and exact pinned versions only (dependency and import names, with path and line; a version matches `[0-9][0-9A-Za-z.+_-]{0,39}` or is dropped), never code or comments; the SOTA lane's web search and fetch are its exposure to hostile pages, and its https sources are shown with the item |
 
 ## Sanitizer
 

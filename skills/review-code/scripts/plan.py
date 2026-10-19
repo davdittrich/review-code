@@ -285,9 +285,16 @@ def _build_shard(run, tj, i, files, trust, packs):
     return d
 
 
-# SOTA inventory: dependency, import and library names only, so the web lane never sees repository text.
+# SOTA inventory: dependency, import and library names and pinned versions only, so the web lane never sees
+# repository text.
 INVENTORY_MAX = 50  # keeps the task message small and bounds the lane's search budget
 NAME_RE = re.compile(r"[A-Za-z0-9@/._-]{1,100}")
+VERSION_RE = re.compile(r"[0-9][0-9A-Za-z.+_-]{0,39}")
+KINDS = ("dependency", "import")  # inventory order: manifest pins outrank imports under the cap
+_V = r"""([^\s,;"')\]=]+)"""  # a candidate version, kept only when VERSION_RE matches all of it
+_PIN_PY = re.compile(r"(?<![<>!~=])===?\s*" + _V)  # an exact pin; ranges and wildcards carry no version
+_PIN_NPM = re.compile(r':\s*"=?v?' + _V + '"')
+_PIN_R = re.compile(r"\(\s*==\s*" + _V + r"\s*\)")
 _DEP = r"([A-Za-z0-9][A-Za-z0-9._-]*)"
 _PY_IMPORT = re.compile(r"^\s*(?:from\s+([A-Za-z_][\w.]*)\s+import\b|import\s+([A-Za-z_][\w., ]*))")
 _JS_IMPORT = re.compile(r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\s+)['"]([^'"\s]+)['"]""")
@@ -301,37 +308,42 @@ _JS_EXT = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 
 
 def _names(path, text):
+    """[(kind, name, version or None)] of one line: imports, or a manifest entry with its exact pinned version."""
     base = path.rpartition("/")[2]
     if base.endswith(".py"):
         m = _PY_IMPORT.match(text)
         if not m:
             return []
         if m.group(1):
-            return [m.group(1).split(".")[0]]
-        return [x.split()[0].split(".")[0] for x in m.group(2).split(",") if x.split()]
+            return [("import", m.group(1).split(".")[0], None)]
+        return [("import", x.split()[0].split(".")[0], None) for x in m.group(2).split(",") if x.split()]
     if base.endswith(_JS_EXT):
-        return [("/".join(n.split("/")[:2]) if n.startswith("@") else n.split("/")[0]) for n in _JS_IMPORT.findall(text)
-                if not n.startswith((".", "/"))]
+        return [("import", "/".join(n.split("/")[:2]) if n.startswith("@") else n.split("/")[0], None)
+                for n in _JS_IMPORT.findall(text) if not n.startswith((".", "/"))]
     if base.endswith((".R", ".r")):
-        return _R_LIB.findall(text)
-    rx = (_REQ if fnmatch.fnmatchcase(base, "requirements*.txt") else _TOML_DEP if base == "pyproject.toml" else
-          _PKG_JSON if base == "package.json" else _DESC if base == "DESCRIPTION" else None)
+        return [("import", n, None) for n in _R_LIB.findall(text)]
+    rx, pin = ((_REQ, _PIN_PY) if fnmatch.fnmatchcase(base, "requirements*.txt") else
+               (_TOML_DEP, _PIN_PY) if base == "pyproject.toml" else (_PKG_JSON, _PIN_NPM) if base == "package.json"
+               else (_DESC, _PIN_R) if base == "DESCRIPTION" else (None, None))
     m = rx.match(text) if rx else None
-    return [m.group(1)] if m and m.group(1) not in ("version", "R") else []
+    if not m or m.group(1) in ("version", "R"):
+        return []
+    v = pin.search(text, m.end(1))
+    return [("dependency", m.group(1), v.group(1) if v and VERSION_RE.fullmatch(v.group(1)) else None)]
 
 
 def _inventory(lines):
-    """[{path, line, name}] of safe dependency and import names, first location per name, at most INVENTORY_MAX."""
+    """[{kind, name, path, line[, version]}] of safe names, first location per (kind, name, version), dependencies
+    first, at most INVENTORY_MAX."""
     seen, out = set(), []
     for path in sorted(lines):
         for n, text in lines[path]:
-            for name in _names(path, text):
-                if name not in seen and NAME_RE.fullmatch(name):
-                    seen.add(name)
-                    out.append({"path": path, "line": n, "name": name})
-                    if len(out) == INVENTORY_MAX:
-                        return out
-    return out
+            for kind, name, ver in _names(path, text):
+                if (kind, name, ver) not in seen and NAME_RE.fullmatch(name):
+                    seen.add((kind, name, ver))
+                    out.append(dict({"kind": kind, "name": name, "path": path, "line": n}, **({"version": ver} if ver else {})))
+    out.sort(key=lambda i: KINDS.index(i["kind"]))  # stable: path and line order within a kind
+    return out[:INVENTORY_MAX]
 
 
 def _estimate(call):

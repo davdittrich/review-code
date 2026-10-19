@@ -603,8 +603,8 @@ class Inventory(Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
         self.assertEqual(rc, 0, out)
         p = self.plan_json()
-        inv = [{"line": 1, "name": "flask", "path": "requirements.txt"},
-               {"line": 6, "name": "requests", "path": "src/calc.py"}]
+        inv = [{"kind": "dependency", "line": 1, "name": "flask", "path": "requirements.txt", "version": "2.0"},
+               {"kind": "import", "line": 6, "name": "requests", "path": "src/calc.py"}]
         self.assertEqual(p["sota_inventory"], inv)
         sota = [c for c in p["calls"] if c["lane"] == "sota"]
         self.assertEqual([c["prompt"] for c in sota], ["SOTA lane. Inventory: " + json.dumps(inv, sort_keys=True, separators=(",", ":"))])
@@ -631,11 +631,35 @@ class Inventory(Fixture):
                "b.py": [(i, "import m%d" % i) for i in range(1, 80)]}
         inv = mod._inventory(src)
         self.assertEqual(len(inv), mod.INVENTORY_MAX)
-        self.assertEqual(inv[0], {"line": 3, "name": "good", "path": "a.js"})
-        self.assertTrue(all(set(i) == {"path", "line", "name"} for i in inv))
+        self.assertEqual(inv[0], {"kind": "import", "line": 3, "name": "good", "path": "a.js"})
+        self.assertTrue(all(set(i) == {"kind", "path", "line", "name"} for i in inv))
         self.assertEqual(len({i["name"] for i in inv}), len(inv))
         for i in inv:
             self.assertRegex(i["name"], r"\A[A-Za-z0-9@/._-]{1,100}\Z")
+
+
+    def test_manifest_pins_carry_a_version_and_an_import_does_not_shadow_them(self):  # review-code-srm
+        import plan as mod
+        src = {"calc.py": [(1, "import requests")],
+               "requirements.txt": [(1, "requests==2.19.0  # pinned"), (2, "flask>=2.0"), (3, "click==8.*"),
+                                    (4, "six==1.0$(x)"), (5, "idna==" + "1" * 41),
+                                    (6, "urllib3[socks]===1.24 ; python_version>'3'")],
+               "pyproject.toml": [(1, '    "httpx==0.23.0",')],
+               "package.json": [(1, '  "express": "4.17.1",'), (2, '  "lodash": "^4.17.0",'), (3, '  "left-pad": "latest",')],
+               "DESCRIPTION": [(1, "    rlang (== 1.0.0),"), (2, "    cli (>= 3.0),")]}
+        inv = mod._inventory(src)
+        self.assertEqual({(i["kind"], i["name"]): i.get("version") for i in inv}, {
+            ("dependency", "requests"): "2.19.0", ("import", "requests"): None, ("dependency", "flask"): None,
+            ("dependency", "click"): None, ("dependency", "six"): None, ("dependency", "idna"): None,
+            ("dependency", "urllib3"): "1.24", ("dependency", "httpx"): "0.23.0", ("dependency", "express"): "4.17.1",
+            ("dependency", "lodash"): None, ("dependency", "left-pad"): None, ("dependency", "rlang"): "1.0.0",
+            ("dependency", "cli"): None})
+        self.assertEqual(len(inv), 13)
+        self.assertEqual(inv[-1], {"kind": "import", "line": 1, "name": "requests", "path": "calc.py"})
+        # under the cap, manifest entries outrank imports from files that sort first
+        inv = mod._inventory({"a.py": [(i, "import m%d" % i) for i in range(1, 80)], "requirements.txt": [(1, "zzz==1.0")]})
+        self.assertEqual((len(inv), inv[0]), (mod.INVENTORY_MAX, {"kind": "dependency", "line": 1, "name": "zzz",
+                                                                  "path": "requirements.txt", "version": "1.0"}))
 
 
 class InventoryEmpty(Fixture):
