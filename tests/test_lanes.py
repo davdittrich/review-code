@@ -59,6 +59,9 @@ class Finder(unittest.TestCase):
     def test_tools_read_only(self):
         self.assertIn("tools: Read, Grep, Glob", self.fm)
 
+    def test_default_model(self):
+        self.assertIn("model: opus", self.fm)
+
 
 class Verifier(unittest.TestCase):
     def setUp(self):
@@ -95,6 +98,27 @@ class Verifier(unittest.TestCase):
 
     def test_tools_read_only(self):
         self.assertIn("tools: Read, Grep, Glob", self.fm)
+
+    def test_default_model(self):
+        self.assertIn("model: sonnet", self.fm)
+
+
+class ModelOverride(unittest.TestCase):
+    """Per-user lane model: userConfig keys in plugin.json, placeholders and unset rule in SKILL.md."""
+
+    def test_user_config_keys(self):
+        with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            cfg = json.load(f)["userConfig"]
+        for key in ("finder_model", "verifier_model"):
+            self.assertEqual(set(cfg[key]), {"type", "title", "description"})
+            self.assertEqual(cfg[key]["type"], "string")
+
+    def test_skill_placeholders_and_unset_rule(self):
+        with open(os.path.join(ROOT, "skills", "review-code", "SKILL.md"), encoding="utf-8") as f:
+            text = f.read()
+        for key in ("finder_model", "verifier_model"):
+            self.assertIn("${user_config.%s}" % key, text)
+        self.assertIn("starts with `${`", text)
 
 
 if __name__ == "__main__":

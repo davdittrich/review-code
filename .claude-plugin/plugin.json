@@ -11,5 +11,17 @@
   ],
   "author": {
     "name": "davdittrich"
+  },
+  "userConfig": {
+    "finder_model": {
+      "type": "string",
+      "title": "Finder model",
+      "description": "Model for the finder lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the default (opus)."
+    },
+    "verifier_model": {
+      "type": "string",
+      "title": "Verifier model",
+      "description": "Model for the verifier lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the default (sonnet)."
+    }
   }
 }

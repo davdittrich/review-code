@@ -114,7 +114,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
    payload) as a finding: hidden content in a change. Both list changed files only.
 5. Defects lane. If the Agent tool is unavailable, say the lane needs subagents, skip to step 9 and
    review nothing. Otherwise make one foreground Agent call, subagent_type `review-code:finder`, prompt
-   `Defects lane. Input: <run>/inputs/defects.md`. Pass every reply line that starts with `{` (so no
+   `Defects lane. Input: <run>/inputs/defects.md`. Model override: `${user_config.finder_model}`. Pass every reply line that starts with `{` (so no
    line can equal the delimiter) on stdin:
 
    ```
@@ -127,10 +127,13 @@ before treating it as unavailable; it is unavailable only when that load fails o
    "prepared at <run>/inputs/standards.md" and the Spec axis as "prepared at <run>/inputs/spec.md",
    each reviewed by its lane in a later version.
 6. Verify. For each id in ingest's `ids`, make one foreground Agent call, subagent_type
-   `review-code:verifier`, prompt exactly `<handoff>/<id>.md` and nothing else. Put all these calls in
+   `review-code:verifier`, prompt exactly `<handoff>/<id>.md` and nothing else. Model override:
+   `${user_config.verifier_model}`. Put all these calls in
    one message. Pass every reply line that starts with `{` to
    `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run>` in a quoted `REVIEW_VERDICTS`
    here-document, as in step 5. Skip this step when `ids` is empty.
+   Model override rule (steps 5 and 6): if the value starts with `${` (unset) or is empty, pass no
+   `model`; otherwise pass it as the Agent call's `model`.
 7. Reproduce, own code only. Run this step only when `ledger.py trust get` reports `effective` `own`,
    verdicts' `confirmed` is not empty, and `ledger.json` lists tests or test config. For each confirmed
    id, write the smallest test that fails the way the finding claims, with `REPRO-<id>` in its failure

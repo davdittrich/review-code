@@ -28,6 +28,10 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 - `glab`, for MR targets. MR reading is untested against a live glab.
 - The Agent tool (subagents). The Defects lane and the verifier run as subagents; without it the skill reviews nothing.
 
+## Lane models
+
+The finder runs on `opus` and the verifier on `sonnet`. Override either per user with the plugin settings `finder_model` and `verifier_model` (an alias or a full model ID); reopen them with `/plugin configure review-code@<marketplace>`. Empty means the default. Tested on Claude Code 2.1.303. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` disables the per-lane override.
+
 ## Output
 
 The default is a terminal report. `--json` prints the schema v1 review document and `--sarif` prints SARIF 2.1.0. Both go to stdout and never to a file; in headless runs, redirect stdout to keep them. The schema is documented in the `skills/review-code/scripts/report.py` module docstring. Unverifiable items are listed in the text and JSON output but are not SARIF results.
