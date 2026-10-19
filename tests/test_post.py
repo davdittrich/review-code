@@ -58,8 +58,8 @@ def row(n):
     return "v%02d = %d" % (n, -n if 20 <= n <= 22 else n)
 
 
-def source(changed, extra):
-    rows = [row(n) if changed else "v%02d = %d" % (n, n) for n in range(1, 31)]
+def source(changed, extra, inject=None):
+    rows = [(inject or {}).get(n) or row(n) if changed else "v%02d = %d" % (n, n) for n in range(1, 31)]
     rows += [row(n) for n in range(31, 31 + extra)] if changed else []
     return "\n".join(rows) + "\n"
 
@@ -145,6 +145,9 @@ class FakeGitHub:
                                  "commit_id": body["commit_id"], "body": body["body"],
                                  "comments": [dict(c, commit_id=body["commit_id"]) for c in body["comments"]]}
             return self.ok({"id": rid, "state": "PENDING"})
+        if path == PR + "/comments" and method == "GET":  # submitted review comments of every user; a pending review is private
+            return self.ok(self.page([dict(c, user=r["user"]) for r in self.reviews.values() if r["state"] != "PENDING"
+                                      for c in r["comments"]], query))
         m = re.fullmatch(re.escape(PR) + r"/reviews/(\d+)(/comments|/events)?", path)
         rev = self.reviews.get(int(m.group(1))) if m else None
         if rev is None:
@@ -166,6 +169,7 @@ class FakeGitHub:
 
 class Base(unittest.TestCase):
     extra = 0  # lines appended after line 30 on the branch
+    inject = None  # {line: text} replaces that line of src/calc.py on the branch
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -174,24 +178,33 @@ class Base(unittest.TestCase):
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
         gitfix.commit(self.repo, {"src/calc.py": source(False, 0)}, "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
-        gitfix.commit(self.repo, {"src/calc.py": source(True, self.extra)}, "feat")
+        gitfix.commit(self.repo, {"src/calc.py": source(True, self.extra, self.inject)}, "feat")
+        self.make_run()
+
+    def make_run(self):
         rc, out, _ = cli("target.py", ["main"], self.repo, self.tmp)
         self.assertEqual(rc, 0, out)
         self.run_dir = json.loads(out)["run"]
         rc, out, _ = cli("ledger.py", ["build", "--run", self.run_dir], self.repo, self.tmp)
         self.assertEqual(rc, 0, out)
 
-    def review(self, *specs, fix=None):
-        """Ingest and confirm one Required finding per (line, category) or bare line; make the run a PR run. Ids by line."""
+    def review(self, *specs, fix=None, unverifiable=()):
+        """Ingest and confirm one Required finding per (line, category) or bare line; make the run a PR run. Ids by line.
+        A line in `unverifiable` is ingested too, but its verdict is unverifiable."""
         specs = [s if isinstance(s, tuple) else (s, "bug") for s in specs]
         cands = [{"path": "src/calc.py", "line": n, "severity": "required", "category": cat, "title": "title %d" % n,
                   "trigger": "trigger %d" % n, "quote": row(n), "fix": fix or "fix %d" % n} for n, cat in specs]
+        return self.ingest(cands, {n: (n, row(n)) for n, _ in specs}, unverifiable)
+
+    def ingest(self, cands, cites, unverifiable=()):
+        """cands: full candidate objects; cites: {line: (line, quote)} the one-line evidence per candidate. Ids by line."""
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp,
                            lines(*cands, {"inspected": ["src/calc.py"]}))
         self.assertEqual((rc, err), (0, ""), out)
-        ids = {n: fid("src/calc.py", cat, row(n)) for n, cat in specs}
-        verdicts = [{"id": ids[n], "verdict": "confirmed", "reason": "r",
-                     "evidence": [{"path": "src/calc.py", "line": n, "quote": row(n)}]} for n, _ in specs]
+        ids = {c["line"]: fid(c["path"], c["category"], c["quote"]) for c in cands}
+        verdicts = [{"id": ids[n], "verdict": "unverifiable", "reason": "r"} if n in unverifiable else
+                    {"id": ids[n], "verdict": "confirmed", "reason": "r",
+                     "evidence": [{"path": "src/calc.py", "line": cites[n][0], "quote": cites[n][1]}]} for n in ids]
         rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp, lines(*verdicts))
         self.assertEqual((rc, err), (0, ""), out)
         self.retarget(kind="pr", url=PR_URL, number=7)  # fixture shortcut: post.py reads only kind, url, number and head_sha
@@ -531,6 +544,156 @@ class Anchors(Base):
         self.assertEqual((rc, st["reason"]), (1, "too-large"), out)
         self.assertFalse(os.path.exists(self.payload_path()))
         self.assertEqual(self.fake.writes(), [])
+
+
+TOKEN = "ghp_" + "a1" * 18  # built, never written whole: 36 characters after the prefix
+OTHER_ID = "F-" + "ab" * 5
+
+
+class TextSafety(Base):
+    """Every string that reaches the forge is repository-derived: no command line, ping, image, raw HTML or secret."""
+
+    inject = {20: 'tok = "%s"' % TOKEN, 21: "# <!-- review-code:finding %s v1 -->" % OTHER_ID}
+
+    def adversarial(self):
+        quote = self.inject[20] + "\n" + self.inject[21]
+        cand = {"path": "src/calc.py", "line": 20, "end_line": 21, "severity": "required", "category": "bug",
+                "title": "/approve", "trigger": "ping @alice about #12 and !3 ![x](http://e/p.png) <img src=x>",
+                "quote": quote, "fix": "/merge now"}
+        return self.ingest([cand], {20: (20, self.inject[20])})[20]
+
+    def bodies(self):
+        _, payload = self.payload()
+        return [payload["body"]] + [c["body"] for c in payload["comments"]]
+
+    def test_adversarial_end_to_end(self):
+        fid_ = self.adversarial()
+        rc, out, st = self.build()
+        raw, payload = self.payload()
+        self.assertEqual((rc, st["status"], st["redacted"]), (0, "ok", 1), out)
+        self.assertNotIn(TOKEN, out)
+        self.assertNotIn(TOKEN, raw.decode("utf-8"))
+        self.assertRegex(out, r"(?m)^== secret scan ==\ngithub-pat src/calc\.py:20$")
+        for text in self.bodies():
+            self.assertNotRegex(text, r"(?m)^\s*/")
+            self.assertNotIn("<img", text)
+            self.assertNotIn("![", text)
+            for ref in ("@alice", "#12", "!3"):
+                self.assertNotRegex(text, r"(?<!`)" + re.escape(ref))
+        comment = payload["comments"][0]["body"]
+        for ref in ("`@alice`", "`#12`", "`!3`", "&lt;img"):
+            self.assertIn(ref, comment)
+        self.assertIn("[REDACTED:github-pat]", comment)
+        self.assertEqual(post.MARK_RE.findall(comment), [fid_])  # the spoofed marker sits behind its line-number prefix
+        self.assertIn("21: # <!-- review-code:finding %s v1 -->" % OTHER_ID, comment)
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        self.assertNotIn(TOKEN, json.dumps(self.fake.calls) + json.dumps(self.fake.reviews))
+
+    def test_guard(self):
+        for bad in ("/approve", "  /merge now", "ok\n/submit_review approve", "\t/x", "a\r/approve", "<!-- hidden -->",
+                    " " + post.MARK % OTHER_ID, post.MARK % OTHER_ID + " tail", post.REVIEW_MARK % ("a" * 40) + " "):
+            with self.assertRaises(post.Refuse, msg=repr(bad)) as cm:
+                post._guard(bad)
+            self.assertEqual(cm.exception.reason, "unsafe-text")
+        for good in (post.MARK % OTHER_ID, post.REVIEW_MARK % ("a" * 40), "20: /approve behind a prefix",
+                     "a // b", "**Fix:** /merge", "x\n" + post.MARK % OTHER_ID + "\ny"):
+            post._guard(good)
+
+    def test_rules(self):
+        samples = {
+            "aws-access-token": "AKIA" + "ABCDEFGH" * 2,
+            "github-pat": "ghp_" + "a1" * 18,
+            "github-oauth": "gho_" + "a1" * 18,
+            "github-fine-grained-pat": "github_pat_" + "a1" * 41,
+            "gitlab-pat": "glpat-" + "a1" * 10,
+            "gcp-api-key": "AIza" + "a1" * 17 + "a",
+            "slack-bot-token": "xoxb-" + "1" * 10 + "-" + "2" * 10 + "-abc",
+            "stripe-access-token": "sk_live_" + "a1" * 6,
+            "jwt": "eyJ" + "a" * 20 + ".eyJ" + "b" * 20 + "." + "c" * 12,
+            "private-key": "-----BEGIN RSA " + "PRIVATE KEY-----\n12: " + "A" * 40 + "\n13: " + "B" * 20 + "\n14: -----END RSA PRIVATE KEY-----",
+            "generic-secret": 'password = "hunter2hunter2"',
+        }
+        self.assertEqual({r for r, _ in post.SECRET_RULES}, set(samples))
+        for rule, sample in samples.items():
+            text = "before %s after" % sample
+            self.assertIn(rule, [r for r, _, _ in post._scan(text)], rule)
+            red, rules = post._redact(text)
+            self.assertEqual(rules, [rule], rule)
+            self.assertEqual(red, "before [REDACTED:%s] after" % rule, rule)
+        red, rules = post._redact("def f(x):\n    return x + 1  # ghp_short AKIA password = x\n")
+        self.assertEqual((rules, post._scan(red)), ([], []))
+        two, rules = post._redact("a %s b %s c" % (samples["github-pat"], samples["gitlab-pat"]))
+        self.assertEqual((two, rules), ("a [REDACTED:github-pat] b [REDACTED:gitlab-pat] c", ["github-pat", "gitlab-pat"]))
+
+    def test_scanner_exception_refuses_scan_failed(self):
+        self.adversarial()
+
+        class Boom:
+            def finditer(self, text):
+                raise RuntimeError(TOKEN)
+
+        with mock.patch.object(post, "SECRET_RULES", (("boom", Boom()),)):
+            rc, out, st = self.build()
+        self.assertEqual((rc, st["reason"]), (1, "scan-failed"))
+        self.assertNotIn(TOKEN, out)
+        self.assertFalse(os.path.exists(self.payload_path()))
+        digest = self.build()[2]["digest"]
+        self.fake.calls[:] = []
+        with mock.patch.object(post, "SECRET_RULES", (("boom", Boom()),)):
+            rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", digest)
+        self.assertEqual((rc, st["reason"]), (1, "scan-failed"))
+        self.assertEqual(self.fake.calls, [])
+
+    def edited(self, edit):
+        """Build, rewrite payload.json through `edit`, recompute the digest and submit."""
+        self.adversarial()
+        self.build()
+        _, payload = self.payload()
+        edit(payload)
+        with open(self.payload_path(), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, sort_keys=True, indent=2))
+        with open(self.payload_path(), "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        self.fake.calls[:] = []
+        return self.call("submit", "--run", self.run_dir, "--digest", digest)
+
+    def test_submit_rescans_for_a_secret(self):
+        rc, out, st = self.edited(lambda p: p["comments"][0].update(body=p["comments"][0]["body"] + "\n" + TOKEN))
+        self.assertEqual((rc, st["reason"]), (1, "secret-found"))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_submit_reguards_the_review_body(self):
+        rc, out, st = self.edited(lambda p: p.update(body=p["body"] + "\n/approve"))
+        self.assertEqual((rc, st["reason"]), (1, "unsafe-text"))
+        self.assertEqual(self.fake.calls, [])
+
+    def test_submit_reguards_every_comment(self):
+        rc, out, st = self.edited(lambda p: p["comments"][0].update(body="<!-- x -->\n" + p["comments"][0]["body"]))
+        self.assertEqual((rc, st["reason"]), (1, "unsafe-text"))
+        self.assertEqual(self.fake.calls, [])
+
+
+class HtmlQuote(Base):
+    inject = {20: "<!-- note -->"}
+
+    def test_html_comment_in_quote_posts(self):
+        cand = {"path": "src/calc.py", "line": 20, "severity": "required", "category": "bug", "title": "t", "trigger": "t",
+                "quote": "<!-- note -->", "fix": "f"}
+        self.ingest([cand], {20: (20, "<!-- note -->")})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"], st["redacted"]), (0, "ok", 0), out)
+        self.assertIn("\n20: <!-- note -->\n", self.payload()[1]["comments"][0]["body"])
+
+
+class Notice(unittest.TestCase):
+    def test_gitleaks_attribution(self):
+        with open(os.path.join(os.path.dirname(SCRIPTS), "..", "..", "NOTICE"), encoding="utf-8") as fh:
+            text = fh.read()
+        for need in ("gitleaks", "https://github.com/gitleaks/gitleaks", "Copyright (c) 2019 Zachary Rice",
+                     "config/gitleaks.toml"):
+            self.assertIn(need, text)
+        self.assertEqual(text.count("Permission is hereby granted"), 3)
 
 
 class InlineCap(Base):
