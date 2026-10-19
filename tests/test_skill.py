@@ -111,6 +111,7 @@ class Phase4Procedure(unittest.TestCase):
         for ln in lines:
             self.assertRegex(ln, r"(?i)\bnever\b", ln)
 
+    # documentation check: pins wording, not behaviour (WR-03)
     def test_fan_out_wording(self):
         self.assertIn(FAN_OUT, self.flat)
         self.assertNotRegex(self.text, r"(?i)foreground Agent")

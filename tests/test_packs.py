@@ -79,6 +79,7 @@ class Structure(unittest.TestCase):
         for phrase in ("judgement call", "repo standard", "overrides", "tooling", "never a blocking"):
             self.assertIn(phrase, low)
 
+    # documentation check: pins wording, not behaviour (WR-03)
     def test_no_internal_pejoratives(self):
         for path in [pack_path(n) for n in self.packs()] + [os.path.join(REFS, "smells.md")]:
             with self.subTest(path=os.path.basename(path)):
