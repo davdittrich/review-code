@@ -288,8 +288,9 @@ class GitHubTracer(Base):
         self.assertEqual((st["status"], st["posted"], st["in_body"]), ("ok", 1, 1))
         tail = [(m, e) for m, e, _ in self.fake.calls[seen:]]
         at = tail.index(("POST", PR + "/reviews"))
-        self.assertEqual(tail[at:], [("POST", PR + "/reviews"), ("GET", PR + "/reviews/100/comments"), ("GET", PR),
-                                     ("POST", PR + "/reviews/100/events")])  # create, read back, head, event
+        self.assertEqual(tail[at:], [("POST", PR + "/reviews"), ("GET", PR + "/reviews/100/comments"),
+                                     ("GET", "diff"), ("GET", PR), ("POST", PR + "/reviews/100/events")])
+        # create, read back, the diff for the positions, head, event
         create = next(b for m, e, b in self.fake.calls[seen:] if (m, e) == ("POST", PR + "/reviews"))
         self.assertEqual(sorted(create), ["body", "comments", "commit_id"])  # no event key
         self.assertEqual(create["commit_id"], self.fake.head)

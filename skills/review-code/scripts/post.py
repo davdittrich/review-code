@@ -195,14 +195,33 @@ class GitHub:
         return rid
 
     def verify(self, payload: dict, handle: int) -> None:
+        """Every stored comment of the pending review must be one of ours: path and commit id, our marker line in its
+        body, and its place. GitHub lists a PENDING review's comments with `line`, `side` and `original_line` null and a
+        diff `position` instead (observed live on PR 1); position is read from the pinned head's own diff. A comment
+        that does carry line and side is compared on those."""
         stored = _pages("gh", self.i["host"], "%s/reviews/%d/comments" % (self.pr, handle), self.i["run"])
-        want = sorted((c["path"], c["line"], c["side"], payload["head_sha"]) for c in payload["comments"])
-        try:
-            got = sorted((c["path"], c["line"], c["side"], c["commit_id"]) for c in stored)
-        except (KeyError, TypeError):
+        want = list(payload["comments"])
+        if len(stored) != len(want):
             raise Refuse("verify-failed")
-        if got != want:
-            raise Refuse("verify-failed")
+        anchors = _anchors(self.diff())
+        for c in stored:
+            for k, w in enumerate(want):
+                if self._same(c, w, payload["head_sha"], anchors):
+                    del want[k]
+                    break
+            else:
+                raise Refuse("verify-failed")
+
+    @staticmethod
+    def _same(c, w: dict, head: str, anchors: dict) -> bool:
+        if not isinstance(c, dict) or c.get("path") != w["path"] or c.get("commit_id") != head:
+            return False
+        if not isinstance(c.get("body"), str) or MARK % w["id"] not in c["body"].replace("\r\n", "\n").split("\n"):
+            return False
+        if c.get("line") is not None or c.get("side") is not None:
+            return c.get("line") == w["line"] and c.get("side") == w["side"]
+        row, pos = anchors.get((w["path"], w["line"])), c.get("position")
+        return row is not None and isinstance(pos, int) and not isinstance(pos, bool) and pos == row[3]
 
     def finish(self, handle: int) -> None:
         try:
@@ -398,11 +417,15 @@ def _live(adapter, head: str, refs) -> None:
 
 
 def _anchors(diff_text: str) -> dict:
-    """{(new path, new line): (tag, old line, old path)} for every context and added row of a unified diff."""
-    rows = {}
+    """{(new path, new line): (tag, old line, old path, position)} for every context and added row of a unified diff.
+    `position` is GitHub's: rows below the file's first @@ header, later @@ headers and `\\ No newline` lines counted."""
+    rows, cur, pos = {}, None, 0
     for _, path, tag, old_line, new_line, _, old_path in sanitize._walk(diff_text):
+        if path != cur:
+            cur, pos = path, -1  # the file's first @@ is row 0, every later row (a second @@ too) adds one
+        pos += 1
         if path and tag in (" ", "+"):
-            rows[(path, new_line)] = (tag, old_line if tag == " " else None, old_path)
+            rows[(path, new_line)] = (tag, old_line if tag == " " else None, old_path, pos)
     return rows
 
 

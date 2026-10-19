@@ -11,10 +11,14 @@ Only with `--comment`, only for a PR or MR target, only in an interactive sessio
 1. `post.py build --run <run>` is read-only on the forge and pre-approved in `allowed-tools`. It reads the pinned `target.json`, the live PR or MR and its diff, builds `post/payload.json`, prints a preview and prints the sha256 of the payload bytes as `digest`.
 2. The skill relays the preview verbatim and makes one AskUserQuestion: "Post as COMMENT" or "Do not post". Every other answer, a dismissed one included, posts nothing.
 3. `post.py submit --run <run> --digest <digest>` is not pre-approved, so the harness permission prompt also applies. It refuses unless the hash of `payload.json` equals the digest the user saw, re-scans every body, re-checks the head and then writes.
-4. GitHub: create one pending review with `commit_id` pinned and its inline comments, read the stored comments back and compare path, line, side and commit id with the payload, re-check the head, send the one `COMMENT` event. GitLab: create a summary draft note and one positioned draft per inline finding, verify the user's drafts are exactly those, re-check the head, publish all drafts in one call that takes no parameters.
+4. GitHub: create one pending review with `commit_id` pinned and its inline comments, read the stored comments back and compare them with the payload (count; per comment path, commit id, its finding marker line and its place, see Verify), re-check the head, send the one `COMMENT` event. GitLab: create a summary draft note and one positioned draft per inline finding, verify the user's drafts are exactly those, re-check the head, publish all drafts in one call that takes no parameters.
 5. Any failure after a create deletes only the objects this call made: the review id its own create returned, or the drafts that carry this payload's marker lines. If a delete fails, `cleanup-failed` names what is left.
 
 The forge calls go through `gh api` and `glab api` with an explicit `--hostname`, repository and number taken from `target.json`, never from the working directory's remote.
+
+## Verify
+
+After the create, submit lists the pending review's comments and refuses `verify-failed` unless they are exactly the payload's: same count, and each stored comment matches one payload comment on path, `commit_id` (the pinned head), the finding's marker as a whole line of its body, and its place. GitHub lists the comments of a PENDING review with `line`, `side` and `original_line` null and a diff `position` instead (observed live on a real PR, 2026-10-20). So when `line` and `side` are null the place is the `position`, compared with the position of the finding's row in `gh pr diff` for the pinned head: rows below the file's first `@@` header, a later `@@` header and a `\ No newline` line each counting one. When a stored comment does carry `line` and `side`, those are compared instead. `payload.json` holds no position; it is derived at verify time, so the digest does not depend on it.
 
 ## What is posted
 
@@ -93,7 +97,7 @@ Bare URLs still autolink.
 | `digest-mismatch` | The payload hash is not the digest given | Run build again and confirm the new preview |
 | `payload-mismatch` | The payload does not belong to this target and head | Run build again |
 | `post-failed` | The forge refused the create, event or publish call | Check `detail`; nothing was left pending unless `cleanup-failed` follows |
-| `verify-failed` | What the forge stored differs from the payload | Nothing is posted; the plugin's own pending objects are deleted |
+| `verify-failed` | What the forge stored differs from the payload: count, path, commit id, marker line, or position (line and side on GitLab) | Nothing is posted; the plugin's own pending objects are deleted |
 | `cleanup-failed` | A delete after a failure did not work; `detail` names the review or drafts left | Delete them by hand |
 
 ## GitLab specifics and not covered
@@ -103,6 +107,7 @@ Bare URLs still autolink.
 - Race: a draft you add in the GitLab UI between verify and publish is published with the review. The pre-check refuses drafts that exist before submit, not ones added during it.
 - Race: the head can still move between check (d) and the forge call. The window is one request.
 - `glab api` is called with a query string in the endpoint (`...?per_page=100&page=N`); that is assumed to work and is unchecked. The fallback is `--method GET -F page=N`.
+- Observed live (GitHub, 2026-10-20, one real PR): a pending review's stored comments have null `line`, `side` and `original_line` and a `position`; the plugin's own delete of that pending review worked. The first live submit refused `verify-failed` for that reason and was fixed (Verify above). That the review event then posts as COMMENTED, and A1 and A3, are not yet observed live.
 - A7: that the forge stores the marker comments and hides them in the rendered page is assumed for GitLab and checked only by the one live GitHub run, if it happened (see README).
 - Not covered at all: editing or replacing an earlier review, multi-line range comments, resolving threads, SARIF upload, and any forge other than GitHub and GitLab.
 - A published review cannot be deleted by this plugin; on GitHub its comments can be removed in the web UI.
