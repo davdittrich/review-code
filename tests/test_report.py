@@ -641,6 +641,12 @@ class SpecAxis(Base):
         self.assertEqual((d["mode"], d["findings"], d["unverifiable"], sorted(d["lanes"])), ("serial", [], [], ["defects"]))
         self.assertEqual(self.rep("discard", extra=["--x"])[0], 1)
 
+    def test_quick_tier_with_a_spec_says_spec_skipped(self):  # CR-05
+        rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "quick"], self.repo, self.tmp)
+        self.assertEqual(json.loads(out)["skipped"], [{"what": "spec", "why": "tier quick"}])
+        self.ingest({"inspected": ["src/calc.py"]})
+        self.assertRegex(self.rep("render")[1], r"\nSpec\nSpec: skipped \(tier quick\)\n")
+
     def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
         rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
         os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))

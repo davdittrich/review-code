@@ -405,6 +405,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
                    {"what": "sota", "why": "serial: no isolated web lane"}]
         lost = list(SERIAL_LOST)
     else:
+        if not spec_none and "spec" not in lanes:  # the report must not show a clean Spec axis that never ran
+            skipped.append({"what": "spec", "why": "tier " + tier})
         # shortcut: aliases and full IDs of one model compare unequal; upgrade when a model registry ships.
         if fm.lower() == vm.lower():
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
