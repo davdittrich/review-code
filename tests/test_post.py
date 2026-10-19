@@ -856,7 +856,10 @@ class TextSafety(Base):
         _, original = self.payload()
         body_edits = (("mention", "ping @org/team"), ("html", "<img src=x>"), ("link", "[text](https://e)"),
                       ("image", "![x](https://e/p.png)"), ("even backslash run", "\\\\[text](https://e)"),
-                      ("entity", "&commat;x"), ("escaped backtick", "\\`[x](https://e)`"), ("raw ampersand", "a & b"))
+                      ("entity", "&commat;x"), ("escaped backtick", "\\`[x](https://e)`"), ("raw ampersand", "a & b"),
+                      ("epic behind an entity", "&amp;123"), ("label", "~bug"), ("quoted milestone", '%"rc 1"'),
+                      ("snippet", "$45"), ("escaped issue bracket", "\\[issue:1]"), ("escaped wiki link", "\\[\\[Home]]"),
+                      ("issue key", "GL-7"), ("project", "grp/proj>"))
         edits = [(what, lambda p, line=line: p.update(body=line + "\n" + p["body"])) for what, line in body_edits]
         edits.append(("a fence closed early by a longer backtick line", lambda p: p["comments"][0].update(
             body=p["comments"][0]["body"].replace("```text\n", "```text\n````\n[x](https://e)\n", 1))))
@@ -990,8 +993,8 @@ class Entities(Base):
         rc, out, st = self.build()
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
         fix = [ln for ln in self.payload()[1]["comments"][0]["body"].split("\n") if ln.startswith("**Fix:**")][0]
-        self.assertIsNone(re.search(r"&(?!amp;)", fix), fix)
-        self.assertIn("&amp;commat;octocat", fix)
+        self.assertIsNone(re.search(r"&(?!amp;)", re.sub(r"`[^`]*`", " ", fix)), fix)  # a code span shows `&` as written
+        self.assertIn("`&commat`;octocat", fix)  # `&` followed by a word is a GitLab epic reference: a code span
 
 
 class QuoteNumbers(Base):
@@ -1019,6 +1022,25 @@ class QuoteNumbers(Base):
             self.assertNotRegex(body, r"(?m)^\d+: ")
         rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
+
+
+SIGILS = ("&123", "~bug", '~"feature request"', "%v1.23", '%"release candidate"', "$45", "^alert", '*iteration:"s 1"',
+          "[issue:12]", "[work_item:g/p/3]", "[[Home]]", "GL-7", "GH-8", "grp/proj>")
+
+
+class GitLabSigils(Base):
+    """GitLab links references in rendered text (docs.gitlab.com/user/markdown, GitLab-specific references): every
+    documented sigil goes in a code span, which its reference filters skip; escaping alone renders the same text."""
+
+    def test_every_reference_sigil_is_in_a_code_span(self):
+        self.review(20, fix="see " + " and ".join(SIGILS))
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        fix = [ln for ln in self.payload()[1]["comments"][0]["body"].split("\n") if ln.startswith("**Fix:**")][0]
+        for ref in SIGILS:
+            self.assertIn("`%s`" % ref, fix)
+        outside = re.sub(r"`[^`]*`", " ", fix)
+        self.assertIsNone(re.search(r"[&~%$^]\w|[~%]\"|\*iteration|\[(?:issue|work_item)|\[\[|G[LH]-\d|/\w*>", outside), fix)
 
 
 class HtmlQuote(Base):

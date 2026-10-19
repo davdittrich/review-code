@@ -33,7 +33,12 @@ REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
 REVIEW_RE = re.compile(r"<!-- review-code:review v1 head=[0-9a-f]{40}(?:[0-9a-f]{24})? -->")
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab path holding one could forge a diff header
-_REF = re.compile(r"[@#!](?=\w)[\w./-]*")  # @name, @org/team, #123, !123: each would ping or link
+# Every reference GitHub or GitLab (docs.gitlab.com/user/markdown, "GitLab-specific references") links or pings. The
+# forges match rendered text, so escaping cannot defuse one; a code span can. Commit SHAs and bare URLs are not covered.
+_REF = re.compile(r"[@#!&~%$^](?=\w)[\w./-]*"  # @user #1 !1 &epic ~label %milestone $snippet ^alert
+                  r'|[~%]"[^"`]*"|\*iteration:(?:"[^"`]*"|[\w./-]+)'  # ~"two words" %"two words" *iteration:x
+                  r"|\[\[[^\]`]*\]\]|\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):[^\]`]*\]"
+                  r"|\b(?:GL|GH)-\d+|\b[\w.-]+/[\w.-][\w./-]*>")  # GL-1 GH-1 issue keys, namespace/project>
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
 # A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
 # CRLF, string literals), so a hit blanks every free-text field of the finding instead of guessing where the key ends.
@@ -489,10 +494,19 @@ def _anchors(diff_text: str) -> dict:
 
 
 def _prose(s) -> str:
-    """One line of repository-derived text that pings, links and renders nothing: references in backticks, `&`, `<` and
-    `[` escaped. `&` goes first, or `&commat;x` would render `@x`; `\\` is doubled, or it would escape the escape."""
-    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'").replace("&", "&amp;").replace("\\", "\\\\")
-    return _REF.sub(lambda m: "`" + m.group() + "`", t).replace("<", "&lt;").replace("[", "\\[")
+    """One line of repository-derived text that pings, links and renders nothing: references in code spans, the rest
+    with `&`, `\\`, `<` and `[` escaped. `&` goes first, or `&commat;x` would render `@x`; `\\` is doubled, or it would
+    escape the escape. A code span shows its text as written, so nothing inside one is escaped."""
+    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'")
+    out, at = [], 0
+    for m in _REF.finditer(t):
+        out += [_escape(t[at:m.start()]), "`" + m.group() + "`"]
+        at = m.end()
+    return "".join(out + [_escape(t[at:])])
+
+
+def _escape(t: str) -> str:
+    return t.replace("&", "&amp;").replace("\\", "\\\\").replace("<", "&lt;").replace("[", "\\[")
 
 
 def _scan(text: str) -> list:
@@ -512,8 +526,13 @@ def _redact(text: str):
     return text, [h[0] for h in hits]
 
 
-_SPAN = re.compile(r"(?<!\\)((?:\\\\)*)`[@#!][\w./-]*`")  # the only code span _prose writes, behind an even backslash run
-_LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|[@#!]\w|(?<!\\)(?:\\\\)*\[")  # what _prose never leaves outside a fence
+_SPAN = re.compile(r"(?<!\\)((?:\\\\)*)`(?:" + _REF.pattern + ")`")  # the only code span _prose writes, behind an even backslash run
+_LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|(?<!\\)(?:\\\\)*\[")  # what _prose never leaves outside a fence
+
+
+def _shown(ln: str) -> str:
+    """The text a forge renders for a guarded line outside the fence (spans already blanked): escapes and entities undone."""
+    return re.sub(r"\\(.)", r"\1", ln).replace("&lt;", "<").replace("&amp;", "&")
 
 
 def _guard(text: str) -> None:
@@ -535,8 +554,10 @@ def _guard(text: str) -> None:
                 fence = None
         elif re.fullmatch(r"`{3,}text", ln):
             fence = ln[:-4]
-        elif not marker and _LOOSE.search(_SPAN.sub(r"\1", ln)):
-            raise Refuse("unsafe-text")
+        elif not marker:
+            bare = _SPAN.sub(r"\1 ", ln)  # a space: a span is a code element, so text around it never joins into a reference
+            if _LOOSE.search(bare) or _REF.search(_shown(bare)):
+                raise Refuse("unsafe-text")
     if fence:
         raise Refuse("unsafe-text")
 
