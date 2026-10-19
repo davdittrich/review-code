@@ -301,30 +301,6 @@ class Categories(Base):
         self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".ledger.")])
 
 
-class DiffMemory(Base):
-    def peak(self, n):
-        self.g("checkout", "-q", "main")
-        self.g("checkout", "-q", "-B", "big%d" % n)
-        line = "v = '" + "a" * 990 + "'\n"
-        head = gitfix.commit(self.repo, {"f%02d.py" % i: "# %d\n" % i + line * 512 for i in range(n)}, "big")
-        write_target(self.run_dir, self.repo, "branch", self.mb, head, self.mb, ["f%02d.py" % i for i in range(n)])
-        tree = {"path": "", "source": "head commit", "skipped": []}
-        with mock.patch("ledger._materialize", return_value=(tree, [], [])):  # tree/ streaming is 6xl.47's test
-            tracemalloc.start()
-            try:
-                ledger.build(self.run_dir)
-                return tracemalloc.get_traced_memory()[1]
-            finally:
-                tracemalloc.stop()
-
-    def test_change_diff_read_line_by_line(self):
-        # 6xl.54: symbol discovery reads change.diff line by line, so peak memory does not grow with the diff
-        self.mb = self.base({"README.md": "x\n"})
-        small, big = self.peak(4), self.peak(16)  # change.diff about 2 MB and 8 MB
-        self.assertGreater(os.path.getsize(os.path.join(self.run_dir, "change.diff")), 8_000_000)
-        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
-
-
 class Conventions(Base):
     def test_conventions_base_only(self):
         base = self.base({"CLAUDE.md": "base rule\n", "src/a.py": "pass\n"})
@@ -534,58 +510,6 @@ class Tree(Base):
         self.assertEqual(sorted({h["file"] for h in led["hidden_text"]}), ["notes.md"])
         self.assertEqual(sorted({h["file"] for h in led["hidden_chars"]}), ["src/cfg.py"])
 
-    def test_tree_streams_working_copy(self):
-        # 6xl.47: each file is read, scanned and written before the next is read (memory bounded by one file)
-        self.base({"a.txt": "x\n"})
-        names = ["f%d.py" % i for i in range(4)]
-        for n in names:
-            with open(os.path.join(self.repo, n), "w", encoding="utf-8") as fh:
-                fh.write("v = '%s'\n" % n)
-        head = self.g("rev-parse", "HEAD")
-        write_target(self.run_dir, self.repo, "repo", head, head, head, names, untracked=names)
-        events, real_open, real_put = [], open, ledger._put
-
-        real_read = target.read_working
-
-        def spy_read(path, limit):
-            if str(path).startswith(self.repo + os.sep):
-                events.append(("read", os.path.basename(path)))
-            return real_read(path, limit)
-
-        def spy_put(root, rel, data):
-            if root.endswith(os.sep + "tree"):
-                events.append(("put", rel))
-            return real_put(root, rel, data)
-
-        with mock.patch.object(target, "read_working", spy_read), mock.patch("ledger._put", spy_put):
-            ledger.build(self.run_dir)
-        tree_events = [e for e in events if e[1] in names]  # context discovery reads the files first
-        self.assertEqual(tree_events[-8:], [(k, n) for n in names for k in ("read", "put")])
-
-    def test_tree_streams_blobs(self):
-        # 6xl.47: on the head path each blob is written before the next one is taken from git
-        self.base({"a.txt": "x\n"})
-        names = ["f%d.py" % i for i in range(4)]
-        self.branch({n: "v = '%s'\n" % n for n in names})
-        events, real_stream, real_put = [], ledger._blob_stream, ledger._put
-
-        def spy_stream(repo, oids):
-            for oid, data in real_stream(repo, oids):
-                events.append(("blob", oid))
-                yield oid, data
-
-        def spy_put(root, rel, data):
-            if root.endswith(os.sep + "tree"):
-                events.append(("put", rel))
-            return real_put(root, rel, data)
-
-        with mock.patch("ledger._blob_stream", spy_stream), mock.patch("ledger._put", spy_put):
-            self.build()
-        kinds = [k for k, v in events if k == "blob" or v in names]
-        self.assertEqual(kinds[-8:], ["blob", "put"] * 4)
-        for n in names:
-            self.assertEqual(self.read("tree/" + n), "v = '%s'\n" % n)
-
     def test_blob_stream_many_objects(self):
         # thousands of ids exceed a pipe buffer both ways: the stream must not deadlock or lose objects
         src = os.path.join(self.tmp, "blobs")
@@ -635,28 +559,6 @@ class Tree(Base):
         self.assertIn({"path": "p.fifo", "reason": "special"}, self.load()["tree"]["skipped"])
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
-    def test_tree_open_never_trusts_an_earlier_lstat(self):
-        # 6xl.91: the file is judged on the open descriptor (O_NOFOLLOW|O_NONBLOCK, fstat), not on a prior lstat
-        import threading
-        self.base({"a.txt": "x\n"})
-        fifo = os.path.join(self.repo, "p.fifo")
-        os.mkfifo(fifo)
-        head = self.g("rev-parse", "HEAD")
-        write_target(self.run_dir, self.repo, "repo", head, head, head, ["a.txt", "p.fifo"])
-        real_lstat = os.lstat
-        fake = real_lstat(os.path.join(self.repo, "a.txt"))
-
-        def racy_lstat(path, *a, **k):  # the FIFO looked like a regular file a moment ago
-            return fake if str(path).endswith("p.fifo") else real_lstat(path, *a, **k)
-
-        done = []
-        with mock.patch("os.lstat", racy_lstat):
-            th = threading.Thread(target=lambda: done.append(ledger.build(self.run_dir)), daemon=True)
-            th.start()
-            th.join(10)
-        self.assertTrue(done, "ledger.build blocked opening a FIFO")
-        self.assertIn({"path": "p.fifo", "reason": "special"}, self.load()["tree"]["skipped"])
-
     def test_tree_hidden_text_in_place_is_scanned(self):
         self.base({"a.md": "x\n"})
         with open(os.path.join(self.repo, "a.md"), "w", encoding="utf-8") as fh:

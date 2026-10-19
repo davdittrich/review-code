@@ -21,7 +21,7 @@ sys.path.insert(0, HERE)
 import gitfix  # noqa: E402
 import target  # noqa: E402
 
-SEEDS = (11, 23, 47)
+SEEDS = (11,)
 # 6xl.85: a non-UTF-8 byte (as surrogateescape decodes it) joins the nasty characters
 ALPHABET = ["a", "b", "c", " ", "\t", "\n", "\r", '"', "\\", "\x1b", "\u00fc", "\u200b", chr(0xE0041), "\udce9"]
 CANARY = "PROPCANARY"

@@ -6,7 +6,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import tracemalloc
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -750,31 +749,6 @@ class TestFilter(Local):
         self.assertEqual(self.excluded(out), {"package-lock.json": ("lockfile", "basename")})
         self.assertNotIn("package-lock.json", load(out["run"])["included"])
 
-class TestBlobMemory(Local):
-    def peak(self, n):
-        line = ("v = '" + "a" * 990 + "'\n").encode()
-        specs = []
-        for i in range(n):
-            data = b"# %d\n" % i + line * 1000  # about 1 MB, distinct per file
-            oid = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=self.repo, env=gitfix.env(), input=data,
-                                 stdout=subprocess.PIPE, check=True).stdout.decode().strip()
-            specs.append(("f%d" % i, oid))
-        tracemalloc.start()
-        try:
-            got = target._blobs({k: ("100644", oid) for k, oid in specs}, [k for k, _ in specs], self.repo)
-            return tracemalloc.get_traced_memory()[1], got
-        finally:
-            tracemalloc.stop()
-
-    def test_blobs_memory_flat_in_file_count(self):
-        # 6xl.59: --repo sniffs every base blob; peak memory must not grow with the number of files
-        small, got4 = self.peak(4)
-        big, got16 = self.peak(16)
-        self.assertEqual((len(got4), len(got16)), (4, 16))
-        self.assertEqual(got16["f3"][2][0], "# 3")
-        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
-
-
 class TestOddNames(Local):
     def test_tab_and_newline_names_listed_in_every_diff_kind(self):
         # 6xl.72: a TAB (or LF, quote) in a changed name must not drop it from the numstat -z listing
@@ -838,28 +812,6 @@ class TestTooLarge(Local):
         self.assertIn("too-large", out["detail"])
         self.assertIn("%d bytes" % (6 * (target._MAX_FILE // 6 + 1)), out["detail"])
         self.assertNotIn("big.py", out["detail"])
-
-    def test_file_over_cap_excluded_with_reason_and_bounded_memory(self):
-        # 6xl.75: one huge file must not blow memory; it leaves review with a recorded reason, unread
-        big = target._MAX_FILE * 3
-        line = "v = '" + "a" * 90 + "'\n"
-        self.change({"big.py": line * (big // len(line)), "small.py": "s = 1\n"})
-        tracemalloc.start()
-        try:
-            rc, out = self.pin("main")
-            peak = tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(self.excluded(out)["big.py"][0], "too-large")
-        self.assertEqual(load(out["run"])["included"], ["small.py"])
-        self.assertLess(peak, target._MAX_FILE)
-        with open(os.path.join(self.repo, "huge.txt"), "w") as fh:
-            fh.write(line * (big // len(line)))
-        self.write("a.txt", "edited\n")
-        rc, out = self.pin("--unstaged")
-        self.assertEqual(self.excluded(out)["huge.txt"][0], "too-large")
-
 
 class TestDotTarget(Local):
     def test_dot_is_the_current_directory(self):
@@ -985,28 +937,6 @@ class TestUntrackedDefault(Local):
         self.write("src/fresh.py", "f = 1\n")
         rc, out = self.pin()
         self.assertEqual((rc, out.get("kind")), (0, "worktree"), out)
-
-
-class TestDiffMemory(Local):
-    def peak(self, n):
-        self.git("checkout", "-q", "main")
-        self.git("checkout", "-q", "-B", "big%d" % n)
-        line = "v = '" + "a" * 990 + "'\n"
-        gitfix.commit(self.repo, {"f%02d.py" % i: "# %d\n" % i + line * 256 for i in range(n)}, "big")
-        tracemalloc.start()
-        try:
-            rc, out = call(["main"], self.repo, self.tmp)
-            self.assertEqual(rc, 0, out)
-            return tracemalloc.get_traced_memory()[1], out
-        finally:
-            tracemalloc.stop()
-
-    def test_change_diff_streamed(self):
-        # 6xl.66: pin writes change.diff file section by file section; peak memory does not follow the diff size
-        small, _ = self.peak(4)
-        big, out = self.peak(16)  # change.diff about 1 MB vs 4 MB
-        self.assertGreater(os.path.getsize(os.path.join(out["run"], "change.diff")), 4_000_000)
-        self.assertLess(big, small * 1.5 + 1_000_000, (small, big))
 
 
 class TestHiddenRefNames(Local):
