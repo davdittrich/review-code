@@ -340,6 +340,21 @@ class Renders(Base):
             ast.parse(fh.read(), feature_version=(3, 9))
 
 
+class AxisIds(Base):
+    def test_defects_id_is_phase3_and_other_axes_are_salted(self):
+        out = self.ingest(CAND)
+        self.assertEqual(out["ids"], [fid("src/calc.py", "bug", "return a - b")])
+        rc, o = self.rep("ingest", lines(dict(CAND, category="lean")), extra=["--lane", "standards"])
+        (sid,) = [i for i in json.loads(o)["ids"] if i not in out["ids"]]
+        salt = "\0".join(("standards", "src/calc.py", "lean", "return a - b"))
+        self.assertEqual(sid, "F-" + hashlib.sha256(salt.encode()).hexdigest()[:10])
+
+    def test_wrong_axis_category_counts_invalid(self):
+        for n, (lane, cat) in enumerate((("standards", "bug"), ("defects", "lean"), ("spec", "lean"), ("sota", "smell")), 1):
+            rc, o = self.rep("ingest", lines(dict(CAND, category=cat)), extra=["--lane", lane])
+            self.assertEqual((json.loads(o)["dropped"]["invalid"], json.loads(o)["ids"]), (n, []), lane)  # dropped sums lanes
+
+
 class RepoTarget(Base):
     pin_args = ["--repo"]
 

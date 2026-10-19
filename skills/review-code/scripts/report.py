@@ -4,7 +4,8 @@ Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this scri
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
 `render`, which prints the report):
 
-    report.py ingest   --run DIR   candidate lines + one {"inspected": [path, ...]} line
+    report.py ingest   --run DIR [--lane defects|standards|spec|sota]
+                                   candidate lines + one {"inspected": [path, ...]} line; additive per lane
     report.py verdicts --run DIR   {"id", "verdict", "evidence": [{"path","line","quote"}], "reason"} lines
     report.py render   --run DIR [--format text|json|sarif]
 
@@ -14,7 +15,8 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}.
   Item keys: id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
-  existing), fix, reason, source_lane ("defects").
+  existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
+A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
 """
 import sys
 
@@ -37,12 +39,20 @@ import target
 SCHEMA_VERSION = 1
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
 CANDIDATE_OPTIONAL = ("end_line", "fix")
+AXES = ("defects", "standards", "spec")
+LANE_AXIS = {"defects": "defects", "standards": "standards", "sota": "standards", "spec": "spec"}
 VERDICT_KEYS = ("id", "verdict", "evidence", "reason")
 CITE_KEYS = ("path", "line", "quote")
 SEVERITIES = ("blocking", "required", "suggestion", "noted")  # rank order
 CATEGORIES = ("security", "data-loss", "race", "accessibility", "doc-mismatch", "constructor-divergence",
               "bug", "test", "performance", "other")
 BLOCKING = CATEGORIES[:6]
+LANE_CATEGORIES = {"defects": CATEGORIES, "standards": ("convention", "comment", "smell", "lean"),
+                   "sota": ("sota",), "spec": ("spec-missing", "spec-partial", "spec-wrong", "scope-creep")}
+CEILING = {"convention": "required", "comment": "required", "smell": "suggestion", "lean": "suggestion",
+           "sota": "suggestion", "spec-missing": "required", "spec-partial": "required", "spec-wrong": "required",
+           "scope-creep": "required"}  # strongest severity a non-Defects category may reach
+LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source"), "sota": ("sources",), "spec": ("spec_line",)}
 VERDICTS = ("confirmed", "refuted", "unverifiable")
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
@@ -109,7 +119,22 @@ def _objects(text):
             yield o if isinstance(o, dict) else None
 
 
-def _candidate(o, tree):
+def _rule(o, run):
+    """(rule, rule_source) of a convention line when the rule text occurs in the named conventions/ file, else None."""
+    rule, src = o.get("rule"), o.get("rule_source")
+    if not (isinstance(rule, str) and _ws(rule) and len(rule) <= 500 and isinstance(src, str)):
+        return None
+    rel = os.path.normpath(src) if src and "\0" not in src else ""
+    if not rel.startswith("conventions" + os.sep):
+        return None
+    real = _real(os.path.realpath(os.path.join(run, "conventions")), rel[len("conventions" + os.sep):])
+    if real is None:
+        return None
+    with open(real, encoding="utf-8", errors="replace") as fh:
+        return (rule, rel) if _ws(rule) in _ws(fh.read()) else None
+
+
+def _candidate(o, tree, lane, run):
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None
@@ -117,54 +142,82 @@ def _candidate(o, tree):
     fix = o.get("fix", "")
     c = {"path": o["path"], "line": o["line"], "end_line": end, "severity": o["severity"],
          "category": o["category"], "title": o["title"], "trigger": o["trigger"], "quote": o["quote"], "fix": fix}
-    if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in CATEGORIES
+    if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
         return None
     c["path"] = os.path.normpath(c["path"])
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
     if c["rows"] is None:
         return None
-    c["id"] = "F-" + hashlib.sha256("\0".join((c["path"], c["category"], _ws(c["quote"]))).encode(
+    if c["category"] == "convention":
+        r = _rule(o, run)
+        if r is None:
+            return None
+        c["rule"], c["rule_source"] = r
+    if isinstance(o.get("sources"), list) and "sources" in LANE_OPTIONAL[lane]:
+        c["sources"] = [x for x in o["sources"] if isinstance(x, str)]
+    if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
+        c["spec_line"] = o["spec_line"]
+    c["axis"], c["source_lane"] = LANE_AXIS[lane], lane
+    key = (c["path"], c["category"], _ws(c["quote"]))  # Defects keeps the Phase 3 input; other axes salt it
+    c["id"] = "F-" + hashlib.sha256("\0".join(key if c["axis"] == "defects" else (c["axis"],) + key).encode(
         "utf-8", "surrogatepass")).hexdigest()[:10]
     return c
 
 
 def _handoff(c, run, nonce):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
-    return "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
+    out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger._block(c["title"], nonce), json.dumps(loc),
         ledger._block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree")))
+    if c["axis"] == "defects":
+        return out
+    out += "check: %s\n" % ("rule" if c["category"] == "convention" else
+                            "spec" if c["axis"] == "spec" else "property")
+    return out + ("rule:\n%s\n" % ledger._block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
-def ingest(run, text):
-    _load(run, "target.json")
-    tree = os.path.realpath(os.path.join(run, "tree"))
-    nonce = secrets.token_hex(8)
+def _read_lane(text, lane, tree, run):
     kept, areas, invalid, ignored = {}, [], 0, 0
     for o in _objects(text):
         if o is not None and "inspected" in o and "path" not in o:
             areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
             continue
-        c = _candidate(o, tree) if o is not None else None
+        c = _candidate(o, tree, lane, run) if o is not None else None
         if c is None or c["id"] in kept:
             invalid += 1
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
         else:
             kept[c["id"]] = c
+    return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas,
+            "dropped": {"invalid": invalid, "do_not_flag": ignored}}
+
+
+def ingest(run, text, lane="defects"):
+    _load(run, "target.json")
+    tree = os.path.realpath(os.path.join(run, "tree"))
+    nonce = secrets.token_hex(8)
+    try:
+        lanes = _load(run, "candidates.json").get("lanes")
+    except target.Refuse:
+        lanes = None
+    lanes = lanes if isinstance(lanes, dict) else {}
+    lanes[lane] = _read_lane(text, lane, tree, run)  # re-ingesting a lane replaces only that lane
+    cands = sorted((c for n in sorted(lanes) for c in lanes[n]["candidates"]), key=lambda c: c["id"])
+    dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     if os.path.exists(os.path.join(run, "verdicts.json")):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700)
-    for c in kept.values():
+    for c in cands:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce))
-    dropped = {"invalid": invalid, "do_not_flag": ignored}
     target.write_private(os.path.join(run, "candidates.json"), json.dumps(
-        {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "dropped": dropped, "inspected": areas},
-        sort_keys=True, indent=2))
-    return {"status": "ok", "ids": sorted(kept), "dropped": dropped, "handoff": hand}
+        {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
+         "lanes": lanes}, sort_keys=True, indent=2))
+    return {"status": "ok", "ids": [c["id"] for c in cands], "dropped": dropped, "handoff": hand}
 
 
 def verdicts(run, text):
@@ -233,25 +286,36 @@ def build(run):
             reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else "no-verdict"
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])))]
+        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
+                             SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         if origin == "pre-existing" and sev in SEVERITIES[2:]:  # VERI-05; Blocking and Required stay (VERI-06)
             dropped["do_not_flag"] += 1
             continue
         items.append(dict(c, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
-                          verified=cls in ("reproduced", "traced"), origin=origin, reason=reason,
-                          source_lane="defects"))
-    items.sort(key=lambda i: (SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
+                          verified=cls in ("reproduced", "traced"), origin=origin, reason=reason))
+    items.sort(key=lambda i: (AXES.index(i["axis"]), SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
     findings = [i for i in items if i["verified"]]
     unverifiable = [i for i in items if not i["verified"]]
     rank = {i["severity"] for i in findings}
+    # Defects: any unverifiable item needs discussion. Standards and Spec: only an item at required does, so
+    # unverifiable smell, lean and comment suggestions never flip the verdict; SOTA never counts (its ceiling is suggestion).
     label = ("Needs changes" if "blocking" in rank else
-             "Needs discussion" if "required" in rank or unverifiable else "No blocking findings")
+             "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
+             or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
     areas = sorted({a for a in cand["inspected"] if _real(tree, a)})
+    try:
+        skipped = _load(run, "plan.json").get("skipped")
+    except target.Refuse:
+        skipped = None
+    skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
+    spec = led.get("spec")
+    if (not isinstance(spec, dict) or spec.get("status") == "none") and not any(s.get("what") == "spec" for s in skipped):
+        skipped.append({"what": "spec", "why": "no spec"})
     return {"schema_version": SCHEMA_VERSION,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
-            "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped,
+            "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped,
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
 
@@ -291,15 +355,28 @@ def _text(doc):
         out.append("Target is not a change: whole-file findings")
     out += ["findings: %d, unverifiable: %d" % (len(fs), len(doc["unverifiable"])),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
-            "trust: " + doc["trust"], ""]
+            "trust: " + doc["trust"]]
+    for ax in AXES:
+        mine = [i for i in fs if i["axis"] == ax]
+        out.append("%s: %d finding%s, worst %s" % (ax, len(mine), "" if len(mine) == 1 else "s", min(
+            (i["severity"] for i in mine), key=SEVERITIES.index, default="none")))
+    out.append("")
+
     def section(head, rows):
         return [head] + (rows or ["none"]) + [""]
 
-    for head, pick in (("Blocking", ("blocking",)), ("Required", ("required",)), ("Suggestions", ("suggestion", "noted"))):
-        out += section(head, [x for i in fs if i["severity"] in pick for x in item(i)])
-    out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
-                                                                   i["evidence_class"], e(i["reason"]))
-                                    for i in doc["unverifiable"]])
+    for ax in AXES:
+        out.append(ax.capitalize())
+        unv = [i for i in doc["unverifiable"] if i["axis"] == ax]
+        if ax != "defects" and not unv and not any(i["axis"] == ax for i in fs):
+            why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
+            out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
+            continue
+        for head, pick in (("Blocking", ("blocking",)), ("Required", ("required",)),
+                           ("Suggestions", ("suggestion", "noted"))):
+            out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
+        out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
+                                                                       i["evidence_class"], e(i["reason"])) for i in unv])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
@@ -312,7 +389,7 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest|verdicts --run DIR | render --run DIR [--format text|json|sarif]")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] | verdicts --run DIR | render --run DIR [--format text|json|sarif]")
 
 
 def main(argv):
@@ -326,10 +403,11 @@ def main(argv):
                 raise _usage()
             sys.stdout.write(render(run, tail[1] if tail else "text"))
             return 0
-        if tail:
+        lane = tail[1] if sub == "ingest" and len(tail) == 2 and tail[0] == "--lane" and tail[1] in LANE_AXIS else None
+        if tail and lane is None:
             raise _usage()
         text = sys.stdin.buffer.read().decode("utf-8", "replace")
-        out = (ingest if sub == "ingest" else verdicts)(run, text)
+        out = ingest(run, text, lane or "defects") if sub == "ingest" else verdicts(run, text)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
