@@ -38,10 +38,10 @@ class Procedure(unittest.TestCase):
         self.assertIsNotNone(m, "allowed-tools must be a YAML list")
         return [ln.strip()[2:].strip() for ln in m.group(1).splitlines()]
 
-    def test_allowed_tools_names_three_scripts_not_repro(self):
+    def test_allowed_tools_names_four_scripts_not_repro(self):
         items = self.allowed()
-        self.assertEqual(len(items), 3, items)
-        for name in ("target.py", "ledger.py", "report.py"):
+        self.assertEqual(len(items), 4, items)
+        for name in ("target.py", "ledger.py", "report.py", "plan.py"):
             self.assertTrue(any(name in i for i in items), name)
         for i in items:
             self.assertNotIn("repro", i)
@@ -62,6 +62,66 @@ class Procedure(unittest.TestCase):
     def test_delimiters_and_flags(self):
         for s in ("REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "REPRO-<id>", "--json", "--sarif"):
             self.assertIn(s, self.text)
+
+
+DESCRIPTION = """description: >
+  Reviews code changes (diffs, commits, branches, pull requests, the working tree) or repository
+  files and reports defects, each with file:line evidence, an evidence class and a severity. Use
+  when a user asks for a code review, a critical or adversarial review, a critique, an audit or a
+  check of code, or asks what is wrong with a change. Not for writing, explaining or debugging code.
+"""
+# 04-02 probe decision line (fan-out waiting rule); also pins review-code-g1x.11, the "foreground Agent call" wording.
+FAN_OUT = ("issue all calls of a wave in one message; wait until every call of the wave has returned or notified "
+           "completion before the next step")
+
+
+class Phase4Procedure(unittest.TestCase):
+    """04-08: plan, cost gate, lanes, verifiers and serial mode in SKILL.md."""
+
+    def setUp(self):
+        with open(SKILL, encoding="utf-8") as fh:
+            self.text = fh.read()
+        self.flat = " ".join(self.text.split())
+
+    def test_steps_in_order(self):
+        steps = ["target.py --stdin", "ledger.py build", "ledger.py trust", "plan.py plan", "review-code:finder",
+                 "report.py ingest", "review-code:verifier", "review-code:spec-verifier", "report.py verdicts",
+                 "repro.py run", "report.py render"]
+        at = [self.text.find(s) for s in steps]
+        self.assertNotIn(-1, at, dict(zip(steps, at)))
+        self.assertEqual(at, sorted(at), dict(zip(steps, at)))
+
+    def test_delimiters_flags_and_plan_keys(self):
+        for s in ("REVIEW_WORDS", "REVIEW_PLAN", "REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "--json", "--sarif",
+                  "--quick", "--standard", "--deep", "--sota", "--no-sota", "--serial", "--ai"):
+            self.assertIn(s, self.text)
+        block = re.search(r"<<'REVIEW_PLAN'\n(.*?)\n\s*REVIEW_PLAN", self.text, re.S).group(1)
+        keys = ["default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort",
+                "max_verifier_calls", "max_shards", "max_packs"]
+        self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
+
+    def test_spec_file_is_never_opened(self):
+        lines = [ln for ln in self.text.splitlines() if "inputs/spec.md" in ln]
+        self.assertTrue(lines)
+        for ln in lines:
+            self.assertRegex(ln, r"(?i)\bnever\b", ln)
+
+    def test_fan_out_wording(self):
+        self.assertIn(FAN_OUT, self.flat)
+        self.assertNotRegex(self.text, r"(?i)foreground Agent")
+
+    def test_cost_gate_and_serial(self):
+        for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
+                  "nesting-depth or concurrent-limit"):
+            self.assertIn(s, self.flat)
+
+    def test_shape(self):
+        self.assertLess(len(self.text.splitlines()), 500)
+        head = self.text.encode("utf-8")[:15000].decode("utf-8", "ignore")
+        self.assertIn("## Iron law", head)
+        self.assertIn("## Verification gate", head)
+        self.assertIn(DESCRIPTION, self.text)
+        self.assertRegex(self.text, r"(?m)^compatibility: Claude Code >= 2\.1\.292")
 
 
 if __name__ == "__main__":
