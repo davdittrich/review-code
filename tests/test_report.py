@@ -491,6 +491,115 @@ class RepoTarget(Base):
         rc, out = self.rep("render")
         self.assertIn("Target is not a change: whole-file findings", out)
 
+CANARY = "CANARY-SPEC-TEXT-7731"
+
+
+class SpecAxis(Base):
+    """Spec lines cite inputs/spec.md by line number only; no spec text reaches any output."""
+    spec_text = "The adder must " + CANARY + " add its operands.\n"
+
+    def pin(self, args):
+        rc, out, _ = cli("target.py", args, self.repo, self.tmp)
+        run = json.loads(out)["run"]
+        with open(os.path.join(self.repo, "local-spec.md"), "w", encoding="utf-8") as fh:
+            fh.write(self.spec_text)
+        rc, out, _ = cli("ledger.py", ["build", "--run", run, "--spec", "local-spec.md"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        return run
+
+    def spec_rows(self):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            rows = fh.read().split("\n")
+        inner = [n for n, r in enumerate(rows, 1) if CANARY in r]
+        opens = [n for n, r in enumerate(rows, 1) if r.startswith("<<<UNTRUSTED-")]
+        closes = [n for n, r in enumerate(rows, 1) if r.endswith(">>>") and not r.startswith("<<<")]
+        return rows, inner[0], opens[0], closes[0]
+
+    def spec(self, line, **kw):
+        return dict(CAND, category="spec-wrong", spec_line=line, **kw)
+
+    def lane(self, *objs):
+        rc, out = self.rep("ingest", lines(*objs), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)
+
+    def test_inside_block_line_is_kept_in_spec_ids(self):
+        rows, inner, opn, cls = self.spec_rows()
+        out = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["ids"], len(out["spec_ids"]), out["dropped"]["invalid"]), ([], 1, 0))
+        with open(os.path.join(out["handoff"], out["spec_ids"][0] + ".md"), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn('spec: %s line %d\n' % (json.dumps(os.path.join(self.run_dir, "inputs", "spec.md")), inner), body)
+        self.assertIn("check: spec", body)
+
+    def test_markers_header_outside_and_past_end_are_invalid(self):
+        rows, inner, opn, cls = self.spec_rows()
+        bad = [1, opn, cls, len(rows) + 5, 0, -1, True, "7", None]
+        out = self.lane(*[self.spec(n) for n in bad])
+        self.assertEqual((out["spec_ids"], out["dropped"]["invalid"]), ([], len(bad)))
+
+    def test_spec_line_is_required_and_defects_never_carries_it(self):
+        rows, inner, _, _ = self.spec_rows()
+        no_line = {k: v for k, v in self.spec(inner).items() if k != "spec_line"}
+        self.assertEqual(self.lane(no_line)["spec_ids"], [])
+        out = self.ingest(dict(CAND, spec_line=inner))  # a Defects lane line may not smuggle one in
+        (fid_,) = out["ids"]
+        with open(os.path.join(out["handoff"], fid_ + ".md"), encoding="utf-8") as fh:
+            self.assertNotIn("spec", fh.read().replace("# Verify finding", ""))
+
+    def test_declined_trailer_validates_and_renders_locators(self):
+        rows, inner, opn, cls = self.spec_rows()
+        out = self.lane({"declined": [{"spec_line": inner, "why": "tests cover it"}, {"spec_line": opn, "why": "x"},
+                                      {"spec_line": inner, "why": ""}, {"spec_line": inner, "why": "y" * 301}, "str"]},
+                        {"inspected": []})
+        self.assertEqual(out["dropped"]["invalid"], 4)
+        self.assertEqual(self.doc()["declined"], [{"spec_line": inner, "why": "tests cover it"}])
+        rc, text = self.rep("render")
+        self.assertIn("Declined\n- inputs/spec.md:%d: tests cover it" % inner, text)
+        out = self.lane({"declined": "nope"})
+        self.assertEqual(out["dropped"]["invalid"], 1)
+
+    def test_declined_is_ignored_on_other_lanes(self):
+        _, inner, _, _ = self.spec_rows()
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": inner, "why": "w"}]}), extra=["--lane", "standards"])
+        self.assertEqual((json.loads(out)["dropped"]["invalid"], self.doc()["declined"]), (1, []))
+
+    def test_spec_item_renders_a_locator_and_no_spec_text_in_any_output(self):
+        rows, inner, _, _ = self.spec_rows()
+        out = self.lane(self.spec(inner), {"declined": [{"spec_line": inner, "why": "covered"}]}, {"inspected": []})
+        (sid,) = out["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        blobs = [json.dumps(out)]
+        for f in sorted(os.listdir(out["handoff"])):
+            with open(os.path.join(out["handoff"], f), encoding="utf-8") as fh:
+                blobs.append(fh.read())
+        for fmt in ("text", "json", "sarif"):
+            rc, text = self.rep("render", extra=["--format", fmt])
+            blobs.append(text)
+        self.assertNotIn(CANARY, "\n".join(blobs))
+        self.assertIn("inputs/spec.md:%d" % inner, blobs[-3])
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["axis"], f["spec_line"], f["category"]), ("spec", inner, "spec-wrong"))
+        self.assertIn("spec: 1 finding", blobs[-3])
+
+    def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
+        rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
+        os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), "w") as fh:
+            fh.write("\n".join(rows))
+        self.assertEqual(report._spec_lines(self.run_dir), {3, 4, 5})
+
+    def test_no_spec_says_so(self):
+        os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as fh:
+            led = json.load(fh)
+        led["spec"] = {"status": "none", "sources": []}
+        with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        self.ingest(CAND)
+        rc, text = self.rep("render")
+        self.assertRegex(text, r"Spec\nSpec: skipped \(no spec\)")
+
 
 if __name__ == "__main__":
     unittest.main()

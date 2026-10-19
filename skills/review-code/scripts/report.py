@@ -138,7 +138,27 @@ def _rule(o, run):
         return (rule, rel) if _ws(rule) in _ws(fh.read()) else None
 
 
-def _candidate(o, tree, lane, run):
+def _spec_lines(run):
+    """Line numbers (1-based) that lie strictly inside an UNTRUSTED block of inputs/spec.md; empty when there is no file.
+    Only the numbers are returned: spec text never leaves this function (CTX-03)."""
+    try:
+        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
+            rows = fh.read().split("\n")
+    except OSError:
+        return set()
+    ok, nonce = set(), None
+    for n, row in enumerate(rows, 1):
+        if nonce is None:
+            m = re.fullmatch(r"<<<UNTRUSTED-([0-9a-f]+)", row)
+            nonce = m.group(1) if m else None
+        elif row == nonce + ">>>":
+            nonce = None
+        else:
+            ok.add(n)
+    return ok
+
+
+def _candidate(o, tree, lane, run, ctx=None):
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None
@@ -148,6 +168,8 @@ def _candidate(o, tree, lane, run):
          "category": o["category"], "title": o["title"], "trigger": o["trigger"], "quote": o["quote"], "fix": fix}
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
+        return None
+    if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
         return None
     c["path"] = os.path.normpath(c["path"])
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
@@ -178,6 +200,8 @@ def _handoff(c, run, nonce):
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")
+    if c["axis"] == "spec":
+        out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
     return out + ("rule:\n%s\n" % ledger._block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
@@ -215,14 +239,29 @@ def _cap_of(run):
     return n
 
 
+def _declined(o, ctx):
+    """(valid entries, invalid count) of a {"declined": [{spec_line, why}]} trailer."""
+    if not isinstance(o["declined"], list):
+        return [], 1
+    good = [{"spec_line": d["spec_line"], "why": _ws(d["why"])} for d in o["declined"] if isinstance(d, dict)
+            and _int(d.get("spec_line")) and d["spec_line"] in ctx and isinstance(d.get("why"), str)
+            and _ws(d["why"]) and len(d["why"]) <= 300]
+    return good, len(o["declined"]) - len(good)
+
+
 def _read_lane(text, lane, tree, run):
-    kept, areas, invalid, ignored, complete = {}, [], 0, 0, False
+    kept, areas, invalid, ignored, complete, declined = {}, [], 0, 0, False, []
+    ctx = _spec_lines(run) if lane == "spec" else None
     for o in _objects(text):
-        if o is not None and "inspected" in o and "path" not in o:
-            complete = True
-            areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
+        if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
+            if "inspected" in o:
+                complete = True
+                areas += [a for a in o["inspected"] if isinstance(a, str)] if isinstance(o["inspected"], list) else []
+            if "declined" in o and lane == "spec":
+                good, bad = _declined(o, ctx)
+                declined, invalid = declined + good, invalid + bad
             continue
-        c = _candidate(o, tree, lane, run) if o is not None else None
+        c = _candidate(o, tree, lane, run, ctx) if o is not None else None
         if c is None or c["id"] in kept:
             invalid += 1
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
@@ -230,7 +269,7 @@ def _read_lane(text, lane, tree, run):
         else:
             kept[c["id"]] = c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
-            "dropped": {"invalid": invalid, "do_not_flag": ignored}}
+            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}}
 
 
 def ingest(run, text, lane="defects"):
@@ -260,8 +299,9 @@ def ingest(run, text, lane="defects"):
     target.write_private(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
          "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut)}, sort_keys=True, indent=2))
-    return {"status": "ok", "ids": [c["id"] for c in queue], "dropped": dropped, "handoff": hand, "capped": len(cut),
-            "lanes": state, "merged": merged}
+    return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
+            "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
+            "capped": len(cut), "lanes": state, "merged": merged}
 
 
 def verdicts(run, text):
@@ -357,11 +397,13 @@ def build(run):
     spec = led.get("spec")
     if (not isinstance(spec, dict) or spec.get("status") == "none") and not any(s.get("what") == "spec" for s in skipped):
         skipped.append({"what": "spec", "why": "no spec"})
+    declined = sorted((d for v in cand.get("lanes", {}).values() for d in v.get("declined", [])),
+                      key=lambda d: (d["spec_line"], d["why"]))
     return {"schema_version": SCHEMA_VERSION,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
-            "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped,
+            "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
             "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
@@ -392,6 +434,7 @@ def _text(doc):
         out = ["- [%s] %s:%d  %s (%s, score %d, %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                       i["evidence_class"], i["score"], i["origin"]),
                "    trigger: " + e(i["trigger"])]
+        out += ["    spec: inputs/spec.md:%d" % i["spec_line"]] if "spec_line" in i else []
         out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
         return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
 
@@ -417,7 +460,7 @@ def _text(doc):
     for ax in AXES:
         out.append(ax.capitalize())
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax]
-        if ax != "defects" and not unv and not any(i["axis"] == ax for i in fs):
+        if ax != "defects" and not unv and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
             continue
@@ -425,7 +468,10 @@ def _text(doc):
                            ("Suggestions", ("suggestion", "noted"))):
             out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
         out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
-                                                                       i["evidence_class"], e(i["reason"])) for i in unv])
+                                                                       i["evidence_class"], e(i["reason"]))
+                                        + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])
+        if ax == "spec" and doc["declined"]:
+            out += section("Declined", ["- inputs/spec.md:%d: %s" % (d["spec_line"], e(d["why"])) for d in doc["declined"]])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
