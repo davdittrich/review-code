@@ -85,5 +85,33 @@ class Structure(unittest.TestCase):
                 self.assertIsNone(BANNED.search(read(path)))
 
 
+class ContractCoverage(unittest.TestCase):
+    """Every ccr-contract row that routes to a named pack has that pack's file (wording is a reviewer step)."""
+    ROUTES = {"python pack": "python", "r pack": "r", "js/ts pack": "js-ts", "sql pack": "sql",
+              "security pack": "security-owasp", "llm-generated-code pack": "llm-generated-code"}
+
+    def routed(self):
+        out = {}
+        for line in read(os.path.join(ROOT, "docs", "ccr-contract.md")).splitlines():
+            cols = [c.strip() for c in line.strip().strip("|").split("|")]
+            if not line.startswith("| L") or len(cols) != 6:
+                continue
+            for key, stem in self.ROUTES.items():
+                if key in cols[4].lower():
+                    out.setdefault(stem, []).append(cols[0])
+        return out
+
+    def test_every_routed_pack_exists(self):
+        routed = self.routed()
+        self.assertEqual(set(routed), set(self.ROUTES.values()))  # parser found a row for each routed pack
+        for stem, rows in routed.items():
+            with self.subTest(pack=stem, rows=rows):
+                self.assertTrue(os.path.exists(pack_path(stem)))
+
+    def test_all_nine_packs_exist(self):
+        packs_dir = os.path.join(REFS, "packs")
+        self.assertEqual(sorted(f[:-3] for f in os.listdir(packs_dir) if f.endswith(".md")), sorted(PACK_NAMES))
+
+
 if __name__ == "__main__":
     unittest.main()
