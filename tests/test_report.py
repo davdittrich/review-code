@@ -1259,7 +1259,8 @@ class Gate(Base):
         rc, out = self.rep("verdicts", "[[\"id\", \"%s\"], [\"verdict\", \"confirmed\"\n" % i, extra=["--batch", "1"])
         self.assertEqual(rc, 0, out)
         st = self.status()
-        self.assertEqual((st["rejected"], st["no_verdict"], st["missing_batches"]), ({"batch-1": 1}, [i], []))
+        self.assertEqual((st["rejected"], st["rejected_batches"], st["rejected_total"], st["no_verdict"], st["missing_batches"]),
+                         ({}, {"1": 1}, 1, [i], []))
         with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
             self.assertTrue(fh.read().startswith("invalid-json "))
 
@@ -1271,6 +1272,49 @@ class Gate(Base):
         self.assertEqual((d["verdict"], d["rejected"]), ("Needs discussion", {"defects": 1}))
         rc, text = self.rep("render")
         self.assertIn("Warning\nrejected lines: 1 (defects 1)", text)
+
+    def test_a_clean_reingest_keeps_the_attempt_and_lost_counters_until_discard(self):  # review-code-bgq
+        bad = "[[\"truncated\", \"x"
+        self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 1}})
+        self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
+        st = self.status()
+        self.assertEqual((st["rejected_total"], st["attempts"]), (0, {"defects": {"attempts": 2, "lost": 1}}))
+        self.ingest(self.GOOD, bad, bad, {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 3, "lost": 3}})
+        self.rep("discard")
+        self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 0}})
+
+    def test_verdict_batches_count_attempts_too(self):
+        (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
+        self.rep("verdicts", "[[\"id\", \"%s\"], [\"verdict\", \"confirmed\"\n" % i, extra=["--batch", "1"])
+        self.assertEqual(self.status()["attempts"]["batch-1"], {"attempts": 1, "lost": 1})
+
+    def test_repaired_lines_show_in_status_and_the_render_warning(self):
+        raw = ('[["path", "src/calc.py"], ["line", 5], ["severity", "required"], ["category", "bug"], ["title", "t"], '
+               '["trigger", "calls f("a", "b") wrongly"], ["quote", "%s"]]' % QQUOTE)
+        self.ingest(raw, {"inspected": ["src/calc.py"]})
+        st = self.status()
+        self.assertEqual((st["repaired"], st["repaired_total"], st["rejected_total"]), ({"defects": 1}, 1, 0))
+        self.assertEqual(self.doc()["repaired"], {"defects": 1})
+        rc, text = self.rep("render")
+        self.assertIn("Warning\nrepaired lines: 1 (defects 1)", text)
+        self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})  # a strict re-ingest repairs nothing
+        self.assertEqual((self.status()["repaired"], "repaired" in self.doc()), ({}, False))
+
+    def test_batch_rejects_do_not_share_a_map_with_lane_names(self):
+        (i,) = self.ingest(self.GOOD, "[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})["ids"]
+        self.rep("verdicts", "[[\"id\", \"%s\"], [\"verdict\", \"confirmed\"\n" % i, extra=["--batch", "1"])
+        st, d = self.status(), self.doc()
+        self.assertEqual((st["rejected"], st["rejected_batches"], st["rejected_total"]), ({"defects": 1}, {"1": 1}, 2))
+        self.assertEqual((d["rejected"], d["rejected_batches"]), ({"defects": 1}, {"1": 1}))
+        rc, text = self.rep("render")
+        self.assertIn("rejected lines: 1 (defects 1)\nrejected verdict lines: 1 (batch 1 1)", text)
+
+    def test_rejected_rows_are_counted_by_newline_not_by_unicode_line_breaks(self):
+        self.ingest("[[\"truncated\", \"x\x85y\u2028z\r", {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.status()["rejected"], {"defects": 1})
 
     def test_discard_removes_rejected(self):
         self.ingest("[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})
