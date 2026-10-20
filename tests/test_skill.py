@@ -222,6 +222,12 @@ class PostingDocs(unittest.TestCase):
         flat = " ".join(self.read(self.REFS, "posting.md").split())
         self.assertIn("between cleanup's listing and its delete is deleted with the review", flat)
 
+    def test_review_kept_never_says_submit_it_as_is(self):
+        """R2-IN-03: a kept review may hold plugin comments that verify rejected; submitting it would publish them."""
+        row = [ln for ln in self.read(self.REFS, "posting.md").split("\n") if ln.startswith("| `review-kept` |")][0]
+        self.assertNotIn("submit or delete that pending review yourself", row)
+        self.assertIn("remove the plugin's comments", row)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
 
