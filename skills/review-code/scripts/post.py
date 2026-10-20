@@ -612,13 +612,15 @@ def _first_line(quote: List[str], rows) -> Optional[int]:
     return fits[0] if len(fits) == 1 else None
 
 
-def _render(f: dict, rows=None, where: Optional[str] = None):
+def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False):
     """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
     escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
     raw, rules = {}, []
     for k in ("title", "trigger", "quote", "fix"):
         raw[k], got = _redact(f[k])
         rules += got
+    if keyed and "private-key" not in rules:  # another finding saw a key marker in this file: its body may be quoted here
+        rules.append("private-key")
     if "private-key" in rules:  # key material may sit in any field, with or without the marker line next to it
         raw = {k: "[REDACTED:private-key]" for k in raw}
     quote = sanitize.escape_for_code(raw["quote"].replace("\r\n", "\n").replace("\r", "<U+000D>"))[0].split("\n")
@@ -678,12 +680,17 @@ def build(run: str) -> dict:
     if not fresh:
         raise Refuse("already-posted")
     comments, entries, in_body, scan = [], [], [], []
+    try:  # a file with a key marker in any finding: every finding in it is blanked, since a key body has no shape
+        keyed = {f["path"] for f in fresh if any("private-key" in _redact(f[k])[1] for k in ("title", "trigger", "quote", "fix"))}
+    except Exception:
+        raise Refuse("scan-failed")
     for f in fresh:  # report order: axis, severity, path, line, id
         row = anchors.get((f["path"], f["line"]))
         inline = row is not None and len(comments) < MAX_INLINE
         rows = report._cited(report._tree(run, f.get("shard")), f["path"], f["line"], f["end_line"], f["quote"])
         try:  # each finding on its own, so every match is reported at the finding's path:line
-            text, rules = _render(f, rows) if inline else _render(f, rows, "%s:%d" % (_prose(f["path"]), f["line"]))
+            where = None if inline else "%s:%d" % (_prose(f["path"]), f["line"])
+            text, rules = _render(f, rows, where, f["path"] in keyed)
         except Exception:
             raise Refuse("scan-failed")
         scan += [{"rule": r, "where": "%s:%d" % (f["path"], f["line"])} for r in rules]

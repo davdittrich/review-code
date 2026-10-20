@@ -1003,6 +1003,27 @@ class PrivateKey(Base):
 FORGED = "<!-- review-code:finding F-aaaaaaaaaa v1 -->"
 
 
+class KeyFile(PrivateKey):
+    """A key's marker line in one finding taints its file: another finding quoting only the body is blanked too."""
+
+    inject = {20: "-----BEGIN RSA PRIVATE KEY-----", 21: KEYS[0], 22: KEYS[1], 23: "-----END RSA PRIVATE KEY-----"}
+
+    def test_a_body_quoted_by_another_finding_is_not_posted(self):
+        cands = [self.cand(20, 20, self.inject[20]), self.cand(21, 22, KEYS[0] + "\n" + KEYS[1], category="test")]
+        cands[1]["title"] = "body only"
+        self.ingest(cands, {c["line"]: (c["line"], c["quote"].split("\n")[0]) for c in cands})
+        rc, out, st = self.build()
+        raw, payload = self.payload()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        self.assertEqual(sorted(h["where"] for h in payload["scan"]), ["src/calc.py:20", "src/calc.py:21"])
+        for text in (out, raw.decode("utf-8")):
+            for k in KEYS[:2]:
+                self.assertNotIn(k[:24], text)
+            self.assertNotIn("body only", text)
+
+    test_no_key_body_line_is_posted = None
+
+
 class LoneCR(Base):
     """A lone CR in a quote would end the `N: ` prefixed line on a forge that turns CR into LF."""
 
