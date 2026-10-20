@@ -15,11 +15,13 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
+
+SCRIPTS = paths.SCRIPTS
 
 import fix  # noqa: E402
 import gitfix  # noqa: E402
+from gitfix import cli, lines  # noqa: E402
 import target  # noqa: E402
 
 BASE = {"src/calc.py": "def load():\n    return 1\n"}
@@ -28,26 +30,6 @@ QUOTE = "return a - b"
 CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "bug", "title": "add subtracts",
         "trigger": "add(2, 3) returns -1", "quote": QUOTE, "fix": "return a + b"}
 CITE = {"path": "src/calc.py", "line": 5, "quote": QUOTE}
-
-
-def cli(script, args, cwd, tmp, stdin=b"", extra=None):
-    e = gitfix.env()
-    e["TMPDIR"] = tmp
-    e.update(extra or {})
-    p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=cwd, env=e, input=stdin,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
-
-
-def wire(o):
-    """dict -> [[key, value], ...], recursively: the brace-free wire form the lanes use."""
-    if isinstance(o, dict):
-        return [[k, wire(v)] for k, v in o.items()]
-    return [wire(v) for v in o] if isinstance(o, list) else o
-
-
-def lines(*objs):
-    return "\n".join(o if isinstance(o, str) else json.dumps(wire(o)) for o in objs) + "\n"
 
 
 class Base(unittest.TestCase):

@@ -11,24 +11,18 @@ import unittest
 from contextlib import redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
 
+SCRIPTS = paths.SCRIPTS
+
 import gitfix  # noqa: E402
+from gitfix import cli  # noqa: E402
 
 CANARY = "CANARY-COMMIT-7d2"
 TARGET_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number",
                "run", "included_count", "excluded_count", "untracked_count", "candidates"}
 LEDGER_KEYS = {"status", "reason", "run", "label", "spec_status", "counts", "trust", "asked"}
 RLO = chr(0x202E)
-
-
-def cli(script, args, cwd, tmp):
-    e = gitfix.env()
-    e["TMPDIR"] = tmp
-    p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=cwd, env=e,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
 
 
 class Fixture(unittest.TestCase):

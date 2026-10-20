@@ -14,8 +14,9 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
+
+SCRIPTS = paths.SCRIPTS
 
 import gitfix  # noqa: E402
 import target  # noqa: E402

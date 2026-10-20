@@ -1,8 +1,13 @@
 """Isolated-git fixture helpers shared by the test modules."""
 import contextlib
+import hashlib
+import json
 import os
 import subprocess
+import sys
 import tempfile
+
+import paths
 
 _FIXED = {
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -66,3 +71,30 @@ def isolated(tmpdir):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def cli(script, args, cwd, tmp, stdin=b"", extra=None):
+    """Run a skill script in an isolated env; stdin may be str or bytes. Returns (rc, stdout, stderr)."""
+    e = env()
+    e["TMPDIR"] = tmp
+    e.update(extra or {})
+    if isinstance(stdin, str):
+        stdin = stdin.encode("utf-8")
+    p = subprocess.run([sys.executable, os.path.join(paths.SCRIPTS, script)] + args, cwd=cwd, env=e, input=stdin,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
+
+
+def wire(o):
+    """dict -> [[key, value], ...], recursively: the brace-free wire form (the Bash guard denies a brace and a quote)."""
+    if isinstance(o, dict):
+        return [[k, wire(v)] for k, v in o.items()]
+    return [wire(v) for v in o] if isinstance(o, list) else o
+
+
+def lines(*objs):
+    return "\n".join(o if isinstance(o, str) else json.dumps(wire(o)) for o in objs) + "\n"
+
+
+def fid(path, category, quote):
+    return "F-" + hashlib.sha256("\0".join((path, category, " ".join(quote.split()))).encode()).hexdigest()[:10]

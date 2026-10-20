@@ -13,8 +13,9 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
+
+SCRIPTS = paths.SCRIPTS
 
 import gitfix  # noqa: E402
 import ledger  # noqa: E402
