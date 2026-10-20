@@ -163,8 +163,8 @@ def _loads(s):
 
 
 REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
-REPAIR_STEPS = 2000  # string ends and values it will try on one line
-INGEST_STEPS = 10000  # ... and on all lines of one ingest or verdicts call
+REPAIR_STEPS = 250  # string ends and values it will try on one line (the 15 real lines need at most 47)
+INGEST_STEPS = 20000  # ... and on all lines of one ingest call or one stored verdicts batch
 LITERAL = ("title", "trigger", "quote", "fix", "reason")  # the only keys whose string may hold a raw quote (e7e)
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
     "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why"))
@@ -248,17 +248,21 @@ def _tokens(v, n):
     return n
 
 
-def _repair(s, total):
+def _repair(s, total, line=None):
     """_loads for a line whose strings hold raw double quotes (seen live: models write quote and fix text unescaped).
     The first reading (see _alts) that is a pair array, with no repeated key, wins. Only string ends are chosen: no key,
     element or object appears that the line did not hold, and the caller still validates the result."""
     if len(s) > REPAIR_MAX_LEN:
         raise _unrepairable(s)
-    budget = [min(REPAIR_STEPS, total[0]), {}]  # steps left, string ends by offset
+    line = [REPAIR_STEPS] if line is None else line  # steps left for this line, both candidates of _parse together
+    cap = max(0, min(line[0], total[0]))
+    budget = [cap, {}]  # steps left, string ends by offset
     try:
         return _repair_one(s, budget)
     finally:
-        total[0] -= min(REPAIR_STEPS, total[0]) - max(budget[0], 0)
+        spent = cap - max(budget[0], 0)
+        total[0] -= spent
+        line[0] -= spent
 
 
 def _repair_one(s, budget):
@@ -314,7 +318,8 @@ def _objects(text, total=None):
             # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
             if not parsed:
-                _, o = _parse(ln, lambda c: _repair(c, total))
+                line = [REPAIR_STEPS]
+                _, o = _parse(ln, lambda c: _repair(c, total, line))
             yield ln, o, not parsed and o is not None
 
 
@@ -726,6 +731,8 @@ def _ingest(run, text, lane, shard):
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
+    for n in _rejected(run)[1]:  # their replies are gone (4gj)
+        os.remove(os.path.join(run, "rejected", ("serial" if n == "serial" else "batch-" + n) + ".txt"))
     if os.path.exists(os.path.join(run, "verdicts.json")):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
@@ -734,7 +741,7 @@ def _ingest(run, text, lane, shard):
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
     _reject(run, key, rejected)
-    _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key)
+    _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"))
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
@@ -814,13 +821,14 @@ def _verdicts(run, text, batch):
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
-    got, foreign, repaired, total, fixes, lost = {}, 0, 0, [INGEST_STEPS], {}, 0  # one repair budget for every stored batch
+    got, foreign, repaired, fixes, lost = {}, 0, 0, {}, 0
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths, total)
+                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths,
+                                     [INGEST_STEPS])  # each stored batch has its own repair budget (one hostile batch starves no other)
             _reject(run, "serial" if k is None else "batch-%d" % k, bad)
             fixes["serial" if k is None else "batch-%d" % k] = fixed
             lost += len(bad) if k == batch else 0

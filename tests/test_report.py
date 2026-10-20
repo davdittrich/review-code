@@ -1221,6 +1221,40 @@ class RepairBudget(Base):
                              self.LINES[3] + "\n")
             self.assertEqual(rc, 0, out)
             self.assertLess(time.time() - t, 2, "batch %d" % k)
+    def test_one_line_spends_at_most_its_own_budget_across_both_candidates(self):  # review-code-dc5 (5)
+        total = [10 ** 9]
+        list(report._objects(self.LINES[3], total))
+        self.assertLessEqual(10 ** 9 - total[0], report.REPAIR_STEPS)
+
+    def test_forty_hostile_lines_do_not_starve_a_legitimate_repair(self):  # review-code-4gj
+        legit = ('[["path","src/calc.py"],["line",5],["severity","required"],["category","bug"],["title","t"],'
+                 '["trigger","calls f("a", "b") wrongly"],["quote","%s"]]' % QQUOTE)
+        out = self.timed(self.ingest, *([self.LINES[3]] * 40), legit, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["repaired"], out["dropped"]["invalid"]), (1, 1, 40))
+
+    def test_hostile_lines_in_one_stored_batch_do_not_starve_another_batch(self):  # review-code-dc5 (3)
+        files = {"f1.py": "x = 1\n", "f2.py": "x = 1\n"}
+        run = self.pin_run(files)
+        cli("report.py", ["ingest", "--run", run], self.repo, self.tmp, lines(
+            *[dict(CAND, path=p, line=1, quote="x = 1") for p in files], {"inspected": list(files)}))
+        rc, out, _ = cli("report.py", ["status", "--run", run], self.repo, self.tmp)
+        b1, b2 = json.loads(out)["verify_calls"][:2]
+        for b, text in ((b1, "\n".join([self.LINES[3]] * 8) + "\n"), (b2, '[["id","%s"],["verdict","confirmed"],'
+                        '["evidence",[[["path","f2.py"],["line",1],["quote","x = 1"]]]],["reason","says "ok" here"]]\n' % b2["ids"][0])):
+            rc, out, _ = cli("report.py", ["verdicts", "--run", run, "--batch", str(b["batch"])], self.repo, self.tmp, text)
+            self.assertEqual(rc, 0, out)
+        self.assertEqual((json.loads(out)["confirmed"], json.loads(out)["repaired"]), (b2["ids"], 1))
+
+    def test_a_lane_reingest_clears_stale_batch_rejects_and_repairs(self):  # review-code-4gj
+        (i,) = self.ingest(dict(CAND, line=5, quote=QQUOTE), {"inspected": ["src/calc.py"]})["ids"]
+        self.rep("verdicts", '[["id","%s"],["verdict","confirmed"\n' % i, extra=["--batch", "1"])
+        shutil.rmtree(os.path.join(self.run_dir, "replies"))  # the state a half-cleaned run leaves
+        os.remove(os.path.join(self.run_dir, "verdicts.json"))
+        self.ingest(dict(CAND, line=5, quote=QQUOTE), {"inspected": ["src/calc.py"]})
+        rc, out = self.rep("status")
+        st = json.loads(out)
+        self.assertEqual((st["rejected_batches"], st["rejected_total"], st["no_verdict"]), ({}, 0, []))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected", "batch-1.txt")))
 
     def pin_run(self, files):
         gitfix.commit(self.repo, files, "more")
