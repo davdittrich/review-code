@@ -969,6 +969,29 @@ class Trust(Base):
         with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
             fh.write(text)
 
+    def test_context_refuses_until_trust_then_prints_report_lines(self):
+        self.built()
+        tj = os.path.join(self.run_dir, "target.json")
+        with open(tj, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        rec["excluded"] = [{"path": "p%d.bin" % i, "reason": "binary", "detail": "d"} for i in range(ledger.CAP_FILES + 3)]
+        with open(tj, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh)
+        led = self.load()
+        led.update(notes=["n1"], hidden_text=[{"file": "change.diff", "path": "a.md", "line": 2, "kind": "html-comment", "length": 9}],
+                   ignored=[{"file": "CLAUDE.md", "reason": "head-only"}], conventions=[{"file": "CONTRIBUTING.md", "copy": "x"}])
+        self.set_ledger(json.dumps(led))
+        self.assertEqual(self.trust("get", "--run", self.run_dir)[1]["asked"], False)
+        self.assertEqual(self.cli("context", "--run", self.run_dir), (1, {"status": "refuse", "reason": "trust-unset"}))
+        self.trust("set", "external", "--run", self.run_dir)
+        rc, out = self.cli("context", "--run", self.run_dir)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(out["excluded"]), ledger.CAP_FILES)
+        self.assertEqual(out["excluded"][0], {"path": "p0.bin", "reason": "binary"})
+        self.assertEqual((out["more"], out["notes"], out["conventions"], out["ignored"], out["hidden_text"][0]["kind"]),
+                         ({"excluded": 3}, ["n1"], ["CONTRIBUTING.md"], [{"file": "CLAUDE.md", "reason": "head-only"}],
+                          "html-comment"))
+
     def test_trust_gate_fail_closed(self):
         self.built()
         gate = lambda *c: self.trust("gate", "--run", self.run_dir, "--", *c)  # noqa: E731

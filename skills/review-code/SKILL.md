@@ -117,10 +117,11 @@ before treating it as unavailable; it is unavailable only when that load fails o
    the single line of a quoted here-document on stdin (as in step 1); the script reads only files inside
    the repository (any other path is refused as `bad-spec`: ask the user to copy the file into the
    repository); no spec means the Spec axis is stated as skipped.
-4. Context report, after trust is recorded. Read `target.json` and `ledger.json`. State each excluded
-   path with its reason, each `notes` line, the convention copies taken from the base, the ignored
-   head-only files and the ledger notes, including the warning that Claude Code itself loads a
-   checked-out head's CLAUDE.md. If `hidden_text` or `hidden_chars` is not empty, report each
+4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
+   (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
+   path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a
+   checked-out head's CLAUDE.md), the `conventions` copies taken from the base and the `ignored`
+   head-only files; `more` counts entries cut by the cap. If `hidden_text` or `hidden_chars` is not empty, report each
    entry (file, line, kind, length or codepoints; `name: true` marks a file name; never guess the
    payload) as a finding: hidden content in a change. Both list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with

@@ -30,7 +30,8 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
-STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command"}
+STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
+               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
@@ -675,6 +676,19 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
     return {"status": "confirm", "command": shlex.join(cmd)}
 
 
+def context(run: str) -> dict:
+    """What SKILL step 4 states to the user, capped; refuses until trust is recorded (target.json holds change-derived names)."""
+    led = target.load_json(run, "ledger.json")
+    if _stored(led) == "unset":
+        raise target.Refuse("trust-unset", "the trust answer is not recorded")
+    tj = target.load_json(run, "target.json")
+    lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
+             "notes": led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
+             "hidden_text": led["hidden_text"], "hidden_chars": led["hidden_chars"]}
+    out = {k: v[:CAP_FILES] for k, v in lists.items()}
+    return dict(out, status="ok", more={k: len(v) - CAP_FILES for k, v in lists.items() if len(v) > CAP_FILES})
+
+
 def _trust_cli(argv: List[str]) -> dict:
     """trust set VALUE --run DIR | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
     sub, rest = argv[0], argv[1:]
@@ -692,6 +706,8 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
     try:
         if argv[:1] == ["trust"] and len(argv) >= 2:
             out = _trust_cli(argv[1:])
+        elif argv[:2] == ["context", "--run"] and len(argv) == 3:
+            out = context(argv[2])
         elif argv[:2] != ["build", "--run"] or len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--spec"):
             raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH]")
         else:
