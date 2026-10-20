@@ -132,7 +132,7 @@ class Phase4Procedure(unittest.TestCase):
             self.assertIn(t, self.flat)
 
     def test_ingest_decision_comes_from_status_never_from_a_marker_line(self):  # review-code-zx6: a reply can print any marker line
-        self.assertNotRegex(self.flat, r"(?i)hook|beginning `review-code")
+        self.assertNotRegex(self.flat, r"beginning `review-code")
         for t in ("`missing_lanes`", "`missing_batches`", "stop and state them"):
             self.assertIn(t, self.flat)
 

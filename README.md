@@ -80,13 +80,11 @@ Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, ne
 
 ## Run directory
 
-The plugin registers one `PostToolUse` hook on the Agent tool (`hooks/hook.py`, `python3` standard library only, no `jq`). After a lane or verifier subagent returns, it ingests that reply in-process, only when the call's agent and prompt equal a call of the run's `plan.json` or `candidates.json`, and adds one line (`review-code ingest: ok ...`) next to the tool result so the main thread does not re-type the reply. It never prints reply text, touches no other tool, and any failure, async reply or malformed reply leaves the reply to the skill's here-document ingest. Hooks disabled or `python3` missing: the skill ingests every reply itself, as before.
-
 Each run writes its pinned target, diff, context ledger and lane inputs to a mode 0700 directory under `git rev-parse --git-path review-code` inside the repository's git directory, never into the working tree. Run directories last written more than 14 days ago are removed when the next run in that repository pins a target. Each run also holds a stripped copy of the reviewed and referenced text files in `tree/`, so it takes about as much disk as those files (for `--repo`, every kept text file of the working copy) until it is removed; delete it sooner when the review is done. A sharded path or repo run copies each shard's files again under `shards/`, so it takes roughly twice that. The skill asks once per run whether the code is your own and records the answer; every other outcome, including headless runs, records `external`. What is untrusted and what the defences do not cover: `skills/review-code/references/untrusted-input.md`.
 
 ## What ships
 
-The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `agents/`, `hooks/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the matt.md and ccr.md keep-or-replace contracts and the trigger-prompt record) and `scripts/`. The GSD planning record under `.planning/` is gitignored and never ships. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
+The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `agents/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the matt.md and ccr.md keep-or-replace contracts and the trigger-prompt record) and `scripts/`. The GSD planning record under `.planning/` is gitignored and never ships. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
 
 ## Releasing
 

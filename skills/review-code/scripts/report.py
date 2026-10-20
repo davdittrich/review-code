@@ -381,21 +381,13 @@ def _dedupe(cands):
 
 @contextlib.contextmanager
 def _locked(run):
-    """Serialise every writer of a run (ingest, verdicts, discard, build): a lane ingest is a read-modify-write.
-    Re-entrant in a process, so the hook can hold it across its checks and the ingest (review-code-edk)."""
-    if fcntl is None or not os.path.isdir(run) or run in _HELD:  # a missing run refuses in the caller's own load_json
+    """Serialise every writer of a run (ingest, verdicts, discard, build): a lane ingest is a read-modify-write."""
+    if fcntl is None or not os.path.isdir(run):  # a missing run refuses in the caller's own load_json
         yield
         return
     with open(os.path.join(run, ".lock"), "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
-        _HELD.add(run)
-        try:
-            yield  # closing fh drops the lock
-        finally:
-            _HELD.discard(run)
-
-
-_HELD = set()
+        yield  # closing fh drops the lock
 
 
 def _put(path, text):
