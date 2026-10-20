@@ -3,6 +3,9 @@
 Wire form (g1x.10): every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace
 (Claude Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair
 element or a non-string key, and a raw JSON object at any depth (the retired object form), is invalid.
+A line that is not JSON because a string holds raw double quotes is read again by _repair (a quote ends a string only
+where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
+but is no pair array is never repaired.
 
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
@@ -151,21 +154,111 @@ def _no_object(pairs):
     raise ValueError("raw JSON object")  # the wire form has none at any depth, so a repeated key cannot hide in one
 
 
+def _loads(s):
+    return json.loads(s, object_pairs_hook=_no_object)
+
+
+REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
+REPAIR_STEPS = 2000  # readings it will try on one line
+_NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+_LIT = {"true": True, "false": False, "null": None}
+
+
+def _unrepairable(s):
+    return json.JSONDecodeError("cannot repair", s, 0)
+
+
+def _skip(s, i):
+    while s[i:i + 1] in (" ", "\t"):
+        i += 1
+    return i
+
+
+def _alts(s, i, budget, pair=False):
+    """Every reading of a JSON value at s[i:] as (value, end), shortest string first (but, with `pair`, the value of a
+    [key, value] pair, first those ending the pair). A string may end at any quote whose next non-space character is `,` or
+    `]`; every other quote inside it is literal. No object is read."""
+    i = _skip(s, i)
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _unrepairable(s)
+    c = s[i:i + 1]
+    if c == "[":
+        j = _skip(s, i + 1)
+        if s[j:j + 1] == "]":
+            yield [], j + 1
+        else:
+            yield from _items(s, j, [], budget)
+    elif c == '"':
+        ends = [q for q in range(i + 1, len(s)) if s[q] == '"' and s[q - 1] != "\\"
+                and s[_skip(s, q + 1):][:1] in (",", "]", "")]
+        for q in sorted(ends, key=lambda q: s[_skip(s, q + 1):][:1] != "]") if pair else ends:
+            try:
+                yield json.loads('"%s"' % re.sub(r'(\\.)|"', lambda m: m.group(1) or '\\"', s[i + 1:q])), q + 1
+            except ValueError:
+                pass
+    elif _NUM.match(s, i):
+        m = _NUM.match(s, i)
+        yield json.loads(m.group()), m.end()
+    else:
+        for w, v in _LIT.items():
+            if s.startswith(w, i):
+                yield v, i + len(w)
+
+
+def _items(s, i, acc, budget):
+    for v, j in _alts(s, i, budget, len(acc) == 1 and isinstance(acc[0], str)):
+        j = _skip(s, j)
+        if s[j:j + 1] == "]":
+            yield acc + [v], j + 1
+        elif s[j:j + 1] == ",":
+            yield from _items(s, j + 1, acc + [v], budget)
+
+
+def _repair(s):
+    """_loads for a line whose strings hold raw double quotes (seen live: models write quote and fix text unescaped).
+    The first reading (see _alts) that is a pair array, with no repeated key, wins. Only string ends are chosen: no key,
+    element or object appears that the line did not hold, and the caller still validates the result."""
+    if len(s) > REPAIR_MAX_LEN:
+        raise _unrepairable(s)
+    budget = [REPAIR_STEPS]
+    for v, j in _alts(s, 0, budget):
+        if _skip(s, j) == len(s):
+            try:
+                if isinstance(_wire(v), dict):
+                    return v
+            except ValueError:
+                pass
+    raise _unrepairable(s)
+
+
+def _parse(ln, load):
+    """(read, dict or None) of a wire line under `load`; the second candidate is the line with its outer bracket restored.
+    read is False only when no candidate is JSON syntax: a line that reads but is no pair array (repeated key, raw object,
+    wrong shape) is final and never repaired."""
+    for cand in (ln, "[" + ln + "]"):
+        try:
+            o = load(cand)
+            o = _wire(o) if isinstance(o, list) else None
+            return True, o if isinstance(o, dict) else None
+        except json.JSONDecodeError:
+            pass
+        except (ValueError, RecursionError):
+            return True, None
+    return False, None
+
+
 def _objects(text):
-    """Every wire line of the stream (`[[`, `["` or, for the retired object form, `{`): the parsed dict, or None when it is
-    not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read as if it had one."""
+    """(line, dict or None, repaired) of every wire line of the stream (`[[`, `["` or, for the retired object form, `{`):
+    the dict is None when it is not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read
+    as if it had one. The strict parse comes first; only a line it could not parse at all goes to _repair."""
     for ln in text.split("\n"):
         if re.match(r'\s*(\{|\[\s*[\["])', ln):
-            o = None
-            # shortcut: only the dropped-outer-bracket slip is repaired (seen live: a finder dropped one opening bracket); other damage stays invalid
-            for cand in (ln, "[" + ln + "]"):
-                try:
-                    o = json.loads(cand, object_pairs_hook=_no_object)
-                    o = _wire(o) if isinstance(o, list) else None
-                    break
-                except (ValueError, RecursionError):
-                    o = None
-            yield o if isinstance(o, dict) else None
+            # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid
+            parsed, o = _parse(ln, _loads)
+            if not parsed:
+                _, o = _parse(ln, _repair)
+            yield ln, o, not parsed and o is not None
 
 
 def _rule(o, run):
@@ -450,11 +543,12 @@ def _declined(o, ctx, copied):
 
 
 def _read_lane(text, lane, tree, run, shard=None):
-    kept, areas, invalid, ignored, complete, declined = {}, [], 0, 0, False, []
+    kept, areas, invalid, ignored, complete, declined, repaired = {}, [], 0, 0, False, [], 0
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
-    for o in _objects(text):
+    for ln, o, fixed in _objects(text):
+        repaired += fixed
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
@@ -478,7 +572,8 @@ def _read_lane(text, lane, tree, run, shard=None):
         else:
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
-            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}}
+            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored},
+            "repaired": repaired}
 
 
 def ingest(run, text, lane="defects", shard=None):
@@ -502,7 +597,9 @@ def _ingest(run, text, lane, shard):
         lanes = None
     lanes = lanes if isinstance(lanes, dict) else {}
     cap = _cap_of(run)
-    lanes[lane if shard is None else "%s@%d" % (lane, shard)] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
+    key = lane if shard is None else "%s@%d" % (lane, shard)
+    lanes[key] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
+    repaired = lanes[key].pop("repaired")
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
     queue = _queue(cands)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
@@ -523,7 +620,7 @@ def _ingest(run, text, lane, shard):
          "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
-            "capped": len(cut), "lanes": state, "merged": merged}
+            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired}
 
 
 def verdicts(run, text, batch=None):
@@ -536,11 +633,12 @@ def _replies(run):
 
 
 def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
-    """Fold one stored reply into got (first verdict per id wins); returns the count of ids outside `allowed`.
+    """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, repaired line count).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
     path, one that no other refuted id of the reply uses (review-code-8dt)."""
-    foreign, mine = 0, []
-    for o in _objects(text):
+    foreign, mine, fixed = 0, [], 0
+    for ln, o, fix in _objects(text):
+        fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
             continue
@@ -566,7 +664,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
     for i in mine:
         if got[i]["verdict"] == "refuted" and any(used.count(key(e)) > 1 for e in got[i]["cites"]):
             got[i]["verdict"] = "unverifiable"
-    return foreign
+    return foreign, fixed
 
 
 def _verdicts(run, text, batch):
@@ -586,18 +684,19 @@ def _verdicts(run, text, batch):
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
-    got, foreign = {}, 0
+    got, foreign, repaired = {}, 0, 0
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
-            foreign += f if k == batch else 0
+                f, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
+            foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
-    out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
+    out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref)),
+           "repaired": repaired}
     return out if batch is None else dict(out, foreign=foreign)
 
 
