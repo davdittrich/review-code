@@ -20,7 +20,8 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
   schema_version, target{kind, head_sha, merge_base, label, not_a_change}, trust (own|external), verdict,
   findings[] (class reproduced|traced), unverifiable[] (class inferred|speculative), dropped{refuted,
-  do_not_flag, invalid}, inspected{files, ledger_counts, areas}.
+  do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
+  kind, length or codepoints, name}] (notes, not findings; capped at 40) with hidden_content_omitted.
   Item keys: id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
