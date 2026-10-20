@@ -542,11 +542,15 @@ class Units(unittest.TestCase):
             self.assertEqual(g.call_count, 0)
 
     def test_timeout_fits_the_bash_call(self):
-        with open(os.path.join(os.path.dirname(SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        step = " ".join(text.split("\n12. Fix")[1].split("\n13. ")[0].split())
-        self.assertIn("600000", step)
-        self.assertLessEqual(fix.TIMEOUT + 60, 600)  # 60 s for the group kill, restore and sweep inside the Bash ceiling
+        docs = os.path.dirname(SCRIPTS)
+        with open(os.path.join(docs, "SKILL.md"), encoding="utf-8") as fh:
+            skill = " ".join(fh.read().split())
+        with open(os.path.join(docs, "references", "fix.md"), encoding="utf-8") as fh:
+            ref = " ".join(fh.read().split())
+        ms, said = re.search(r"`timeout` of (\d+), because their test run may take up to (\d+) seconds", skill).groups()
+        past = re.search(r"ran past (\d+) seconds \(`TIMEOUT`\)", ref).group(1)
+        self.assertEqual((int(said), int(past)), (fix.TIMEOUT, fix.TIMEOUT))  # the docs state the constant
+        self.assertLessEqual(fix.TIMEOUT + 60, int(ms) // 1000)  # 60 s for the group kill, restore and sweep
 
     def test_first_signal_ignores_the_rest(self):
         names = [n for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)]
