@@ -969,6 +969,13 @@ class Trust(Base):
         with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
             fh.write(text)
 
+    def test_build_stdout_carries_trust_and_asked(self):
+        self.built()
+        self.assertEqual(self.cli("build", "--run", self.run_dir)[1]["trust"], "unset")
+        self.trust("set", "own", "--run", self.run_dir)
+        out = self.cli("build", "--run", self.run_dir)[1]
+        self.assertEqual((out["trust"], out["asked"]), ("own", True))
+
     def test_context_refuses_until_trust_then_prints_report_lines(self):
         self.built()
         tj = os.path.join(self.run_dir, "target.json")

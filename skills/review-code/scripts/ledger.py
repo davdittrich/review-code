@@ -622,7 +622,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none"))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
-            "counts": {c: len(led[c]) for c in CATEGORIES}}
+            "counts": {c: len(led[c]) for c in CATEGORIES},
+            "trust": _stored(led), "asked": led["trust_asked"] is True}
 
 
 TRUST_VALUES = ("own", "external")

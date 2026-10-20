@@ -105,9 +105,8 @@ before treating it as unavailable; it is unavailable only when that load fails o
      (the caret-bang form); a PR or MR is its number or URL; a range is `A..B` or `A...B`.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`. State the `label` and
    counts from its stdout. For `triage`, print "Triage only: no repository context found".
-3. Questions, once per run, before reading any run-dir file. Run
-   `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust get --run <run>`; when `asked` is true, skip to
-   step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
+3. Questions, once per run, before reading any run-dir file. When step 2's
+   stdout has `asked` true, skip to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code") and,
    only when the build's `spec_status` is `none`, the spec question (options: give a spec path, or
    "There is no spec"). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`

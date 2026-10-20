@@ -19,7 +19,7 @@ import gitfix  # noqa: E402
 CANARY = "CANARY-COMMIT-7d2"
 TARGET_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number",
                "run", "included_count", "excluded_count", "untracked_count", "candidates"}
-LEDGER_KEYS = {"status", "reason", "run", "label", "spec_status", "counts"}
+LEDGER_KEYS = {"status", "reason", "run", "label", "spec_status", "counts", "trust", "asked"}
 RLO = chr(0x202E)
 
 
