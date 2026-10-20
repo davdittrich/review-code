@@ -120,6 +120,12 @@ class Overrides(Fixture):
         self.run_plan([("nav_hint", "${user_config.nav_hint}")])
         self.assertEqual(self.plan_json()["effective_overrides"], {})
 
+    def test_rerun_without_nav_hint_clears_the_stale_line(self):  # review-code-8wi
+        self.run_plan([("nav_hint", "a")])
+        self.run_plan([])
+        with open(os.path.join(self.run_dir, "inputs", "defects.md"), encoding="utf-8") as fh:
+            self.assertNotIn("Navigation preference: ", fh.read())
+
     def test_verifier_override_reaches_both_verifiers(self):
         self.run_plan([("verifier_model", "opus"), ("verifier_effort", "low")])
         p = self.plan_json()
