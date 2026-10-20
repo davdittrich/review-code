@@ -439,7 +439,7 @@ def baseline(run: str, digest: str) -> dict:
     ledger.trust_gate(run, json.loads(raw.decode("utf-8"))["command"])
     repo = tj["repo"]
     files = [os.path.join(repo, target.git(["rev-parse", "--git-path", p], repo).strip())
-             for p in ("config", "info/attributes")]
+             for p in ("config", "info/attributes", "info/exclude")]
     st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
           "untracked": [], "in_flight": None, "halted": None, "side_effects": []}
     _save(run, st)  # before the run: a second baseline or plan now refuses already-run

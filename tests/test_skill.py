@@ -275,6 +275,10 @@ class FixDocs(unittest.TestCase):
         self.assertIn("file-level", flat)
         self.assertIn("new import", flat)
 
+    def test_ignored_files_limit_documented(self):
+        for flat in (self.flat(self.REFS, "fix.md"), self.flat(ROOT, "README.md")):
+            self.assertIn("files git ignores", flat)
+
     def test_untrusted_input(self):
         flat = self.flat(self.REFS, "untrusted-input.md")
         self.assertIn("steps 9 and 12", flat)

@@ -737,13 +737,15 @@ class Tamper(Scope):
                    "plan.json": lambda run, fid: os.path.join(run, "fix", "plan.json"),
                    "target.json": lambda run, fid: os.path.join(run, "target.json"),
                    "ledger.json": lambda run, fid: os.path.join(run, "ledger.json"),
-                   "git config": lambda run, fid: self.state(run)["git_files"][0]}
+                   "git config": lambda run, fid: self.state(run)["git_files"][0],
+                   "git exclude": lambda run, fid: os.path.join(self.repo, ".git", "info", "exclude")}
         for name, where in targets.items():
             with self.subTest(file=name):
                 run, fid, bg = self.started()
                 self.edit("src/calc.py", QUOTE, "return a + b")
                 edited = slurp(self.p("src/calc.py"))
                 path = where(run, fid)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "ab") as fh:
                     fh.write(b" ")
                 self.tampered(run, bg, fid)
