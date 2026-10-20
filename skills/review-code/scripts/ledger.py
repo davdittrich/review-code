@@ -70,14 +70,6 @@ def _dec(raw: bytes) -> str:
 
 
 
-def _listing(repo: str, rev: str) -> Dict[str, Tuple[str, str]]:
-    return target.tree_listing(rev, repo)
-
-
-def _index_listing(repo: str) -> Dict[str, Tuple[str, str]]:
-    return target.index_listing(repo)
-
-
 def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     tracked = [_dec(n) for n in target.git_bytes(["ls-files", "-z"], repo).split(b"\0") if n]
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
@@ -283,7 +275,7 @@ def _put(root: str, rel: str, data: bytes) -> bool:
 def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
                  included: List[str]) -> Tuple[list, list, list]:
     """Copy review rules from the pinned merge base only, hidden text stripped; a head-only rule file is ignored."""
-    base_ls = _listing(repo, mb)
+    base_ls = target.tree_listing(mb, repo)
     want = sorted(_conv_paths(base_ls, included))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
     blobs = _blobs(repo, regular.values())
@@ -545,8 +537,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
     inplace = tj["kind"] in INPLACE
-    head_ls = None if inplace else _listing(repo, head)
-    idx = _index_listing(repo) if tj["kind"] == "staged" else None
+    head_ls = None if inplace else target.tree_listing(head, repo)
+    idx = target.index_listing(repo) if tj["kind"] == "staged" else None
     if idx is not None:
         files, rev = sorted(idx), INDEX
     else:
@@ -559,7 +551,7 @@ def build(run: str, spec: Optional[str] = None) -> dict:
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
     sources, capped["issues"], sections, found_spec = _gather_spec(
-        tj, spec, head_ls if head_ls is not None else _listing(repo, head), messages)
+        tj, spec, head_ls if head_ls is not None else target.tree_listing(head, repo), messages)
     spec_status = "found" if found_spec else "none"
 
     led = {
