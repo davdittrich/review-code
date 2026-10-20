@@ -258,7 +258,7 @@ def _objects(text):
     as if it had one. The strict parse comes first; only a line it could not parse at all goes to _repair."""
     for ln in text.split("\n"):
         if re.match(r'\s*(\{|\[\s*[\["])', ln):
-            # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid
+            # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
             if not parsed:
                 _, o = _parse(ln, _repair)

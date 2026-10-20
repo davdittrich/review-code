@@ -324,7 +324,8 @@ _JS_EXT = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
 
 def _code(text, marker):
     """The line without its comment. shortcut: a marker inside a string also cuts the line (a URL before an import
-    loses it); a block comment is dropped when it opens or continues the line."""
+    loses it); a block comment is dropped when it opens or continues the line. Upgrade to a tokenizer when a lane
+    misses an import over this."""
     t = text.lstrip()
     return "" if t.startswith(("/*", "*")) else re.sub(r"/\*.*?\*/", "", text).split(marker)[0]
 
