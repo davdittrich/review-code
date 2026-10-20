@@ -126,6 +126,22 @@ class Overrides(Fixture):
         with open(os.path.join(self.run_dir, "inputs", "defects.md"), encoding="utf-8") as fh:
             self.assertNotIn("Navigation preference: ", fh.read())
 
+    def test_rerun_without_nav_hint_clears_the_stale_line_in_spec_input(self):  # review-code-1m2
+        os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+        with open(os.path.join(self.repo, "docs", "spec.md"), "w") as fh:
+            fh.write("# Spec\nadd must add.\n")
+        cli("ledger.py", ["build", "--run", self.run_dir, "--spec", "docs/spec.md"], self.repo, self.tmp)
+        self.run_plan([("nav_hint", "a")], "--tier", "deep")
+        self.run_plan([], "--tier", "deep")
+        for lane in ("defects", "standards", "spec"):
+            with open(os.path.join(self.run_dir, "inputs", lane + ".md"), encoding="utf-8") as fh:
+                self.assertNotIn("Navigation preference: ", fh.read(), lane)
+
+    def test_nav_hint_cannot_rebuild_a_template_opener(self):  # review-code-97q
+        self.run_plan([("nav_hint", "$${{x} y")])
+        with open(os.path.join(self.run_dir, "inputs", "defects.md"), encoding="utf-8") as fh:
+            self.assertNotIn("${", fh.read())
+
     def test_verifier_override_reaches_both_verifiers(self):
         self.run_plan([("verifier_model", "opus"), ("verifier_effort", "low")])
         p = self.plan_json()

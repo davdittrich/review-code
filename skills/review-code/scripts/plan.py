@@ -71,7 +71,9 @@ def parse_config(text):
         if not val or val.startswith("${"):
             continue  # unset userConfig reference: the tier's value stands
         if key == "nav_hint":  # free text: sanitized, never refused
-            hint = " ".join(val.replace("${", "").split())[:NAV_MAX].strip()
+            while "${" in val:  # one pass can join "$" and "{" into a new opener
+                val = val.replace("${", "")
+            hint = " ".join(val.split())[:NAV_MAX].strip()
             if hint:
                 cfg[key] = hint
             continue
@@ -183,11 +185,11 @@ def _put_sections(path, sections):
 
 
 def _put_nav(path, hint):
-    """One `Navigation preference:` line at the end of a lane input file; a rerun replaces it."""
+    """One `Navigation preference:` line at the end of a lane input file; a rerun replaces it, or clears it when hint is None."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     text = re.sub(r"^Navigation preference: .*\n?", "", text, flags=re.M).rstrip("\n")
-    target.write_private(path, text + "\n\nNavigation preference: " + hint + "\n")
+    target.write_private(path, text + ("\n\nNavigation preference: " + hint if hint else "") + "\n")
 
 
 def _install_packs(run, packs):
@@ -497,8 +499,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         else:
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
-                if hint:
-                    _put_nav(path, hint)
+                _put_nav(path, hint)
                 calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else agent[lane],
                               "model": None if serial else fm, "effort": None if serial else fe, "input": path,
                               "shard": sh["id"] if sh else None,
