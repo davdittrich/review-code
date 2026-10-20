@@ -1135,5 +1135,56 @@ class Repair(Base):
             self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln[:60])
 
 
+class Gate(Base):
+    """review-code-19l: a rejected line is kept, counted in status and warned in the report, never skipped silently."""
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, QFEAT
+    GOOD = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "bug", "title": "t", "trigger": "tr",
+            "quote": QQUOTE}
+
+    def status(self):
+        rc, out = self.rep("status")
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)
+
+    def test_ingest_keeps_rejected_lines_with_a_reason_and_a_reingest_replaces_them(self):
+        self.ingest(self.GOOD, "[[\"path\", \"nope.py\"], [\"line\", 1]]", "[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})
+        path = os.path.join(self.run_dir, "rejected", "defects.txt")
+        with open(path, encoding="utf-8") as fh:
+            rows = fh.read().splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(rows[0].startswith("failed-validation ") and "nope.py" in rows[0], rows)
+        self.assertTrue(rows[1].startswith("invalid-json ") and "truncated" in rows[1], rows)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        st = self.status()
+        self.assertEqual((st["rejected_total"], st["rejected"], st["no_verdict"]), (2, {"defects": 2}, []))
+        self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
+        self.assertFalse(os.path.exists(path))
+        st = self.status()
+        self.assertEqual((st["rejected_total"], st["rejected"]), (0, {}))
+
+    def test_verdicts_keep_rejected_lines_per_batch_and_status_lists_no_verdict_ids(self):
+        (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
+        rc, out = self.rep("verdicts", "[[\"id\", \"%s\"], [\"verdict\", \"confirmed\"\n" % i, extra=["--batch", "1"])
+        self.assertEqual(rc, 0, out)
+        st = self.status()
+        self.assertEqual((st["rejected"], st["no_verdict"], st["missing_batches"]), ({"batch-1": 1}, [i], []))
+        with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("invalid-json "))
+
+    def test_render_warns_and_keeps_needs_discussion_while_a_line_is_lost(self):
+        self.ingest({"inspected": ["src/calc.py"]})
+        self.assertEqual(self.doc()["verdict"], "No blocking findings")
+        self.ingest("[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})
+        d = self.doc()
+        self.assertEqual((d["verdict"], d["rejected"]), ("Needs discussion", {"defects": 1}))
+        rc, text = self.rep("render")
+        self.assertIn("Warning\nrejected lines: 1 (defects 1)", text)
+
+    def test_discard_removes_rejected(self):
+        self.ingest("[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})
+        self.rep("discard")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected")))
+
+
 if __name__ == "__main__":
     unittest.main()

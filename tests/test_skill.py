@@ -156,6 +156,11 @@ class Phase4Procedure(unittest.TestCase):
         for t in ("`missing_lanes`", "`missing_batches`", "stop and state them"):
             self.assertIn(t, self.flat)
 
+    def test_steps_7_and_8_are_not_done_while_a_line_or_verdict_is_lost(self):  # review-code-19l
+        for t in ("`rejected_total` is 0", "<run>/rejected/<lane>.txt", "SendMessage to the agentId", "at most 2 tries",
+                  "`no_verdict` are empty", "exact count of lines still lost", "exact ids still unverified"):
+            self.assertIn(t, self.flat)
+
     def test_cost_gate_and_serial(self):
         flat = self.flat + " " + " ".join(ref("lanes.md").split())  # serial mode's procedure lives in lanes.md
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",

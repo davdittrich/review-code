@@ -6,6 +6,9 @@ element or a non-string key, and a raw JSON object at any depth (the retired obj
 A line that is not JSON because a string holds raw double quotes is read again by _repair (a quote ends a string only
 where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
 but is no pair array is never repaired.
+Gate (review-code-19l): every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K,
+serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
+`render` shows a Warning section and does not go above Needs discussion while either is nonzero.
 
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
@@ -21,7 +24,8 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
                                    verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
     report.py render   --run DIR [--format text|json|sarif]
-    report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed
+    report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
+                                   rejected {lane or batch: count}, rejected_total, no_verdict (ids of a stored batch without a verdict)
     report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/, replies/ and repro/ (a re-plan starts clean)
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
@@ -410,6 +414,28 @@ def _planned(run):
             and (c.get("shard") is None or _int(c["shard"]))]
 
 
+def _rejected(run):
+    """{lane or batch name: rejected line count} of <run>/rejected, nonzero entries only."""
+    d, out = os.path.join(run, "rejected"), {}
+    for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        with open(os.path.join(d, n), encoding="utf-8") as fh:
+            k = len(fh.read().splitlines())
+        if n.endswith(".txt") and k:
+            out[n[:-4]] = k
+    return out
+
+
+def _no_verdict(run, cand, ver):
+    """Sorted ids of a stored verify batch (or of a serial reply: every queued id) that have no verdict line."""
+    store = _replies(run)
+    have = set(os.listdir(store)) if os.path.isdir(store) else set()
+    cut = set(cand.get("capped_ids", []))
+    queue = [c["id"] for c in _queue(cand["candidates"]) if c["id"] not in cut]
+    asked = set(queue) if "serial.txt" in have else {i for c in cand.get("verify_calls", []) if isinstance(c, dict)
+                                                       and "%d.txt" % c["batch"] in have for i in c["ids"]}
+    return sorted(asked - set(ver))
+
+
 def status(run):
     """Read-only: what the verify step needs and what is still missing. No lock: files are replaced whole."""
     cand = target.load_json(run, "candidates.json")
@@ -423,7 +449,9 @@ def status(run):
     except target.Refuse:
         ver = {}
     state = cand.get("lane_state", {})
-    return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
+    rej = _rejected(run)
+    return {"status": "ok", "rejected": rej, "rejected_total": sum(rej.values()),
+            "no_verdict": _no_verdict(run, cand, ver), "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "verify_calls": calls, "lane_state": state,
             "missing_lanes": sorted(set(_planned(run)) - set(state)),
             "missing_batches": [] if "serial.txt" in have else [c["batch"] for c in calls if "%d.txt" % c["batch"] not in have],
@@ -543,12 +571,13 @@ def _declined(o, ctx, copied):
 
 
 def _read_lane(text, lane, tree, run, shard=None):
-    kept, areas, invalid, ignored, complete, declined, repaired = {}, [], 0, 0, False, [], 0
+    kept, areas, invalid, ignored, complete, declined, rejected, repaired = {}, [], 0, 0, False, [], [], 0
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     for ln, o, fixed in _objects(text):
         repaired += fixed
+        why = "invalid-json" if o is None else "failed-validation"
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
@@ -567,13 +596,26 @@ def _read_lane(text, lane, tree, run, shard=None):
             c = None
         if c is None or c["id"] in kept:
             invalid += 1
+            if c is None:  # a duplicate loses nothing
+                rejected.append((why, ln))
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
         else:
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
-            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored},
+            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}, "rejected": rejected,
             "repaired": repaired}
+
+
+def _reject(run, name, rows):
+    """<run>/rejected/<name>.txt holds one `reason line` row per rejected wire line, replaced whole by a re-ingest of
+    the same lane or batch and removed when none is left (review-code-19l)."""
+    d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
+    if rows:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        _put(path, "".join("%s %s\n" % (why, ln) for why, ln in rows))
+    elif os.path.exists(path):
+        os.remove(path)
 
 
 def ingest(run, text, lane="defects", shard=None):
@@ -599,7 +641,7 @@ def _ingest(run, text, lane, shard):
     cap = _cap_of(run)
     key = lane if shard is None else "%s@%d" % (lane, shard)
     lanes[key] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
-    repaired = lanes[key].pop("repaired")
+    rejected, repaired = lanes[key].pop("rejected"), lanes[key].pop("repaired")
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
     queue = _queue(cands)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
@@ -613,6 +655,7 @@ def _ingest(run, text, lane, shard):
     packs = _packs(run)
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
+    _reject(run, key, rejected)
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
@@ -633,14 +676,16 @@ def _replies(run):
 
 
 def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
-    """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, repaired line count).
+    """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
+    repaired line count).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
     path, one that no other refuted id of the reply uses (review-code-8dt)."""
-    foreign, mine, fixed = 0, [], 0
+    foreign, mine, bad, fixed = 0, [], [], 0
     for ln, o, fix in _objects(text):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
+            bad.append(("invalid-json" if o is None else "failed-validation", ln))
             continue
         if allowed is not None and o["id"] not in allowed:
             foreign += 1
@@ -664,7 +709,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
     for i in mine:
         if got[i]["verdict"] == "refuted" and any(used.count(key(e)) > 1 for e in got[i]["cites"]):
             got[i]["verdict"] = "unverifiable"
-    return foreign, fixed
+    return foreign, bad, fixed
 
 
 def _verdicts(run, text, batch):
@@ -682,6 +727,9 @@ def _verdicts(run, text, batch):
     store = _replies(run)
     if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
+        for n in _rejected(run):
+            if n.startswith("batch-"):
+                os.remove(os.path.join(run, "rejected", n + ".txt"))
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
     got, foreign, repaired = {}, 0, 0
@@ -690,7 +738,8 @@ def _verdicts(run, text, batch):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
+                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
+            _reject(run, "serial" if k is None else "batch-%d" % k, bad)
             foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
@@ -708,7 +757,7 @@ def discard(run):
 
 
 def _discard(run):
-    for d in ("handoff", "repro", "replies"):
+    for d in ("handoff", "repro", "replies", "rejected"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
     for f in ("candidates.json", "verdicts.json"):
         if os.path.exists(os.path.join(run, f)):
@@ -794,6 +843,9 @@ def _build(run):
     lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
     if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] in ("defects", "spec")):
         label = "Needs discussion"  # a defects or spec lane that was never ingested or never finished proves nothing (review-code-0c4)
+    rej, lost = _rejected(run), _no_verdict(run, cand, ver)
+    if label == "No blocking findings" and (rej or lost):
+        label = "Needs discussion"  # a lane line or verdict that was dropped may have held a finding or a refutation (review-code-19l)
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
@@ -823,6 +875,8 @@ def _build(run):
           for h in led["hidden_text"]]
     hc += [{"file": h["file"], "line": h.get("line"), "kind": "hidden-chars", "codepoints": h["codepoints"],
             "name": h.get("name") is True} for h in led["hidden_chars"]]
+    if rej or lost:
+        doc.update(rejected=rej, no_verdict=lost)
     if hc:  # OUT-02: notes outside the evidence gate; positions and sizes, never the payload
         doc.update(hidden_content=hc[:MAX_HIDDEN], hidden_content_omitted=max(0, len(hc) - MAX_HIDDEN))
     return doc
@@ -885,6 +939,11 @@ def _text(doc):
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "not-ingested"]
+    if doc.get("rejected") or doc.get("no_verdict"):
+        out += ["", "Warning"]
+        out += ["rejected lines: %d (%s)" % (sum(doc["rejected"].values()), ", ".join(
+            "%s %d" % (e(n), k) for n, k in sorted(doc["rejected"].items())))] if doc["rejected"] else []
+        out += ["no verdict: %d (%s)" % (len(doc["no_verdict"]), ", ".join(doc["no_verdict"]))] if doc["no_verdict"] else []
     out.append("")
 
     def section(head, rows):
