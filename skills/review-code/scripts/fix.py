@@ -597,9 +597,10 @@ def finish(run: str, seal: str, status: str) -> dict:
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
-        if not any(n.endswith(".pre") for n in os.listdir(_fixdir(run))):
-            raise target.Refuse("not-in-flight")
-        # a brief was handed out, so state.json lost its in-flight entry: no seal to compare, no git call, no restore
+        if all(n[:-4] in st["done"] for n in os.listdir(_fixdir(run)) if n.endswith(".pre")):
+            raise target.Refuse("not-in-flight")  # nothing pending: a repeat of a finish that recorded its outcome
+        # a snapshot has no recorded outcome, so state.json lost its in-flight entry: no seal to compare, no git call,
+        # no restore
         st["halted"] = "tampered"
         _save(run, st)
         return {"status": "halted", "outcome": "tampered"}

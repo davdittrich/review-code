@@ -739,6 +739,24 @@ class FinishScope(Scope):
                 else:
                     self.git("branch", "-D", "other")
 
+    def test_repeated_finish_is_not_tampering(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        before = self.state(run)
+        rc, _, j = self.finish(run, bg["seal"])
+        self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "not-in-flight"}))
+        self.assertEqual(self.state(run), before)
+        self.git("checkout", "--", "src/calc.py")
+        run, fid, bg = self.started()  # a halt keeps its own reason
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.git("branch", "other")
+        self.violation(run, bg)
+        before = self.state(run)
+        rc, _, j = self.finish(run, bg["seal"])
+        self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "not-in-flight"}))
+        self.assertEqual(self.state(run), before)
+
     def test_not_in_flight_and_usage(self):
         run, _ = self.ready()
         self.go(run)
