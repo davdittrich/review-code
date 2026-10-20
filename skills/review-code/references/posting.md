@@ -4,7 +4,7 @@ Load this when you need to know how `--comment` posts a review to a pull request
 
 ## When posting runs
 
-Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs (SCOPE-05); `post.py build` repeats the check as `not-a-forge-target`. Step 11 does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops.
+Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs (SCOPE-05); `post.py build` repeats the check as `not-a-forge-target`. Step 11 does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops. Headless `--comment` on a PR is unsupported: the two headless runs tried did not reach `post.py build`, because the approval prompt on the lane-ingest command is intermittent (review-code-02a.18).
 
 ## Flow
 

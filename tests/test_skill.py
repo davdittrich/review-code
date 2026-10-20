@@ -269,6 +269,14 @@ class SerialModeNotice(unittest.TestCase):
         self.assertEqual(len([b for b in bullets if "Re-checked live on GitHub" in b]), 1)
         self.assertEqual(len([b for b in bullets if b.count("refuses `already-posted`")]), 1)
 
+    def test_headless_comment_on_a_pr_is_documented_as_unsupported(self):  # 02a.18 option C
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            line = [ln for ln in fh if ln.startswith("`--comment` on a PR or MR target")][0]
+        self.assertIn("Headless `claude -p --comment` on a PR is unsupported", line)
+        self.assertIn("review-code-02a.18", line)
+        with open(os.path.join(ROOT, "skills", "review-code", "references", "posting.md"), encoding="utf-8") as fh:
+            self.assertIn("unsupported", [ln for ln in fh if ln.startswith("Only with `--comment`")][0])
+
     def test_step_12_begin_loop_also_leaves_on_halted(self):  # 02a.19: an interrupted begin prints status halted
         self.assertIn("`done`, `refuse` or `halted` leave the loop", self.step("\n12. Fix", "\n13. "))
 
