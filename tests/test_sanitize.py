@@ -46,7 +46,7 @@ INVISIBLE_ONLY = [
     ("zwsp", "ZW" + ZWSP + "SPLIT"),
     ("zwsp_entity", "ZW&#x200b;SPLIT"),
     ("bom", "ZW" + chr(0xFEFF) + "SPLIT"),
-    ("variation", "ZW️SPLIT"),
+    ("variation", "ZW" + chr(0xFE0F) + "SPLIT"),
     ("bidi", "ZW" + chr(0x202E) + "SPLIT"),
     ("esc", "ZW\x1b[31mSPLIT"),
 ]

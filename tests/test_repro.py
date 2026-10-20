@@ -12,23 +12,16 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
 
+SCRIPTS = paths.SCRIPTS
+
 import gitfix  # noqa: E402
+from gitfix import cli  # noqa: E402
 import repro  # noqa: E402
 
 FID = "F-0123456789"
 PASS_SRC = "import sys\nprint('REPRO-%s')\nsys.exit(1)\n" % FID
-
-
-def cli(script, args, cwd, tmp, stdin=b"", extra=None):
-    e = gitfix.env()
-    e["TMPDIR"] = tmp
-    e.update(extra or {})
-    p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=cwd, env=e, input=stdin,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
 
 
 class Base(unittest.TestCase):
@@ -173,11 +166,12 @@ class Rules(Base):
     def test_timeout_kills_process_group(self):
         run = self.start()
         out = io.StringIO()
+        bound = 1
         t0 = time.monotonic()
-        with mock.patch.object(repro, "TIMEOUT", 1), gitfix.isolated(self.tmp), redirect_stdout(out):
+        with mock.patch.object(repro, "TIMEOUT", bound), gitfix.isolated(self.tmp), redirect_stdout(out):
             rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "/bin/sh", "-c",
                              "sleep 30 & sleep 30"], stdin=io.BytesIO(b"x"))
-        self.assertLess(time.monotonic() - t0, repro.TIMEOUT + 5 + 5)
+        self.assertLess(time.monotonic() - t0, bound + 5 + 5)
         self.assertEqual((rc, json.loads(out.getvalue())["outcome"]), (0, "timeout"))
         self.assertEqual(self.record(run), {"outcome": "timeout", "exit": None})
         self.assert_clean(run)

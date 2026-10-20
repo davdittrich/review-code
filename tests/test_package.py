@@ -101,6 +101,7 @@ class GateMutations(unittest.TestCase):
         p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            env=dict(os.environ, PATH=fake + os.pathsep + os.environ["PATH"]))
         out = p.stdout.decode("utf-8")
+        self.assertEqual(p.returncode, 1, out)
         self.assertNotIn("ok - hygiene-tracked", out)
         self.assertIn("FAIL - hygiene-tracked", out)
 
