@@ -103,6 +103,19 @@ def glab_json(args: List[str], cwd: str):
     return _cli_json("glab", args, cwd)
 
 
+def load_target(run: str) -> dict:
+    """<run>/target.json, or Refuse("no-target") when it is missing or lacks what every consumer reads."""
+    try:
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["repo"], tj["head_sha"], tj["url"]
+        if isinstance(tj["kind"], str) and isinstance(tj["included"], list):
+            return tj
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    raise Refuse("no-target", "the run directory has no usable target.json")
+
+
 def write_private(path: str, text: str) -> None:
     """Create or truncate `path` with mode 0600 (the run-directory layout promises owner-only files)."""
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:

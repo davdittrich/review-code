@@ -118,12 +118,8 @@ def _pages(tool: str, host: str, endpoint: str, cwd: str) -> list:
 
 def _target(run: str) -> dict:
     """Forge, host, repository, number and head from target.json alone: never gh's `{owner}/{repo}` placeholders or the cwd remote."""
-    try:
-        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
-            rec = json.load(fh)
-        kind, url, head = rec["kind"], rec["url"], rec["head_sha"]
-    except (OSError, ValueError, KeyError, TypeError):
-        raise Refuse("no-target")
+    rec = target.load_target(run)
+    kind, url, head = rec["kind"], rec["url"], rec["head_sha"]
     if kind not in ("pr", "mr"):
         raise Refuse("not-a-forge-target")
     m = (target._PR_URL if kind == "pr" else target._MR_URL).fullmatch(url) if isinstance(url, str) else None

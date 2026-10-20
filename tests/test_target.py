@@ -212,6 +212,23 @@ class TestCliTimeout(unittest.TestCase):
         self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
 
 
+class TestLoadTarget(unittest.TestCase):
+    def test_one_refusal_for_a_missing_or_malformed_file(self):
+        with tempfile.TemporaryDirectory() as run:
+            for text in (None, "{", "[]", "{}", json.dumps({"kind": "pr", "included": "x", "repo": "r", "url": 1,
+                                                          "head_sha": "h"})):
+                if text is not None:
+                    with open(os.path.join(run, "target.json"), "w") as fh:
+                        fh.write(text)
+                with self.assertRaises(target.Refuse) as cm:
+                    target.load_target(run)
+                self.assertEqual(cm.exception.reason, "no-target", text)
+            good = {"kind": "pr", "included": [], "repo": "r", "url": None, "head_sha": "h"}
+            with open(os.path.join(run, "target.json"), "w") as fh:
+                json.dump(good, fh)
+            self.assertEqual(target.load_target(run), good)
+
+
 class Local(Base):
     def setUp(self):
         super().setUp()

@@ -75,15 +75,6 @@ def _put(path: str, data: bytes) -> None:
     os.chmod(path, 0o600)
 
 
-def _target(run: str) -> dict:
-    try:
-        rec = _json(os.path.join(run, "target.json"))
-        rec["repo"], rec["kind"], rec["head_sha"]
-        return rec
-    except (OSError, ValueError, KeyError, TypeError):
-        raise target.Refuse("no-target")
-
-
 STATE_KEYS = ("version", "digest", "refs", "git_files", "done", "accepted", "untracked", "in_flight", "halted",
               "side_effects")  # what baseline writes
 
@@ -312,7 +303,7 @@ def _tests(run: str, st: dict) -> dict:
     env = {k: os.environ[k] for k in repro.ENV_KEEP if k in os.environ}
     env.update(HOME=home, TMPDIR=tmp)
     try:
-        res = repro._execute(command, _target(run)["repo"], env, "", timeout=TIMEOUT)  # empty id: only the exit counts
+        res = repro._execute(command, target.load_target(run)["repo"], env, "", timeout=TIMEOUT)  # empty id: only the exit counts
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -385,7 +376,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
 
 
 def plan(run: str, words: List[str]) -> dict:
-    tj = _target(run)
+    tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
     if tj["kind"] in ("path", "repo") and tj.get("dirty"):
@@ -455,7 +446,7 @@ def plan(run: str, words: List[str]) -> dict:
 
 
 def baseline(run: str, digest: str) -> dict:
-    tj = _target(run)
+    tj = target.load_target(run)
     fd = _fixdir(run)
     if os.path.exists(os.path.join(fd, "state.json")):
         raise target.Refuse("already-run")
@@ -493,7 +484,7 @@ def begin(run: str) -> dict:
         raise target.Refuse("halted")
     if st["in_flight"]:
         raise target.Refuse("in-flight")
-    tj = _target(run)
+    tj = target.load_target(run)
     repo = tj["repo"]
     fd = _fixdir(run)
     raw = _read(os.path.join(fd, "plan.json"))
@@ -622,7 +613,7 @@ def finish(run: str, seal: str, status: str) -> dict:
     if not secrets.compare_digest(_seal(run, fid), seal) or not _snapshots_hold(run, st):
         outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
     else:
-        tj = _target(run)  # read only after the seal held: the fixer could have rewritten it
+        tj = target.load_target(run)  # read only after the seal held: the fixer could have rewritten it
         try:
             outcome, detail, res = _settle(run, tj, st, cur, status)
         except BaseException as e:  # Ctrl-C, SIGTERM (as SystemExit), any error: the tree goes back, then re-raise
@@ -655,7 +646,7 @@ def report_(run: str) -> dict:
     tampered = st["halted"] == "tampered"
     pend = sorted(n[:-4] for n in os.listdir(fd) if n.endswith(".pre") and n[:-4] not in st["done"])
     unsafe = tampered or cur is not None or bool(pend)  # then no git command runs: a rewritten config may carry filters
-    repo = None if unsafe else _target(run)["repo"]
+    repo = None if unsafe else target.load_target(run)["repo"]
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):

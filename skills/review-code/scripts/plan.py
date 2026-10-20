@@ -54,17 +54,6 @@ MAX_STDIN = 65536
 WAVE_SIZE = 8
 
 
-def _load_target(run):
-    try:
-        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
-            tj = json.load(fh)
-    except (OSError, ValueError):
-        raise target.Refuse("no-target", "the run directory has no target.json")
-    if not isinstance(tj, dict) or not isinstance(tj.get("included"), list) or not isinstance(tj.get("kind"), str):
-        raise target.Refuse("bad-target", "target.json is malformed")
-    return tj
-
-
 def parse_config(text):
     """Validated {key: value} from key=value lines. Never echoes a rejected value (T-04-18)."""
     cfg = {}
@@ -423,7 +412,7 @@ def _env_lost():
 
 
 def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
-    tj = _load_target(run)
+    tj = target.load_target(run)
     led = ledger._load(run)
     spec = led.get("spec")
     spec_none = not isinstance(spec, dict) or spec.get("status") == "none"
