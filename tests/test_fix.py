@@ -521,6 +521,19 @@ class Units(unittest.TestCase):
         self.assertIn("600000", step)
         self.assertLessEqual(fix.TIMEOUT + 60, 600)  # 60 s for the group kill, restore and sweep inside the Bash ceiling
 
+    def test_first_signal_ignores_the_rest(self):
+        names = [n for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)]
+        old = {n: signal.getsignal(getattr(signal, n)) for n in names}
+        for n, h in old.items():
+            self.addCleanup(signal.signal, getattr(signal, n), h)
+        for n in names:
+            signal.signal(getattr(signal, n), fix._term)
+        with self.assertRaises(SystemExit) as cm:
+            fix._term(signal.SIGTERM, None)
+        self.assertEqual(cm.exception.code, 143)
+        for n in names:  # a second signal during the restore must not unwind it
+            self.assertEqual(signal.getsignal(getattr(signal, n)), signal.SIG_IGN, n)
+
     def test_py39_grammar(self):
         with open(os.path.join(SCRIPTS, "fix.py"), encoding="utf-8") as fh:
             ast.parse(fh.read(), feature_version=(3, 9))

@@ -699,6 +699,9 @@ def report_(run: str) -> dict:
 
 
 def _term(signum, frame):
+    for name in ("SIGTERM", "SIGHUP"):  # one-shot: a second signal must not abort the restore the first one starts
+        if getattr(signal, name, None):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
     raise SystemExit(143)  # unwinds through the restore handlers; the default action would skip them
 
 
