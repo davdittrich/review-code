@@ -1044,7 +1044,8 @@ class TestRuns(Scope):
         e["TMPDIR"] = self.tmp
         proc = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "fix.py"), "finish", "--run", run, "--seal",
                                  bg["seal"], "--status", "applied"], cwd=self.repo, env=e, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+                                stderr=subprocess.PIPE,
+                                preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
         self.addCleanup(proc.kill)
         deadline = time.monotonic() + 20
         while not os.path.exists(started):
@@ -1065,9 +1066,17 @@ class TestRuns(Scope):
         self.assertNotIn(b"Traceback", err)
         self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
         self.assertEqual(self.state(run)["done"][fid]["outcome"], "reverted-interrupt")
+        return out.decode("utf-8")
 
     def test_sigterm_restores(self):
         self.signalled(signal.SIGTERM)
+
+    def test_sigint_restores_and_prints_one_json_line(self):
+        out = self.signalled(signal.SIGINT)
+        last = [ln for ln in out.splitlines() if ln.strip()][-1]
+        self.assertEqual(json.loads(last), {"reason": "interrupted", "status": "halted"})
+        with open(os.path.join(os.path.dirname(SCRIPTS), "references", "fix.md"), encoding="utf-8") as fh:
+            self.assertIn("`interrupted`", fh.read())
 
     def test_sighup_restores(self):
         self.signalled(signal.SIGHUP)

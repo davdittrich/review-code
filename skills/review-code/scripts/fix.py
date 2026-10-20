@@ -754,6 +754,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             out["detail"] = r.detail
     except (OSError, KeyError, ValueError, TypeError) as e:
         out = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}
+    except KeyboardInterrupt:  # finish and baseline restored before re-raising
+        out = {"status": "halted", "reason": "interrupted"}
     if out.get("text"):
         print(out["text"])
     print(json.dumps({k: x for k, x in out.items() if k in STDOUT_KEYS}, sort_keys=True))
