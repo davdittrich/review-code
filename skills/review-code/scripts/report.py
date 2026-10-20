@@ -61,6 +61,7 @@ import ledger
 import sanitize
 import target
 
+MAX_AREAS = 20  # areas inspected shown in a PR/MR body and in SARIF; the text report lists all
 SCHEMA_VERSION = 1
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
 CANDIDATE_OPTIONAL = ("end_line", "fix")
@@ -575,7 +576,7 @@ _LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "not
 
 
 def _sarif(doc):
-    fs = doc["findings"]
+    fs, areas = doc["findings"], doc["inspected"]["areas"]
     return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0", "runs": [{
         "tool": {"driver": {"name": "review-code",
                             "rules": [{"id": "review-code/" + c} for c in sorted({f["category"] for f in fs})]}},
@@ -585,7 +586,8 @@ def _sarif(doc):
                                                          "region": {"startLine": f["line"], "endLine": f["end_line"]}}}],
                      "partialFingerprints": {"reviewCodeId/v1": f["id"]},
                      "properties": {"evidenceClass": f["evidence_class"], "severity": f["severity"],
-                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs]}]}
+                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs],
+        "properties": {"inspectedAreas": areas[:MAX_AREAS], "inspectedAreasOmitted": max(0, len(areas) - MAX_AREAS)}}]}
 
 
 def _text(doc):

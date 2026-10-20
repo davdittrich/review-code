@@ -549,7 +549,7 @@ _LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|(?<!\\)(?:\\\\)*\[")  # what _prose nev
 
 # The only lines build writes outside the quote fence, besides an empty line, `---` and the marker lines.
 _SHAPE = re.compile(r"\*\*(?:Verdict|Location|Lines|Trigger|Evidence|Fix):\*\* |\*\*(?:%s)\*\* \(|(?:%s): \d+ findings?$"
-                    r"|Not posted: \d+ unverifiable items " % ("|".join(LABEL.values()), "|".join(a.capitalize() for a in report.AXES)))
+                    r"|Not posted: \d+ unverifiable items |Areas inspected: " % ("|".join(LABEL.values()), "|".join(a.capitalize() for a in report.AXES)))
 
 
 def _shown(ln: str) -> str:
@@ -641,11 +641,13 @@ def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False
     return "\n".join(out + [MARK % f["id"]]), rules
 
 
-def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str) -> str:
+def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str, areas: List[str]) -> str:
     out = ["**Verdict:** %s (advisory)" % _prose(verdict)]
     for ax in report.AXES:
         n = sum(1 for f in findings if f["axis"] == ax)
         out += ["%s: %d finding%s" % (ax.capitalize(), n, "" if n == 1 else "s")] if n else []
+    more = len(areas) - report.MAX_AREAS  # CTX-02
+    out += ["Areas inspected: " + ", ".join(_prose(a) for a in areas[:report.MAX_AREAS]) + (" (+%d more)" % more if more > 0 else "")] if areas else []
     text = "\n".join(out)
     if entries:
         text += "\n\n" + "\n\n---\n\n".join(entries)
@@ -705,7 +707,7 @@ def build(run: str) -> dict:
     n_unverifiable = sum(1 for i in doc["unverifiable"] if i["category"] != "sota")
     payload = {"version": 1, "forge": info["forge"], "host": info["host"], "repo": info["repo"],
                "number": info["number"], "url": info["url"], "head_sha": head,
-               "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head), "comments": comments,
+               "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head, doc["inspected"]["areas"]), "comments": comments,
                "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
                "skipped": [f["id"] for f in doc["findings"] if f["id"] in posted]}
     if refs:

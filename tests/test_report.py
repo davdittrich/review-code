@@ -321,6 +321,7 @@ class Renders(Base):
             self.assertEqual(r["properties"], {"evidenceClass": f["evidence_class"], "severity": f["severity"],
                                                "origin": f["origin"], "score": f["score"], "axis": f["axis"]})
         self.assertEqual([r["level"] for r in run["results"]], ["error", "warning"])
+        self.assertEqual(run["properties"], {"inspectedAreas": ["src/calc.py"], "inspectedAreasOmitted": 0})  # CTX-02
 
     def test_text_sections_and_escape(self):
         self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")

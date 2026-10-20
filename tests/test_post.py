@@ -321,7 +321,14 @@ class GitHubTracer(Base):
         self.assertIn("== not posted ==", out)
         self.assertEqual(post.MARK_RE.findall(payload["body"]), [self.ids[2]])
         self.assertIn("**Location:** src/calc.py:2 (outside the diff)", payload["body"])
+        self.assertIn("Areas inspected: src/calc.py\n", payload["body"])  # CTX-02, shown in the preview with the rest of the body
         self.assertEqual(out.splitlines()[-1], json.dumps(st, sort_keys=True))  # the status line is last
+
+    def test_body_caps_the_inspected_areas(self):
+        n = post.report.MAX_AREAS
+        text = post._body("v", [], [], 0, "h", ["a%d.py" % i for i in range(n + 3)])
+        self.assertIn("a%d.py (+3 more)" % (n - 1), text)
+        self.assertNotIn("a%d.py" % n, text)
 
     def test_digest_is_the_payload_hash_and_wrong_digest_writes_nothing(self):
         self.build()
