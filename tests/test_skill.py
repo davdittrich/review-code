@@ -71,7 +71,7 @@ class Procedure(unittest.TestCase):
         self.assertIn("starts with `[`", self.text)
         self.assertNotIn("starts with `{`", self.text)
         self.assertIn("\\u007b", self.text)
-        self.assertIn("\\u0022", self.text)  # 02a.18: a quote inside a string value
+        self.assertIn("a `\"` as `\\u0022`", self.text)  # 02a.18: a quote inside a string value
 
     def test_delimiters_and_flags(self):
         for s in ("REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "REPRO-<id>", "--json", "--sarif"):
@@ -253,8 +253,21 @@ class SerialModeNotice(unittest.TestCase):
             with open(os.path.join(refs, name), encoding="utf-8") as fh:
                 line = [ln for ln in fh if ln.startswith(row)][0]
             self.assertIn("serial mode", line, name)
+            self.assertNotIn("always", line, name)  # 02a.26: dirty-tree, trust-* and others can refuse first
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             self.assertIn("`nothing-to-post`", fh.read().split("## Serial mode", 1)[1].split("\n## ", 1)[0])
+
+    def test_readme_wire_form_names_both_guard_triggers(self):  # 02a.22
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            line = [ln for ln in fh if ln.startswith("Wire form:")][0]
+        self.assertIn("backslash-escaped quote", line)
+        self.assertIn("\\u0022", line)
+
+    def test_posting_md_has_one_live_recheck_bullet_inside_a7(self):  # 02a.24: no second bullet repeating A7's tail
+        with open(os.path.join(ROOT, "skills", "review-code", "references", "posting.md"), encoding="utf-8") as fh:
+            bullets = [ln for ln in fh if ln.startswith("- ")]
+        self.assertEqual(len([b for b in bullets if "Re-checked live on GitHub" in b]), 1)
+        self.assertEqual(len([b for b in bullets if b.count("refuses `already-posted`")]), 1)
 
     def test_step_12_begin_loop_also_leaves_on_halted(self):  # 02a.19: an interrupted begin prints status halted
         self.assertIn("`done`, `refuse` or `halted` leave the loop", self.step("\n12. Fix", "\n13. "))

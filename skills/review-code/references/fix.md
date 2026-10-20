@@ -61,7 +61,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `head-not-checked-out` | The checked-out `HEAD` is not the reviewed `head_sha` | Check out the reviewed commit |
 | `dirty-tree` | The working tree has changes or untracked files | Commit, or remove them |
 | `already-run` | This run already has a plan or a baseline | Review again for a new run |
-| `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons. A serial-mode run always lands here, because serial mode verifies nothing | Nothing to do; review again in parallel mode for a fix |
+| `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons. A serial-mode run lands here unless another refusal comes first, because serial mode verifies nothing | Nothing to do; review again in parallel mode for a fix |
 | `preview-too-large` | The preview is over 25,000 characters | Review a smaller change |
 | `no-plan` | `baseline` found no `fix/plan.json` | Run `plan` first |
 | `digest-mismatch` | The plan on disk is not the one the user confirmed | Run the review again |

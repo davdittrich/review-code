@@ -328,7 +328,7 @@ class BraceFree(unittest.TestCase):
 
     def test_every_producer_says_how_to_write_a_double_quote(self):  # 02a.18: the guard denies a backslash-escaped quote in a here-document body
         for name in plan.MAX_TURNS:
-            self.assertIn("\\u0022", "\n".join(parts(name)[1]), name)
+            self.assertIn("each `\"` as `\\u0022`", "\n".join(parts(name)[1]), name)
 
 
 class TurnCeilings(unittest.TestCase):

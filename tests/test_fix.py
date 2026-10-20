@@ -503,8 +503,26 @@ class Paths(Base):
 
 class Units(unittest.TestCase):
     def test_top_level_defs_have_two_blank_lines(self):
+        def slips(src):  # top-level def/class not preceded by exactly two blank lines (comments and decorators stay attached)
+            rows, bad = src.split("\n"), []
+            for node in ast.parse(src).body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    i = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 2
+                    while i >= 0 and rows[i].startswith("#"):
+                        i -= 1
+                    n = 0
+                    while i >= 0 and rows[i] == "":
+                        n, i = n + 1, i - 1
+                    if i >= 0 and n != 2:
+                        bad.append((node.name, n))
+            return bad
+
+        self.assertEqual(slips("x = 1\ndef a():\n    pass\n"), [("a", 0)])
+        self.assertEqual(slips("x = 1\n\ndef a():\n    pass\n"), [("a", 1)])
+        self.assertEqual(slips("x = 1\n\n\n\ndef a():\n    pass\n"), [("a", 3)])
+        self.assertEqual(slips("x = 1\n\n\n# c\n@d\ndef a():\n    pass\ns = \"\"\"\n\ndef b():\n\"\"\"\n"), [])
         with open(os.path.join(SCRIPTS, "fix.py"), encoding="utf-8") as fh:
-            self.assertEqual(re.findall(r"[^\n]\n\n(?:async def|def|class) .*", fh.read()), [])
+            self.assertEqual(slips(fh.read()), [])
 
     def test_tier(self):
         simple = {"category": "bug", "severity": "required", "line": 5, "end_line": 5, "fix": "return a + b"}
@@ -1066,6 +1084,8 @@ class TestRuns(Scope):
                                  bg["seal"], "--status", "applied"], cwd=self.repo, env=e, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+        self.addCleanup(proc.stderr.close)  # cleanups run last-in first-out: kill, then close the pipes
+        self.addCleanup(proc.stdout.close)
         self.addCleanup(proc.kill)
         deadline = time.monotonic() + 20
         while not os.path.exists(started):
@@ -1173,6 +1193,8 @@ class TestRuns(Scope):
         proc = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "fix.py"), "baseline", "--run", run,
                                  "--digest", j["digest"]], cwd=self.repo, env=e, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
+        self.addCleanup(proc.stderr.close)  # cleanups run last-in first-out: kill, then close the pipes
+        self.addCleanup(proc.stdout.close)
         self.addCleanup(proc.kill)
         deadline = time.monotonic() + 20
         while not os.path.exists(started):
