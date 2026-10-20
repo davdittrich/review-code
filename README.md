@@ -28,6 +28,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 - `glab`, for MR targets. MR reading and MR posting (`--comment`) are untested against a live GitLab.
 - Headless `claude -p`: a prompt that makes the model call the Skill tool ("use the review-code skill ...") is denied in the default permission mode, with the bare result `Execute skill: review-code:review-code` and no detail. Pass `--allowedTools Skill`, or use the slash form `/review-code`.
 - The Agent tool (subagents). The lanes and verifiers run as subagents; without it the skill runs in serial mode in the main thread (see Serial mode).
+- Optional: `serena` and `codegraph` MCP servers. When installed, and the review runs inside the activated or indexed repository (serena started with `--project-from-cwd`; codegraph needs `codegraph init`), the lanes and verifiers use four named read-only tools (`mcp__serena__find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `mcp__codegraph__codegraph_explore`) to find symbols and callers; otherwise they use Grep. These are accelerators, not dependencies. Their results describe the working checkout, which can differ from the pinned tree, so evidence is still quoted from the pinned tree only. The allowlist lives in the `tools:` line of each `agents/*.md`.
 
 ## Tiers and flags
 

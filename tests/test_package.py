@@ -49,8 +49,14 @@ class GateMutations(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-sota-tools", out)
 
+    def test_gate_rejects_unlisted_mcp_tool_on_finder(self):  # review-code-7u1: named read-only MCP tools only
+        self.mutate_agent("finder", "mcp__serena__get_symbols_overview", "mcp__serena__replace_content")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-finder-tools", out)
+
     def test_gate_rejects_web_tool_on_standards(self):
-        self.mutate_agent("standards", "tools: Read, Grep, Glob", "tools: Read, Grep, Glob, WebFetch")
+        self.mutate_agent("standards", "mcp__codegraph__codegraph_explore\n", "mcp__codegraph__codegraph_explore, WebFetch\n")
         rc, out = self.gate()
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-standards-tools", out)
@@ -80,7 +86,7 @@ class GateMutations(unittest.TestCase):
         self.assertIn("FAIL - agent-fixer-tools", out)
 
     def test_gate_rejects_edit_on_finder(self):  # the lanes stay read-only; the fixer alone holds Edit
-        self.mutate_agent("finder", "tools: Read, Grep, Glob", "tools: Read, Grep, Glob, Edit")
+        self.mutate_agent("finder", "mcp__codegraph__codegraph_explore\n", "mcp__codegraph__codegraph_explore, Edit\n")
         rc, out = self.gate()
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-finder-tools", out)

@@ -7,6 +7,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+MCP_NAV = ("mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols",
+           "mcp__serena__get_symbols_overview", "mcp__codegraph__codegraph_explore")
+NAV_TOOLS = "tools: " + ", ".join(("Read", "Grep", "Glob") + MCP_NAV)
+NAV_LANES = ("finder", "standards", "spec", "verifier", "spec-verifier")
 import paths  # noqa: F401
 
 import plan  # noqa: E402
@@ -66,7 +70,7 @@ class Finder(unittest.TestCase):
             self.assertIn(item, low)
 
     def test_tools_read_only(self):
-        self.assertIn("tools: Read, Grep, Glob", self.fm)
+        self.assertIn(NAV_TOOLS, self.fm)
 
     def test_default_model(self):
         self.assertIn("model: opus", self.fm)
@@ -123,7 +127,7 @@ class Standards(tp.Fixture):
             self.assertNotIn(w, low)
 
     def test_frontmatter(self):
-        for line in ("tools: Read, Grep, Glob", "model: opus", "maxTurns: 40"):
+        for line in (NAV_TOOLS, "model: opus", "maxTurns: 40"):
             self.assertIn(line, self.fm)
 
     def test_example_line_ingests_on_a_real_run_dir(self):
@@ -170,7 +174,7 @@ class Verifier(unittest.TestCase):
             self.assertFalse(os.path.isabs(cite["path"]) or cite["path"].startswith("tree/"))
 
     def test_tools_read_only(self):
-        self.assertIn("tools: Read, Grep, Glob", self.fm)
+        self.assertIn(NAV_TOOLS, self.fm)
 
     def test_default_model(self):
         self.assertIn("model: sonnet", self.fm)
@@ -222,7 +226,7 @@ class Spec(unittest.TestCase):
         self.assertTrue(any("never copy spec text" in line.lower() for line in self.body))
 
     def test_frontmatter(self):
-        for line in ("tools: Read, Grep, Glob", "model: opus", "maxTurns: 30"):
+        for line in (NAV_TOOLS, "model: opus", "maxTurns: 30"):
             self.assertIn(line, self.fm)
 
 
@@ -262,7 +266,7 @@ class SpecVerifier(unittest.TestCase):
             self.assertIn(item, low)
 
     def test_frontmatter(self):
-        for line in ("tools: Read, Grep, Glob", "model: sonnet", "maxTurns: 30"):
+        for line in (NAV_TOOLS, "model: sonnet", "maxTurns: 30"):
             self.assertIn(line, self.fm)
 
 
@@ -354,7 +358,7 @@ class TurnCeilings(unittest.TestCase):
 
     def test_tool_sets(self):
         for name in plan.MAX_TURNS:
-            want = "tools: WebSearch, WebFetch" if name == "sota" else "tools: Read, Grep, Glob"
+            want = "tools: WebSearch, WebFetch" if name == "sota" else NAV_TOOLS
             self.assertEqual([x for x in parts(name)[0] if x.startswith("tools:")], [want], name)
 
 
@@ -363,14 +367,51 @@ PRODUCERS = sorted(plan.MAX_TURNS)
 VERIFIERS = ("verifier", "spec-verifier")
 
 
+class ReadOnlyTools(unittest.TestCase):
+    """review-code-7u1: tools: is an exclusive allowlist; MCP navigation tools are named, never wildcarded."""
+    ALLOWED = {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "Edit", *MCP_NAV}
+
+    @staticmethod
+    def tools(name):
+        (line,) = [x for x in parts(name)[0] if x.startswith("tools:")]
+        return [t.strip() for t in line[len("tools:"):].split(",")]
+
+    def test_every_entry_is_on_the_allowlist(self):
+        for name in AGENTS:
+            self.assertLessEqual(set(self.tools(name)), self.ALLOWED, name)
+
+    def test_no_wildcard_or_mutating_entry(self):
+        bad = re.compile(r"\*|write|edit|delete|replace|insert|rename|memory|bash|task|agent|toolsearch", re.I)
+        for name in AGENTS:
+            for t in self.tools(name):
+                if name == "fixer" and t == "Edit":
+                    continue
+                self.assertIsNone(bad.search(t), (name, t))
+
+    def test_lane_sets(self):
+        for name in NAV_LANES:
+            self.assertEqual(self.tools(name), ["Read", "Grep", "Glob", *MCP_NAV], name)
+        self.assertEqual(self.tools("sota"), ["WebSearch", "WebFetch"])
+        self.assertEqual(self.tools("fixer"), ["Read", "Edit", "Grep", "Glob"])
+
+
 class SharedPhrases(unittest.TestCase):
     """review-code-4nc: a lane subagent sees only its own file, so shared rules are copied on purpose; each copy is pinned here."""
     ESCAPE = ("write each `{` as `\\u007b` and each `\"` as `\\u0022`: the shell guard denies a brace followed by a quote "
               "and a backslash-escaped quote, and the skill decodes both.")
     NO_SPEC = "Never open inputs/spec.md, and never read PR, MR, issue or commit text: the change author's claims are not evidence."
 
+    NAV = ("The code-navigation tools (serena, codegraph) describe the user's working checkout, which can differ from the pinned tree/: "
+           "use them to locate symbols and callers, quote evidence only from tree/ files, and fall back to Grep when a tool is absent or errors.")
+
     def text(self, name):
         return "\n".join(parts(name)[1])
+
+    def test_nav_lanes_carry_the_checkout_rule(self):
+        for name in NAV_LANES:
+            self.assertIn(self.NAV, self.text(name), name)
+        for name in ("sota", "fixer"):
+            self.assertNotIn("code-navigation tools", self.text(name), name)
 
     def test_every_agent_opens_with_the_data_rule(self):
         for name in AGENTS:

@@ -183,14 +183,14 @@ for f in "$tree"/agents/*.md; do
   fi
   count=$(grep -c '^tools:' "$afm" || true)
   val=$(sed -n 's/^tools:[ \t]*//p' "$afm" | head -n 1)
-  got=$(printf '%s\n' "$val" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | sort | tr '\n' ' ' | sed 's/ $//')
+  got=$(printf '%s\n' "$val" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
   # LANE-05: only sota holds web tools, and it holds no filesystem tool; every other lane is the reverse.
   if [ "$name" = sota ]; then
     want="WebFetch WebSearch"
   elif [ "$name" = fixer ]; then
     want="Edit Glob Grep Read"
   else
-    want="Glob Grep Read"
+    want="Glob Grep Read mcp__codegraph__codegraph_explore mcp__serena__find_referencing_symbols mcp__serena__find_symbol mcp__serena__get_symbols_overview"
   fi
   if [ "$count" -eq 1 ] && [ "$got" = "$want" ]; then
     ok "agent-$name-tools"
