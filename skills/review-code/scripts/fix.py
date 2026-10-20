@@ -82,11 +82,22 @@ def _target(run: str) -> dict:
         raise target.Refuse("no-target")
 
 
+STATE_KEYS = ("version", "digest", "refs", "git_files", "done", "accepted", "untracked", "in_flight", "halted",
+              "side_effects")  # what baseline writes
+
+
 def _state(run: str) -> dict:
     try:
-        return _json(os.path.join(_fixdir(run), "state.json"))
+        st = _json(os.path.join(_fixdir(run), "state.json"))
     except FileNotFoundError:
         raise target.Refuse("no-baseline")
+    except ValueError:  # includes a decode error
+        st = None
+    if not isinstance(st, dict) or any(k not in st for k in STATE_KEYS):
+        raise target.Refuse("tampered", "fix/state.json is unreadable, so the run directory changed while a fixer ran; "
+                            "the tree is left as it is and no git command ran; check .git/config and git status by "
+                            "hand; the snapshots are the .pre files in the run's fix/ directory")
+    return st
 
 
 def _save(run: str, st: dict) -> None:

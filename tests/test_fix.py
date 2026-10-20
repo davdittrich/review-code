@@ -792,6 +792,31 @@ class Tamper(Scope):
         self.assertIn("TAMPERED", r["text"])
         self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
 
+    def test_unparseable_state_is_tampered(self):
+        for name, content in (("not json", "{"), ("not an object", "[]"), ("missing keys", "{}")):
+            with self.subTest(state=name):
+                run, fid, bg = self.started()
+                self.edit("src/calc.py", QUOTE, "return a + b")
+                edited = slurp(self.p("src/calc.py"))
+                with open(os.path.join(run, "fix", "state.json"), "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                for args in (["finish", "--run", run, "--seal", bg["seal"], "--status", "applied"],
+                             ["begin", "--run", run], ["report", "--run", run]):
+                    rc, _, j = self.fixrun(args)
+                    self.assertEqual((rc, j["status"], j["reason"]), (1, "refuse", "tampered"), (args[0], j))
+                    self.assertIn(".git/config", j["detail"])
+                calls = []
+                orig = target._run
+                with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)), \
+                        gitfix.isolated(self.tmp):
+                    for call in (lambda: fix.finish(run, bg["seal"], "applied"), lambda: fix.report_(run)):
+                        with self.assertRaises(target.Refuse) as cm:
+                            call()
+                        self.assertEqual(cm.exception.reason, "tampered")
+                self.assertEqual(calls, [])
+                self.assertEqual(slurp(self.p("src/calc.py")), edited)
+                self.git("checkout", "--", "src/calc.py")
+
     def test_accepted_snapshot_rewritten(self):
         second = two("src/second.py", 2, "return a / b", "return a * b")
         run, fid, bg = self.started(CAND, second)

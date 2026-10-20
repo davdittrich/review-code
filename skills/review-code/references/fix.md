@@ -67,6 +67,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `digest-mismatch` | The plan on disk is not the one the user confirmed | Run the review again |
 | `no-baseline` | There is no `fix/state.json`: `baseline` has not run | Run `baseline` first |
 | `halted` | An earlier outcome or a red baseline stopped the run | Read the report |
+| `tampered` | `fix/state.json` is not a JSON object holding every state key, because something rewrote it while a fixer ran; no git command ran and nothing was restored | Check `.git/config` and `git status` by hand; restore the file from its `.pre` snapshot in `<run>/fix/` if needed |
 | `in-flight` | A fixer call is outstanding; a second brief is refused | Wait for it, then `finish` |
 | `not-in-flight` | `finish` without a brief handed out | Run `begin` first |
 | `head-moved` | `HEAD` is not the reviewed commit any more | Do not commit during a fix run |
