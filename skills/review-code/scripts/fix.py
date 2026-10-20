@@ -87,14 +87,26 @@ STATE_KEYS = ("version", "digest", "refs", "git_files", "done", "accepted", "unt
               "side_effects")  # what baseline writes
 
 
+def _typed(st) -> bool:
+    """state.json holds the types fix.py writes, so no consumer meets an AttributeError or KeyError."""
+    if not isinstance(st, dict) or any(k not in st for k in STATE_KEYS):
+        return False
+    cur = st["in_flight"]
+    return (all(isinstance(st[k], dict) for k in ("done", "accepted"))
+            and all(isinstance(v, dict) for v in st["done"].values())
+            and all(isinstance(st[k], list) for k in ("untracked", "side_effects", "git_files"))
+            and (cur is None or (isinstance(cur, dict) and isinstance(cur.get("id"), str)
+                                 and isinstance(cur.get("path"), str) and isinstance(cur.get("mode"), int))))
+
+
 def _state(run: str) -> dict:
     try:
         st = _json(os.path.join(_fixdir(run), "state.json"))
     except FileNotFoundError:
         raise target.Refuse("no-baseline")
-    except ValueError:  # includes a decode error
+    except (ValueError, RecursionError):  # ValueError includes a decode error
         st = None
-    if not isinstance(st, dict) or any(k not in st for k in STATE_KEYS):
+    if not _typed(st):
         raise target.Refuse("tampered", "fix/state.json is unreadable, so the run directory changed while a fixer ran; "
                             "the tree is left as it is and no git command ran; check .git/config and git status by "
                             "hand; the snapshots are the .pre files in the run's fix/ directory")

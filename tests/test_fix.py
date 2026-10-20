@@ -852,6 +852,35 @@ class Tamper(Scope):
                 self.assertEqual(slurp(self.p("src/calc.py")), edited)
                 self.git("checkout", "--", "src/calc.py")
 
+    def test_wrong_typed_state_is_tampered(self):
+        def with_(**kw):
+            return lambda st: json.dumps(dict(st, **kw))
+        cases = {"done entry not an object": with_(done={"F-1": "x"}),
+                 "in_flight without id": with_(in_flight={"x": 1}),
+                 "in_flight path not a string": with_(in_flight={"id": "F-1", "path": 1, "mode": 420}),
+                 "in_flight mode missing": with_(in_flight={"id": "F-1", "path": "a.py"}),
+                 "accepted not an object": with_(accepted=[]),
+                 "untracked not a list": with_(untracked="x"),
+                 "deeply nested": lambda st: "[" * 200000}
+        for name, make in cases.items():
+            with self.subTest(state=name):
+                run, fid, bg = self.started()
+                self.edit("src/calc.py", QUOTE, "return a + b")
+                edited = slurp(self.p("src/calc.py"))
+                path = os.path.join(run, "fix", "state.json")
+                with open(path, encoding="utf-8") as fh:
+                    good = json.load(fh)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(make(good))
+                try:
+                    for args in (["finish", "--run", run, "--seal", bg["seal"], "--status", "applied"],
+                                 ["begin", "--run", run], ["report", "--run", run]):
+                        rc, _, j = self.fixrun(args)
+                        self.assertEqual((rc, j["status"], j.get("reason")), (1, "refuse", "tampered"), (args[0], j))
+                    self.assertEqual(slurp(self.p("src/calc.py")), edited)
+                finally:
+                    self.git("checkout", "--", "src/calc.py")
+
     def test_in_flight_cleared_is_tampered(self):
         run, fid, bg = self.started()
         self.edit("src/calc.py", QUOTE, "return a + b")
