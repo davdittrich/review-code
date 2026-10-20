@@ -234,6 +234,11 @@ class SerialModeNotice(unittest.TestCase):
         self.assertIn("serial mode", step11)
         self.assertIn("`nothing-to-post`", step11)
 
+    def test_step_12_names_serial_mode_and_nothing_to_fix(self):
+        step12 = self.step("\n12. Fix", "\n13. ")
+        self.assertIn("serial mode", step12)
+        self.assertIn("`nothing-to-fix`", step12)
+
 
 class FixDocs(unittest.TestCase):
     """06-03: fix.md names every refusal and outcome fix.py can emit; the pointers, README and limits say what the code does."""
