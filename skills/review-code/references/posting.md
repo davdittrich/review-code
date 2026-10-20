@@ -4,13 +4,13 @@ Load this when you need to know how `--comment` posts a review to a pull request
 
 ## When posting runs
 
-Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs (SCOPE-05); `post.py build` repeats the check as `not-a-forge-target`. Step 11 does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops. Headless `--comment` on a PR is unsupported: the approval prompt on the lane-ingest command is intermittent.
+Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs; `post.py build` repeats the check as `not-a-forge-target`. Step 11 (the Flow below) does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops. Headless `--comment` on a PR is unsupported: the approval prompt on the lane-ingest command is intermittent.
 
 ## Flow
 
-1. `post.py build --run <run>` is read-only on the forge and pre-approved in `allowed-tools`. It reads the pinned `target.json`, the live PR or MR and its diff, builds `post/payload.json`, prints a preview and prints the sha256 of the payload bytes as `digest`.
-2. The skill relays the preview verbatim and makes one AskUserQuestion that names the digest: "Post as COMMENT" or "Do not post". Every other answer, a dismissed one included, posts nothing.
-3. `post.py submit --run <run> --digest <digest>` is not pre-approved, so the harness permission prompt also applies. It refuses unless the hash of `payload.json` equals the digest the user saw, re-scans every body, re-checks the head and then writes.
+1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/post.py build --run <run>` and relay stdout. It is read-only on the forge and pre-approved in `allowed-tools`. It reads the pinned `target.json`, the live PR or MR and its diff, builds `post/payload.json`, prints a preview and prints the sha256 of the payload bytes as `digest`. When its last line has `status` `refuse`, state `reason` and `detail` and stop; when `reason` is `nothing-to-post`, apply the serial-mode cause in `references/lanes.md` Serial mode.
+2. Headless: state "not posted: confirmation needs an interactive session" and stop. Otherwise make one AskUserQuestion whose question names the `digest`, with options "Post as COMMENT" and "Do not post". Every other answer, a dismissed or empty one included, posts nothing.
+3. Only on "Post as COMMENT" run `python3 ${CLAUDE_SKILL_DIR}/scripts/post.py submit --run <run> --digest <digest>` with the `digest` from build's last line and state its result. It is not pre-approved, so the harness permission prompt also applies. It refuses unless the hash of `payload.json` equals the digest the user saw, re-scans every body, re-checks the head and then writes. Posting never happens through any other gh or glab command.
 4. GitHub: create one pending review with `commit_id` pinned and its inline comments, read the stored comments back and compare them with the payload (count; per comment path, commit id, its finding marker line and its place, see Verify), re-check the head, count the review's comments once more (a comment started in the web UI joins your one pending review), send the one `COMMENT` event. GitLab: create a summary draft note and one positioned draft per inline finding, verify the user's drafts are exactly those, re-check the head, count the drafts once more, publish all drafts in one call that takes no parameters.
 5. Any failure after a create deletes only the objects this call made: the review id its own create returned, while every comment in it carries one of this payload's finding markers as a whole line, or the drafts that carry this payload's marker lines. A GitHub review that also holds a comment of anyone else's making when cleanup lists it (one you started in the web UI joins your one pending review) is kept and refuses `review-kept`; see the GitHub race below for the one-request window after that listing. When a GitHub create fails or its answer is lost (a timeout, a dropped connection, unparsable JSON), submit lists your reviews and deletes a PENDING one of yours whose body holds this payload's review marker line; a pending review you start in the web UI meanwhile has no marker and is never touched. If a delete fails, `cleanup-failed` names what is left.
 
@@ -69,7 +69,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
-| `usage` | Wrong arguments, or a digest that is not 64 hex digits | Run the two commands as SKILL.md step 11 gives them |
+| `usage` | Wrong arguments, or a digest that is not 64 hex digits | Run the two commands as Flow gives them |
 | `python-too-old` | Python below 3.9 | Use Python 3.9 or later |
 | `internal-error` | An unexpected file or data error (`detail` is the exception type) | Re-run the review; report it if it repeats |
 | `no-target` | `target.json` is missing or unreadable | Re-run the review from step 1 |

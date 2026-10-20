@@ -564,10 +564,9 @@ class Units(unittest.TestCase):
 
     def test_timeout_fits_the_bash_call(self):
         docs = os.path.dirname(SCRIPTS)
-        with open(os.path.join(docs, "SKILL.md"), encoding="utf-8") as fh:
-            skill = " ".join(fh.read().split())
         with open(os.path.join(docs, "references", "fix.md"), encoding="utf-8") as fh:
             ref = " ".join(fh.read().split())
+        skill = ref  # the Bash timeout instruction moved from SKILL.md step 12 into fix.md Flow
         ms, said = re.search(r"`timeout` of (\d+), because their test run may take up to (\d+) seconds", skill).groups()
         past = re.search(r"ran past (\d+) seconds \(`TIMEOUT`\)", ref).group(1)
         self.assertEqual((int(said), int(past)), (fix.TIMEOUT, fix.TIMEOUT))  # the docs state the constant

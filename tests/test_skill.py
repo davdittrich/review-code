@@ -6,6 +6,23 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL = os.path.join(ROOT, "skills", "review-code", "SKILL.md")
+REFS = os.path.join(ROOT, "skills", "review-code", "references")
+
+
+def ref(name):
+    with open(os.path.join(REFS, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def flow(name):
+    """The Flow section of a reference that SKILL.md steps 11 and 12 point to."""
+    return ref(name).split("\n## Flow", 1)[1].split("\n## ", 1)[0]
+
+
+def procedure():
+    """SKILL.md followed by the Flow sections its pointer steps hand over to, in step order."""
+    with open(SKILL, encoding="utf-8") as fh:
+        return fh.read() + "\n" + flow("posting.md") + "\n" + flow("fix.md")
 
 
 class AskUserQuestionLoading(unittest.TestCase):
@@ -70,8 +87,9 @@ class Procedure(unittest.TestCase):
     def test_reply_lines_are_pair_arrays_not_objects(self):  # g1x.10: the Bash guard denies a brace then a quote
         self.assertIn("starts with `[`", self.text)
         self.assertNotIn("starts with `{`", self.text)
-        self.assertIn("\\u007b", self.text)
-        self.assertIn("a `\"` as `\\u0022`", self.text)  # 02a.18: a quote inside a string value
+        serial = ref("lanes.md")  # the main thread writes the lines in serial mode; the escape rule moved there
+        self.assertIn("\\u007b", serial)
+        self.assertIn("a `\"` as `\\u0022`", serial)  # 02a.18: a quote inside a string value
 
     def test_delimiters_and_flags(self):
         for s in ("REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "REPRO-<id>", "--json", "--sarif"):
@@ -79,10 +97,11 @@ class Procedure(unittest.TestCase):
 
 
 DESCRIPTION = """description: >
-  Reviews code changes (diffs, commits, branches, pull requests, the working tree) or repository
-  files and reports defects, each with file:line evidence, an evidence class and a severity. Use
-  when a user asks for a code review, a critical or adversarial review, a critique, an audit or a
-  check of code, or asks what is wrong with a change. Not for writing, explaining or debugging code.
+  Critically reviews code and reports only verified defects, each with file:line evidence, an
+  evidence class and a severity. Use whenever the user wants a diff, commit, branch, pull request,
+  merge request, working tree, file or repository reviewed, critiqued or audited, or asks what is
+  wrong with a change, even without the word review; also to post the findings to a PR or fix them.
+  Not for writing, explaining or debugging code.
 """
 # 04-02 probe decision line (fan-out waiting rule); also pins review-code-g1x.11, the "foreground Agent call" wording.
 FAN_OUT = ("issue all calls of a wave in one message; wait until every call of the wave has returned or notified "
@@ -127,9 +146,11 @@ class Phase4Procedure(unittest.TestCase):
 
     # documentation check (review-code-cmp, review-code-csd): a compound read and a split verdicts call both failed live
     def test_verdict_step_reads_by_call_and_sends_one_verdicts_call_per_batch(self):
-        for t in ("one Read call per file", "never a shell loop", "ONE call", "replaces all earlier verdicts", "--batch <batch>",
-                  "repeat of a batch replaces only that batch"):
+        for t in ("--batch <batch>", "repeat of a batch replaces only that batch"):
             self.assertIn(t, self.flat)
+        serial = " ".join(ref("lanes.md").split())  # serial mode's self-score batch moved to lanes.md Serial mode
+        for t in ("one Read call per file", "never a shell loop", "ONE call", "replaces all earlier verdicts"):
+            self.assertIn(t, serial)
 
     def test_ingest_decision_comes_from_status_never_from_a_marker_line(self):  # review-code-zx6: a reply can print any marker line
         self.assertNotRegex(self.flat, r"beginning `review-code")
@@ -137,9 +158,11 @@ class Phase4Procedure(unittest.TestCase):
             self.assertIn(t, self.flat)
 
     def test_cost_gate_and_serial(self):
+        flat = self.flat + " " + " ".join(ref("lanes.md").split())  # serial mode's procedure lives in lanes.md
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
                   "nesting-depth or concurrent-limit"):
-            self.assertIn(s, self.flat)
+            self.assertIn(s, flat)
+        self.assertIn("references/lanes.md", self.flat)  # the SKILL pointer into Serial mode
 
     def test_shape(self):
         self.assertLess(len(self.text.splitlines()), 500)
@@ -154,8 +177,7 @@ class Phase5Procedure(unittest.TestCase):
     """05-01: --comment, the SCOPE-05 stop and the confirmed post in step 11."""
 
     def setUp(self):
-        with open(SKILL, encoding="utf-8") as fh:
-            self.text = fh.read()
+        self.text = procedure()  # SKILL.md plus the Flow sections steps 11 and 12 hand over to
         self.flat = " ".join(self.text.split())
 
     def test_steps_in_order(self):  # --run keeps post.py build out of the allowed-tools frontmatter entry
@@ -169,7 +191,7 @@ class Phase5Procedure(unittest.TestCase):
                   "not posted: confirmation needs an interactive session"):
             self.assertIn(s, self.flat)
         self.assertNotIn("Never post to a PR", self.flat)
-        self.assertIn("never post except through step 11", self.flat)
+        self.assertIn("post only through step 11", self.flat)
 
     def test_comment_is_removed_in_step_1_and_checked_before_any_lane(self):
         step1 = self.text.split("\n1. Target.", 1)[1].split("\n2. Ledger.", 1)[0]
@@ -187,8 +209,7 @@ class Phase6Procedure(unittest.TestCase):
     """06-03: --fix in step 1, the confirmed one-at-a-time fix loop in step 12, and the pre-approval limits."""
 
     def setUp(self):
-        with open(SKILL, encoding="utf-8") as fh:
-            self.text = fh.read()
+        self.text = procedure()  # SKILL.md plus the Flow sections steps 11 and 12 hand over to
         self.flat = " ".join(self.text.split())
 
     def test_steps_in_order(self):
@@ -206,17 +227,16 @@ class Phase6Procedure(unittest.TestCase):
     def test_gate_words(self):
         for s in ("Apply and run tests", "not applied: confirmation needs an interactive session", "REVIEW_FIX_CMD",
                   '[["status","applied"]]', "--status declined", "one fixer call at a time", "references/fix.md",
-                  "never post except through step 11", "Target code runs only through steps 9 and 12"):
+                  "post only through step 11", "run target code only in steps 9 and 12"):
             self.assertIn(s, self.flat)
 
     def test_fixer_call_is_the_brief_path_on_the_tiers_model(self):
-        step12 = self.text.split("\n12. Fix", 1)[1].split("\n13. ", 1)[0]
-        flat = " ".join(step12.split())
+        flat = " ".join(flow("fix.md").split())
         for s in ("subagent_type` `review-code:fixer", "exactly the brief path", "`model`", "`effort`", "begin"):
             self.assertIn(s, flat)
 
     def test_edits_only_through_the_fixer(self):
-        self.assertIn("never edit files except through the fixer in step 12", self.flat.lower())
+        self.assertIn("edit files only through the fixer in step 12", self.flat.lower())
         self.assertNotIn("Fix mode does not exist yet", self.text)
 
     def test_baseline_and_finish_are_not_pre_approved(self):
@@ -233,25 +253,38 @@ class SerialModeNotice(unittest.TestCase):
         with open(SKILL, encoding="utf-8") as fh:
             self.text = fh.read()
 
-    def step(self, start, end):
-        return " ".join(self.text.split(start, 1)[1].split(end, 1)[0].split())
+    def serial(self):
+        return " ".join(ref("lanes.md").split("## Serial mode", 1)[1].split("\n## ", 1)[0].split())
 
-    def test_step_11_names_serial_mode_and_nothing_to_post(self):
-        step11 = self.step("\n11. Post", "\n12. Fix")
-        self.assertIn("serial mode", step11)
+    def test_steps_11_and_12_hand_over_to_the_flows_and_name_the_nothing_to_refusals(self):
+        step11 = " ".join(self.text.split("\n11. Post", 1)[1].split("\n12. Fix", 1)[0].split())
+        step12 = " ".join(self.text.split("\n12. Fix", 1)[1].split("\n13. ", 1)[0].split())
+        self.assertIn("references/posting.md", step11)
         self.assertIn("`nothing-to-post`", step11)
-
-    def test_step_12_names_serial_mode_and_nothing_to_fix(self):
-        step12 = self.step("\n12. Fix", "\n13. ")
-        self.assertIn("serial mode", step12)
+        self.assertIn("references/fix.md", step12)
         self.assertIn("`nothing-to-fix`", step12)
 
+    def test_flow_sits_inside_the_first_30_lines_steps_11_and_12_tell_the_model_to_read(self):
+        """Steps 11 and 12 read `limit 30`; a Flow that grows past it would be cut off."""
+        for name in ("posting.md", "fix.md"):
+            lines = ref(name).splitlines()
+            start = lines.index("## Flow")
+            end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("## "))
+            self.assertLessEqual(end, 30, name)
+        with open(SKILL, encoding="utf-8") as fh:
+            self.assertEqual(fh.read().count("limit 30"), 2)
+
+    def test_flows_send_nothing_to_refusals_to_serial_mode(self):
+        for name, reason in (("posting.md", "nothing-to-post"), ("fix.md", "nothing-to-fix")):
+            fl = " ".join(flow(name).split())
+            self.assertIn("`reason` is `%s`" % reason, fl)
+            self.assertIn("Serial mode", fl)
+
     def test_serial_mode_is_blamed_only_for_the_nothing_to_refusals(self):  # 02a.21: dirty-tree, trust-* and others can refuse first
-        step11 = self.step("\n11. Post", "\n12. Fix")
-        step12 = self.step("\n12. Fix", "\n13. ")
-        self.assertNotIn("always refuses", step11 + " " + step12)
-        self.assertIn("`reason` is `nothing-to-post`", step11)
-        self.assertIn("`reason` is `nothing-to-fix`", step12)
+        s = self.serial()
+        self.assertNotIn("always refuses", s)
+        self.assertIn("`reason` is `nothing-to-post` or `nothing-to-fix`", s)
+        self.assertIn("parallel mode", s)
 
     def test_refusal_tables_and_readme_carry_the_serial_mode_cause(self):  # 02a.21
         refs = os.path.join(ROOT, "skills", "review-code", "references")
@@ -284,7 +317,7 @@ class SerialModeNotice(unittest.TestCase):
             self.assertIn("unsupported", [ln for ln in fh if ln.startswith("Only with `--comment`")][0])
 
     def test_step_12_begin_loop_also_leaves_on_halted(self):  # 02a.19: an interrupted begin prints status halted
-        self.assertIn("`done`, `refuse` or `halted` leave the loop", self.step("\n12. Fix", "\n13. "))
+        self.assertIn("`done`, `refuse` or `halted` leave the loop", " ".join(flow("fix.md").split()))
 
 
 class FixDocs(unittest.TestCase):
