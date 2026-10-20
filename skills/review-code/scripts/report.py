@@ -70,6 +70,7 @@ import target
 MAX_HIDDEN = 40
 MAX_AREAS = 20  # areas inspected shown in a PR/MR body and in SARIF; the text report lists all
 SCHEMA_VERSION = 1
+VERIFY_BATCH = 5  # handoffs per verifier call; shortcut: fixed, raise it if verifier replies stay reliable past 5
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
 CANDIDATE_OPTIONAL = ("end_line", "fix")
 AXES = ("defects", "standards", "spec")
@@ -298,6 +299,22 @@ def _handoff(c, run, nonce, packs=()):
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
+def _batches(queue, hand):
+    """verify_calls: queue ids grouped by (agent, shard, code path), at most VERIFY_BATCH per call, queue order kept.
+    Same-path groups keep one verifier on one file's code; the prompt lists absolute handoff paths."""
+    groups = {}
+    for c in queue:
+        agent = "review-code:spec-verifier" if c["axis"] == "spec" else "review-code:verifier"
+        groups.setdefault((agent, c.get("shard"), c["path"]), []).append(c["id"])
+    out = []
+    for (agent, _, _), ids in groups.items():
+        for i in range(0, len(ids), VERIFY_BATCH):
+            chunk = ids[i:i + VERIFY_BATCH]
+            out.append({"batch": len(out) + 1, "agent": agent, "ids": chunk, "prompt": "Verify. Handoffs:\n" + "\n".join(
+                os.path.join(os.path.abspath(hand), x + ".md") for x in chunk)})
+    return out
+
+
 def _dedupe(cands):
     """(survivors, merged count). Per axis, candidates on one path and category whose ranges lie within 2 lines merge;
     the more severe survives, then the longer trigger, then the smaller id. A wrong merge hides a finding and a missed
@@ -463,7 +480,8 @@ def _ingest(run, text, lane, shard):
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
-         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut)}, sort_keys=True, indent=2))
+         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut),
+         "verify_calls": _batches(queue, hand)}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
             "capped": len(cut), "lanes": state, "merged": merged}
