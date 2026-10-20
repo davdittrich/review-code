@@ -76,7 +76,7 @@ Reproduction covers your own code only. For a confirmed finding, the skill write
 
 Limits: there is no network or filesystem isolation (a test can read host files by absolute path), dependencies are not installed in the fresh worktree, and user-site packages and HOME-based configuration are not visible.
 
-Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, never objects, because the Claude Code Bash guard denies a here-document body holding a brace followed by a quote, or a backslash-escaped quote: lanes write `{` as `\u007b` and `"` as `\u0022`. The guard can also ask for approval on other code-like text in a body (observed on 2.1.304: `a() != b`), so a headless run can stop at `report.py ingest` (review-code-02a.18). A reproduction test source with a dict literal can still trip that guard; headless runs skip reproduction.
+Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, never objects, because the Claude Code Bash guard denies a here-document body holding a brace followed by a quote, or a backslash-escaped quote: lanes write `{` as `\u007b` and `"` as `\u0022`. The approval prompt on a here-document body is also intermittent: on 2.1.304 the same code-like body (`if a(b).c() != d:`) ran in 2 of 3 headless probes and asked in 1, so no escaping rule makes a headless `--comment` run on a PR reliable and it can stop at `report.py ingest` (review-code-02a.18). A reproduction test source with a dict literal can still trip that guard; headless runs skip reproduction.
 
 ## Run directory
 
