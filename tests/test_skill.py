@@ -29,6 +29,8 @@ class Procedure(unittest.TestCase):
 
     REPRO_CALL = "python3 /x/skills/review-code/scripts/repro.py run --run r --id F-0123456789 --test t.py -- python3 t.py"
     SUBMIT_CALL = "python3 /x/skills/review-code/scripts/post.py submit --run r --digest " + "0" * 64
+    BASELINE_CALL = "python3 /x/skills/review-code/scripts/fix.py baseline --run r --digest " + "0" * 64
+    FINISH_CALL = "python3 /x/skills/review-code/scripts/fix.py finish --run r --seal " + "0" * 64 + " --status applied"
 
     def setUp(self):
         with open(SKILL, encoding="utf-8") as fh:
@@ -40,20 +42,23 @@ class Procedure(unittest.TestCase):
         self.assertIsNotNone(m, "allowed-tools must be a YAML list")
         return [ln.strip()[2:].strip() for ln in m.group(1).splitlines()]
 
-    def test_allowed_tools_names_five_scripts_not_repro_or_submit(self):
+    def test_allowed_tools_names_eight_entries(self):
         items = self.allowed()
-        self.assertEqual(len(items), 5, items)
-        for name in ("target.py", "ledger.py", "report.py", "plan.py", "post.py"):
+        self.assertEqual(len(items), 8, items)
+        for name in ("target.py", "ledger.py", "report.py", "plan.py", "post.py", "fix.py"):
             self.assertTrue(any(name in i for i in items), name)
         for i in items:
             self.assertNotIn("repro", i)
             self.assertNotIn("scripts/*", i)
+            self.assertFalse(i.startswith(("Edit", "Write")), i)
             pat = re.fullmatch(r"Bash\((.*)\)", i)
             self.assertIsNotNone(pat, i)
             rx = ".*".join(re.escape(p) for p in pat.group(1).replace("${CLAUDE_SKILL_DIR}", "/x/skills/review-code")
                            .split("*"))
-            for call in (self.REPRO_CALL, self.SUBMIT_CALL):
+            for call in (self.REPRO_CALL, self.SUBMIT_CALL, self.BASELINE_CALL, self.FINISH_CALL):
                 self.assertIsNone(re.fullmatch(rx, call), (i, call))
+        self.assertEqual(sorted(i for i in items if "fix.py" in i),
+                         ["Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py %s *)" % v for v in ("begin", "plan", "report")])
 
     def test_steps_in_order(self):
         steps = ["review-code:finder", "report.py ingest", "review-code:verifier", "report.py verdicts",
@@ -169,6 +174,49 @@ class Phase5Procedure(unittest.TestCase):
         self.assertIn("post.py build *", fm)
         self.assertNotIn("post.py submit", fm)
         self.assertNotIn("post.py *", fm)
+
+
+class Phase6Procedure(unittest.TestCase):
+    """06-03: --fix in step 1, the confirmed one-at-a-time fix loop in step 12, and the pre-approval limits."""
+
+    def setUp(self):
+        with open(SKILL, encoding="utf-8") as fh:
+            self.text = fh.read()
+        self.flat = " ".join(self.text.split())
+
+    def test_steps_in_order(self):
+        steps = ["report.py render", "post.py build --run", "fix.py plan --run", "fix.py baseline --run",
+                 "fix.py begin --run", "review-code:fixer", "fix.py finish --run", "fix.py report --run"]
+        at = [self.text.find(s) for s in steps]
+        self.assertNotIn(-1, at, dict(zip(steps, at)))
+        self.assertEqual(at, sorted(at), dict(zip(steps, at)))
+
+    def test_fix_flag_in_step_1(self):
+        step1 = self.text.split("\n1. Target.", 1)[1].split("\n2. Ledger.", 1)[0]
+        self.assertIn("`--fix`", step1)
+        self.assertIn("needs committed code", " ".join(step1.split()))
+
+    def test_gate_words(self):
+        for s in ("Apply and run tests", "not applied: confirmation needs an interactive session", "REVIEW_FIX_CMD",
+                  '[["status","applied"]]', "--status declined", "one fixer call at a time", "references/fix.md",
+                  "never post except through step 11", "Target code runs only through steps 9 and 12"):
+            self.assertIn(s, self.flat)
+
+    def test_fixer_call_is_the_brief_path_on_the_tiers_model(self):
+        step12 = self.text.split("\n12. Fix", 1)[1].split("\n13. ", 1)[0]
+        flat = " ".join(step12.split())
+        for s in ("subagent_type` `review-code:fixer", "exactly the brief path", "`model`", "`effort`", "begin"):
+            self.assertIn(s, flat)
+
+    def test_edits_only_through_the_fixer(self):
+        self.assertIn("never edit files except through the fixer in step 12", self.flat.lower())
+        self.assertNotIn("Fix mode does not exist yet", self.text)
+
+    def test_baseline_and_finish_are_not_pre_approved(self):
+        fm = self.text.split("\n---", 1)[0]
+        self.assertNotIn("fix.py baseline", fm)
+        self.assertNotIn("fix.py finish", fm)
+        self.assertNotIn("fix.py *", fm)
 
 
 class PostingDocs(unittest.TestCase):
