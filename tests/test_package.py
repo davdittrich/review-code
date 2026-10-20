@@ -91,6 +91,17 @@ class GateMutations(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-finder-tools", out)
 
+    def test_gate_rejects_beads_database_files(self):  # review-code-9kt
+        for rel in (".dolt/noms/x", "sub/.dolt/x", "state.db", "a/.beads-credential-key", ".beads-credential-key"):
+            path = os.path.join(self.tree, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+            rc, out = self.gate()
+            self.assertEqual(rc, 1, rel)
+            self.assertIn("FAIL - hygiene-tracked", out, rel)
+            os.remove(path)
+
     def test_gate_fails_when_listing_fails(self):
         # WR-06: a failing `find` must reach `bad hygiene-tracked`, not print ok
         fake = os.path.join(self._td.name, "bin")

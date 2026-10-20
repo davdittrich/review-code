@@ -15,9 +15,16 @@ finish() {
   exit 0
 }
 
+# The YAML frontmatter of $1: line 1 must be ---, up to the closing ---; fails when either is missing.
+frontmatter() {
+  awk 'NR == 1 { if ($0 != "---") exit 1; next }
+    /^---[ \t]*$/ { found = 1; exit }
+    { print }
+    END { if (!found) exit 1 }' "$1"
+}
+
 for dep in git jq claude tar; do
   if ! command -v "$dep" >/dev/null 2>&1; then
-    printf 'missing dependency: %s\n' "$dep"
     bad deps "$dep not on PATH"
     finish
   fi
@@ -109,10 +116,7 @@ if [ ! -f "$skill" ]; then
   bad skill-file "missing $skill"
 else
   fm="$scratch/frontmatter"
-  if awk 'NR == 1 { if ($0 != "---") exit 1; next }
-    /^---[ \t]*$/ { found = 1; exit }
-    { print }
-    END { if (!found) exit 1 }' "$skill" >"$fm"; then
+  if frontmatter "$skill" >"$fm"; then
     ok skill-frontmatter-start
     name=$(sed -n 's/^name:[ \t]*//p' "$fm" | head -n 1)
     dir=$(basename "$(dirname "$skill")")
@@ -174,10 +178,7 @@ for f in "$tree"/agents/*.md; do
   [ -f "$f" ] || continue
   name=$(basename "$f" .md)
   afm="$scratch/agent-frontmatter"
-  if ! awk 'NR == 1 { if ($0 != "---") exit 1; next }
-    /^---[ \t]*$/ { found = 1; exit }
-    { print }
-    END { if (!found) exit 1 }' "$f" >"$afm"; then
+  if ! frontmatter "$f" >"$afm"; then
     bad "agent-$name-tools" "agents/$name.md: line 1 must be --- with a closing ---"
     continue
   fi
@@ -246,7 +247,7 @@ else
 fi
 
 # Tracked files ship to every installer (plugin source is "./"): no tooling, pointer or third-party text.
-banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/CLAUDE\.md$|^\.claude/settings(\.local)?\.json$|^\.planning/|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
+banned='^(CLAUDE|AGENTS|GEMINI)\.md$|^\.(wolf|serena|codex|opencode|cursor|agents|beads)/|^\.claude/(commands|rules|skills)/|^\.claude/CLAUDE\.md$|^\.claude/settings(\.local)?\.json$|^\.planning/|(^|/)\.dolt/|\.db$|(^|/)\.beads-credential-key$|^docs/(ccr|matt|ponytail|caveman|cavecrew-reviewer|gsd-code-reviewer|code-review)\.md$'
 # List the tree under test (the export, or the given directory), never the caller's repo.
 # find runs alone: a pipeline's status is its last stage, and POSIX sh has no pipefail.
 if listing=$(cd "$tree" && find . -type f ! -path './.git/*'); then
