@@ -956,6 +956,13 @@ class Redaction(Base):
         self.assertEqual(sent, [body])
         self.assertNotIn(JWT, calls)
 
+    def test_a_backticked_secret_is_redacted_not_refused(self):
+        self.review(20, fix="set token = `abcdefgh12` in the config")
+        st, payload, calls = self.posted()
+        self.assertEqual(st["redacted"], 1)
+        self.assertIn("[REDACTED:generic-secret]", payload["comments"][0]["body"])
+        self.assertNotIn("abcdefgh12", calls)
+
     def test_a_backslash_before_a_bracket_cannot_unescape_it(self):
         self.review(20, fix="see \\[x](https://evil.example) and \\\\[y](https://evil.example)")
         _, payload, _ = self.posted()

@@ -56,7 +56,8 @@ SECRET_RULES = tuple((rule, re.compile(rx)) for rule, rx in (
     ("stripe-access-token", r"\b(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}"),
     ("jwt", r"\bey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9/\\_-]{17,}\.[a-zA-Z0-9/\\_-]{10,}"),
     ("private-key", _PEM),
-    ("generic-secret", r"""(?i)(?:password|secret|token|api[_-]?key)\s*[:=]\s*["'][^"'\s]{8,}["']"""),
+    # a backtick counts as a quote too: _prose turns it into `'`, so the rendered text would match after redaction ran
+    ("generic-secret", r"""(?i)(?:password|secret|token|api[_-]?key)\s*[:=]\s*["'`][^"'\s]{8,}["'`]"""),
 ))
 MAX_INLINE = 32
 MAX_BODY = 60000
