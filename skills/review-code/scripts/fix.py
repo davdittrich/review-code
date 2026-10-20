@@ -42,7 +42,10 @@ _MANIFEST = re.compile(
     r"build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|pom\.xml|NAMESPACE|.*\.csproj|"
     r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
-_RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel)\.conf(?:ig)?\.\w+|noxfile\.py|Rakefile|build\.rs)\Z")
+_RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
+                     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
+# test names ledger._TEST_NAME lacks
+_TEST_MORE = re.compile(r"(?:.*\.(?:test|spec)\.[cm][jt]s|.*\.cy\.[jt]sx?|.*_spec\.rb|.*Tests?\.cs)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered")
 REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
@@ -131,6 +134,15 @@ def _protected(path: str) -> bool:
     return (any(p.startswith(".") for p in parts) or base in target._LOCKFILES or base.endswith(".lock")
             or path.endswith(ledger._CFG_EXT) or bool(ledger._CFG_ROOT.match(base)) or bool(_MANIFEST.match(base))
             or path in ledger._CI_FILES)
+
+
+def _judges(path: str, cmd_files: set) -> bool:
+    """Files that decide whether the tests pass: test files, fixtures, runner configs, the test command's own script.
+    A spec/ directory counts only at the repo root (RSpec), so src/spec/parser.py stays fixable."""
+    d, _, base = path.rpartition("/")
+    dirs = d.split("/") if d else []
+    return (path in cmd_files or ledger._is_fixture(path) or bool(_RUNNER.match(base) or _TEST_MORE.match(base)
+            or ledger._TEST_NAME.match(base) or (ledger._TEST_DIRS - {"spec"}) & set(dirs)) or dirs[:1] == ["spec"])
 
 
 def _live(repo: str, path) -> Optional[str]:
@@ -389,6 +401,8 @@ def plan(run: str, words: List[str]) -> dict:
         raise target.Refuse("dirty-tree")  # FIX-04: a clean start, untracked files included
     if os.path.exists(os.path.join(_fixdir(run), "state.json")):
         raise target.Refuse("already-run")  # FIX-03: one run per review
+    # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
+    cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
     for f in report.build(run)["findings"]:
         fix_text = f.get("fix")
@@ -397,7 +411,7 @@ def plan(run: str, words: List[str]) -> dict:
             why = "no-fix"
         elif _protected(f["path"]):
             why = "protected-path"
-        elif ledger._is_test(f["path"]) or ledger._is_fixture(f["path"]) or _RUNNER.match(f["path"].rpartition("/")[2]):
+        elif _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
         else:
             real = _live(repo, f["path"])

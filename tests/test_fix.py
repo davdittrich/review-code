@@ -337,30 +337,57 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
 
 
+RUN = "# runner\nrun 3 - 1\n"
+SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
+           "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs")
+KEPT = ("ci/run-tests.sh", "src/spec/parser.py", "src/testing_utils.py", "src/latest.py", "src/contest.py", "src/Contests.cs",
+        "lib/specs.rb", "src/webpack.configs.js")
+
+
 class TestPathSkips(Base):
-    feat_files = {
-        "src/calc.py": FEAT,
-        "tests/test_calc.py": "def test_x():\n    assert 1 - 1\n",
-        "conftest.py": "def f():\n    return 2 - 1\n",
-        "jest.config.js": "module.exports = 3 - 1;\n",
-    }
+    feat_files = dict({"src/calc.py": FEAT, "tests/test_calc.py": "def test_x():\n    assert 1 - 1\n",
+                       "conftest.py": "def f():\n    return 2 - 1\n", "jest.config.js": "module.exports = 3 - 1;\n"},
+                      **{p: RUN for p in SKIPPED + KEPT})
+
+    def planned(self, cands, words=None):
+        run = self.pin()
+        self.assertEqual(len(self.ingest(run, *cands)), len(cands))
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.plan(run, words)
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return {s["path"]: s["why"] for s in doc["skipped"]}, [e["path"] for e in doc["entries"]]
 
     def test_test_files_are_skipped(self):
-        run = self.pin()
         cands = [CAND, two("tests/test_calc.py", 2, "assert 1 - 1", "assert 1 + 1"),
                  two("conftest.py", 2, "return 2 - 1", "return 2 + 1"),
                  two("jest.config.js", 1, "module.exports = 3 - 1;", "module.exports = 3 + 1;")]
-        self.assertEqual(len(self.ingest(run, *cands)), 4)
-        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
-        rc, out, j = self.plan(run)
-        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 3), out)
-        want = {report_id(c): "test-path" for c in cands[1:]}
-        block = out.split("== skipped ==\n")[1].split("\n")
-        self.assertEqual({ln.split()[0]: ln.split()[2] for ln in block[:3]}, want)
-        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
-            doc = json.load(fh)
-        self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
-        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+        skipped, applied = self.planned(cands)
+        self.assertEqual(skipped, {c["path"]: "test-path" for c in cands[1:]})
+        self.assertEqual(applied, ["src/calc.py"])
+
+    def test_runner_setup_and_test_name_shapes_are_skipped(self):
+        cands = [CAND] + [two(p, 2, "run 3 - 1", "run 3 + 1") for p in SKIPPED]
+        skipped, applied = self.planned(cands)
+        self.assertEqual(skipped, {p: "test-path" for p in SKIPPED})
+        self.assertEqual(applied, ["src/calc.py"])
+
+    def test_source_files_with_test_like_names_stay_fixable(self):
+        cands = [two(p, 2, "run 3 - 1", "run 3 + 1") for p in KEPT]
+        skipped, applied = self.planned(cands)
+        self.assertEqual((skipped, sorted(applied)), ({}, sorted(KEPT)))
+
+    def test_the_test_command_script_is_skipped(self):
+        run_sh = two("ci/run-tests.sh", 2, "run 3 - 1", "run 3 + 1")
+        for words in (["./ci/run-tests.sh"], ["sh", "ci/run-tests.sh"]):
+            with self.subTest(words=words):
+                skipped, applied = self.planned(
+                    [CAND, run_sh, two("src/latest.py", 2, "run 3 - 1", "run 3 + 1")], words)
+                self.assertEqual(skipped, {"ci/run-tests.sh": "test-path"})
+                self.assertEqual(sorted(applied), ["src/calc.py", "src/latest.py"])
+                self.tearDown()
+                self.setUp()
 
 
 def report_id(c):
