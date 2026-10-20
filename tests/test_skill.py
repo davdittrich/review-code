@@ -217,6 +217,11 @@ class PostingDocs(unittest.TestCase):
         for s in ("posting comes in a later version", "PR posting and fix mode do not exist yet"):
             self.assertNotIn(s, text)
 
+    def test_cleanup_window_is_documented(self):
+        """R2-WR-02: GitHub's DELETE has no precondition, so a comment added after cleanup's listing goes with the review."""
+        flat = " ".join(self.read(self.REFS, "posting.md").split())
+        self.assertIn("between cleanup's listing and its delete is deleted with the review", flat)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
 
