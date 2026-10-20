@@ -1052,6 +1052,15 @@ class GitLabSigils(Base):
         for ref in ("GH-12", "GL-7", "proj>"):
             self.assertNotIn(ref, outside, fix)
 
+    def test_a_reference_right_after_another_still_builds(self):
+        self.review(20, fix="see GH-12GH-3 and GH-1x/y->> and 9GL-4 now")  # a code span ends a word for the forge
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        fix = [ln for ln in self.payload()[1]["comments"][0]["body"].split("\n") if ln.startswith("**Fix:**")][0]
+        outside = re.sub(r"`[^`]*`", " ", fix)
+        for ref in ("GH-3", "y->", "GL-4"):
+            self.assertNotIn(ref, outside, fix)
+
 
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
