@@ -17,7 +17,6 @@ import secrets
 import shlex
 import shutil
 import stat
-import tempfile
 from datetime import datetime, timezone
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -59,10 +58,7 @@ def write(path: str, text: str) -> None:
 
 
 def _write_json(path: str, obj: dict) -> None:
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ledger.")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, sort_keys=True, indent=2)
-    os.replace(tmp, path)
+    target.write_atomic(path, json.dumps(obj, sort_keys=True, indent=2).encode("utf-8"))
 
 
 def _dec(raw: bytes) -> str:

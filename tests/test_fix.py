@@ -829,7 +829,7 @@ class FinishScope(Scope):
             with self.assertRaises(OSError):
                 fix._save(run, st)
         self.assertEqual(slurp(path), before)  # an interrupted write leaves the old file whole
-        self.assertEqual([n for n in os.listdir(os.path.join(run, "fix")) if n.startswith(".fix-")], [])
+        self.assertEqual([n for n in os.listdir(os.path.join(run, "fix")) if n.startswith(".tmp-")], [])
         fix._save(run, st)
         self.assertEqual(self.state(run)["halted"], "x")
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)

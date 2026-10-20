@@ -137,10 +137,43 @@ def load_json(run: str, name: str) -> dict:
     return obj
 
 
+def _touch_run(path: str) -> None:
+    """Refresh the run directory above `path`: _prune keys on its own mtime, which a write deeper down never moves."""
+    d = os.path.dirname(os.path.abspath(path))
+    while os.path.dirname(d) != d:
+        up = os.path.dirname(d)
+        if os.path.basename(d).startswith("review-code.") and os.path.basename(up) == "review-code":
+            try:
+                os.utime(d)
+            except OSError:
+                pass
+            return
+        d = up
+
+
 def write_private(path: str, text: str) -> None:
     """Create or truncate `path` with mode 0600 (the run-directory layout promises owner-only files)."""
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
         fh.write(text)
+    _touch_run(path)
+
+
+def write_atomic(path: str, data: bytes, mode: int = 0o600) -> None:
+    """Put `data` at `path` byte-exact with `mode`: temp file in the same directory, then an atomic replace, so a
+    reader never sees a half file and a failed write leaves the old file and no temp."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _touch_run(path)
 
 
 RETENTION_DAYS = 14

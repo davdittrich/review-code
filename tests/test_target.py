@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -518,6 +519,15 @@ class TestRunDirPruning(Local):
         self.assertFalse(os.path.exists(old))
         for p in (fresh, other, keep, link, out["run"]):
             self.assertTrue(os.path.exists(p), p)
+
+    def test_a_write_deep_in_a_run_keeps_it_past_the_cutoff(self):  # review-code-j2w
+        for write in (target.write_private, lambda p, t: target.write_atomic(p, t.encode())):
+            run = self.mk("review-code.TOUCH1", target.RETENTION_DAYS + 1)
+            os.makedirs(os.path.join(run, "post"))
+            write(os.path.join(run, "post", "result.json"), "{}")
+            target._prune(os.path.dirname(run))
+            self.assertTrue(os.path.exists(run))
+            shutil.rmtree(run)
 
     def test_a_refused_target_prunes_nothing(self):
         old = self.mk("review-code.OLD123", target.RETENTION_DAYS + 1)

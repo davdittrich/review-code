@@ -513,9 +513,7 @@ def _locked(run):
 
 def _put(path, text):
     """write_private through a temp file and os.replace, so a reader never sees a half file."""
-    tmp = "%s.tmp%d" % (path, os.getpid())
-    target.write_private(tmp, text)
-    os.replace(tmp, path)
+    target.write_atomic(path, text.encode("utf-8"))
 
 
 def _plan(run):

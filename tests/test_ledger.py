@@ -305,7 +305,7 @@ class Categories(Base):
         ledger.build(self.run_dir)
         self.assertEqual(sorted(os.listdir(self.run_dir)), first)
         self.assertEqual(self.load()["version"], 1)
-        self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".ledger.")])
+        self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".tmp-")])
 
 
 class Conventions(Base):

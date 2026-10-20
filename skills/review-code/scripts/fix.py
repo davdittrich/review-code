@@ -23,7 +23,6 @@ import shlex
 import shutil
 import signal
 import stat
-import tempfile
 from typing import List, Optional, Tuple
 
 import ledger
@@ -219,18 +218,7 @@ def _seal(run: str, fid: str) -> str:
 def _restore(path: str, data: bytes, mode: int) -> None:
     """Put data back byte-exact: temp file in the same directory, then an atomic replace."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".fix-")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    target.write_atomic(path, data, mode)
 
 
 def _quarantine(run: str, key: str, repo: str, paths: List[str], move: bool) -> List[str]:
