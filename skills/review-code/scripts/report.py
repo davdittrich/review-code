@@ -120,19 +120,6 @@ def _cited(tree, path, line, end, quote):
     return got if _ws(quote) and _ws(quote) in _ws(" ".join(got)) else None
 
 
-def _load(run, name):
-    try:
-        with open(os.path.join(run, name), encoding="utf-8") as fh:
-            obj = json.load(fh)
-    except FileNotFoundError:
-        raise target.Refuse("no-" + name.split(".")[0], "the run directory has no " + name)
-    except (OSError, ValueError, RecursionError):
-        raise target.Refuse("bad-" + name.split(".")[0], name + " cannot be read")
-    if not isinstance(obj, dict):
-        raise target.Refuse("bad-" + name.split(".")[0], name + " is not an object")
-    return obj
-
-
 def _wire(v):
     """A lane line is a JSON array of [key, value] pairs (the Bash guard denies a brace then a quote in a here-document).
     Every list whose items are all 2-item lists with a string first becomes a dict, recursively; other lists stay lists.
@@ -256,10 +243,9 @@ def _candidate(o, tree, lane, base, ctx=None):
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None
-    end = o.get("end_line", o["line"])
-    fix = o.get("fix", "")
-    c = {"path": o["path"], "line": o["line"], "end_line": end, "severity": o["severity"],
-         "category": o["category"], "title": o["title"], "trigger": o["trigger"], "quote": o["quote"], "fix": fix}
+    c = {k: o[k] for k in CANDIDATE_REQUIRED}
+    c.update({k: o.get(k, d) for k, d in zip(CANDIDATE_OPTIONAL, (o["line"], ""))})
+    end, fix = c["end_line"], c["fix"]
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
         return None
@@ -333,7 +319,7 @@ def _dedupe(cands):
 def _plan(run):
     """plan.json as a dict, {} when the run has none."""
     try:
-        return _load(run, "plan.json")
+        return target.load_json(run, "plan.json")
     except target.Refuse as r:
         if r.reason == "no-plan":
             return {}
@@ -415,7 +401,7 @@ def _read_lane(text, lane, tree, run, shard=None):
 
 
 def ingest(run, text, lane="defects", shard=None):
-    _load(run, "target.json")
+    target.load_json(run, "target.json")
     if shard is not None:
         sh = _plan(run).get("shards")
         if not any(isinstance(x, dict) and x.get("id") == shard and _int(x["id"]) for x in (sh if isinstance(sh, list) else [])):
@@ -423,7 +409,7 @@ def ingest(run, text, lane="defects", shard=None):
     tree = _tree(run, shard)
     nonce = secrets.token_hex(8)
     try:
-        lanes = _load(run, "candidates.json").get("lanes")
+        lanes = target.load_json(run, "candidates.json").get("lanes")
     except target.Refuse:
         lanes = None
     lanes = lanes if isinstance(lanes, dict) else {}
@@ -453,13 +439,14 @@ def ingest(run, text, lane="defects", shard=None):
 
 
 def verdicts(run, text):
-    cand = _load(run, "candidates.json")
+    cand = target.load_json(run, "candidates.json")
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
     copied = _spec_copy(run) if spec else None
     got = {}
     for o in _objects(text):
+        o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o["id"] not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
             continue
         ev = o.get("evidence")
@@ -478,7 +465,7 @@ def verdicts(run, text):
 
 def discard(run):
     """Drop every lane result, so a serial re-plan never renders lanes from the parallel attempt (SKILL step 7)."""
-    _load(run, "target.json")
+    target.load_json(run, "target.json")
     for d in ("handoff", "repro"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
     for f in ("candidates.json", "verdicts.json"):
@@ -505,9 +492,9 @@ def _repro(run, fid):
 
 
 def build(run):
-    tj, led, cand = _load(run, "target.json"), ledger._load(run), _load(run, "candidates.json")
+    tj, led, cand = (target.load_json(run, n) for n in ("target.json", "ledger.json", "candidates.json"))
     try:
-        ver = _load(run, "verdicts.json")
+        ver = target.load_json(run, "verdicts.json")
     except target.Refuse as r:
         if r.reason != "no-verdicts":
             raise

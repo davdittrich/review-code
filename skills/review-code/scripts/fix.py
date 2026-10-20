@@ -35,7 +35,6 @@ import target
 ID_RE = report.ID_RE
 TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
-MAX_PREVIEW = 25000  # same bound and reason as post.py
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
 _MANIFEST = re.compile(
     r"(?:requirements.*\.txt|constraints.*\.txt|setup\.py|go\.mod|go\.work|Gemfile|.*\.gemspec|Pipfile|"
@@ -434,7 +433,7 @@ def plan(run: str, words: List[str]) -> dict:
         text.append("== skipped ==")
         text += ["%s %s %s" % (s["id"], _e(s["path"]), s["why"]) for s in skipped]
     body = "\n".join(text)
-    if len(body) > MAX_PREVIEW:
+    if len(body) > target.MAX_PREVIEW:
         raise target.Refuse("preview-too-large")
     fd = _fixdir(run)
     os.makedirs(fd, mode=0o700, exist_ok=True)
@@ -750,7 +749,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         out = {"status": "halted", "reason": "interrupted"}
     if out.get("text"):
         print(out["text"])
-    print(json.dumps({k: x for k, x in out.items() if k in STDOUT_KEYS}, sort_keys=True))
+    target.emit(out, STDOUT_KEYS)
     return 0 if out["status"] in ("ok", "done") else 1
 
 

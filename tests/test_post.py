@@ -767,7 +767,7 @@ class Anchors(Base):
                 self.refused_too_large()
 
     def test_a_preview_over_the_cap_refuses_and_writes_nothing(self):
-        self.review(2, 20, fix="x" * (post.MAX_PREVIEW // 2))  # each body is under MAX_BODY, the preview is not
+        self.review(2, 20, fix="x" * (target.MAX_PREVIEW // 2))  # each body is under MAX_BODY, the preview is not
         rc, out, st = self.build()
         self.assertEqual((rc, st["reason"]), (1, "preview-too-large"), out[-300:])
         self.assertEqual(out.count("\n"), 1)  # the status line only: no preview the harness would cut or spill

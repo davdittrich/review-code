@@ -27,7 +27,7 @@ import target
 
 Refuse = target.Refuse
 EVENT = "COMMENT"
-ID_RE = r"F-[0-9a-f]{10}"
+ID_RE = report.ID_RE
 MARK = "<!-- review-code:finding %s v1 -->"
 REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
@@ -61,7 +61,6 @@ SECRET_RULES = tuple((rule, re.compile(rx)) for rule, rx in (
 ))
 MAX_INLINE = 32
 MAX_BODY = 60000
-MAX_PREVIEW = 25000  # Claude Code saves Bash output over 30000 characters (its default) to a file, unseen by the user
 PER_PAGE = 100
 MAX_PAGES = 20
 LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggestion", "noted": "Noted"}
@@ -716,7 +715,7 @@ def build(run: str) -> dict:
         raise Refuse("too-large")
     _checked(texts)
     preview = _preview(payload)
-    if len(preview) > MAX_PREVIEW:  # the user must see every byte they confirm
+    if len(preview) > target.MAX_PREVIEW:  # the user must see every byte they confirm
         raise Refuse("preview-too-large")
     out_dir = os.path.join(run, "post")
     os.makedirs(out_dir, exist_ok=True)
@@ -782,7 +781,7 @@ def main(argv: List[str]) -> int:
             out["detail"] = r.detail
     except (OSError, KeyError, ValueError, TypeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
-    print(json.dumps({k: v for k, v in out.items() if k in STDOUT_KEYS}, sort_keys=True))
+    target.emit(out, STDOUT_KEYS)
     return rc
 
 

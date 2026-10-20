@@ -19,9 +19,10 @@ import subprocess
 from typing import List, Optional
 
 import ledger
+import report
 import target
 
-ID_RE = r"F-[0-9a-f]{10}"
+ID_RE = report.ID_RE
 TIMEOUT = 120  # seconds; read at call time
 ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TERM")
 SENTINEL = "REPRO-"

@@ -23,6 +23,7 @@ from typing import Iterator, List, Optional, Tuple
 
 import sanitize
 
+MAX_PREVIEW = 25000  # Claude Code saves Bash output over 30000 characters (its default) to a file, unseen by the user
 STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number", "run",
                "included_count", "excluded_count", "untracked_count", "candidates"}
 # No hook or fsmonitor program from the repository runs (SC5); names arrive unquoted, so escape_for_code covers them.
@@ -114,6 +115,20 @@ def load_target(run: str) -> dict:
     except (OSError, ValueError, KeyError, TypeError):
         pass
     raise Refuse("no-target", "the run directory has no usable target.json")
+
+
+def load_json(run: str, name: str) -> dict:
+    """<run>/<name>, read fresh; a missing file refuses no-<stem>, anything but a JSON object bad-<stem>."""
+    try:
+        with open(os.path.join(run, name), encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except FileNotFoundError:
+        raise Refuse("no-" + name.split(".")[0], "the run directory has no " + name)
+    except (OSError, ValueError, RecursionError):
+        raise Refuse("bad-" + name.split(".")[0], name + " cannot be read")
+    if not isinstance(obj, dict):
+        raise Refuse("bad-" + name.split(".")[0], name + " is not an object")
+    return obj
 
 
 def write_private(path: str, text: str) -> None:
@@ -253,12 +268,16 @@ def resolve(argv: List[str], cwd: str) -> List[dict]:
     return _classify(argv[0], cwd)
 
 
+def _reading(kind: str, n: int) -> str:
+    return ("pull request #%d" if kind == "pr" else "merge request !%d") % n
+
+
 def _forge_candidate(kind: str, m: "re.Match") -> dict:
     n = _num(m.group(3))
     sep = "/pull/" if kind == "pr" else "/-/merge_requests/"
     return {"kind": kind, "number": n, "repo_key": _forge_key(m.group(1), m.group(2)),
             "url": "https://%s/%s%s%d" % (m.group(1), m.group(2), sep, n),
-            "reading": ("pull request #%d" if kind == "pr" else "merge request !%d") % n}
+            "reading": _reading(kind, n)}
 
 
 def _classify(arg: str, cwd: str) -> List[dict]:
@@ -273,7 +292,7 @@ def _classify(arg: str, cwd: str) -> List[dict]:
         n = _num(arg[1:])
         kind = "pr" if arg[0] == "#" else "mr"
         return [{"kind": kind, "number": n, "url": None,
-                 "reading": ("pull request #%d" if kind == "pr" else "merge request !%d") % n}]
+                 "reading": _reading(kind, n)}]
     if arg.endswith("^!"):
         _commit_id(arg[:-2], cwd)
         return [{"kind": "commit", "rev": arg[:-2], "reading": "the single commit " + arg[:-2]}]
@@ -290,7 +309,7 @@ def _classify(arg: str, cwd: str) -> List[dict]:
     if _DIGITS.fullmatch(arg):
         try:
             n = _num(arg)
-            cands.append({"kind": "pr", "number": n, "url": None, "reading": "pull request #%d" % n})
+            cands.append({"kind": "pr", "number": n, "url": None, "reading": _reading("pr", n)})
         except Refuse as e:
             err = e
     try:
@@ -845,8 +864,8 @@ def pin(candidate: dict, cwd: str) -> dict:
     return rec
 
 
-def emit(obj: dict) -> None:
-    print(json.dumps({k: v for k, v in obj.items() if k in STDOUT_KEYS}, sort_keys=True))
+def emit(obj: dict, keys=None) -> None:
+    print(json.dumps({k: v for k, v in obj.items() if k in (keys or STDOUT_KEYS)}, sort_keys=True))
 
 
 def _parse_cli(argv: List[str]) -> tuple:

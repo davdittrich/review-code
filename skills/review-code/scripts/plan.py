@@ -413,7 +413,7 @@ def _env_lost():
 
 def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     tj = target.load_target(run)
-    led = ledger._load(run)
+    led = target.load_json(run, "ledger.json")
     spec = led.get("spec")
     spec_none = not isinstance(spec, dict) or spec.get("status") == "none"
     t = TIERS[tier]
@@ -529,7 +529,7 @@ def main(argv):
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
-    print(json.dumps({k: v for k, v in out.items() if k in STDOUT_KEYS}, sort_keys=True))
+    target.emit(out, STDOUT_KEYS)
     return rc
 
 

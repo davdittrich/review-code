@@ -68,10 +68,6 @@ def _dec(raw: bytes) -> str:
     return raw.decode("utf-8", "surrogateescape")
 
 
-def _bytes(path: str) -> bytes:
-    return path.encode("utf-8", "surrogateescape")
-
-
 
 def _listing(repo: str, rev: str) -> Dict[str, Tuple[str, str]]:
     return target.tree_listing(rev, repo)
@@ -628,20 +624,6 @@ def build(run: str, spec: Optional[str] = None) -> dict:
 TRUST_VALUES = ("own", "external")
 
 
-def _load(run: str) -> dict:
-    """ledger.json, read fresh on every call; anything but a JSON object refuses."""
-    try:
-        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
-            led = json.load(fh)
-    except FileNotFoundError:
-        raise target.Refuse("no-ledger", "the run directory has no ledger.json")
-    except (OSError, ValueError, RecursionError):
-        raise target.Refuse("bad-ledger", "ledger.json cannot be read")
-    if not isinstance(led, dict):
-        raise target.Refuse("bad-ledger", "ledger.json is not an object")
-    return led
-
-
 def _stored(led: dict) -> str:
     v = led.get("trust")
     return v if isinstance(v, str) and v in TRUST_VALUES else "unset"
@@ -651,7 +633,7 @@ def _keep_trust(run: str, led: dict) -> None:
     """A rebuild keeps the stored answer. Re-read just before the write; a set between the read and
     the replace is lost (shortcut: no lock, the orchestrator never builds and sets at once)."""
     try:
-        old = _load(run)
+        old = target.load_json(run, "ledger.json")
     except target.Refuse:
         return
     led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
@@ -660,7 +642,7 @@ def _keep_trust(run: str, led: dict) -> None:
 def trust_set(run: str, value: str) -> dict:
     if value not in TRUST_VALUES:
         raise target.Refuse("bad-trust-value", "trust is own or external")
-    led = _load(run)
+    led = target.load_json(run, "ledger.json")
     cur = _stored(led)
     if cur not in ("unset", value):
         raise target.Refuse("trust-already-set", "the trust answer is recorded once per run")
@@ -672,7 +654,7 @@ def trust_set(run: str, value: str) -> dict:
 
 def trust_get(run: str) -> dict:
     try:
-        led = _load(run)
+        led = target.load_json(run, "ledger.json")
     except target.Refuse:
         led = {}
     v = _stored(led)
@@ -683,7 +665,7 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
     """Choke point for the orchestrator, not a sandbox: it answers, it never runs anything."""
     if not cmd or not cmd[0].strip():
         raise target.Refuse("no-command", "no command after --")
-    led = _load(run)
+    led = target.load_json(run, "ledger.json")
     if _stored(led) != "own":
         raise target.Refuse("trust-unset" if led.get("trust") in (None, "unset") else "trust-external",
                             "own code was not confirmed")
@@ -720,7 +702,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:
         rc = 0
-    print(json.dumps({k: v for k, v in out.items() if k in STDOUT_KEYS}, sort_keys=True))
+    target.emit(out, STDOUT_KEYS)
     return rc
 
 
