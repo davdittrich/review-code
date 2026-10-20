@@ -650,6 +650,22 @@ class FinishScope(Scope):
         self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(q)).st_mode), 0o700)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
+    def test_non_utf8_stray_is_quarantined(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        name = b"stray\xff.py"
+        path = os.path.join(os.fsencode(self.repo), name)
+        try:
+            with open(path, "wb") as fh:
+                fh.write(b"x\n")
+        except OSError:
+            self.skipTest("the filesystem refuses a name that is not valid UTF-8")
+        self.violation(run, bg)
+        self.assertFalse(os.path.lexists(path))
+        q = os.path.join(os.fsencode(self.quarantined(run, fid, "")), name)
+        self.assertEqual(slurp(q), b"x\n")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
     def test_untracked_in_a_new_directory(self):
         run, fid, bg = self.started()
         os.makedirs(self.p("pkg/deep"))

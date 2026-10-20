@@ -194,9 +194,9 @@ def _changes(repo: str) -> List[Tuple[str, str]]:
         if len(ent) < 4:
             continue
         xy = ent[:2].decode("ascii", "replace")
-        out.append((xy, ent[3:].decode("utf-8", "replace")))
+        out.append((xy, ent[3:].decode("utf-8", "surrogateescape")))
         if ("R" in xy or "C" in xy) and i < len(parts):
-            out.append((xy, parts[i].decode("utf-8", "replace")))
+            out.append((xy, parts[i].decode("utf-8", "surrogateescape")))
             i += 1
     return out
 
