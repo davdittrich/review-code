@@ -121,11 +121,11 @@ def _target(run: str) -> dict:
     kind, url, head = rec["kind"], rec["url"], rec["head_sha"]
     if kind not in ("pr", "mr"):
         raise Refuse("not-a-forge-target")
-    m = (target._PR_URL if kind == "pr" else target._MR_URL).fullmatch(url) if isinstance(url, str) else None
+    m = (target.PR_URL if kind == "pr" else target.MR_URL).fullmatch(url) if isinstance(url, str) else None
     segments = m.group(2).split("/") if m else []
     if (m is None or not _HOST.fullmatch(m.group(1)) or not all(_SEGMENT.fullmatch(x) for x in segments)
             or len(segments) < 2 or (kind == "pr" and len(segments) != 2) or rec.get("number") != int(m.group(3))
-            or not isinstance(head, str) or not target._OID.fullmatch(head)):
+            or not isinstance(head, str) or not target.OID.fullmatch(head)):
         raise Refuse("bad-target-url")
     return {"forge": "github" if kind == "pr" else "gitlab", "host": m.group(1), "repo": m.group(2),
             "number": int(m.group(3)), "head_sha": head, "url": url, "run": run}
@@ -157,7 +157,7 @@ class GitHub:
             raise Refuse("draft")
         if state != "open":
             raise Refuse("closed")
-        if not isinstance(sha, str) or not target._OID.fullmatch(sha):
+        if not isinstance(sha, str) or not target.OID.fullmatch(sha):
             raise Refuse("gh-failed")
         return sha
 
@@ -343,7 +343,7 @@ class GitLab:
             raise Refuse("glab-failed")
         if draft is True:
             raise Refuse("draft")
-        if not (isinstance(refs, dict) and all(isinstance(refs.get(k), str) and target._OID.fullmatch(refs[k]) for k in self._REFS)):
+        if not (isinstance(refs, dict) and all(isinstance(refs.get(k), str) and target.OID.fullmatch(refs[k]) for k in self._REFS)):
             raise Refuse("diff-refs-pending")  # GitLab has not computed them yet
         self.refs = {k: refs[k] for k in self._REFS}
         return self.refs["head_sha"]
@@ -501,7 +501,7 @@ def _anchors(diff_text: str) -> dict:
     """{(new path, new line): (tag, old line, old path, position)} for every context and added row of a unified diff.
     `position` is GitHub's: rows below the file's first @@ header, later @@ headers and `\\ No newline` lines counted."""
     rows, cur, pos = {}, None, 0
-    for _, path, tag, old_line, new_line, _, old_path in sanitize._walk(diff_text):
+    for _, path, tag, old_line, new_line, _, old_path in sanitize.walk(diff_text):
         if path != cur:
             cur, pos = path, -1  # the file's first @@ is row 0, every later row (a second @@ too) adds one
         pos += 1

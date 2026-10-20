@@ -150,7 +150,7 @@ class SeededNames(unittest.TestCase):
                     with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
                         tj = json.load(fh)
                     listed = set(tj["included"]) | {e["path"] for e in tj["excluded"] if e.get("reason")}
-                    self.assertEqual({target._shown(n) for n in paths} - listed, set())
+                    self.assertEqual({target.shown(n) for n in paths} - listed, set())
                     found = [b for b in RAW if b in out]
                     for d, dirs, fs in os.walk(run):
                         for n in dirs + fs:

@@ -136,7 +136,7 @@ def _scan_lines(run, tj):
         return out
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         diff, used = fh.read(), {}
-    for _, path, tag, _, n, body, _ in sanitize._walk(diff):
+    for _, path, tag, _, n, body, _ in sanitize.walk(diff):
         if tag == "+" and path in inc and used.get(path, 0) < SCAN_BYTES:
             used[path] = used.get(path, 0) + len(body) + 1
             out.setdefault(path, []).append((n, body[:LINE_MAX]))
@@ -176,8 +176,8 @@ def _install_packs(run, packs):
     inp = os.path.join(run, "inputs")
     shutil.rmtree(os.path.join(inp, "packs"), ignore_errors=True)
     for name, _ in packs:
-        ledger._write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
-    ledger._write(os.path.join(inp, "smells.md"), _ref("smells.md"))
+        ledger.write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
+    ledger.write(os.path.join(inp, "smells.md"), _ref("smells.md"))
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
     _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed)])
     _put_sections(os.path.join(inp, "standards.md"), [

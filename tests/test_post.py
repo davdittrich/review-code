@@ -90,7 +90,7 @@ class FakeGitHub:
         return [c for c in self.calls if c[0] in ("POST", "PUT", "DELETE")]
 
     def rows(self):
-        return {(p, n) for _, p, tag, _, n, _, _ in sanitize._walk(self.diff) if p and tag in " +"}
+        return {(p, n) for _, p, tag, _, n, _, _ in sanitize.walk(self.diff) if p and tag in " +"}
 
     def position(self, path, line):
         """GitHub's `position`: 1-based lines below the file's first @@ header, later @@ headers included (an independent
@@ -1309,7 +1309,7 @@ class FakeGitLab:
                 self.entries.append({"old_path": m.group(1), "new_path": m.group(2), "diff": chunk[chunk.index("@@ "):],
                                      "new_file": False, "renamed_file": False, "deleted_file": False,
                                      "collapsed": False, "too_large": False})
-        self.context = {(p, n) for _, p, tag, _, n, _, _ in sanitize._walk(self.diff) if p and tag == " "}
+        self.context = {(p, n) for _, p, tag, _, n, _, _ in sanitize.walk(self.diff) if p and tag == " "}
         self.calls, self.drafts, self.notes, self.me_id, self.next_id = [], [], [], 42, 100
         self.fail_map = {}  # "METHOD endpoint-prefix" -> HTTP status
         self.mr_reads, self.moves_after, self.base_moves_after = 0, None, None  # the head or base moves after this many MR reads

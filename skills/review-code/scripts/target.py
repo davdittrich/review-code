@@ -39,11 +39,11 @@ _LOCKFILES = frozenset((
     "flake.lock", "pubspec.lock", "Podfile.lock", "packages.lock.json", "gradle.lockfile"))
 # shortcut: a changed or referenced file over this size leaves review unread ("too-large"); stripping holds a
 # file several times over in memory. Raise it when lanes can usefully read bigger files (6xl.75).
-_MAX_FILE = 4_000_000
+MAX_FILE = 4_000_000
 _ARGV_BUDGET = 60000  # bytes of path arguments per git call; far below the kernel limit
-_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256, lowercase only
-_PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S)
-_MR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/-/merge_requests/([0-9]+)(?:[/?#].*)?", re.S)
+OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")  # SHA-1 or SHA-256, lowercase only
+PR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/pull/([0-9]+)(?:[/?#].*)?", re.S)
+MR_URL = re.compile(r"https?://([^/\s]+)/(.+?)/-/merge_requests/([0-9]+)(?:[/?#].*)?", re.S)
 _DIGITS = re.compile(r"[0-9]+")
 _REMOTE_URL = re.compile(r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)(?::[0-9]+)?[:/](.+?)/?", re.I | re.S)
 _PR_FIELDS = "state,isDraft,baseRefOid,headRefOid,baseRefName,url,number"
@@ -216,14 +216,14 @@ def _remotes(cwd: str) -> List[tuple]:
     return rows
 
 
-def _shown(name: str) -> str:
+def shown(name: str) -> str:
     """A file name as run-dir files show it: hidden characters escaped (escape_for_code)."""
     return sanitize.escape_for_code(name)[0]
 
 
 def _q(name: str) -> str:
     """A ref name from the repository, quoted unless plainly safe: `reading` text goes to stdout."""
-    return name if re.fullmatch(r"[A-Za-z0-9._/+@-]+", name) else json.dumps(_shown(name))
+    return name if re.fullmatch(r"[A-Za-z0-9._/+@-]+", name) else json.dumps(shown(name))
 
 
 def default_branch(cwd: str) -> Optional[tuple]:
@@ -282,10 +282,10 @@ def _forge_candidate(kind: str, m: "re.Match") -> dict:
 
 def _classify(arg: str, cwd: str) -> List[dict]:
     """Candidate readings in fixed order. Explicit syntax is unique; bare words may have several readings."""
-    m = _PR_URL.fullmatch(arg)
+    m = PR_URL.fullmatch(arg)
     if m:
         return [_forge_candidate("pr", m)]
-    m = _MR_URL.fullmatch(arg)
+    m = MR_URL.fullmatch(arg)
     if m:
         return [_forge_candidate("mr", m)]
     if arg[:1] in ("#", "!") and _DIGITS.fullmatch(arg[1:]):
@@ -352,13 +352,13 @@ def _branch_ok(name: object, cwd: str) -> bool:
 
 
 def _oid_ok(value: object) -> bool:
-    return isinstance(value, str) and _OID.fullmatch(value) is not None
+    return isinstance(value, str) and OID.fullmatch(value) is not None
 
 
 def _view_pr(cand: dict, cwd: str) -> dict:
     j = gh_json(["pr", "view", cand["url"] or str(cand["number"]), "--json", _PR_FIELDS], cwd)
     try:
-        state, m = j["state"], _PR_URL.fullmatch(j["url"])
+        state, m = j["state"], PR_URL.fullmatch(j["url"])
         ok = (state in ("OPEN", "CLOSED", "MERGED") and m and j["number"] == cand["number"]
               and _oid_ok(j["baseRefOid"]) and _oid_ok(j["headRefOid"]) and _branch_ok(j["baseRefName"], cwd))
     except (KeyError, TypeError):
@@ -376,7 +376,7 @@ def _view_pr(cand: dict, cwd: str) -> dict:
 def _view_mr(cand: dict, cwd: str) -> dict:
     j = glab_json(["mr", "view", cand["url"] or str(cand["number"]), "-F", "json"], cwd)
     try:
-        state, refs, m = j["state"], j["diff_refs"], _MR_URL.fullmatch(j["web_url"])
+        state, refs, m = j["state"], j["diff_refs"], MR_URL.fullmatch(j["web_url"])
         ok = (state in ("opened", "closed", "merged", "locked") and m and j["iid"] == cand["number"]
               and _oid_ok(refs["base_sha"]) and _oid_ok(refs["head_sha"]) and _branch_ok(j["target_branch"], cwd))
     except (KeyError, TypeError):
@@ -607,7 +607,7 @@ def _blobs(listing: dict, names: List[str], top: str) -> dict:
     want = {n: listing[n][1] for n in names if n in listing and listing[n][0] != "160000"}
     uniq = sorted(set(want.values()))
     got = {}
-    for oid, (f, data) in zip(uniq, cat_batch([o.encode() for o in uniq], top, False, _MAX_FILE)):
+    for oid, (f, data) in zip(uniq, cat_batch([o.encode() for o in uniq], top, False, MAX_FILE)):
         if len(f) >= 3 and f[-2] == b"blob":
             got[oid] = _scan(data) if data is not None else (False, 0, [], int(f[-1]))
     return {n: got[o] for n, o in want.items() if o in got}
@@ -618,7 +618,7 @@ def _files(names: List[str], top: str) -> dict:
     left out, and one over the cap gets only its size."""
     out = {}
     for n in names:
-        status, got = read_working(os.path.join(top, n), _MAX_FILE)
+        status, got = read_working(os.path.join(top, n), MAX_FILE)
         if status == "ok":
             out[n] = _scan(got)
         elif status == "too-large":
@@ -665,8 +665,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
             size = max(size, base_ls.get(n, (False, 0, [], 0))[3])
             base = n.rsplit("/", 1)[-1]
             hit = None
-            if size > _MAX_FILE:  # 6xl.75: a resource limit, so it applies before every heuristic
-                drop(n, "too-large", "%d bytes, over %d" % (size, _MAX_FILE))
+            if size > MAX_FILE:  # 6xl.75: a resource limit, so it applies before every heuristic
+                drop(n, "too-large", "%d bytes, over %d" % (size, MAX_FILE))
                 continue
             if n in explicit:
                 kept.append(n)
@@ -696,7 +696,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
                 kept.append(n)
             elif hit[2] and n not in base_ls:
                 kept.append(n)
-                notes.append("%s: kept; it matches the %s rule but the change adds it" % (_shown(n), hit[2]))
+                notes.append("%s: kept; it matches the %s rule but the change adds it" % (shown(n), hit[2]))
             else:
                 drop(n, hit[0], hit[1])
     return sorted(kept), sorted(excluded, key=lambda e: e["path"]), notes
@@ -790,8 +790,8 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
             for sec in sections:
                 full = None
                 if is_tracked and wide:  # CTX-04: whole-file context tells strip_hidden_diff where a comment opens
-                    paths = {p for _, p, tag, *_ in sanitize._walk(sec) if p and sanitize.is_prose_file(p)}
-                    paths |= {o for *_, o in sanitize._walk(sec) if o and sanitize.is_prose_file(o)}
+                    paths = {p for _, p, tag, *_ in sanitize.walk(sec) if p and sanitize.is_prose_file(p)}
+                    paths |= {o for *_, o in sanitize.walk(sec) if o and sanitize.is_prose_file(o)}
                     prose = [n for n in names if n in paths and n not in plan["untracked"]]
                     full = _diff_text(wide, prose, True, top) if prose else None
                 text, st = sanitize.strip_hidden_diff(sec, full)
@@ -840,7 +840,7 @@ def pin(candidate: dict, cwd: str) -> dict:
             counts[e["reason"]] = counts.get(e["reason"], 0) + 1
         sizes = [e["detail"].split(" bytes")[0] for e in excluded if e["reason"] == "too-large"]
         raise Refuse("only-excluded", "every changed file is excluded: " + ", ".join(  # 6xl.89: sizes, never names
-            "%d %s" % (n, r) + (" (%s bytes, over %d)" % (", ".join(sizes), _MAX_FILE) if r == "too-large" else "")
+            "%d %s" % (n, r) + (" (%s bytes, over %d)" % (", ".join(sizes), MAX_FILE) if r == "too-large" else "")
             for r, n in sorted(counts.items())))
     run = new_run_dir(cwd)
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
@@ -849,15 +849,15 @@ def pin(candidate: dict, cwd: str) -> dict:
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
     rec = {
-        "version": 1, "kind": kind, "repo": top, "run": run, "arg": _shown(candidate.get("arg", "")),
-        "number": plan.get("number"), "url": _shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
+        "version": 1, "kind": kind, "repo": top, "run": run, "arg": shown(candidate.get("arg", "")),
+        "number": plan.get("number"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
-        "included": [_shown(n) for n in names], "excluded": [dict(e, path=_shown(e["path"])) for e in excluded],
-        "untracked": sorted(_shown(n) for n in plan["untracked"]),
+        "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
+        "untracked": sorted(shown(n) for n in plan["untracked"]),
         "hidden_chars": [{"file": "change.diff", **h} for h in hidden] + named,
-        "hidden_text": [{**h, "path": _shown(h["file"]), "file": "change.diff"} for h in stripped], "notes": plan.get("notes", []) + fnotes,
+        "hidden_text": [{**h, "path": shown(h["file"]), "file": "change.diff"} for h in stripped], "notes": plan.get("notes", []) + fnotes,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     write_private(os.path.join(run, "target.json"), json.dumps(rec, sort_keys=True, indent=2))
@@ -894,7 +894,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
         cands = resolve(args, cwd)
         if choice is None and len(cands) > 1:
             emit({"status": "ambiguous", "candidates": [
-                {"index": i, "kind": c["kind"], "reading": _shown(c["reading"])} for i, c in enumerate(cands, 1)]})
+                {"index": i, "kind": c["kind"], "reading": shown(c["reading"])} for i, c in enumerate(cands, 1)]})
             return 2
         if choice is not None and not 1 <= choice <= len(cands):
             raise Refuse("bad-choice", "the choice is not one of the listed readings")

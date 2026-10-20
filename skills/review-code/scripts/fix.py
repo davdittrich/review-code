@@ -512,7 +512,7 @@ def begin(run: str) -> dict:
         nonce = secrets.token_hex(8)
         brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
                  "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
-        brief += ["%s:\n%s" % (k, ledger._block(e[k], nonce)) for k in ("title", "trigger", "quote", "fix")]
+        brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote", "fix")]
         target.write_private(os.path.join(fd, e["id"] + ".md"), "\n".join(brief) + "\n")
         st["in_flight"] = {"id": e["id"], "path": e["path"], "mode": stat.S_IMODE(os.stat(real).st_mode)}
         _save(run, st)
@@ -691,7 +691,7 @@ def report_(run: str) -> dict:
         nonce = secrets.token_hex(8)
         text.append("== test output (untrusted) ==")
         for i, d in tails:
-            text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger._block(d["tail"], nonce)]
+            text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger.block(d["tail"], nonce)]
     if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
     text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",

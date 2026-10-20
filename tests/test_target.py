@@ -116,7 +116,7 @@ class TestPR(PRWorld):
 
     def test_pr_url_from_forge_is_escaped(self):
         # 6xl.85: the forge's url field is untrusted text; target.json must not carry a hidden payload in it
-        url = "https://github.com/o/r/pull/7#" + "".join(chr(0xE0000 + ord(c)) for c in "PAY")  # matches _PR_URL
+        url = "https://github.com/o/r/pull/7#" + "".join(chr(0xE0000 + ord(c)) for c in "PAY")  # matches PR_URL
         rc, out = call(["7"], self.repo, self.tmp, gh=self.gh(url=url))
         self.assertIn(out.get("reason"), (None, "gh-failed"), out)  # the url must match the PR URL pattern
         if out.get("status") == "ok":
@@ -839,11 +839,11 @@ class TestTooLarge(Local):
 
     def test_only_oversized_file_reports_its_size(self):
         # 6xl.89: a run whose one file is over the cap says so, with the size (no name on stdout)
-        self.change({"big.py": "v = 1\n" * (target._MAX_FILE // 6 + 1)})
+        self.change({"big.py": "v = 1\n" * (target.MAX_FILE // 6 + 1)})
         rc, out = self.pin("main")
         self.assertEqual((rc, out["reason"]), (1, "only-excluded"))
         self.assertIn("too-large", out["detail"])
-        self.assertIn("%d bytes" % (6 * (target._MAX_FILE // 6 + 1)), out["detail"])
+        self.assertIn("%d bytes" % (6 * (target.MAX_FILE // 6 + 1)), out["detail"])
         self.assertNotIn("big.py", out["detail"])
 
 class TestDotTarget(Local):
@@ -864,7 +864,7 @@ class TestBlobsByOid(Local):
 
     def test_lf_and_cr_names_get_cap_and_nul_rule(self):
         line = "v = '" + "a" * 90 + "'\n"
-        big = line * (target._MAX_FILE * 2 // len(line))
+        big = line * (target.MAX_FILE * 2 // len(line))
         self.git("checkout", "-q", "-b", "chg", "main")
         gitfix.commit(self.repo, {"big\n.py": big, "nul\r": b"x\x00y\n", "ok.py": "o = 1\n"}, "odd")
         for words in (["main"], ["HEAD^!"]):
@@ -923,7 +923,7 @@ class TestSidesPerKind(Local):
 
     def test_unstaged_base_is_the_index(self):
         self.git("checkout", "-q", "main")
-        big = "x = 1\n" * (target._MAX_FILE // 6 + 10)
+        big = "x = 1\n" * (target.MAX_FILE // 6 + 10)
         gitfix.commit(self.repo, {"logo.png": b"\x89PNG\x00\x00", "big.txt": big, "plain.md": "p\n"}, "head side")
         self.write("logo.png", "TEXT_IN_INDEX = 1\n")
         self.write("big.txt", "small\n")

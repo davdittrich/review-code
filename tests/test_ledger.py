@@ -549,7 +549,7 @@ class Tree(Base):
     def test_tree_skips_huge_referenced_file(self):
         # 6xl.75: a referenced-only file over the cap is skipped with a reason, never read whole
         line = "x" * 99 + "\n"
-        self.base({"README.md": line * (target._MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
+        self.base({"README.md": line * (target.MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
         tracemalloc.start()
         try:
@@ -559,7 +559,7 @@ class Tree(Base):
             tracemalloc.stop()
         self.assertIn({"path": "README.md", "reason": "too-large"}, led["tree"]["skipped"])
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "README.md")))
-        self.assertLess(peak, target._MAX_FILE)
+        self.assertLess(peak, target.MAX_FILE)
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
     def test_tree_special_file_skipped_with_reason(self):

@@ -185,7 +185,7 @@ def sanitize_prose(text: Optional[str]) -> str:
     return _strip(strip_invisible(_BREAK.sub("\n", text or "")))[0]
 
 
-def _walk(diff: str):
+def walk(diff: str):
     """(index, new path, tag, old line, new line, content, old path) for every hunk line of a unified diff; tag is
     ' ', '+', '-', '\\' or '@' (a hunk header: content is the function-context text after its second @@).
     Paths are None before the first file header; the old path differs from the new one for a rename or copy.
@@ -267,7 +267,7 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
         return olds if tag == "-" else news if tag == "+" else olds or news
 
     sides = {}  # (path, side) -> {line number: content}; the "-" side is keyed by the old path
-    for _, path, tag, o, n, body, old in _walk(diff if full is None else full):
+    for _, path, tag, o, n, body, old in walk(diff if full is None else full):
         if path and tag not in "\\@" and prose(path, tag, old):
             if tag != "+":
                 sides.setdefault((old or path, "-"), {})[o] = body
@@ -283,7 +283,7 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
                 by_line.setdefault(ln, []).append(k)  # 6xl.84: every removal on a line gets its entry
         done[key] = (out.split("\n"), info, by_line, lines)
     res, hits, seen = diff.split("\n"), [], set()
-    for i, path, tag, o, n, body, old in _walk(diff):
+    for i, path, tag, o, n, body, old in walk(diff):
         if not (path and tag != "\\" and prose(path, tag, old)):
             continue
         if tag == "@":  # 6xl.55: the trailer is a lone old-side line, maybe inside a comment: drop it

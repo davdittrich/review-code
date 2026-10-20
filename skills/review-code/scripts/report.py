@@ -277,17 +277,17 @@ def _candidate(o, tree, lane, base, ctx=None):
 def _handoff(c, run, nonce, packs=()):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
-        c["id"], c["id"], ledger._block(c["title"], nonce), json.dumps(loc),
-        ledger._block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
+        c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
+        ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree")))
-    out += "".join("do-not-flag:\n%s\n" % ledger._block(text, nonce) for files, text in packs if c["path"] in files)
+    out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")
     if c["axis"] == "spec":
         out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
-    return out + ("rule:\n%s\n" % ledger._block(c["rule"], nonce) if c["category"] == "convention" else "")
+    return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
 def _dedupe(cands):
@@ -502,7 +502,7 @@ def build(run):
     whole = tj["kind"] in WHOLE
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         added = {}
-        for _, p, tag, _, n, _, _ in sanitize._walk(fh.read()):
+        for _, p, tag, _, n, _, _ in sanitize.walk(fh.read()):
             if tag == "+":
                 added.setdefault(p, set()).add(n)
     capped = set(cand.get("capped_ids", []))
