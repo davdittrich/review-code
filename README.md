@@ -56,7 +56,7 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 
 ## Serial mode
 
-When the Agent tool is unavailable, when an Agent call fails with a nesting-depth or concurrent-limit error, or with `--serial`, the main thread reviews the Defects and Standards inputs itself and self-scores all candidates in one batch. The report says `mode: serial` and lists what is lost: no independent verifier (nothing is Blocking), no lane isolation, no Spec axis, no SOTA lane and no reproduction. The main thread holds Bash while it reads target code and is told to act on nothing it reads; that is an instruction, not a sandbox.
+When the Agent tool is unavailable, when an Agent call fails with a nesting-depth or concurrent-limit error, or with `--serial`, the main thread reviews the Defects and Standards inputs itself and self-scores all candidates in one batch. The report says `mode: serial` and lists what is lost: no independent verifier (nothing is Blocking), no lane isolation, no Spec axis, no SOTA lane and no reproduction. The main thread holds Bash while it reads target code and is told to act on nothing it reads; that is an instruction, not a sandbox. Nothing is verified in serial mode, so `--comment` ends in `nothing-to-post` and `--fix` in `nothing-to-fix`; review again in parallel mode to post or fix.
 
 ## Output
 

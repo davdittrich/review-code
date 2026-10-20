@@ -61,7 +61,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `head-not-checked-out` | The checked-out `HEAD` is not the reviewed `head_sha` | Check out the reviewed commit |
 | `dirty-tree` | The working tree has changes or untracked files | Commit, or remove them |
 | `already-run` | This run already has a plan or a baseline | Review again for a new run |
-| `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons | Nothing to do |
+| `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons. A serial-mode run always lands here, because serial mode verifies nothing | Nothing to do; review again in parallel mode for a fix |
 | `preview-too-large` | The preview is over 25,000 characters | Review a smaller change |
 | `no-plan` | `baseline` found no `fix/plan.json` | Run `plan` first |
 | `digest-mismatch` | The plan on disk is not the one the user confirmed | Run the review again |
@@ -75,7 +75,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `tree-changed` | A file other than an accepted fix or a test leftover differs from `HEAD` | Leave the tree alone while it runs |
 | `baseline-red` | The command failed, timed out or could not start on the untouched tree; `exit` and `tail` are shown | Make the tests pass first. The test environment holds only `PATH`, `LANG`, `LC_ALL` and `TERM` with a private `HOME` and `TMPDIR`, so a command that needs other variables or your home directory fails here |
 | `baseline-interrupted` | `baseline` was interrupted or killed before it finished; no green baseline exists | Review again |
-| `interrupted` | Ctrl-C stopped a fix.py command; any restore ran first, so `finish` records `reverted-interrupt` and `baseline` records `baseline-interrupted` | Read the report |
+| `interrupted` | Printed with status `halted`, not `refuse`: Ctrl-C stopped a fix.py command. A running `finish` or `baseline` restores first and records `reverted-interrupt` or `baseline-interrupted`; a second Ctrl-C during that restore is ignored | Read the report |
 
 ## Limits
 

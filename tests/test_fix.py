@@ -1098,6 +1098,22 @@ class TestRuns(Scope):
         with open(os.path.join(os.path.dirname(SCRIPTS), "references", "fix.md"), encoding="utf-8") as fh:
             self.assertIn("`interrupted`", fh.read())
 
+    def test_interrupted_row_says_it_prints_status_halted(self):  # 02a.19: the table above it is the refusals
+        with open(os.path.join(os.path.dirname(SCRIPTS), "references", "fix.md"), encoding="utf-8") as fh:
+            row = [ln for ln in fh if ln.startswith("| `interrupted` |")][0]
+        self.assertIn("status `halted`", row)
+
+    def test_sigint_handler_is_one_shot(self):  # 02a.20: a second Ctrl-C must not cut the restore short
+        before = signal.getsignal(signal.SIGINT)
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                fix._term(signal.SIGINT, None)
+            self.assertEqual(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+        finally:
+            signal.signal(signal.SIGINT, before)
+            for name in ("SIGTERM", "SIGHUP"):
+                signal.signal(getattr(signal, name), signal.SIG_DFL)
+
     def test_sighup_restores(self):
         self.signalled(signal.SIGHUP)
 

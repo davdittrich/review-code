@@ -716,9 +716,11 @@ def report_(run: str) -> dict:
 
 
 def _term(signum, frame):
-    for name in ("SIGTERM", "SIGHUP"):  # one-shot: a second signal must not abort the restore the first one starts
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):  # one-shot: a second signal must not abort the restore the first one starts
         if getattr(signal, name, None):
             signal.signal(getattr(signal, name), signal.SIG_IGN)
+    if signum == signal.SIGINT:
+        raise KeyboardInterrupt  # main() prints the halted line; the restore handlers run first
     raise SystemExit(143)  # unwinds through the restore handlers; the default action would skip them
 
 
@@ -735,7 +737,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
-            for name in ("SIGTERM", "SIGHUP"):  # a hangup would otherwise skip the restore; Windows has no SIGHUP
+            for name in ("SIGINT", "SIGTERM", "SIGHUP"):  # a hangup would otherwise skip the restore; Windows has no SIGHUP
                 if getattr(signal, name, None):
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":

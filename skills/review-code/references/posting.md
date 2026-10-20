@@ -87,7 +87,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `diff-refs-pending` | GitLab has not computed the diff refs yet | Wait and re-run |
 | `draft-notes-unavailable` | The GitLab instance has no draft notes endpoint (HTTP 404) | Post is not possible on this instance |
 | `too-many-comments` | More than 20 pages of reviews, comments, notes or drafts | Post by hand |
-| `nothing-to-post` | The run has no verified finding | Nothing to do |
+| `nothing-to-post` | The run has no verified finding. A serial-mode run always lands here, because serial mode verifies nothing | Nothing to do; review again in parallel mode to post |
 | `head-moved` | The PR or MR head (or GitLab diff refs) changed after the review | Review the new head |
 | `already-posted` | Every verified finding already carries your marker on this PR or MR | Nothing to do; a retry after a timeout also ends here |
 | `pending-review-exists` | You already have a pending review on this PR (never deleted: it may hold your work) | Submit or delete it, then re-run |

@@ -240,6 +240,25 @@ class SerialModeNotice(unittest.TestCase):
         self.assertIn("serial mode", step12)
         self.assertIn("`nothing-to-fix`", step12)
 
+    def test_serial_mode_is_blamed_only_for_the_nothing_to_refusals(self):  # 02a.21: dirty-tree, trust-* and others can refuse first
+        step11 = self.step("\n11. Post", "\n12. Fix")
+        step12 = self.step("\n12. Fix", "\n13. ")
+        self.assertNotIn("always refuses", step11 + " " + step12)
+        self.assertIn("`reason` is `nothing-to-post`", step11)
+        self.assertIn("`reason` is `nothing-to-fix`", step12)
+
+    def test_refusal_tables_and_readme_carry_the_serial_mode_cause(self):  # 02a.21
+        refs = os.path.join(ROOT, "skills", "review-code", "references")
+        for name, row in (("posting.md", "| `nothing-to-post` |"), ("fix.md", "| `nothing-to-fix` |")):
+            with open(os.path.join(refs, name), encoding="utf-8") as fh:
+                line = [ln for ln in fh if ln.startswith(row)][0]
+            self.assertIn("serial mode", line, name)
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            self.assertIn("`nothing-to-post`", fh.read().split("## Serial mode", 1)[1].split("\n## ", 1)[0])
+
+    def test_step_12_begin_loop_also_leaves_on_halted(self):  # 02a.19: an interrupted begin prints status halted
+        self.assertIn("`done`, `refuse` or `halted` leave the loop", self.step("\n12. Fix", "\n13. "))
+
 
 class FixDocs(unittest.TestCase):
     """06-03: fix.md names every refusal and outcome fix.py can emit; the pointers, README and limits say what the code does."""
