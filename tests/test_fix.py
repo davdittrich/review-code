@@ -1184,6 +1184,7 @@ class Report(Scope):
         self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (0, 1, 1, 1), text)
         self.assertIn("%s src/calc.py:5 fixed" % fid, text)
         self.assertIn("%s src/second.py:2 reverted-tests" % bg2["id"], text)
+        self.assertIn("halted: reverted-tests", text)
         self.assertRegex(text, r"== changed files ==\n[^\n]*src/calc\.py")
         self.assertRegex(text, r"== test output \(untrusted\) ==\n[^\n]*\n<<<UNTRUSTED-([0-9a-f]+)\n(?s:.*SyntaxError.*)\1>>>")
         self.assertIn("HEAD and refs: unchanged", text)
@@ -1191,6 +1192,14 @@ class Report(Scope):
         self.assertIn("not checked", text)  # the new-import limit
         self.assertIn("== quarantined ==", text)
         self.assertIn("src/second.py", text.split("== quarantined ==")[1])
+
+    def test_halt_reason_is_named(self):
+        run, _ = self.ready()
+        j = self.plan(run, [sys.executable, "-B", "-c", "import sys; sys.exit(1)"])[2]
+        self.assertEqual(self.baseline(run, j["digest"])[2]["reason"], "baseline-red")
+        rc, text, r = self.report(run)
+        self.assertEqual((rc, r["halted"]), (0, 1), text)
+        self.assertIn("halted: baseline-red", text)
 
     def test_tampered_runs_no_git(self):
         run, fid, bg = self.started()

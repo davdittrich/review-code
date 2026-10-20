@@ -667,6 +667,8 @@ def report_(run: str) -> dict:
         outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else "pending")
         text.append("%s %s:%d %s%s" % (e["id"], _e(e["path"]), e["line"], outcome,
                                        " (%s)" % _e(d["detail"]) if d.get("detail") else ""))
+    if st["halted"] and not tampered:
+        text.append("halted: " + _e(st["halted"]))
     if tampered:
         text.append("TAMPERED: the run directory or the git config changed while the fixer ran. The tree is left as it "
                     "is and no git command ran. Check .git/config and git status by hand.")
