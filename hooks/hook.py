@@ -18,6 +18,7 @@ import report  # noqa: E402
 import target  # noqa: E402
 
 MAX_REPLY = 256 * 1024
+GIT_TIMEOUT = 5
 HEADER = "Verify. Handoffs:\n"
 HANDOFF = re.compile(r"F-[0-9a-f]{10}\.md")
 
@@ -83,7 +84,7 @@ def handle(doc):
         raise Skip("no cwd")
     base = os.path.realpath(os.path.join(cwd, subprocess.run(
         ["git", "rev-parse", "--git-path", "review-code"], cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        check=True).stdout.decode("utf-8", "replace").strip()))
+        check=True, timeout=GIT_TIMEOUT).stdout.decode("utf-8", "replace").strip()))
     run = run_of(paths[0], base)
     verify = prompt.startswith(HEADER)
     if verify:
@@ -91,34 +92,39 @@ def handle(doc):
         for p in paths:
             if not HANDOFF.fullmatch(os.path.basename(p)) or os.path.realpath(p) != os.path.join(hand, os.path.basename(p)):
                 raise Skip("handoff path is not in the run")
-    plan = report._plan(run)
-    if plan.get("mode") != "parallel":
-        raise Skip("plan mode is not parallel")
-    if verify:
-        calls = target.load_json(run, "candidates.json").get("verify_calls")
-    else:
-        calls = plan.get("calls")
-    hit = [c for c in (calls if isinstance(calls, list) else []) if isinstance(c, dict) and c.get("agent") == agent and c.get("prompt") == prompt]
-    if len(hit) != 1:
-        raise Skip("prompt is not a plan call")
-    c = hit[0]
-    if verify:
-        key = "batch %s" % c["batch"]
-    else:
-        key = c["lane"] if c.get("shard") is None else "%s@%s" % (c["lane"], c["shard"])
-    try:
-        text = reply_text(doc.get("tool_response"))
-        if not verify and (os.path.exists(os.path.join(run, "replies", "verify")) or os.path.exists(os.path.join(run, "verdicts.json"))):
-            raise Malformed("verification already started")
-    except Malformed as m:
-        return "review-code hook: NOT ingested %s: %s; ingest by heredoc" % (key, m)
-    if verify:
-        out = report.verdicts(run, text, c["batch"])
-        return "review-code verdicts: ok batch=%d confirmed=%d refuted=%d foreign=%d" % (
-            c["batch"], len(out["confirmed"]), len(out["refuted"]), out["foreign"])
-    out = report.ingest(run, text, c["lane"], c.get("shard"))
-    return "review-code ingest: ok lane=%s shard=%s ids=%d invalid=%d" % (
-        c["lane"], "none" if c.get("shard") is None else c["shard"], len(out["ids"]) + len(out["spec_ids"]), out["dropped"]["invalid"])
+    with report._locked(run):  # plan match, late-reply guard and ingest are one read-modify-write (review-code-edk)
+        plan = report._plan(run)
+        if plan.get("mode") != "parallel":
+            raise Skip("plan mode is not parallel")
+        if verify:
+            calls = target.load_json(run, "candidates.json").get("verify_calls")
+        else:
+            calls = plan.get("calls")
+        hit = [c for c in (calls if isinstance(calls, list) else []) if isinstance(c, dict) and c.get("agent") == agent and c.get("prompt") == prompt]
+        if len(hit) != 1:
+            raise Skip("prompt is not a plan call")
+        c = hit[0]
+        if verify:
+            key = "batch %s" % c["batch"]
+        else:
+            key = c["lane"] if c.get("shard") is None else "%s@%s" % (c["lane"], c["shard"])
+        try:
+            text = reply_text(doc.get("tool_response"))
+            if verify:
+                out = report.verdicts(run, text, c["batch"])
+            else:
+                out = report.ingest(run, text, c["lane"], c.get("shard"))
+        except Malformed as m:
+            return "review-code hook: NOT ingested %s: %s; ingest by heredoc" % (key, m)
+        except target.Refuse as r:
+            if r.reason != "late-reply":
+                raise
+            return "review-code hook: NOT ingested %s: verification already started" % key
+        if verify:
+            return "review-code verdicts: ok batch=%d confirmed=%d refuted=%d foreign=%d" % (
+                c["batch"], len(out["confirmed"]), len(out["refuted"]), out["foreign"])
+        return "review-code ingest: ok lane=%s shard=%s ids=%d invalid=%d" % (
+            c["lane"], "none" if c.get("shard") is None else c["shard"], len(out["ids"]) + len(out["spec_ids"]), out["dropped"]["invalid"])
 
 
 def main():

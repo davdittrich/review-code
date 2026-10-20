@@ -381,13 +381,21 @@ def _dedupe(cands):
 
 @contextlib.contextmanager
 def _locked(run):
-    """Serialise every writer of a run (ingest, verdicts, discard, build): a lane ingest is a read-modify-write."""
-    if fcntl is None or not os.path.isdir(run):  # a missing run refuses in the caller's own load_json
+    """Serialise every writer of a run (ingest, verdicts, discard, build): a lane ingest is a read-modify-write.
+    Re-entrant in a process, so the hook can hold it across its checks and the ingest (review-code-edk)."""
+    if fcntl is None or not os.path.isdir(run) or run in _HELD:  # a missing run refuses in the caller's own load_json
         yield
         return
     with open(os.path.join(run, ".lock"), "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
-        yield  # closing fh drops the lock
+        _HELD.add(run)
+        try:
+            yield  # closing fh drops the lock
+        finally:
+            _HELD.discard(run)
+
+
+_HELD = set()
 
 
 def _put(path, text):
@@ -488,6 +496,8 @@ def ingest(run, text, lane="defects", shard=None):
 
 def _ingest(run, text, lane, shard):
     target.load_json(run, "target.json")
+    if os.path.exists(_replies(run)) or os.path.exists(os.path.join(run, "verdicts.json")):  # it would drop the verdicts
+        raise target.Refuse("late-reply", "verification already started: discard the run to re-ingest a lane")
     if shard is not None:
         sh = _plan(run).get("shards")
         if not any(isinstance(x, dict) and x.get("id") == shard and _int(x["id"]) for x in (sh if isinstance(sh, list) else [])):
@@ -533,10 +543,11 @@ def _replies(run):
     return os.path.join(run, "replies", "verify")
 
 
-def _one(text, allowed, cand_ids, trees, spec, copied, got):
+def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
     """Fold one stored reply into got (first verdict per id wins); returns the count of ids outside `allowed`.
-    allowed None is a serial reply (any queued id); a set is a batch, which also needs a cite to refute."""
-    foreign = 0
+    allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
+    path, one that no other refuted id of the reply uses (review-code-8dt)."""
+    foreign, mine = 0, []
     for o in _objects(text):
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
@@ -552,9 +563,17 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got):
         reason = o.get("reason")
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             continue
+        if allowed is not None and o["verdict"] == "refuted":
+            cites = [e for e in cites if os.path.normpath(e["path"]) == paths[o["id"]]]
         kind = "unverifiable" if allowed is not None and o["verdict"] == "refuted" and not cites else o["verdict"]
         got[o["id"]] = {"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
+        mine.append(o["id"])
+    key = lambda e: (os.path.normpath(e["path"]), e["line"], _ws(e["quote"]))  # noqa: E731
+    used = [key(e) for i in mine if allowed is not None and got[i]["verdict"] == "refuted" for e in got[i]["cites"]]
+    for i in mine:
+        if got[i]["verdict"] == "refuted" and any(used.count(key(e)) > 1 for e in got[i]["cites"]):
+            got[i]["verdict"] = "unverifiable"
     return foreign
 
 
@@ -562,9 +581,12 @@ def _verdicts(run, text, batch):
     cand = target.load_json(run, "candidates.json")
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
+    paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
     copied = _spec_copy(run) if spec else None
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
+    if batch is None and calls and _plan(run).get("mode") == "parallel":  # it would replace every stored batch (review-code-3k5)
+        raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
     if batch is not None and batch not in calls:
         raise target.Refuse("bad-batch", "--batch is not a batch of candidates.json verify_calls")
     store = _replies(run)
@@ -578,7 +600,7 @@ def _verdicts(run, text, batch):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got)
+                f = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
             foreign += f if k == batch else 0
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
@@ -678,6 +700,9 @@ def _build(run):
     label = ("Needs changes" if "blocking" in rank else
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
              or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
+    lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
+    if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] in ("defects", "spec")):
+        label = "Needs discussion"  # a defects or spec lane that was never ingested or never finished proves nothing (review-code-0c4)
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
@@ -700,7 +725,7 @@ def _build(run):
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
             if isinstance(plan.get("lost_guarantees"), list) else [],
-            "lanes": dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {})), "merged": cand.get("merged", 0),
+            "lanes": lanes, "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False}

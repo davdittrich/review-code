@@ -227,6 +227,7 @@ class Base(unittest.TestCase):
 
     def ingest(self, cands, cites, unverifiable=()):
         """cands: full candidate objects; cites: {line: (line, quote)} the one-line evidence per candidate. Ids by line."""
+        cli("report.py", ["discard", "--run", self.run_dir], self.repo, self.tmp)  # a lane ingest after verdicts refuses (review-code-edk)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp,
                            lines(*cands, {"inspected": ["src/calc.py"]}))
         self.assertEqual((rc, err), (0, ""), out)

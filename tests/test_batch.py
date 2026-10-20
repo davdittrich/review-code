@@ -138,6 +138,28 @@ class Verdicts(BigRun):
         out = self.verdicts(self.line(self.first[0], "refuted", False))
         self.assertEqual(out["refuted"], [self.first[0]])
 
+    def test_batched_refuted_cite_must_lie_in_the_candidates_own_path(self):  # review-code-8dt
+        other = {"path": "src/other.py", "line": 2, "quote": "w1 = a + 1"}
+        bad = dict(self.line(self.first[0], "refuted"), evidence=[other])
+        out = self.batch(1, bad, self.line(self.first[1], "refuted"))
+        self.assertEqual(out["refuted"], [self.first[1]])
+        self.assertEqual(self.stored()[self.first[0]]["verdict"], "unverifiable")
+
+    def test_batched_refuted_cite_cannot_serve_two_ids(self):  # review-code-8dt
+        shared = [{"path": "src/big.py", "line": 2, "quote": "v1 = a - 1"}]
+        a, b = (dict(self.line(i, "refuted"), evidence=shared) for i in self.first[:2])
+        out = self.batch(1, a, b, self.line(self.first[2], "refuted"))
+        self.assertEqual(out["refuted"], [self.first[2]])
+        self.assertEqual([self.stored()[i]["verdict"] for i in self.first[:2]], ["unverifiable"] * 2)
+
+    def test_verdicts_without_batch_refuse_in_a_parallel_plan(self):  # review-code-3k5
+        self.batch(1, *[self.line(i) for i in self.first])
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"mode": "parallel", "caps": {"max_verifier_calls": 60}}, fh)
+        r, out = self.rep("verdicts", tr.lines(self.line(self.second[0])))
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "batch-required"))
+        self.assertEqual(sorted(self.stored()), sorted(self.first))  # the stored batches survive
+
     def test_unknown_batch_refuses_and_stores_nothing(self):
         self.assertEqual(self.batch(9, self.line(self.first[0]), rc=1)["reason"], "bad-batch")
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
@@ -149,7 +171,9 @@ class Verdicts(BigRun):
 
     def test_ingest_and_discard_clear_the_stored_replies(self):
         self.batch(1, *[self.line(i) for i in self.first])
-        self.ingest(big(1))
+        r, out = self.rep("ingest", tr.lines(big(1)))  # review-code-edk: a lane reply after verification started refuses
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "late-reply"))
+        self.rep("discard")
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
         self.batch(1, self.line(self.ingest(big(1))["ids"][0]))
         self.rep("discard")
@@ -201,6 +225,36 @@ class Status(Verdicts):
         r, text = self.rep("render")
         for n in ("defects@2", "standards"):
             self.assertIn("lane %s not-ingested: its reply was never ingested" % n, text)
+
+
+class CleanGate(tr.Lanes):  # review-code-0c4
+    def plan(self, *lanes):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 10}, "calls": [{"lane": n, "shard": None} for n in lanes]}, fh)
+
+    def verdict(self):
+        d = self.doc()
+        r, text = self.rep("render")
+        return d["verdict"], text
+
+    def test_defects_or_spec_lane_not_ingested_is_not_clean(self):
+        for planned in (("defects", "standards"), ("defects", "spec")):
+            self.plan(*planned)
+            self.lane(planned[1], {"inspected": ["src/calc.py"]})
+            verdict, text = self.verdict()
+            self.assertEqual(verdict, "Needs discussion", planned)
+            self.assertIn("lane %s not-ingested" % planned[0], text)
+
+    def test_incomplete_defects_lane_is_not_clean(self):
+        self.plan("defects")
+        self.lane("defects")
+        self.assertEqual(self.verdict()[0], "Needs discussion")
+
+    def test_complete_lanes_read_clean(self):
+        self.plan("defects", "standards")
+        self.lane("defects", {"inspected": ["src/calc.py"]})
+        self.lane("standards")  # an incomplete standards lane stays advisory
+        self.assertEqual(self.verdict()[0], "No blocking findings")
 
 
 if __name__ == "__main__":

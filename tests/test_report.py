@@ -266,6 +266,8 @@ class Derivation(Base):
     def test_ingest_resets_review_state(self):
         self.ingest(cand(Q_ADD, 8))
         self.verdicts(verdict((Q_ADD, 8)))
+        self.assertEqual(self.rep("ingest", lines(cand(Q_ADD, 8)))[0], 1)  # review-code-edk: late-reply refuses
+        self.rep("discard")
         self.ingest(cand(Q_ADD, 8))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
         self.assertEqual(self.doc()["findings"], [])
@@ -288,6 +290,7 @@ class Renders(Base):
               dict(verdict((Q_OLD, 5)), id=fid("src/calc.py", "security", Q_OLD))]
         outs = []
         for order in (1, -1):
+            self.rep("discard")  # a lane ingest after verdicts refuses (review-code-edk)
             self.ingest(*cs[::order], {"inspected": ["src/calc.py"]})
             self.verdicts(*vs[::order])
             outs.append(self.rep("render", extra=["--format", "json"])[1])
@@ -667,13 +670,14 @@ class SpecAxis(Base):
         self.assertEqual(v["confirmed"], [])
         for fmt in ("text", "json"):
             self.assertNotIn(CANARY, self.rep("render", extra=["--format", fmt])[1])
+        self.rep("discard")  # a lane ingest after verdicts refuses (review-code-edk)
         self.assertEqual(len(self.ingest(dict(CAND, title=copy))["ids"]), 1)  # Defects never reads the spec: no check
 
     def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
         rows, inner, _, _ = self.spec_rows()
         self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
         out = self.lane(self.spec(inner), {"inspected": []})
-        self.verdicts({"id": out["spec_ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        self.assertEqual(self.rep("verdicts", lines({"id": out["spec_ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), extra=["--batch", "1"])[0], 0)  # parallel plan: review-code-3k5
         os.makedirs(os.path.join(self.run_dir, "repro"))
         self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir, "--serial"], self.repo, self.tmp)[0], 0)
         rc, o = self.rep("discard")
@@ -950,7 +954,7 @@ class Ctx06Integration(Lanes):  # CTX-06 across ledger.py, plan.py and report.py
         mk = lambda rule: dict(CAND, category="convention", rule=rule, rule_source="conventions/REVIEW.md")
         out = self.lane("standards", mk(RULE_REVIEW), mk(RULE_HEAD))
         self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 1))
-        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        self.assertEqual(self.rep("verdicts", lines({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), extra=["--batch", "1"])[0], 0)  # parallel plan: review-code-3k5
         d = self.doc()
         (f,) = d["findings"]
         self.assertEqual((f["category"], f["rule_source"], f["rule"]), ("convention", "conventions/REVIEW.md", RULE_REVIEW))

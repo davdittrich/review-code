@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 
 import paths  # noqa: F401
@@ -174,7 +175,15 @@ class Refused(HookBase):
         call = self.cand()["verify_calls"][0]
         self.hook(self.payload(call["agent"], call["prompt"], tr.lines({"id": call["ids"][0], "verdict": "confirmed", "evidence": [tr.CITE], "reason": "r"})))
         ctx = self.lane(1)
-        self.assertEqual(ctx, "review-code hook: NOT ingested standards: verification already started; ingest by heredoc")
+        self.assertEqual(ctx, "review-code hook: NOT ingested standards: verification already started")
+
+    def test_heredoc_ingest_after_verification_is_refused_too(self):  # review-code-edk: one guard, under the run lock
+        self.lane(0)
+        call = self.cand()["verify_calls"][0]
+        self.hook(self.payload(call["agent"], call["prompt"], tr.lines({"id": call["ids"][0], "verdict": "confirmed", "evidence": [tr.CITE], "reason": "r"})))
+        rc, out = self.rep("ingest", tr.lines(tr.CAND, {"inspected": ["src/calc.py"]}), extra=["--lane", "standards"])
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "late-reply"))
+        self.assertEqual(list(self.cand()["lane_state"]), ["defects"])
 
     def test_verify_prompt_with_a_forged_handoff_is_skipped(self):
         self.lane(0)
@@ -185,6 +194,18 @@ class Refused(HookBase):
 
 
 class Crash(HookBase):
+    def test_hung_git_times_out_instead_of_blocking_the_agent_call(self):  # review-code-edk
+        fake = os.path.join(self.tmp, "fakebin")
+        os.makedirs(fake)
+        with open(os.path.join(fake, "git"), "w") as fh:
+            fh.write("#!/bin/sh\nexec sleep 60\n")
+        os.chmod(os.path.join(fake, "git"), 0o755)
+        c = self.calls[0]
+        t0 = time.monotonic()
+        ctx = self.hook(self.payload(c["agent"], c["prompt"], tr.lines(tr.CAND)), {"PATH": fake + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(ctx, "review-code hook: error TimeoutExpired; ingest by heredoc")
+        self.assertLess(time.monotonic() - t0, 30)
+
     def test_exception_is_reported_not_raised(self):
         c = self.calls[0]
         os.chmod(self.run_dir, 0o500)  # the lock file cannot be opened: report.ingest raises OSError
