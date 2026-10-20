@@ -83,6 +83,6 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 - Passing tests do not prove a fix whose code the tests do not cover.
 - Containment is an after-the-fact check, a seal and a restore, not a sandbox: the fixer can write outside the repository, and `fix.py` does not look there.
 - The test command gets no network or filesystem isolation. `HOME` and `TMPDIR` are private, and tracked files a test changes are restored and listed.
-- SIGKILL during a fix leaves the in-flight file edited; `report` names it and its snapshot, and the next `plan` refuses `dirty-tree`.
+- SIGKILL during a fix leaves the in-flight file edited; `report` names it and its snapshot, and the next `plan` refuses `dirty-tree`. `report` then runs no git command, because the unfinished call may have rewritten `.git/config`.
 - `refs/remotes` is not checked. The timeout and the 60-line cap are module constants.
 - Fix mode is not unattended: it needs an interactive session and the harness permission prompts for `baseline`, `finish` and, in `default` permission mode, the fixer's edits.

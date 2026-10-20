@@ -617,8 +617,9 @@ def finish(run: str, seal: str, status: str) -> dict:
 def report_(run: str) -> dict:
     st = _state(run)
     fd, cur = _fixdir(run), st["in_flight"]
-    tampered = st["halted"] == "tampered"  # then no git command runs: a rewritten config may carry filters
-    repo = None if tampered else _target(run)["repo"]
+    tampered = st["halted"] == "tampered"
+    unsafe = tampered or cur is not None  # then no git command runs: a rewritten config may carry filters
+    repo = None if unsafe else _target(run)["repo"]
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):
@@ -632,7 +633,7 @@ def report_(run: str) -> dict:
     if tampered:
         text.append("TAMPERED: the run directory or the git config changed while the fixer ran. The tree is left as it "
                     "is and no git command ran. Check .git/config and git status by hand.")
-    else:
+    elif not unsafe:
         stat_out = target.git(["diff", "--stat", "--no-color", "--no-ext-diff"], repo)
         text += ["== changed files ==", sanitize.escape_for_code(stat_out)[0].rstrip("\n")]
     quarantined = sorted(os.path.relpath(os.path.join(d, n), os.path.join(fd, "quarantine"))
@@ -645,8 +646,10 @@ def report_(run: str) -> dict:
             text += ["== %s ==" % title] + [_e(x) for x in items]
     if cur:
         text += ["== in flight ==", "%s (the file may hold a partial edit); snapshot: %s" % (
-            _e(cur["path"]), os.path.join(fd, cur["id"] + ".pre"))]
-    if not tampered:
+            _e(cur["path"]), os.path.join(fd, cur["id"] + ".pre")),
+            "no git command ran: the fixer call did not finish and may have changed .git/config; check .git/config "
+            "and git status by hand"]
+    if not unsafe:
         known = set(st["accepted"]) | set(st["untracked"]) | ({cur["path"]} if cur else set())
         odd = [p for _, p in _changes(repo) if p not in known]
         if odd:
@@ -657,7 +660,7 @@ def report_(run: str) -> dict:
         text.append("== test output (untrusted) ==")
         for i, d in tails:
             text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger._block(d["tail"], nonce)]
-    if not tampered:
+    if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
     text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",
             "passing tests do not prove a fix is right where the tests do not cover it",

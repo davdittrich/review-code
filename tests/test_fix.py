@@ -994,6 +994,22 @@ class Report(Scope):
         self.assertIn("src/calc.py", sec)
         self.assertIn(os.path.join(run, "fix", fid + ".pre"), sec)
 
+    def test_in_flight_report_runs_no_git(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        calls = []
+        orig = target._run
+        with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)), \
+                gitfix.isolated(self.tmp):
+            r = fix.report_(run)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(calls, [])
+        sec = r["text"].split("== in flight ==")[1]
+        self.assertIn("src/calc.py", sec)
+        self.assertIn(os.path.join(run, "fix", fid + ".pre"), sec)
+        self.assertIn("no git command ran", sec)
+        self.assertNotIn("HEAD and refs:", r["text"])
+
     def test_unexpected_changes_and_leftovers(self):
         run, fid, bg = self.started(CAND, SECOND_CAND, words=self.probe(
             'open("out.log", "w").write("x"); open("src/other.py", "w").write("x")'))
