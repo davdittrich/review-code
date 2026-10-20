@@ -269,12 +269,8 @@ class GitHub:
         try:
             self._call("POST", "%s/reviews/%d/events" % (self.pr, handle), {"event": EVENT})
         except Refuse as r:  # GitHub may have applied the event although its answer was lost (5xx, timeout)
-            try:
-                got = self._call("GET", "%s/reviews/%d" % (self.pr, handle))
-                state = got.get("state") if isinstance(got, dict) else None
-            except Refuse:
-                state = None
-            if state is None or not isinstance(state, str):
+            state = self._state(handle)
+            if state is None:
                 self.unknown = True  # never delete: the review may be public, and a DELETE would fail on it anyway
                 raise Refuse("post-partial", "published unknown")
             if state != "PENDING":
@@ -297,7 +293,18 @@ class GitHub:
         try:
             self._call("DELETE", "%s/reviews/%d" % (self.pr, handle))
         except Refuse:
+            if self._state(handle) not in (None, "PENDING"):  # the event landed before the failure (an interrupt)
+                raise Refuse("post-partial", "published")
             raise Refuse("cleanup-failed", "pending review %d" % handle)
+
+    def _state(self, handle: int) -> Optional[str]:
+        """The review's state, or None when it cannot be read."""
+        try:
+            got = self._call("GET", "%s/reviews/%d" % (self.pr, handle))
+        except Refuse:
+            return None
+        state = got.get("state") if isinstance(got, dict) else None
+        return state if isinstance(state, str) else None
 
 
 class GitLab:

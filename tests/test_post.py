@@ -633,6 +633,18 @@ class Safety(Base):
 
         self.landed(*self.call("submit", "--run", self.run_dir, "--digest", digest, cli=cli))
 
+    def test_an_interrupt_after_the_event_landed_reports_it_published(self):
+        digest = self.confirmed()
+
+        def cli(tool, args, cwd, stdin=None):
+            got = self.fake(tool, args, cwd, stdin)
+            if args[5:6] == [PR + "/reviews/100/events"]:  # Ctrl-C after GitHub applied the event
+                raise KeyboardInterrupt
+            return got
+
+        self.refused(self.call("submit", "--run", self.run_dir, "--digest", digest, cli=cli), "post-partial", "published")
+        self.assertEqual(self.fake.reviews[100]["state"], "COMMENTED")
+
     def test_an_event_with_a_lost_answer_and_no_state_is_unknown(self):
         digest = self.confirmed()
         self.event_lands_then(self.fake.fail(502), also=lambda: self.fake.fail_map.update({"GET " + PR + "/reviews/100": 500}))
