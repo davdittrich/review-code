@@ -293,6 +293,11 @@ class Renders(Base):
             outs.append(self.rep("render", extra=["--format", "json"])[1])
         self.assertEqual(outs[0], outs[1])
         self.assertTrue(outs[0].isascii() and outs[0].endswith("}\n"))
+        self.assertEqual(outs[0].count("\n"), 1)  # compact: one line
+
+    def test_sarif_is_one_line(self):
+        self.seed()
+        self.assertEqual(self.rep("render", extra=["--format", "sarif"])[1].count("\n"), 1)
 
     def test_sarif(self):
         self.seed()

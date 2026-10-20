@@ -654,7 +654,7 @@ def render(run, fmt):
     doc = build(run)
     if fmt == "text":
         return _text(doc)
-    return json.dumps(_sarif(doc) if fmt == "sarif" else doc, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+    return json.dumps(_sarif(doc) if fmt == "sarif" else doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
 
 
 def _usage():
