@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -464,6 +465,7 @@ class Units(unittest.TestCase):
             os.mkdir(os.path.join(d, "fix"))
             cfg, attr = os.path.join(d, "config"), os.path.join(d, "attributes")
             files = {os.path.join(d, "fix", "plan.json"): b"{}", os.path.join(d, "fix", fid + ".pre"): b"pre",
+                     os.path.join(d, "target.json"): b"{}", os.path.join(d, "ledger.json"): b"{}",
                      cfg: b"[core]\n", attr: b"* text\n"}
             state = os.path.join(d, "fix", "state.json")
             files[state] = json.dumps({"git_files": [cfg, attr], "x": 1}).encode()
@@ -733,6 +735,8 @@ class Tamper(Scope):
         targets = {"state.json": lambda run, fid: os.path.join(run, "fix", "state.json"),
                    "pre": lambda run, fid: os.path.join(run, "fix", fid + ".pre"),
                    "plan.json": lambda run, fid: os.path.join(run, "fix", "plan.json"),
+                   "target.json": lambda run, fid: os.path.join(run, "target.json"),
+                   "ledger.json": lambda run, fid: os.path.join(run, "ledger.json"),
                    "git config": lambda run, fid: self.state(run)["git_files"][0]}
         for name, where in targets.items():
             with self.subTest(file=name):
@@ -745,6 +749,48 @@ class Tamper(Scope):
                 self.tampered(run, bg, fid)
                 self.assertEqual(slurp(self.p("src/calc.py")), edited)
                 self.git("checkout", "--", "src/calc.py")
+
+    def test_target_repointed_to_a_copy(self):
+        run, fid, bg = self.started()
+        copy = os.path.join(self.tmp, "copy")
+        shutil.copytree(self.repo, copy, symlinks=True)
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["repo"] = copy
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        with open(self.p("poetry.lock"), "w", encoding="utf-8") as fh:
+            fh.write("pinned\n")
+        edited = slurp(self.p("src/calc.py"))
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "tampered"), f)
+        st = self.state(run)
+        self.assertEqual((st["halted"], st["in_flight"]), ("tampered", None))
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+        self.assertEqual(slurp(self.p("src/calc.py")), edited)
+        self.assertEqual(slurp(self.p("poetry.lock")), b"pinned\n")
+        rc, text, _ = self.report(run)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("TAMPERED", text)
+
+    def test_unreadable_target_is_tampered(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            fh.write("{")
+        calls = []
+        orig = target._run
+        with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)), \
+                gitfix.isolated(self.tmp):
+            f = fix.finish(run, bg["seal"], "applied")
+            self.assertEqual((f["status"], f["outcome"]), ("halted", "tampered"), f)
+            r = fix.report_(run)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.state(run)["halted"], "tampered")
+        self.assertEqual(r["status"], "ok")
+        self.assertIn("TAMPERED", r["text"])
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
 
     def test_accepted_snapshot_rewritten(self):
         second = two("src/second.py", 2, "return a / b", "return a * b")

@@ -174,7 +174,8 @@ def _refs(repo: str) -> str:
 def _seal(run: str, fid: str) -> str:
     """Hash of every file the fixer could rewrite to subvert the revert. Plain reads only: no git call."""
     fd = _fixdir(run)
-    paths = [os.path.join(fd, "plan.json"), os.path.join(fd, "state.json"), os.path.join(fd, fid + ".pre")]
+    paths = [os.path.join(fd, "plan.json"), os.path.join(fd, "state.json"), os.path.join(fd, fid + ".pre"),
+             os.path.join(run, "target.json"), os.path.join(run, "ledger.json")]
     try:
         files = _json(paths[1]).get("git_files", [])
     except (OSError, ValueError, AttributeError):
@@ -447,12 +448,12 @@ def baseline(run: str, digest: str) -> dict:
 
 
 def begin(run: str) -> dict:
-    tj = _target(run)
     st = _state(run)
     if st["halted"]:
         raise target.Refuse("halted")
     if st["in_flight"]:
         raise target.Refuse("in-flight")
+    tj = _target(run)
     repo = tj["repo"]
     fd = _fixdir(run)
     raw = _read(os.path.join(fd, "plan.json"))
@@ -567,7 +568,6 @@ def _snapshots_hold(run: str, st: dict) -> bool:
 def finish(run: str, seal: str, status: str) -> dict:
     if status not in ("applied", "declined") or not HEX.match(seal):
         raise target.Refuse("usage", USAGE)
-    tj = _target(run)
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
@@ -576,6 +576,7 @@ def finish(run: str, seal: str, status: str) -> dict:
     if not secrets.compare_digest(_seal(run, fid), seal) or not _snapshots_hold(run, st):
         outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
     else:
+        tj = _target(run)  # read only after the seal held: the fixer could have rewritten it
         try:
             outcome, detail, res = _settle(run, tj, st, cur, status)
         except BaseException as e:  # Ctrl-C, SIGTERM (as SystemExit), any error: the tree goes back, then re-raise
@@ -603,10 +604,10 @@ def finish(run: str, seal: str, status: str) -> dict:
 
 
 def report_(run: str) -> dict:
-    tj = _target(run)
     st = _state(run)
-    repo, fd, cur = tj["repo"], _fixdir(run), st["in_flight"]
+    fd, cur = _fixdir(run), st["in_flight"]
     tampered = st["halted"] == "tampered"  # then no git command runs: a rewritten config may carry filters
+    repo = None if tampered else _target(run)["repo"]
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):

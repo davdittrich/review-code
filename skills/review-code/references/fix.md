@@ -40,7 +40,7 @@ No fix may touch a path with a dot component (`.github/`, `.env`), a lockfile (`
 | `reverted-tests` | The tests failed; the file is restored | yes |
 | `reverted-timeout` | The tests ran past 600 seconds (`TIMEOUT`); restored | yes |
 | `reverted-interrupt` | `finish` was interrupted (Ctrl-C, SIGTERM, an error); the file is restored from its snapshot | yes |
-| `tampered` | The seal, the plan, the state, a snapshot or the git config changed while the fixer ran; nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
+| `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot or the git config changed while the fixer ran; nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
 
 ## Refusals
 
