@@ -41,15 +41,18 @@ TIERS = {
     "deep": {"lanes": ("defects", "standards", "spec", "sota"), "finder": ("opus", "xhigh"),
              "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_shards": 12, "max_packs": 9},
 }
-LANE_AGENT = {"defects": "review-code:finder", "standards": "review-code:standards", "spec": "review-code:spec",
-              "sota": "review-code:sota"}
+DEFAULT_PREFIX = "review-code"
+LANE_AGENT = {"defects": "finder", "standards": "standards", "spec": "spec", "sota": "sota"}  # agent name; the prefix is a plugin option
+PREFIX_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+NAV_MAX = 300
 # Ceilings, not per-tier values: maxTurns is frontmatter-only (sub-agents doc), so a call cannot lower it.
 MAX_TURNS = {"finder": 40, "standards": 40, "spec": 30, "sota": 20, "verifier": 30, "spec-verifier": 30}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
 CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_shards": (1, 50), "max_packs": (1, 9)}
-CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort"} | set(CAP_BOUNDS)
+CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort", "agent_prefix",
+               "nav_hint"} | set(CAP_BOUNDS)
 MAX_STDIN = 65536
 # The harness refuses a 9th concurrent subagent ("You can run 8 subagents at once", live run 2026-10-19), so a wave stops at 8.
 WAVE_SIZE = 8
@@ -67,7 +70,14 @@ def parse_config(text):
             raise target.Refuse("bad-config", "unknown or malformed config line")
         if not val or val.startswith("${"):
             continue  # unset userConfig reference: the tier's value stands
-        if key in CAP_BOUNDS:
+        if key == "nav_hint":  # free text: sanitized, never refused
+            hint = " ".join(val.replace("${", "").split())[:NAV_MAX].strip()
+            if hint:
+                cfg[key] = hint
+            continue
+        if key == "agent_prefix":
+            ok = PREFIX_RE.fullmatch(val) is not None
+        elif key in CAP_BOUNDS:
             lo, hi = CAP_BOUNDS[key]
             ok = re.fullmatch(r"[0-9]{1,4}", val) is not None and lo <= int(val) <= hi
         elif key.endswith("_model"):
@@ -170,6 +180,14 @@ def _put_sections(path, sections):
     for head, _ in sections:
         text = re.sub(r"^## %s\n.*?(?=^## |\Z)" % re.escape(head), "", text, flags=re.M | re.S)
     target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections))
+
+
+def _put_nav(path, hint):
+    """One `Navigation preference:` line at the end of a lane input file; a rerun replaces it."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    text = re.sub(r"^Navigation preference: .*\n?", "", text, flags=re.M).rstrip("\n")
+    target.write_private(path, text + "\n\nNavigation preference: " + hint + "\n")
 
 
 def _install_packs(run, packs):
@@ -423,6 +441,9 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     fm, fe = cfg.get("finder_model", t["finder"][0]), cfg.get("finder_effort", t["finder"][1])
     vm, ve = cfg.get("verifier_model", t["verifier"][0]), cfg.get("verifier_effort", t["verifier"][1])
     caps = {k: cfg.get(k, t[k]) for k in CAP_BOUNDS}
+    prefix = cfg.get("agent_prefix", DEFAULT_PREFIX)
+    agent = {lane: prefix + ":" + n for lane, n in LANE_AGENT.items()}
+    hint = cfg.get("nav_hint")
     lanes = [x for x in t["lanes"] if x != "sota" or sota is not False]
     if sota and "sota" not in lanes:
         lanes.append("sota")
@@ -469,21 +490,23 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         elif lane == "sota" and not inventory:
             skipped.append({"what": "sota", "why": "no dependency or import names in the change"})
         elif lane == "sota":
-            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": LANE_AGENT[lane], "model": fm, "effort": fe,
+            calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": agent[lane], "model": fm, "effort": fe,
                           "input": None, "shard": None,
-                          "prompt": "SOTA lane. Inventory: " + json.dumps([{k: v for k, v in i.items() if k not in ("path", "line")}
+                          "prompt": "SOTA lane. " + ("Navigation preference: %s\n" % hint if hint else "") + "Inventory: " + json.dumps([{k: v for k, v in i.items() if k not in ("path", "line")}
                                                                            for i in inventory], sort_keys=True, separators=(",", ":"))})
         else:
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
-                calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else LANE_AGENT[lane],
+                if hint:
+                    _put_nav(path, hint)
+                calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else agent[lane],
                               "model": None if serial else fm, "effort": None if serial else fe, "input": path,
                               "shard": sh["id"] if sh else None,
                               "prompt": "%s lane%s. Input: %s" % (lane.capitalize(), ", shard %d" % sh["id"] if sh else "", path)})
     ver = {"model": vm, "effort": ve}
-    doc = {"version": 1, "tier": tier, "mode": "serial" if serial else "parallel", "calls": calls,
-           "verifier": dict(ver, agent="review-code:verifier"),
-           "spec_verifier": dict(ver, agent="review-code:spec-verifier"),
+    doc = {"version": 1, "agent_prefix": prefix, "tier": tier, "mode": "serial" if serial else "parallel", "calls": calls,
+           "verifier": dict(ver, agent=prefix + ":verifier"),
+           "spec_verifier": dict(ver, agent=prefix + ":spec-verifier"),
            "caps": dict(caps, wave_size=WAVE_SIZE),
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],

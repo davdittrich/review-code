@@ -64,6 +64,16 @@
       "description": "Cap on packs per run, 1 to 9. Leave empty for the tier's value.",
       "min": 1,
       "max": 9
+    },
+    "agent_prefix": {
+      "type": "string",
+      "title": "Agent prefix",
+      "description": "Plugin name whose agents run the lanes, as <prefix>:finder and so on. Leave empty for review-code. Lowercase letters, digits and hyphens, at most 64."
+    },
+    "nav_hint": {
+      "type": "string",
+      "title": "Navigation hint",
+      "description": "One line telling the lanes which code-navigation tools to prefer, at most 300 characters. A preference, not a permission. Leave empty for none."
     }
   }
 }

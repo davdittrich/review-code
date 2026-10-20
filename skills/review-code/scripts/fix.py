@@ -47,7 +47,7 @@ OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "re
             "reverted-timeout", "reverted-interrupt", "tampered")
 REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
-               "effort", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
+               "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
@@ -477,6 +477,14 @@ def baseline(run: str, digest: str) -> dict:
     return {"status": "ok"}
 
 
+def _fixer_agent(run: str) -> str:
+    """<agent_prefix>:fixer, the prefix recorded in the run's plan.json (review-code without one)."""
+    try:
+        return target.load_json(run, "plan.json").get("agent_prefix", "review-code") + ":fixer"
+    except target.Refuse:
+        return "review-code:fixer"
+
+
 def begin(run: str) -> dict:
     st = _state(run)
     if st["halted"]:
@@ -517,7 +525,7 @@ def begin(run: str) -> dict:
         st["in_flight"] = {"id": e["id"], "path": e["path"], "mode": stat.S_IMODE(os.stat(real).st_mode)}
         _save(run, st)
         return {"status": "ok", "id": e["id"], "brief": os.path.join(fd, e["id"] + ".md"), "path": e["path"],
-                "line": line, "model": e["model"], "effort": e["effort"], "seal": _seal(run, e["id"])}
+                "line": line, "model": e["model"], "effort": e["effort"], "agent": _fixer_agent(run), "seal": _seal(run, e["id"])}
     _save(run, st)
     return {"status": "done"}
 

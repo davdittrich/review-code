@@ -70,6 +70,56 @@ class Overrides(Fixture):
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
         self.assertEqual(p["effective_overrides"], {"finder_effort": "high", "finder_model": "sonnet"})
 
+    def test_default_agent_prefix(self):
+        self.run_plan([])
+        p = self.plan_json()
+        self.assertEqual([c["agent"] for c in p["calls"]], ["review-code:finder", "review-code:standards"])
+        self.assertEqual((p["verifier"]["agent"], p["spec_verifier"]["agent"], p["agent_prefix"]),
+                         ("review-code:verifier", "review-code:spec-verifier", "review-code"))
+
+    def test_custom_agent_prefix_reaches_calls_and_verifiers(self):
+        rc, out = self.run_plan([("agent_prefix", "mycorp-review-agents")])
+        self.assertEqual(rc, 0)
+        p = self.plan_json()
+        self.assertEqual([c["agent"] for c in p["calls"]], ["mycorp-review-agents:finder", "mycorp-review-agents:standards"])
+        self.assertEqual((out["verifier"]["agent"], out["spec_verifier"]["agent"]),
+                         ("mycorp-review-agents:verifier", "mycorp-review-agents:spec-verifier"))
+        self.assertEqual(p["agent_prefix"], "mycorp-review-agents")
+
+    def test_custom_agent_prefix_reaches_verify_calls(self):
+        self.run_plan([("agent_prefix", "mycorp")])
+        self.ingest_lane("defects", CAND, {"inspected": ["src/calc.py"]})
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            self.assertEqual({c["agent"] for c in json.load(fh)["verify_calls"]}, {"mycorp:verifier"})
+
+    def test_bad_agent_prefix_refuses(self):
+        for bad in ("Bad", "a:b", "-x", "a b", "x" * 65):
+            rc, out = self.run_plan([("agent_prefix", bad)])
+            self.assertEqual((rc, out["reason"]), (1, "bad-config"), bad)
+            self.assertNotIn(bad, json.dumps(out))
+
+    def test_unset_agent_prefix_literal_is_ignored(self):
+        self.run_plan([("agent_prefix", "${user_config.agent_prefix}")])
+        self.assertEqual(self.plan_json()["calls"][0]["agent"], "review-code:finder")
+
+    def test_nav_hint_is_sanitized_and_lands_in_lane_inputs(self):
+        self.run_plan([("nav_hint", "use mcp__x__find ${HOME} first " + "z" * 400)])
+        for lane in ("defects", "standards"):
+            with open(os.path.join(self.run_dir, "inputs", lane + ".md"), encoding="utf-8") as fh:
+                lines = [x for x in fh.read().splitlines() if x.startswith("Navigation preference: ")]
+            self.assertEqual(len(lines), 1)
+            self.assertNotIn("${", lines[0])
+            self.assertLessEqual(len(lines[0]), len("Navigation preference: ") + 300)
+            self.assertIn("mcp__x__find", lines[0])
+
+    def test_nav_hint_rerun_does_not_double_and_unset_literal_is_ignored(self):
+        self.run_plan([("nav_hint", "a")])
+        self.run_plan([("nav_hint", "b")])
+        with open(os.path.join(self.run_dir, "inputs", "defects.md"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read().count("Navigation preference: "), 1)
+        self.run_plan([("nav_hint", "${user_config.nav_hint}")])
+        self.assertEqual(self.plan_json()["effective_overrides"], {})
+
     def test_verifier_override_reaches_both_verifiers(self):
         self.run_plan([("verifier_model", "opus"), ("verifier_effort", "low")])
         p = self.plan_json()
@@ -237,7 +287,7 @@ class Serial(Fixture):
 
 
 class Tracer(Fixture):
-    KEYS = {"version", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
+    KEYS = {"version", "agent_prefix", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
             "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
 
     def test_standard_tier_without_spec(self):

@@ -337,12 +337,12 @@ def status(run):
             "confirmed": sorted(i for i, v in ver.items() if v.get("verdict") == "confirmed" and v.get("cites"))}
 
 
-def _batches(queue, hand):
+def _batches(queue, hand, prefix="review-code"):
     """verify_calls: queue ids grouped by (agent, shard, code path), at most VERIFY_BATCH per call, queue order kept.
     Same-path groups keep one verifier on one file's code; the prompt lists absolute handoff paths."""
     groups = {}
     for c in queue:
-        agent = "review-code:spec-verifier" if c["axis"] == "spec" else "review-code:verifier"
+        agent = "%s:%sverifier" % (prefix, "spec-" if c["axis"] == "spec" else "")
         groups.setdefault((agent, c.get("shard"), c["path"]), []).append(c["id"])
     out = []
     for (agent, _, _), ids in groups.items():
@@ -520,7 +520,7 @@ def _ingest(run, text, lane, shard):
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
          "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut),
-         "verify_calls": _batches(queue, hand)}, sort_keys=True, indent=2))
+         "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
             "capped": len(cut), "lanes": state, "merged": merged}

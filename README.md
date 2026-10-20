@@ -54,6 +54,16 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 - `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
 - `verifier_model`, `verifier_effort`: the same for the verifiers.
 - `max_verifier_calls` (1 to 200): cap on the findings sent to verifiers per run (ids, not calls; a call holds up to 5 handoffs of one code path). `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
+- `agent_prefix`: plugin whose agents run the lanes (`<prefix>:finder`, `standards`, `spec`, `sota`, `verifier`, `spec-verifier`, `fixer`); default `review-code`. Lowercase letters, digits and hyphens, at most 64.
+- `nav_hint`: one line (at most 300 characters, `${` removed) added to each lane's input as `Navigation preference: ...`. The lanes treat it as a preference; it never widens their `tools:` list.
+
+### Own agents (custom navigation tools)
+
+1. Copy `agents/*.md` into your own plugin, for example `mycorp-review-agents`.
+2. Edit the `tools:` lines to your read-only MCP servers, or delete the MCP entries.
+3. Set `agent_prefix=mycorp-review-agents`.
+
+The shipped files stay read-only by default, and the package allowlist test guards only the shipped files. Keep every lane read-only in a copy: no Bash, Write, Edit or network tools (the fixer alone keeps Edit). Both plugins must be installed; see the probe result in the ticket history for how a second plugin's agents resolve.
 
 ## Serial mode
 

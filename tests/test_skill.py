@@ -129,7 +129,7 @@ class Phase4Procedure(unittest.TestCase):
             self.assertIn(s, self.text)
         block = re.search(r"<<'REVIEW_PLAN'\n(.*?)\n\s*REVIEW_PLAN", self.text, re.S).group(1)
         keys = ["default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort",
-                "max_verifier_calls", "max_shards", "max_packs"]
+                "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
     def test_spec_file_is_never_opened(self):
@@ -231,7 +231,7 @@ class Phase6Procedure(unittest.TestCase):
 
     def test_fixer_call_is_the_brief_path_on_the_tiers_model(self):
         flat = " ".join(flow("fix.md").split())
-        for s in ("subagent_type` `review-code:fixer", "exactly the brief path", "`model`", "`effort`", "begin"):
+        for s in ("subagent_type` begin's `agent` (`review-code:fixer`", "exactly the brief path", "`model`", "`effort`", "begin"):
             self.assertIn(s, flat)
 
     def test_edits_only_through_the_fixer(self):
