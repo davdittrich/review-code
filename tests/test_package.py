@@ -27,6 +27,23 @@ class GateMutations(unittest.TestCase):
         rc, out = self.gate()
         self.assertEqual(rc, 0, out)
 
+    def test_gate_requires_exec_form_hook(self):  # a shell-string command breaks on a plugin path with spaces
+        path = os.path.join(self.tree, "hooks", "hooks.json")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn('"command": "python3"', text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace('"command": "python3"', '"command": "python3 hooks/hook.py"'))
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - hook-config", out)
+
+    def test_gate_requires_hook_script(self):
+        os.remove(os.path.join(self.tree, "hooks", "hook.py"))
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - hook-config", out)
+
     def test_gate_checks_every_agent_file(self):
         # WR-07: an added lane with Bash must not ship unchecked
         with open(os.path.join(self.tree, "agents", "extra.md"), "w", encoding="utf-8") as fh:

@@ -199,6 +199,16 @@ for f in "$tree"/agents/*.md; do
   fi
 done
 
+# Hook: exec form (no shell, safe with spaces in the plugin path), the Agent tool, and the script it names must ship.
+hj="$tree/hooks/hooks.json"
+if jq -e '.hooks.PostToolUse | length == 1 and (.[0].matcher | test("Agent")) and (.[0].hooks | length == 1)
+  and (.[0].hooks[0] | .type == "command" and .command == "python3" and .args == ["${CLAUDE_PLUGIN_ROOT}/hooks/hook.py"] and .timeout == 30)' "$hj" >/dev/null 2>&1 &&
+  [ -f "$tree/hooks/hook.py" ]; then
+  ok hook-config
+else
+  bad hook-config 'hooks/hooks.json needs one PostToolUse entry on Agent: command python3, args ["${CLAUDE_PLUGIN_ROOT}/hooks/hook.py"], timeout 30, and hooks/hook.py must exist'
+fi
+
 # PKG-02: licence and upstream attribution (D-07, D-08).
 lic="$tree/LICENSE"
 notice="$tree/NOTICE"

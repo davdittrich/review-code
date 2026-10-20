@@ -1,0 +1,18 @@
+{
+  "description": "Ingest review-code lane and verifier replies from the Agent tool result (python3, stdlib only).",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/hook.py"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
