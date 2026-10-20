@@ -80,18 +80,24 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 CLI_TIMEOUT = 120  # seconds per gh or glab call
 
 
-def _cli_json(tool: str, args: List[str], cwd: str):
+def cli_run(tool: str, args: List[str], cwd: str, stdin: Optional[bytes] = None):
+    """The one gh/glab subprocess seam: argv list, no shell. Returns (exit code, stdout bytes, stderr bytes)."""
     try:
-        p = subprocess.run([tool] + list(args), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        p = subprocess.run([tool] + list(args), cwd=cwd, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=CLI_TIMEOUT)
     except FileNotFoundError:
         raise Refuse(tool + "-missing", tool + " is not installed")
-    except subprocess.TimeoutExpired:  # a hung gh or glab would block the run for ever
+    except subprocess.TimeoutExpired:  # a hung gh or glab would block the run, or a submit after its create, for ever
         raise Refuse(tool + "-failed", "timeout")
-    if p.returncode != 0:
+    return p.returncode, p.stdout, p.stderr
+
+
+def _cli_json(tool: str, args: List[str], cwd: str):
+    rc, out, _ = cli_run(tool, args, cwd)
+    if rc != 0:
         raise Refuse(tool + "-failed", tool + " exited with an error")
     try:
-        return json.loads(p.stdout.decode("utf-8", "replace"))
+        return json.loads(out.decode("utf-8", "replace"))
     except ValueError:
         raise Refuse(tool + "-failed", tool + " printed invalid JSON")
 

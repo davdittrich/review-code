@@ -650,12 +650,12 @@ class Safety(Base):
         self.assertEqual(self.fake.calls, [])
 
     def test_gh_missing(self):
-        with mock.patch.object(post.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
 
     def test_a_hung_tool_times_out(self):
         hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
-        with mock.patch.object(post.subprocess, "run", hung):
+        with mock.patch.object(target.subprocess, "run", hung):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
         self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
 
@@ -1509,7 +1509,7 @@ class GitLabSafety(GitLabBase):
                 self.assertEqual(self.fake.writes(), [])
 
     def test_glab_missing(self):
-        with mock.patch.object(post.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "glab-missing")
 
     def test_head_or_base_moved_at_a_before_the_diff(self):

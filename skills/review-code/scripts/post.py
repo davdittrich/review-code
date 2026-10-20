@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import urllib.parse
 from typing import List, Optional
 
@@ -71,16 +70,7 @@ _HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?")
 _SEGMENT = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")  # no leading dash: a segment can never read as an option
 
 
-def _cli(tool: str, args: List[str], cwd: str, stdin: Optional[bytes] = None):
-    """The one subprocess seam: argv list, no shell. Returns (exit code, stdout bytes, stderr bytes)."""
-    try:
-        p = subprocess.run([tool] + list(args), cwd=cwd, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=target.CLI_TIMEOUT)
-    except FileNotFoundError:
-        raise Refuse(tool + "-missing")
-    except subprocess.TimeoutExpired:  # a hung gh or glab would block build, or submit after its create, for ever
-        raise Refuse(tool + "-failed", "timeout")
-    return p.returncode, p.stdout, p.stderr
+_cli = target.cli_run  # tests patch this name
 
 
 def _api(tool: str, host: str, method: str, endpoint: str, body=None, cwd: str = "."):
