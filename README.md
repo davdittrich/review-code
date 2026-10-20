@@ -6,7 +6,7 @@ Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a ve
 
 ## Install
 
-From a local checkout (works today):
+From GitHub:
 
 ```sh
 claude plugin marketplace add davdittrich/review-code
@@ -17,7 +17,7 @@ To install from a local checkout instead, use `claude plugin marketplace add /pa
 
 The repository is its own marketplace (`.claude-plugin/marketplace.json`, source `./`).
 
-Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`. Path targets and a `--spec` file are relative to the current directory (a `--spec` path that names no file there is tried from the repository top); `.` at the repository top level means the whole repository, and in a subdirectory that directory.
+Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`. Path targets are relative to the current directory, and the spec file is given when the skill asks for it (step 3 question); `.` at the repository top level means the whole repository, and in a subdirectory that directory.
 
 ## Requirements
 
@@ -76,7 +76,7 @@ Reproduction covers your own code only. For a confirmed finding, the skill write
 
 Limits: there is no network or filesystem isolation (a test can read host files by absolute path), dependencies are not installed in the fresh worktree, and user-site packages and HOME-based configuration are not visible.
 
-Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, never objects, because the Claude Code Bash guard denies a here-document body holding a brace followed by a quote, or a backslash-escaped quote: lanes write `{` as `\u007b` and `"` as `\u0022`. The approval prompt on a here-document body is also intermittent: on 2.1.304 the same code-like body (`if a(b).c() != d:`) ran in 2 of 3 headless probes and asked in 1, so no escaping rule makes a headless `--comment` run on a PR reliable and it can stop at `report.py ingest` (review-code-02a.18). A reproduction test source with a dict literal can still trip that guard; headless runs skip reproduction.
+Wire form: lane and verifier replies are JSON arrays of `[key, value]` pairs, never objects, because the Claude Code Bash guard denies a here-document body holding a brace followed by a quote, or a backslash-escaped quote: lanes write `{` as `\u007b` and `"` as `\u0022`. The approval prompt on a here-document body is also intermittent: on 2.1.304 the same code-like body (`if a(b).c() != d:`) ran in 2 of 3 headless probes and asked in 1, so no escaping rule makes a headless `--comment` run on a PR reliable and it can stop at `report.py ingest`. A reproduction test source with a dict literal can still trip that guard; headless runs skip reproduction.
 
 ## Run directory
 
