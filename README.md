@@ -63,7 +63,7 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 2. Edit the `tools:` lines to your read-only MCP servers, or delete the MCP entries.
 3. Set `agent_prefix=mycorp-review-agents`.
 
-The shipped files stay read-only by default, and the package allowlist test guards only the shipped files. Keep every lane read-only in a copy: no Bash, Write, Edit or network tools (the fixer alone keeps Edit). Both plugins must be installed; see the probe result in the ticket history for how a second plugin's agents resolve.
+The shipped files stay read-only by default, and the package allowlist test guards only the shipped files. Keep every lane read-only in a copy: no Bash, Write, Edit or network tools (the fixer alone keeps Edit). Both plugins must be installed; a second plugin's agents resolve as `<plugin>:<agent>` (observed on Claude Code 2.1.304).
 
 ## Serial mode
 
