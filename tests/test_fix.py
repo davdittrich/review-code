@@ -69,7 +69,7 @@ class Base(unittest.TestCase):
         return rc, out
 
     def pin(self, arg="main", trust="own"):
-        rc, out = self.tool("target.py", [arg])
+        rc, out = self.tool("target.py", [] if arg is None else [arg])
         self.assertEqual(rc, 0, out)
         run = json.loads(out)["run"]
         self.assertEqual(self.tool("ledger.py", ["build", "--run", run])[0], 0)
@@ -78,7 +78,8 @@ class Base(unittest.TestCase):
         return run
 
     def ingest(self, run, *cands):
-        rc, out = self.tool("report.py", ["ingest", "--run", run], lines(*(list(cands) + [{"inspected": ["src/calc.py"]}])))
+        seen = sorted({c["path"] for c in cands} | {"src/calc.py"})
+        rc, out = self.tool("report.py", ["ingest", "--run", run], lines(*(list(cands) + [{"inspected": seen}])))
         self.assertEqual(rc, 0, out)
         return json.loads(out)["ids"]
 
@@ -228,6 +229,220 @@ class Tracer(Base):
         bad = {"commit", "push", "add", "stash", "reset", "checkout", "switch", "merge", "rebase", "tag", "fetch",
                "pull", "am"}
         self.assertEqual([n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value in bad], [])
+
+
+def append(path, text):
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def two(path, line, quote, fix_text, **kw):
+    return dict(CAND, path=path, line=line, quote=quote, fix=fix_text, **kw)
+
+
+class PlanGates(Base):
+    def refused(self, run, reason, words=None, fixdir=None):
+        rc, out, j = self.plan(run, words)
+        self.assertEqual((rc, j["status"], j["reason"]), (1, "refuse", reason), out)
+        if reason != "already-run":
+            self.assertFalse(os.path.exists(os.path.join(run, "fix", "state.json")))
+        if fixdir is False:
+            self.assertFalse(os.path.exists(os.path.join(run, "fix")))
+        return j
+
+    def test_uncommitted_targets_refused(self):
+        path = os.path.join(self.repo, "src/calc.py")
+        append(path, "# staged\n")
+        self.git("add", "src/calc.py")
+        append(path, "# unstaged\n")
+        for arg in ("--staged", "--unstaged", None):
+            with self.subTest(arg=arg):
+                self.refused(self.pin(arg), "uncommitted-target", fixdir=False)
+
+    def test_dirty_path_pin_refused(self):
+        append(os.path.join(self.repo, "src/calc.py"), "# edit\n")
+        run = self.pin("src/calc.py")
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["kind"], "path")
+        self.refused(run, "dirty-pin", fixdir=False)
+
+    def test_trust_and_command_gates(self):
+        self.refused(self.pin(trust=None), "trust-unset", fixdir=False)
+        self.refused(self.pin(trust="external"), "trust-external", fixdir=False)
+        run = self.pin()
+        self.refused(run, "no-command", words=[], fixdir=False)
+        self.refused(run, "bad-command", words=[sys.executable, "a\0b"], fixdir=False)
+
+    def test_head_must_be_checked_out(self):
+        run = self.pin()
+        self.git("checkout", "-q", "main")
+        self.refused(run, "head-not-checked-out", fixdir=False)
+
+    def test_tree_must_be_clean(self):
+        run = self.pin()
+        append(os.path.join(self.repo, "src/calc.py"), "# edit\n")
+        self.refused(run, "dirty-tree", fixdir=False)
+        self.git("checkout", "--", "src/calc.py")
+        append(os.path.join(self.repo, "junk.txt"), "x")
+        self.refused(run, "dirty-tree", fixdir=False)
+
+    def test_second_run_refused(self):
+        run, _ = self.ready()
+        self.go(run)
+        self.refused(run, "already-run")
+        rc, _, j = self.baseline(run, "0" * 64)
+        self.assertEqual((rc, j["reason"]), (1, "already-run"))
+
+    def test_nothing_to_fix_counts_reasons(self):
+        run = self.pin()
+        self.ingest(run, CAND)  # never confirmed: unverifiable
+        self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: none")
+        run = self.pin()
+        (fid,) = self.ingest(run, dict(CAND, fix=""))
+        self.confirm(run, (fid, CITE))
+        self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: no-fix 1")
+
+    def test_same_plan_twice_same_digest(self):
+        run, _ = self.ready()
+        first = self.plan(run)[2]["digest"]
+        self.assertEqual(self.plan(run)[2]["digest"], first)
+
+
+class Skips(Base):
+    feat_files = {
+        "src/calc.py": FEAT,
+        "src/dup.py": "def f(x):\n    return x * 2\n\ndef g(x):\n    return x * 2\n",
+        "src/nofix.py": "def h(x):\n    return x - 1\n",
+        "setup.py": "def setup(a, b):\n    return a - b\n",
+    }
+
+    def test_each_skip_is_named_in_the_preview(self):
+        run = self.pin()
+        cands = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3"),
+                 two("src/nofix.py", 2, "return x - 1", ""), two("setup.py", 2, "return a - b", "return a + b")]
+        self.assertEqual(len(self.ingest(run, *cands)), 4)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 3), out)
+        block = out.split("== skipped ==\n")[1].split("\n")
+        want = {report_id(cands[1]): "stale", report_id(cands[2]): "no-fix", report_id(cands[3]): "protected-path"}
+        got = {ln.split()[0]: ln.split()[2] for ln in block[:3]}
+        self.assertEqual(got, want)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
+        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+
+
+def report_id(c):
+    return "F-" + hashlib.sha256("\0".join((c["path"], c["category"], " ".join(c["quote"].split()))).encode()).hexdigest()[:10]
+
+
+class BeginGates(Base):
+    def test_begin_needs_a_baseline(self):
+        run, _ = self.ready()
+        self.plan(run)
+        self.assertEqual(self.begin(run)[2]["reason"], "no-baseline")
+
+    def test_second_begin_while_in_flight(self):
+        run, _ = self.ready()
+        self.go(run)
+        self.assertEqual(self.begin(run)[2]["status"], "ok")
+        rc, _, j = self.begin(run)
+        self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "in-flight"}))
+
+    def test_moved_state_refused(self):
+        for reason, mutate in (
+                ("head-moved", lambda run: self.git("commit", "-q", "--allow-empty", "-m", "later")),
+                ("refs-moved", lambda run: self.git("branch", "other")),
+                ("tree-changed", lambda run: append(os.path.join(self.repo, "src/calc.py"), "# x\n")),
+                ("digest-mismatch", lambda run: append(os.path.join(run, "fix", "plan.json"), " "))):
+            with self.subTest(reason=reason):
+                run, _ = self.ready()
+                self.go(run)
+                mutate(run)
+                rc, _, j = self.begin(run)
+                self.assertEqual((rc, j), (1, {"status": "refuse", "reason": reason}))
+                self.git("checkout", "-q", "--", "src/calc.py")
+                self.git("branch", "-q", "-D", "other") if reason == "refs-moved" else None
+                if reason == "head-moved":
+                    self.git("reset", "-q", "--hard", "HEAD~1")
+
+    def test_test_run_cache_is_not_a_change(self):
+        run, _ = self.ready()
+        words = [sys.executable, "-c", "import sys; sys.path.insert(0, 'src'); import calc"]  # leaves src/__pycache__
+        j = self.plan(run, words)[2]
+        self.assertEqual(self.baseline(run, j["digest"])[2]["status"], "ok")
+        self.assertIn("src/__pycache__/", self.git("status", "--porcelain", "--untracked-files=normal"))
+        self.assertEqual(self.begin(run)[2]["status"], "ok")
+
+
+class Shift(Base):
+    feat_files = {"src/calc.py": FEAT + "\ndef mul(a, b):\n    return a / b\n"}
+    second = two("src/calc.py", 8, "return a / b", "return a * b")
+
+    def start(self):
+        run = self.pin()
+        self.ingest(run, CAND, self.second)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"]))
+                            for c in (CAND, self.second)])
+        self.go(run)
+        return run
+
+    def test_later_finding_follows_the_inserted_lines(self):
+        run = self.start()
+        bg = self.begin(run)[2]
+        self.assertEqual((bg["id"], bg["line"]), (report_id(CAND), 5))
+        self.edit("src/calc.py", QUOTE, "total = a\n    return total + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        bg = self.begin(run)[2]
+        self.assertEqual((bg["id"], bg["line"]), (report_id(self.second), 9))
+        with open(bg["brief"], encoding="utf-8") as fh:
+            self.assertIn("lines: 9-9", fh.read())
+
+    def test_vanished_quote_is_stale_not_edited(self):
+        run = self.start()
+        bg = self.begin(run)[2]
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.edit("src/calc.py", "return a / b", "return a // b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        self.assertEqual(self.begin(run)[2]["status"], "done")
+        with open(os.path.join(run, "fix", "state.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["done"][report_id(self.second)]["outcome"], "stale")
+
+
+class Paths(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "x = 1\n"}
+
+    def test_protected(self):
+        for p in ("package-lock.json", "sub/Cargo.lock", ".github/workflows/ci.yml", ".env", "pyproject.toml",
+                  "pkg/package.json", "conf/app.yaml", "requirements-dev.txt", "go.mod", "NAMESPACE", "Jenkinsfile"):
+            self.assertTrue(fix._protected(p), p)
+        for p in ("src/calc.py", "README.md", "tests/test_calc.py"):
+            self.assertFalse(fix._protected(p), p)
+
+    def test_live(self):
+        outside = os.path.join(self.tmp, "outside.py")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n")
+        os.symlink("src", os.path.join(self.repo, "link"))
+        os.symlink("src/calc.py", os.path.join(self.repo, "alias.py"))
+        self.git("add", "link", "alias.py")
+        self.git("commit", "-q", "-m", "links")
+        with open(os.path.join(self.repo, "loose.py"), "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n")
+        self.assertEqual(fix._live(self.repo, "src/calc.py"), os.path.join(self.repo, "src", "calc.py"))
+        for p in (outside, "../outside.py", "src/../../outside.py", "link/calc.py", "alias.py", "loose.py", "src", "",
+                  "src/missing.py", "src/calc.py\0", None):
+            self.assertIsNone(fix._live(self.repo, p), p)
+
+    def test_relocate(self):
+        text = "a = 1\nif x:\n    return a -\n        b\nreturn 2\n"
+        self.assertEqual(fix._relocate(text, "return a - b"), 3)
+        self.assertEqual(fix._relocate(text, "return   2"), 5)
+        self.assertIsNone(fix._relocate(text, "missing"))
+        self.assertIsNone(fix._relocate(text + text, "return 2"))
+        self.assertIsNone(fix._relocate(text, "   "))
 
 
 class Units(unittest.TestCase):

@@ -96,6 +96,15 @@ def _tier(f: dict) -> Tuple[str, str]:
     return TIERS["complex" if hard else "simple"]
 
 
+def _protected(path: str) -> bool:
+    """Paths no fix may touch: dot components, lockfiles, manifests, config and CI files (A5)."""
+    parts = path.split("/")
+    base = parts[-1]
+    return (any(p.startswith(".") for p in parts) or base in target._LOCKFILES or base.endswith(".lock")
+            or path.endswith(ledger._CFG_EXT) or bool(ledger._CFG_ROOT.match(base)) or bool(_MANIFEST.match(base))
+            or path in ledger._CI_FILES)
+
+
 def _live(repo: str, path) -> Optional[str]:
     """Real path of a tracked regular file inside repo reached without a symlink, else None."""
     if not isinstance(path, str) or not path or "\0" in path or os.path.isabs(path):
@@ -228,19 +237,32 @@ def _note_untracked(repo: str, st: dict) -> None:
 
 def plan(run: str, words: List[str]) -> dict:
     tj = _target(run)
+    if tj["kind"] in ("staged", "unstaged", "worktree"):
+        raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
+    if tj["kind"] in ("path", "repo") and tj.get("dirty"):
+        raise target.Refuse("dirty-pin")  # their tree/ held working-copy content
+    if any("\0" in w for w in words):
+        raise target.Refuse("bad-command")
     ledger.trust_gate(run, words)
     repo = tj["repo"]
+    if target.git(["rev-parse", "HEAD"], repo).strip() != tj["head_sha"]:
+        raise target.Refuse("head-not-checked-out")
+    if _changes(repo):
+        raise target.Refuse("dirty-tree")  # FIX-04: a clean start, untracked files included
+    if os.path.exists(os.path.join(_fixdir(run), "state.json")):
+        raise target.Refuse("already-run")  # FIX-03: one run per review
     entries, skipped = [], []
     for f in report.build(run)["findings"]:
         fix_text = f.get("fix")
         why, line = None, None
         if not isinstance(fix_text, str) or not fix_text.strip():
             why = "no-fix"
+        elif _protected(f["path"]):
+            why = "protected-path"
         else:
             real = _live(repo, f["path"])
             line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
-            if line is None:
-                why = "stale"
+            why = "bad-path" if real is None else "stale" if line is None else None
         if why:
             skipped.append({"id": f["id"], "path": f["path"], "why": why})
             continue
@@ -248,6 +270,12 @@ def plan(run: str, words: List[str]) -> dict:
         e["line"], e["end_line"] = line, line + (f["end_line"] - f["line"])
         e["model"], e["effort"] = _tier(e)
         entries.append(e)
+    if not entries:
+        counts = {}
+        for x in skipped:
+            counts[x["why"]] = counts.get(x["why"], 0) + 1
+        raise target.Refuse("nothing-to-fix", "skipped: " + (", ".join("%s %d" % kv for kv in sorted(counts.items()))
+                                                             or "none"))
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
     text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
                                                                           _e(shlex.join(words)))]
@@ -310,7 +338,23 @@ def begin(run: str) -> dict:
         raise target.Refuse("in-flight")
     repo = tj["repo"]
     fd = _fixdir(run)
-    for e in _json(os.path.join(fd, "plan.json"))["entries"]:
+    raw = _read(os.path.join(fd, "plan.json"))
+    if hashlib.sha256(raw).hexdigest() != st["digest"]:
+        raise target.Refuse("digest-mismatch")
+    if target.git(["rev-parse", "HEAD"], repo).strip() != tj["head_sha"]:
+        raise target.Refuse("head-moved")
+    if _refs(repo) != st["refs"]:
+        raise target.Refuse("refs-moved")
+    top = os.path.realpath(repo)
+    for xy, p in _changes(repo):  # only accepted fixes and files a test run left behind may differ from HEAD
+        a = st["accepted"].get(p)
+        try:
+            kept = xy == " M" and a is not None and hashlib.sha256(_read(os.path.join(top, p))).hexdigest() == a["sha"]
+        except OSError:
+            kept = False
+        if not kept and not (xy == "??" and p in st["untracked"]):
+            raise target.Refuse("tree-changed")
+    for e in json.loads(raw.decode("utf-8"))["entries"]:
         if e["id"] in st["done"]:
             continue
         real = _live(repo, e["path"])
