@@ -444,8 +444,8 @@ def baseline(run: str, digest: str) -> dict:
     files = [os.path.join(repo, target.git(["rev-parse", "--git-path", p], repo).strip())
              for p in ("config", "info/attributes", "info/exclude")]
     st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
-          "untracked": [], "in_flight": None, "halted": None, "side_effects": []}
-    _save(run, st)  # before the run: a second baseline or plan now refuses already-run
+          "untracked": [], "in_flight": None, "halted": "baseline-interrupted", "side_effects": []}
+    _save(run, st)  # before the run: a second baseline or plan refuses already-run, and a hard kill leaves it halted
     try:
         res = _tests(run, st)
         moved = _sweep(run, tj, st, "baseline")

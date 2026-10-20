@@ -986,6 +986,38 @@ class TestRuns(Scope):
         self.assertEqual((rc, b["status"], b["reason"]), (1, "halted", "refs-moved"), b)
         self.assertEqual(self.begin(run)[2]["reason"], "halted")
 
+    def test_killed_baseline_stays_halted(self):
+        run = self.pin()
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.arm()
+        started = os.path.join(self.tmp, "started")
+        j = self.plan(run, self.probe("open(%r, 'w').write(str(os.getpid())); os.rename(%r, %r); time.sleep(60)" %
+                                      (started + ".tmp", started + ".tmp", started)))[2]
+        e = gitfix.env()
+        e["TMPDIR"] = self.tmp
+        proc = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "fix.py"), "baseline", "--run", run,
+                                 "--digest", j["digest"]], cwd=self.repo, env=e, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        self.addCleanup(proc.kill)
+        deadline = time.monotonic() + 20
+        while not os.path.exists(started):
+            self.assertLess(time.monotonic(), deadline, "the test command never started")
+            time.sleep(0.05)
+        with open(started, encoding="utf-8") as fh:
+            pgid = int(fh.read())
+
+        def reap():  # the probe leads its own session, so its pid is its group id
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(reap)
+        proc.kill()
+        proc.wait(timeout=20)
+        self.assertEqual(self.state(run)["halted"], "baseline-interrupted")
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+
     def test_test_cache_left(self):
         run, fid, bg = self.started(CAND, SECOND_CAND, words=self.probe('open("out.log", "w").write("x")'))
         self.edit("src/calc.py", QUOTE, "return a + b")

@@ -74,7 +74,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `refs-moved` | A branch, tag or stash ref changed (a halted baseline also uses this reason) | Do not touch refs during a fix run |
 | `tree-changed` | A file other than an accepted fix or a test leftover differs from `HEAD` | Leave the tree alone while it runs |
 | `baseline-red` | The command failed, timed out or could not start on the untouched tree; `exit` and `tail` are shown | Make the tests pass first. The test environment holds only `PATH`, `LANG`, `LC_ALL` and `TERM` with a private `HOME` and `TMPDIR`, so a command that needs other variables or your home directory fails here |
-| `baseline-interrupted` | `baseline` was interrupted; no green baseline exists | Review again |
+| `baseline-interrupted` | `baseline` was interrupted or killed before it finished; no green baseline exists | Review again |
 
 ## Limits
 
