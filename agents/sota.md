@@ -48,7 +48,7 @@ One line per finding, nothing else. A line is a JSON array of [key, value] pairs
 
 - item and quote come from one inventory item: item its number, quote equal to its name.
 - sources lists one to five https URLs you actually read.
-- In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
+- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Last, one line listing the inventory item numbers you checked:

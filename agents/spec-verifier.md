@@ -47,5 +47,5 @@ Exactly one line, nothing else: a JSON array of [key, value] pairs, never an obj
 
 [["id", "F-0123456789"], ["verdict", "confirmed"], ["evidence", [[["path", "src/calc.py"], ["line", 5], ["quote", "return a - b"]]]], ["reason", "add subtracts, so the requirement at the named spec line is not met by any path in this module."]]
 
-In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
+In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
 Never add a score, confidence or evidence class: the skill derives them.

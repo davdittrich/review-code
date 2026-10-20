@@ -958,6 +958,12 @@ class WireForm(Base):
         v = self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
         self.assertEqual(v["confirmed"], out["ids"])
 
+    def test_unicode_escaped_double_quote(self):  # 02a.18: a lane writes a quote as \\u0022 so the here-document body has no backslash-quote
+        raw = json.dumps(wire(dict(CAND, title='uses "x" in text'))).replace('\\"', "\\u0022")
+        self.assertNotIn('\\"', raw)
+        out = self.ingest(raw, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))
+
     def test_old_object_form_is_invalid(self):
         out = self.ingest(json.dumps(CAND), json.dumps({"inspected": ["src/calc.py"]}))
         self.assertEqual((out["ids"], out["dropped"]["invalid"]), ([], 2))  # the trailer is invalid too

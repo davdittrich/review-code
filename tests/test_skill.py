@@ -71,6 +71,7 @@ class Procedure(unittest.TestCase):
         self.assertIn("starts with `[`", self.text)
         self.assertNotIn("starts with `{`", self.text)
         self.assertIn("\\u007b", self.text)
+        self.assertIn("\\u0022", self.text)  # 02a.18: a quote inside a string value
 
     def test_delimiters_and_flags(self):
         for s in ("REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "REPRO-<id>", "--json", "--sarif"):

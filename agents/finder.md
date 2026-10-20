@@ -67,7 +67,7 @@ One line per finding, nothing else. A line is a JSON array of [key, value] pairs
 - path is relative to tree/; line and end_line are 1-based; end_line and fix may be left out.
 - quote is copied verbatim from the cited lines in tree/.
 - trigger names the input or state that makes the line fail.
-- In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
+- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Last, one line listing every file you read, relative to tree/:

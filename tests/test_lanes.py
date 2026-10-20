@@ -326,6 +326,10 @@ class BraceFree(unittest.TestCase):
         for name in plan.MAX_TURNS:
             self.assertIn("\\u007b", "\n".join(parts(name)[1]), name)
 
+    def test_every_producer_says_how_to_write_a_double_quote(self):  # 02a.18: the guard denies a backslash-escaped quote in a here-document body
+        for name in plan.MAX_TURNS:
+            self.assertIn("\\u0022", "\n".join(parts(name)[1]), name)
+
 
 class TurnCeilings(unittest.TestCase):
     """LANE-09: maxTurns is frontmatter-only, so each agent file carries plan.py's ceiling."""

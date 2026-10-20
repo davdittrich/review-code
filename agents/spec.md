@@ -65,7 +65,7 @@ One line per finding, nothing else. A line is a JSON array of [key, value] pairs
 - quote is copied verbatim from the cited lines in tree/, never from inputs/spec.md.
 - spec_line is a line inside an UNTRUSTED block of inputs/spec.md; no other line is accepted.
 - Never copy spec text into title, trigger, fix or any other field.
-- In every string value write each `{` as `\u007b`: the shell guard denies a brace followed by a quote, and the skill decodes it.
+- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Then one line listing every file you read, relative to tree/:
