@@ -17,15 +17,23 @@ differently.
 
 ## Description under test
 
-SKILL.md git blob id: `3700f2cca4617802e2cdd7529e3c87a61a72dc33`
-(`git rev-parse HEAD:skills/review-code/SKILL.md`).
-A later edit to the gate wording in the SKILL.md body (review-code-qz4.26) moved the file blob to
-`4828f0c74dae805534260c9c224395416dfd3089`; the matt.md re-base (review-code-qz4.30) added a
-"Two axes" body section and moved it to `06db443ddc06238bfd679efee95fb306c301dbb2`. The description text is byte-identical, so the trial
-results below still apply. A later description change invalidates the
-results below.
+**Current description (reworded in ea40bb4, 2026-10-20; not trial-tested):**
 
-The trials ran against this blob (commit `039d0e0`). It replaces the first description (blob
+```text
+Reviews code changes (diff, commit, branch, PR or MR, working tree, files, repo) and reports only
+verified defects with file:line evidence. Use whenever the user wants code reviewed, critiqued or
+audited, or asks what is wrong with a change, even without the word review; also to post the
+findings to a PR or fix them.
+```
+
+The T/N trial results below apply only to the earlier description text (blob
+`3700f2cca4617802e2cdd7529e3c87a61a72dc33`, kept byte-identical through review-code-qz4.26 and
+qz4.30 body edits). They were not re-run on the current text: the trigger harness cannot
+discriminate (the skill-creator `run_eval` path drops block-scalar descriptions and returns on the
+first tool call; review-code-98e). The current wording is therefore unvalidated for triggering.
+The next description change also leaves the results below stale.
+
+The trials ran against the earlier blob `3700f2cc` (commit `039d0e0`). It replaces the first description (blob
 `9f902cbb68d5c858659afe690cfa35e9d9c03c10`), under which T10 lost to `critical-code-reviewer`
 (9 WIN, 1 LOSE; review-code-qz4.16). The wording change added "the working tree", "a critical or
 adversarial review" and "a code review"; the exclusion sentence is unchanged. All 20 prompts were

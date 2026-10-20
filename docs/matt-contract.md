@@ -12,7 +12,7 @@
 
 | matt.md lines | Rule (paraphrase) | Disposition | Rationale | Target |
 |---|---|---|---|---|
-| L1-L4 | Frontmatter: name `code-review`, trigger description | replace | The skill is named `review-code`; its description is already trial-tested (docs/trigger-prompts.md) and keeps its wording. | SKILL.md frontmatter |
+| L1-L4 | Frontmatter: name `code-review`, trigger description | replace | The skill is named `review-code`; its description was reworded after the trigger trials (docs/trigger-prompts.md) and the current text is not trial-tested. | SKILL.md frontmatter |
 | L6-L9 | Review the diff from a fixed point on two axes: Standards and Spec | keep | Core design. | SKILL.md "Two axes" |
 | L11 | Both axes run as parallel sub-agents, then are aggregated | adapt | Sub-agent lanes arrive in a later phase; the v0.1 stub reviews both axes in one pass in the main thread. | later phases |
 | L13 | Tell the user to run `/setup-matt-pocock-skills` when no tracker is given | replace | No dependency on another skill; ask the user for the spec instead. | SKILL.md |
