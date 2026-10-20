@@ -81,7 +81,7 @@
 | L92 | Operating protocols section heading | adapt | Rules about uncertainty move into the skill's verification gate. | SKILL.md | Posit v1.2 |
 | L94 | Constraints and uncertainty sub-heading | adapt | Uncertain items become the `unverifiable` bucket (VERI-02), listed rather than dropped. | SKILL.md + verifier | Posit v1.2 |
 | L95 | With partial code, say what cannot be verified and flag risk without assuming failure | keep | Maps to verifier outcome `unverifiable` (VERI-02). | SKILL.md + verifier | Posit v1.2 |
-| L96 | On repeat reviews focus on the delta and do not reopen settled items | keep | Fits change targeting (CTX-07) and origin tagging (VERI-06). | SKILL.md | Posit v1.2 |
+| L96 | On repeat reviews focus on the delta and do not reopen settled items | drop | A run reviews one change and holds no earlier-round state; lanes already skip unchanged lines and the report tags pre-existing findings by origin. | n/a | Posit v1.2 |
 | L97 | When a pattern is unfamiliar, note it, defer to team convention and ask | keep | Aligns with honouring repo guidance files (CTX-06). | SKILL.md | Posit v1.2 |
 | L99 | Severity tiers sub-heading | adapt | D-13: tiers stay as severity; evidence class is a second, separate axis. | severity rubric (OUT-01) | Posit v1.2 |
 | L100 | Blocking tier: security, data loss, races, accessibility, doc/source mismatch, constructor divergence | adapt | D-13: category list kept, including constructor divergence; Blocking additionally requires `reproduced` or `traced` evidence (VERI-03). Accessibility is demoted to Required when its evidence is below `traced` (approved). Tier core exists upstream; the two cross-file categories are v1.3. | severity rubric | v1.3-only |
@@ -91,7 +91,7 @@
 | L105 | Tone and delivery sub-heading | adapt | Tone block is kept, minus theatre (D-14). | SKILL.md tone | Posit v1.2 |
 | L106 | Explain why: state the failure mode | keep | Becomes the `evidence` field of a finding. | finding schema (OUT-02) | Posit v1.2 |
 | L107 | Be specific: quote lines and give a fix | keep | Becomes the `file`, `line` and `fix` fields. | finding schema (OUT-02) | Posit v1.2 |
-| L108 | Exit rule: say so when the code is genuinely strong; do not invent issues | keep | An empty verified result is valid output; supports the no-false-positive core value. | SKILL.md | Posit v1.2 |
+| L108 | Exit rule: say so when the code is genuinely strong; do not invent issues | drop | A lane with nothing to report emits only its inspected line, and the report labels an empty result "No blocking findings" (report.py); lanes carry no prose. | report.py | Posit v1.2 |
 | L110 | Final review check heading | adapt | Becomes the verifier checklist. | verifier prompt (VERI-01) | Posit v1.2 |
 | L111 | Is a production incident likely? | adapt | Used by the verifier as an impact question. | verifier prompt | Posit v1.2 |
 | L112 | Which assumptions are unvalidated? | adapt | Used by the verifier; unvalidated assumptions yield `inferred` evidence. | verifier prompt | Posit v1.2 |
