@@ -97,11 +97,10 @@ class Procedure(unittest.TestCase):
 
 
 DESCRIPTION = """description: >
-  Critically reviews code and reports only verified defects, each with file:line evidence, an
-  evidence class and a severity. Use whenever the user wants a diff, commit, branch, pull request,
-  merge request, working tree, file or repository reviewed, critiqued or audited, or asks what is
-  wrong with a change, even without the word review; also to post the findings to a PR or fix them.
-  Not for writing, explaining or debugging code.
+  Reviews code changes (diff, commit, branch, PR or MR, working tree, files, repo) and reports only
+  verified defects with file:line evidence. Use whenever the user wants code reviewed, critiqued or
+  audited, or asks what is wrong with a change, even without the word review; also to post the
+  findings to a PR or fix them.
 """
 # 04-02 probe decision line (fan-out waiting rule); also pins review-code-g1x.11, the "foreground Agent call" wording.
 FAN_OUT = ("issue all calls of a wave in one message; wait until every call of the wave has returned or notified "

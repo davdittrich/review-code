@@ -1,11 +1,10 @@
 ---
 name: review-code
 description: >
-  Critically reviews code and reports only verified defects, each with file:line evidence, an
-  evidence class and a severity. Use whenever the user wants a diff, commit, branch, pull request,
-  merge request, working tree, file or repository reviewed, critiqued or audited, or asks what is
-  wrong with a change, even without the word review; also to post the findings to a PR or fix them.
-  Not for writing, explaining or debugging code.
+  Reviews code changes (diff, commit, branch, PR or MR, working tree, files, repo) and reports only
+  verified defects with file:line evidence. Use whenever the user wants code reviewed, critiqued or
+  audited, or asks what is wrong with a change, even without the word review; also to post the
+  findings to a PR or fix them.
 license: MIT
 compatibility: Claude Code >= 2.1.292 (provisional); git; python3 >= 3.9; gh for pull request reading and posting; glab for merge request reading and posting
 argument-hint: "[target]"
