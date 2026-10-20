@@ -42,6 +42,7 @@ _MANIFEST = re.compile(
     r"build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|pom\.xml|NAMESPACE|.*\.csproj|"
     r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
+_RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel)\.conf(?:ig)?\.\w+|noxfile\.py|Rakefile|build\.rs)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered")
 REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
@@ -383,6 +384,8 @@ def plan(run: str, words: List[str]) -> dict:
             why = "no-fix"
         elif _protected(f["path"]):
             why = "protected-path"
+        elif ledger._is_test(f["path"]) or ledger._is_fixture(f["path"]) or _RUNNER.match(f["path"].rpartition("/")[2]):
+            why = "test-path"  # a fix there could weaken the tests that judge it
         else:
             real = _live(repo, f["path"])
             line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])

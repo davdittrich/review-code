@@ -19,7 +19,7 @@ Only when the user's words held `--fix`; a review without it never edits a file.
 
 ## Which findings
 
-Verified findings only, in report order. A finding is skipped, with the reason listed under `== skipped ==` in the preview, when it has no fix text (`no-fix`), names a protected path (`protected-path`), names a path that is not a tracked regular file reached without a symlink (`bad-path`), or its quote no longer occurs exactly once in the file (`stale`). The tier rule picks the pair: `opus` with `high` effort for a Blocking category or severity, a span of six lines or more or a fix text over 300 characters, else `sonnet` with `medium`. The pairs are unvalidated. Each preview row carries the finding's origin label.
+Verified findings only, in report order. A finding is skipped, with the reason listed under `== skipped ==` in the preview, when it has no fix text (`no-fix`), names a protected path (`protected-path`), names a test file, a test fixture (`conftest.py`, `fixtures/`, `testdata/`) or a test-runner config (`jest.config.*`, `vitest.config.*`, `karma.conf.*`, `webpack.config.*`, `babel.config.*`, `noxfile.py`, `Rakefile`, `build.rs`) (`test-path`; a fix there could weaken the tests that judge it), names a path that is not a tracked regular file reached without a symlink (`bad-path`), or its quote no longer occurs exactly once in the file (`stale`). The tier rule picks the pair: `opus` with `high` effort for a Blocking category or severity, a span of six lines or more or a fix text over 300 characters, else `sonnet` with `medium`. The pairs are unvalidated. Each preview row carries the finding's origin label.
 
 ## Protected paths
 

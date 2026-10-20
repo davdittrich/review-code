@@ -337,6 +337,32 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
 
 
+class TestPathSkips(Base):
+    feat_files = {
+        "src/calc.py": FEAT,
+        "tests/test_calc.py": "def test_x():\n    assert 1 - 1\n",
+        "conftest.py": "def f():\n    return 2 - 1\n",
+        "jest.config.js": "module.exports = 3 - 1;\n",
+    }
+
+    def test_test_files_are_skipped(self):
+        run = self.pin()
+        cands = [CAND, two("tests/test_calc.py", 2, "assert 1 - 1", "assert 1 + 1"),
+                 two("conftest.py", 2, "return 2 - 1", "return 2 + 1"),
+                 two("jest.config.js", 1, "module.exports = 3 - 1;", "module.exports = 3 + 1;")]
+        self.assertEqual(len(self.ingest(run, *cands)), 4)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 3), out)
+        want = {report_id(c): "test-path" for c in cands[1:]}
+        block = out.split("== skipped ==\n")[1].split("\n")
+        self.assertEqual({ln.split()[0]: ln.split()[2] for ln in block[:3]}, want)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
+        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+
+
 def report_id(c):
     return "F-" + hashlib.sha256("\0".join((c["path"], c["category"], " ".join(c["quote"].split()))).encode()).hexdigest()[:10]
 
