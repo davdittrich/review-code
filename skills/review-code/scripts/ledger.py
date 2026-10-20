@@ -403,6 +403,9 @@ def _clean(v: object) -> str:
     return sanitize.sanitize_prose(v if isinstance(v, str) else "")
 
 
+_BODY = {"pr": "body", "mr": "description"}  # the field that holds the text, per forge
+
+
 def _forge(tj: dict) -> Optional[dict]:
     """PR or MR title, body, head branch and closing issue numbers; None when gh or glab fails."""
     ident = tj["url"] or str(tj["number"])
@@ -414,7 +417,7 @@ def _forge(tj: dict) -> Optional[dict]:
             j = target.glab_json(["mr", "view", ident, "-F", "json"], tj["repo"])
         mr = tj["kind"] == "mr"
         closing = {c["number"] for c in j.get("closingIssuesReferences") or []}  # forge JSON is untrusted shape too
-        return {"title": _clean(j.get("title")), "body": _clean(j.get("description" if mr else "body")),
+        return {"title": _clean(j.get("title")), "body": _clean(j.get(_BODY.get(tj["kind"], "body"))),
                 "branch": str(j.get("source_branch" if mr else "headRefName") or ""),
                 "closing": {n for n in closing if type(n) is int and 0 < n < 10 ** 9}}
     except (target.Refuse, AttributeError, KeyError, TypeError):
@@ -434,7 +437,7 @@ def _issue_text(tj: dict, n: int) -> Optional[str]:
             j = target.glab_json(["issue", "view", str(n), "-F", "json"] + _repo_args(tj), tj["repo"])
         else:
             j = target.gh_json(["issue", "view", str(n), "--json", "title,body"] + _repo_args(tj), tj["repo"])
-        return _clean(j.get("title")) + "\n\n" + _clean(j.get("description" if tj["kind"] == "mr" else "body"))
+        return _clean(j.get("title")) + "\n\n" + _clean(j.get(_BODY.get(tj["kind"], "body")))
     except (target.Refuse, AttributeError):
         return None
 
