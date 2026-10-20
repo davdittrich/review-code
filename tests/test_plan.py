@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+import paths  # noqa: F401
 
 import test_packs as tp  # noqa: E402
 import test_report as tr  # noqa: E402  (module import: its test classes are not collected twice)

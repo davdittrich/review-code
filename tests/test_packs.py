@@ -7,7 +7,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 REFS = os.path.join(ROOT, "skills", "review-code", "references")
-sys.path.insert(0, os.path.join(ROOT, "skills", "review-code", "scripts"))
+import paths  # noqa: F401
 
 import report  # noqa: E402
 

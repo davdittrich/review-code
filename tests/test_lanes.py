@@ -7,8 +7,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, "skills", "review-code", "scripts"))
-sys.path.insert(0, HERE)
+import paths  # noqa: F401
 
 import plan  # noqa: E402
 import report  # noqa: E402

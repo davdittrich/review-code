@@ -13,8 +13,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
-sys.path.insert(0, SCRIPTS)
-sys.path.insert(0, HERE)
+import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import repro  # noqa: E402

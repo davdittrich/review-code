@@ -4,7 +4,7 @@ import re
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "review-code", "scripts"))
+import paths  # noqa: F401
 import sanitize  # noqa: E402
 
 ZWSP = chr(0x200B)
