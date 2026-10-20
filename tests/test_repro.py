@@ -188,5 +188,38 @@ class Rules(Base):
             ast.parse(fh.read(), feature_version=(3, 9))
 
 
+class Execute(unittest.TestCase):
+    def test_interrupt_kills_process_group(self):
+        seen = []
+
+        def boom(proc, *a, **k):
+            seen.append(proc.pid)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(subprocess.Popen, "communicate", autospec=True, side_effect=boom):
+            with self.assertRaises(KeyboardInterrupt):
+                repro._execute(["/bin/sh", "-c", "sleep 30 & sleep 30"], "/", {"PATH": os.environ["PATH"]}, FID)
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                os.killpg(seen[0], 0)
+            except ProcessLookupError:
+                break
+            self.assertLess(time.monotonic(), deadline, "the process group is still alive")
+            time.sleep(0.05)
+
+    def test_timeout_argument_and_tail(self):
+        env = {"PATH": os.environ["PATH"]}
+        t0 = time.monotonic()
+        res = repro._execute(["sleep", "30"], "/", env, FID, timeout=1)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertEqual(res, {"outcome": "timeout", "exit": None, "tail": ""})
+        res = repro._execute(["/bin/sh", "-c", "i=0; while [ $i -lt 3000 ]; do echo line$i; i=$((i+1)); done; exit 3"],
+                             "/", env, FID)
+        self.assertEqual((res["outcome"], res["exit"]), ("not-reproduced", 3))
+        self.assertEqual(len(res["tail"]), 2000)
+        self.assertTrue(res["tail"].endswith("line2999\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

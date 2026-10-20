@@ -1,7 +1,7 @@
 """Run one user-confirmed failing test for one finding in a throwaway worktree and record the outcome.
 
-Stdlib only, Python 3.9 grammar. The only place in the plugin where target code executes, and only
-after ledger.trust_gate passes. Prints one JSON line; never a traceback. No sandbox: the environment
+Stdlib only, Python 3.9 grammar. Runs target code (fix.py is the other place), and only after
+ledger.trust_gate passes. Prints one JSON line; never a traceback. No sandbox: the environment
 allowlist keeps secrets out, nothing more.
 """
 import sys
@@ -32,29 +32,37 @@ def _test_path_ok(rel: str) -> bool:
     return bool(rel) and "\0" not in rel and not os.path.isabs(rel) and ".." not in rel.split("/")
 
 
-def _execute(cmd: List[str], cwd: str, env: dict, fid: str) -> dict:
-    """Run cmd in its own session; on timeout kill the whole group, then collect what is left."""
+def _kill(p) -> None:
+    """SIGKILL the child's whole group, then reap the child so the group is really gone."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        p.kill()
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:  # shortcut: a grandchild that left the session keeps the pipe; abandon it
+        pass
+    p.stdout.close()
+
+
+def _execute(cmd: List[str], cwd: str, env: dict, fid: str, timeout: Optional[float] = None) -> dict:
+    """Run cmd in its own session; on timeout or any BaseException kill the whole group. tail: last 2000 characters."""
     try:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, start_new_session=True)
     except OSError:
-        return {"outcome": "error", "exit": None}
+        return {"outcome": "error", "exit": None, "tail": ""}
     try:
-        out, _ = p.communicate(timeout=TIMEOUT)
+        out, _ = p.communicate(timeout=TIMEOUT if timeout is None else timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except OSError:
-            p.kill()
-        try:
-            p.communicate(timeout=5)
-        except subprocess.TimeoutExpired:  # shortcut: a grandchild that left the session keeps the pipe; abandon it
-            pass
-        return {"outcome": "timeout", "exit": None}
+        _kill(p)
+        return {"outcome": "timeout", "exit": None, "tail": ""}
+    except BaseException:
+        _kill(p)
+        raise
     text = out.decode("utf-8", "replace")
-    if p.returncode != 0 and SENTINEL + fid in text:
-        return {"outcome": "reproduced", "exit": p.returncode}
-    return {"outcome": "not-reproduced", "exit": p.returncode}
+    outcome = "reproduced" if p.returncode != 0 and SENTINEL + fid in text else "not-reproduced"
+    return {"outcome": outcome, "exit": p.returncode, "tail": text[-2000:]}
 
 
 def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes) -> dict:
@@ -103,7 +111,8 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes) -> dic
     out_dir = os.path.join(run_dir, "repro")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
-    target.write_private(os.path.join(out_dir, fid + ".json"), json.dumps(result, sort_keys=True))
+    record = {k: result[k] for k in ("outcome", "exit")}  # the tail is target output: it is not kept
+    target.write_private(os.path.join(out_dir, fid + ".json"), json.dumps(record, sort_keys=True))
     return dict(result, status="ok", id=fid)
 
 

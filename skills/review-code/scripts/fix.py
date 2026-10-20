@@ -21,6 +21,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import tempfile
 from typing import List, Optional, Tuple
@@ -273,23 +274,77 @@ def _tests(run: str, st: dict) -> dict:
         os.mkdir(d, 0o700)
     env = {k: os.environ[k] for k in repro.ENV_KEEP if k in os.environ}
     env.update(HOME=home, TMPDIR=tmp)
-    saved, repro.TIMEOUT = repro.TIMEOUT, TIMEOUT
     try:
-        res = repro._execute(command, _target(run)["repo"], env, "")  # empty id: only the exit code counts
+        res = repro._execute(command, _target(run)["repo"], env, "", timeout=TIMEOUT)  # empty id: only the exit counts
     finally:
-        repro.TIMEOUT = saved
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
+    tail = sanitize.escape_for_code(res["tail"])[0]
     if res["outcome"] in ("timeout", "error"):
-        return {"outcome": res["outcome"], "exit": res["exit"]}
-    return {"outcome": "pass" if res["exit"] == 0 else "fail", "exit": res["exit"]}
+        return {"outcome": res["outcome"], "exit": res["exit"], "tail": tail}
+    return {"outcome": "pass" if res["exit"] == 0 else "fail", "exit": res["exit"], "tail": tail}
 
 
-def _note_untracked(repo: str, st: dict) -> None:
-    """Files a test run left behind (caches, build output) are not an edit by anyone."""
+def _moved(tj: dict, st: dict) -> Optional[str]:
+    if target.git(["rev-parse", "HEAD"], tj["repo"]).strip() != tj["head_sha"]:
+        return "head-moved"
+    return "refs-moved" if _refs(tj["repo"]) != st["refs"] else None
+
+
+def _kept(top: str, xy: str, p: str, a: dict) -> bool:
+    """An accepted file still holds exactly the bytes its fix was accepted with."""
+    try:
+        return xy == " M" and hashlib.sha256(_read(os.path.join(top, p))).hexdigest() == a["sha"]
+    except OSError:
+        return False
+
+
+def _post(run: str, top: str, p: str, a: dict) -> Tuple[bytes, int]:
+    try:
+        mode = stat.S_IMODE(os.stat(os.path.join(top, p)).st_mode)
+    except OSError:
+        mode = 0o644  # shortcut: a deleted accepted file loses its exec bit, upgrade by recording the mode
+    return _read(os.path.join(_fixdir(run), a["id"] + ".post")), mode
+
+
+def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, bytes]] = None) -> Optional[str]:
+    """After a test run. Tracked files the tests changed go back (current bytes quarantined first, accepted fixes
+    from their .post, the rest from HEAD) and are listed in side_effects; new untracked files stay and are listed
+    in untracked. entry (path, bytes) is the fix under test. Answers head-moved, refs-moved or "tests changed
+    <path>" when the run broke the fix under test, else None."""
+    repo = tj["repo"]
+    top = os.path.realpath(repo)
+    moved = _moved(tj, st)
+    if moved:
+        return moved
+    writes, head, idx, side = {}, [], [], []
     for xy, p in _changes(repo):
-        if xy == "??" and p not in st["untracked"]:
-            st["untracked"].append(p)
+        a = st["accepted"].get(p)
+        if xy == "??":
+            if p not in st["untracked"]:
+                st["untracked"].append(p)
+        elif entry and p == entry[0]:
+            if xy != " M":  # staged by the tests: the bytes are judged below, the index goes back now
+                idx.append(p)
+                side.append(p)
+        elif a is None or not _kept(top, xy, p, a):
+            side.append(p)
+            if a is None:
+                head.append(p)
+            else:
+                writes[p] = _post(run, top, p, a)
+                idx += [p] * (xy[0] not in " ?")
+    if side:
+        _undo(run, key, repo, writes, head, idx, [])
+        st["side_effects"] += [x for x in side if x not in st["side_effects"]]
+    if entry:
+        try:
+            now = _read(os.path.join(top, entry[0]))
+        except OSError:
+            now = None
+        if now != entry[1]:
+            return "tests changed " + _names([entry[0]])
+    return None
 
 
 def plan(run: str, words: List[str]) -> dict:
@@ -376,13 +431,18 @@ def baseline(run: str, digest: str) -> dict:
     st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
           "untracked": [], "in_flight": None, "halted": None, "side_effects": []}
     _save(run, st)  # before the run: a second baseline or plan now refuses already-run
-    res = _tests(run, st)
-    _note_untracked(repo, st)
-    if res["outcome"] != "pass":
-        st["halted"] = "baseline-red"
+    try:
+        res = _tests(run, st)
+        moved = _sweep(run, tj, st, "baseline")
+    except BaseException:
+        st["halted"] = "baseline-interrupted"  # no green baseline: begin must not hand out a fix
+        _save(run, st)
+        raise
+    reason = "baseline-red" if res["outcome"] != "pass" else "refs-moved" if moved else None
+    st["halted"] = reason
     _save(run, st)
-    if res["outcome"] != "pass":
-        return {"status": "halted", "reason": "baseline-red", "exit": res["exit"]}
+    if reason:
+        return {"status": "halted", "reason": reason, "exit": res["exit"], "tail": res["tail"]}
     return {"status": "ok"}
 
 
@@ -405,10 +465,7 @@ def begin(run: str) -> dict:
     top = os.path.realpath(repo)
     for xy, p in _changes(repo):  # only accepted fixes and files a test run left behind may differ from HEAD
         a = st["accepted"].get(p)
-        try:
-            kept = xy == " M" and a is not None and hashlib.sha256(_read(os.path.join(top, p))).hexdigest() == a["sha"]
-        except OSError:
-            kept = False
+        kept = a is not None and _kept(top, xy, p, a)
         if not kept and not (xy == "??" and p in st["untracked"]):
             raise target.Refuse("tree-changed")
     for e in json.loads(raw.decode("utf-8"))["entries"]:
@@ -441,8 +498,7 @@ def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
     real = os.path.join(top, path)
     pre = _read(os.path.join(fd, fid + ".pre"))
     entry = {path: (pre, cur["mode"])}
-    moved = "head-moved" if target.git(["rev-parse", "HEAD"], repo).strip() != tj["head_sha"] else \
-        "refs-moved" if _refs(repo) != st["refs"] else None
+    moved = _moved(tj, st)
     if moved:
         _undo(run, fid, repo, entry, [], [], [])
         return "reverted-violation", moved, None
@@ -456,17 +512,9 @@ def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
                 writes[p] = entry[p]
                 idx += [p] * staged
         elif a is not None:
-            try:
-                kept = xy == " M" and hashlib.sha256(_read(os.path.join(top, p))).hexdigest() == a["sha"]
-            except OSError:
-                kept = False
-            if not kept:
+            if not _kept(top, xy, p, a):
                 bad.append(p)
-                try:
-                    mode = stat.S_IMODE(os.stat(os.path.join(top, p)).st_mode)
-                except OSError:
-                    mode = 0o644  # shortcut: a deleted accepted file loses its exec bit, upgrade by recording mode
-                writes[p] = (_read(os.path.join(fd, a["id"] + ".post")), mode)
+                writes[p] = _post(run, top, p, a)
                 idx += [p] * staged
         elif xy == "??":
             if p not in st["untracked"]:
@@ -495,13 +543,16 @@ def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
         _undo(run, fid, repo, entry, [], [], [])
         return "reverted-too-large", "%d changed lines, the limit is %d" % (n, MAX_CHANGED), None
     res = _tests(run, st)
-    _note_untracked(repo, st)
+    broke = _sweep(run, tj, st, fid, (path, now))
+    if broke:
+        _undo(run, fid, repo, entry, [], [], [])
+        return "reverted-violation", broke, res
     if res["outcome"] == "pass":
         _put(os.path.join(fd, fid + ".post"), now)
         st["accepted"][path] = {"id": fid, "sha": hashlib.sha256(now).hexdigest()}
         return "fixed", None, res
     _undo(run, fid, repo, entry, [], [], [])
-    return "reverted-tests", None, res
+    return ("reverted-timeout" if res["outcome"] == "timeout" else "reverted-tests"), None, res
 
 
 def _snapshots_hold(run: str, st: dict) -> bool:
@@ -525,10 +576,20 @@ def finish(run: str, seal: str, status: str) -> dict:
     if not secrets.compare_digest(_seal(run, fid), seal) or not _snapshots_hold(run, st):
         outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
     else:
-        outcome, detail, res = _settle(run, tj, st, cur, status)
+        try:
+            outcome, detail, res = _settle(run, tj, st, cur, status)
+        except BaseException as e:  # Ctrl-C, SIGTERM (as SystemExit), any error: the tree goes back, then re-raise
+            _undo(run, fid, tj["repo"], {cur["path"]: (_read(os.path.join(_fixdir(run), fid + ".pre")), cur["mode"])},
+                  [], [], [])
+            st["done"][fid] = {"outcome": "reverted-interrupt", "exit": None, "detail": type(e).__name__}
+            st["in_flight"], st["halted"] = None, "reverted-interrupt"
+            _save(run, st)
+            raise
     st["done"][fid] = {"outcome": outcome, "exit": res["exit"] if res else None}
     if detail:
         st["done"][fid]["detail"] = detail
+    if res and outcome in REVERTED:
+        st["done"][fid]["tail"] = res["tail"]
     st["in_flight"] = None
     if outcome in REVERTED:
         st["halted"] = outcome
@@ -537,23 +598,66 @@ def finish(run: str, seal: str, status: str) -> dict:
     if detail:
         out["detail"] = detail
     if res and outcome in REVERTED:
-        out["exit"] = res["exit"]
+        out["exit"], out["tail"] = res["exit"], res["tail"]
     return out
 
 
 def report_(run: str) -> dict:
     tj = _target(run)
     st = _state(run)
-    repo = tj["repo"]
-    text = ["%s %s:%d %s" % (e["id"], _e(e["path"]), e["line"], st["done"].get(e["id"], {}).get("outcome", "pending"))
-            for e in _json(os.path.join(_fixdir(run), "plan.json"))["entries"]]
-    text += ["== changes ==", sanitize.escape_for_code(target.git(["diff", "--stat", "--no-color", "--no-ext-diff"],
-                                                              repo))[0].rstrip("\n"),
-             "HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED")]
+    repo, fd, cur = tj["repo"], _fixdir(run), st["in_flight"]
+    tampered = st["halted"] == "tampered"  # then no git command runs: a rewritten config may carry filters
+    try:
+        entries = _json(os.path.join(fd, "plan.json"))["entries"]
+    except (OSError, ValueError, KeyError):
+        entries = []
+    text = []
+    for e in entries:
+        d = st["done"].get(e["id"], {})
+        outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else "pending")
+        text.append("%s %s:%d %s%s" % (e["id"], _e(e["path"]), e["line"], outcome,
+                                       " (%s)" % _e(d["detail"]) if d.get("detail") else ""))
+    if tampered:
+        text.append("TAMPERED: the run directory or the git config changed while the fixer ran. The tree is left as it "
+                    "is and no git command ran. Check .git/config and git status by hand.")
+    else:
+        stat_out = target.git(["diff", "--stat", "--no-color", "--no-ext-diff"], repo)
+        text += ["== changed files ==", sanitize.escape_for_code(stat_out)[0].rstrip("\n")]
+    quarantined = sorted(os.path.relpath(os.path.join(d, n), os.path.join(fd, "quarantine"))
+                         for d, _, names in os.walk(os.path.join(fd, "quarantine")) for n in names)
+    for title, items in (("restored after tests", st["side_effects"]),
+                         ("quarantined", quarantined[:50] + ["and %d more" % (len(quarantined) - 50)] *
+                          (len(quarantined) > 50)),
+                         ("untracked files left by tests", st["untracked"])):
+        if items:
+            text += ["== %s ==" % title] + [_e(x) for x in items]
+    if cur:
+        text += ["== in flight ==", "%s (the file may hold a partial edit); snapshot: %s" % (
+            _e(cur["path"]), os.path.join(fd, cur["id"] + ".pre"))]
+    if not tampered:
+        known = set(st["accepted"]) | set(st["untracked"]) | ({cur["path"]} if cur else set())
+        odd = [p for _, p in _changes(repo) if p not in known]
+        if odd:
+            text += ["== unexpected changes =="] + [_e(p) for p in odd]
+    tails = [(i, d) for i, d in st["done"].items() if d.get("tail")]
+    if tails:
+        nonce = secrets.token_hex(8)
+        text.append("== test output (untrusted) ==")
+        for i, d in tails:
+            text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger._block(d["tail"], nonce)]
+    if not tampered:
+        text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
+    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",
+            "passing tests do not prove a fix is right where the tests do not cover it",
+            "a new import of a package no manifest declares is not checked"]
     outs = [v.get("outcome") for v in st["done"].values()]
     return {"status": "ok", "text": "\n".join(text), "fixed": outs.count("fixed"),
             "reverted": sum(1 for o in outs if o in REVERTED), "declined": outs.count("declined"),
             "halted": 1 if st["halted"] else 0}
+
+
+def _term(signum, frame):
+    raise SystemExit(143)  # unwinds through the restore handlers; the default action would skip them
 
 
 def main(argv: List[str], stdin: Optional[object] = None) -> int:
@@ -568,6 +672,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                 or v.get("--status", "applied") not in ("applied", "declined"):
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
+        if sub in ("baseline", "finish"):
+            signal.signal(signal.SIGTERM, _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
             out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])

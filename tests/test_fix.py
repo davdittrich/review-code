@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -131,8 +133,8 @@ class Base(unittest.TestCase):
         self.confirm(run, (fid, dict(CITE, quote=cand["quote"], line=cand["line"])))
         return run, fid
 
-    def go(self, run):
-        rc, out, j = self.plan(run)
+    def go(self, run, words=None):
+        rc, out, j = self.plan(run, words)
         self.assertEqual((rc, j["status"]), (0, "ok"), out)
         rc, _, j2 = self.baseline(run, j["digest"])
         self.assertEqual((rc, j2["status"]), (0, "ok"), j2)
@@ -505,17 +507,30 @@ class Scope(Base):
     def p(self, rel):
         return os.path.join(self.repo, rel)
 
-    def started(self, cand=CAND, *more):
-        """(run, fid, bg): baseline green, first fix handed out, nothing edited yet."""
+    def started(self, cand=CAND, *more, words=None, armed=False):
+        """(run, fid, bg): baseline green, first fix handed out, nothing edited yet. armed: the go file exists
+        already, so the baseline run takes the probe branch too."""
         run = self.pin()
         cands = (cand,) + more
         ids = self.ingest(run, *cands)
         self.confirm(run, *[(i, dict(CITE, path=c["path"], quote=c["quote"], line=c["line"]))
                             for i, c in zip(ids, cands)])
-        self.go(run)
+        if armed:
+            self.arm()
+        self.go(run, words)
         bg = self.begin(run)[2]
         self.assertEqual(bg["status"], "ok", bg)
         return run, bg["id"], bg
+
+    def arm(self):
+        with open(os.path.join(self.tmp, "go"), "w", encoding="utf-8"):
+            pass
+
+    def probe(self, body):
+        """A test command that passes until the go file exists, then runs body (one line of python source)."""
+        # one line: the plan takes one command word per line
+        code = "import os, sys, time; os.path.exists(%r) and exec(%r)" % (os.path.join(self.tmp, "go"), body)
+        return [sys.executable, "-B", "-c", code]
 
     def state(self, run):
         with open(os.path.join(run, "fix", "state.json"), encoding="utf-8") as fh:
@@ -740,6 +755,187 @@ class Tamper(Scope):
         with open(os.path.join(run, "fix", fid + ".post"), "ab") as fh:
             fh.write(b"#")
         self.tampered(run, bg2, bg2["id"])
+
+
+SECOND_CAND = two("src/second.py", 2, "return a / b", "return a * b")
+
+
+class TestRuns(Scope):
+    def test_timeout(self):
+        run, fid, bg = self.started(words=self.probe("time.sleep(30)"))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        t0 = time.monotonic()
+        with mock.patch.object(fix, "TIMEOUT", 1), gitfix.isolated(self.tmp):
+            f = fix.finish(run, bg["seal"], "applied")
+        self.assertLess(time.monotonic() - t0, 15)
+        self.assertEqual((f["status"], f["outcome"]), ("halted", "reverted-timeout"), f)
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+        self.assertEqual(self.state(run)["halted"], "reverted-timeout")
+
+    def test_failing_tail(self):
+        body = 'sys.stdout.write("MARK-" + chr(27) + "[31m\\n"); sys.exit(1)'
+        run, fid, bg = self.started(words=self.probe(body))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["outcome"], f["exit"]), (1, "reverted-tests", 1), f)
+        self.assertIn("MARK-", f["tail"])
+        self.assertNotIn("\x1b", f["tail"])
+        self.assertLessEqual(len(f["tail"]), 2000 * 8)
+
+    def test_interrupt_restores(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        with mock.patch.object(fix.repro, "_execute", side_effect=KeyboardInterrupt), gitfix.isolated(self.tmp):
+            with self.assertRaises(KeyboardInterrupt):
+                fix.finish(run, bg["seal"], "applied")
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+        st = self.state(run)
+        self.assertEqual((st["done"][fid]["outcome"], st["halted"], st["in_flight"]),
+                         ("reverted-interrupt", "reverted-interrupt", None))
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+
+    def test_sigterm_restores(self):
+        run, fid, bg = self.started(words=self.probe("open(%r, 'w').close(); time.sleep(60)" %
+                                                     os.path.join(self.tmp, "started")))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        e = gitfix.env()
+        e["TMPDIR"] = self.tmp
+        proc = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "fix.py"), "finish", "--run", run, "--seal",
+                                 bg["seal"], "--status", "applied"], cwd=self.repo, env=e, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        self.addCleanup(proc.kill)
+        deadline = time.monotonic() + 20
+        while not os.path.exists(os.path.join(self.tmp, "started")):
+            self.assertLess(time.monotonic(), deadline, "the test command never started")
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=20)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn(b"Traceback", err)
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+        self.assertEqual(self.state(run)["done"][fid]["outcome"], "reverted-interrupt")
+
+    def test_side_effect_restored(self):
+        body = 'open("src/other.py", "w").write("x")'
+        run, fid, bg = self.started(words=self.probe(body))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["outcome"]), (0, "fixed"), f)
+        self.assertEqual(slurp(self.p("src/other.py")), OTHER.encode())
+        self.assertEqual(self.state(run)["side_effects"], ["src/other.py"])
+        self.assertEqual(slurp(self.quarantined(run, fid, "src/other.py")), b"x")
+
+    def test_side_effect_restored_at_baseline(self):
+        run, fid, bg = self.started(words=self.probe('open("src/other.py", "w").write("x")'), armed=True)
+        self.assertEqual(slurp(self.p("src/other.py")), OTHER.encode())
+        self.assertEqual(self.state(run)["side_effects"], ["src/other.py"])
+        self.assertEqual(slurp(self.quarantined(run, "baseline", "src/other.py")), b"x")
+
+    def test_tests_rewrite_fixed_file(self):
+        run, fid, bg = self.started(words=self.probe('open("src/calc.py", "a").write("# t\\n")'))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        f = self.violation(run, bg)
+        self.assertIn("src/calc.py", f["detail"])
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+    def test_tests_move_refs(self):
+        run, fid, bg = self.started(words=self.probe('os.system("git branch zzz")'))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        f = self.violation(run, bg)
+        self.assertIn("refs-moved", f["detail"])
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+    def test_baseline_refs_moved_halts(self):
+        run = self.pin()
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.arm()
+        j = self.plan(run, self.probe('os.system("git branch zzz")'))[2]
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"], b["reason"]), (1, "halted", "refs-moved"), b)
+        self.assertEqual(self.begin(run)[2]["reason"], "halted")
+
+    def test_test_cache_left(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.probe('open("out.log", "w").write("x")'))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        self.assertTrue(os.path.exists(self.p("out.log")))
+        self.assertIn("out.log", self.state(run)["untracked"])
+        self.assertEqual(self.begin(run)[2]["status"], "ok")
+
+    def test_env_secret(self):
+        run, _ = self.ready()
+        code = "import os, sys; sys.exit(1 if 'REVIEW_CODE_SECRET' in os.environ else 0)"
+        j = self.plan(run, [sys.executable, "-B", "-c", code])[2]
+        rc, out, _ = cli("fix.py", ["baseline", "--run", run, "--digest", j["digest"]], self.repo, self.tmp,
+                         extra={"REVIEW_CODE_SECRET": "x"})
+        self.assertEqual(rc, 0, out)
+
+
+class Report(Scope):
+    def test_two_entries_and_the_untrusted_tail(self):
+        words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second"]
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=words)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        bg2 = self.begin(run)[2]
+        self.edit("src/second.py", "return a / b", "return a *")
+        self.assertEqual(self.finish(run, bg2["seal"])[2]["outcome"], "reverted-tests")
+        rc, text, r = self.report(run)
+        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (0, 1, 1, 1), text)
+        self.assertIn("%s src/calc.py:5 fixed" % fid, text)
+        self.assertIn("%s src/second.py:2 reverted-tests" % bg2["id"], text)
+        self.assertRegex(text, r"== changed files ==\n[^\n]*src/calc\.py")
+        self.assertRegex(text, r"== test output \(untrusted\) ==\n[^\n]*\n<<<UNTRUSTED-([0-9a-f]+)\n(?s:.*SyntaxError.*)\1>>>")
+        self.assertIn("HEAD and refs: unchanged", text)
+        self.assertIn("nothing was committed, staged or pushed", text)
+        self.assertIn("not checked", text)  # the new-import limit
+        self.assertIn("== quarantined ==", text)
+        self.assertIn("src/second.py", text.split("== quarantined ==")[1])
+
+    def test_tampered_runs_no_git(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        with open(os.path.join(run, "fix", "plan.json"), "ab") as fh:
+            fh.write(b" ")
+        with gitfix.isolated(self.tmp):
+            self.assertEqual(fix.finish(run, bg["seal"], "applied")["outcome"], "tampered")
+            calls = []
+            orig = target._run
+            with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)):
+                r = fix.report_(run)
+        self.assertEqual(calls, [])
+        self.assertIn("tampered", r["text"])
+        self.assertIn(".git/config", r["text"])
+
+    def test_in_flight_names_the_snapshot(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        rc, text, r = self.report(run)
+        sec = text.split("== in flight ==")[1]
+        self.assertIn("src/calc.py", sec)
+        self.assertIn(os.path.join(run, "fix", fid + ".pre"), sec)
+
+    def test_unexpected_changes_and_leftovers(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.probe(
+            'open("out.log", "w").write("x"); open("src/other.py", "w").write("x")'))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.arm()
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        with open(self.p("stray.txt"), "w", encoding="utf-8") as fh:
+            fh.write("s")
+        text = self.report(run)[1]
+        self.assertIn("src/other.py", text.split("== restored after tests ==")[1].split("==")[0])
+        self.assertIn("out.log", text.split("== untracked files left by tests ==")[1].split("==")[0])
+        self.assertIn("stray.txt", text.split("== unexpected changes ==")[1].split("==")[0])
+        self.assertNotIn("out.log", text.split("== unexpected changes ==")[1].split("==")[0])
 
 
 if __name__ == "__main__":
