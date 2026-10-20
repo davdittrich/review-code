@@ -219,6 +219,69 @@ class Phase6Procedure(unittest.TestCase):
         self.assertNotIn("fix.py *", fm)
 
 
+class FixDocs(unittest.TestCase):
+    """06-03: fix.md names every refusal and outcome fix.py can emit; the pointers, README and limits say what the code does."""
+
+    FIX = os.path.join(ROOT, "skills", "review-code", "scripts", "fix.py")
+    REFS = os.path.join(ROOT, "skills", "review-code", "references")
+    # reasons that do not go through a Refuse call in fix.py: the trust gate's, a halted baseline's, the guards'
+    EXTRA = {"baseline-red", "baseline-interrupted", "no-command", "trust-unset", "trust-external", "python-too-old",
+             "internal-error"}
+
+    def read(self, *parts):
+        with open(os.path.join(*parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    def flat(self, *parts):
+        return " ".join(self.read(*parts).split())
+
+    def names(self):
+        found = set(self.EXTRA)
+        for node in ast.walk(ast.parse(self.read(self.FIX))):
+            if isinstance(node, ast.Call) and node.args and getattr(node.func, "attr", getattr(node.func, "id", None)) == "Refuse":
+                if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    found.add(node.args[0].value)
+        ns = {}
+        exec(compile(ast.Module([n for n in ast.parse(self.read(self.FIX)).body
+                                 if isinstance(n, ast.Assign) and n.targets[0].id == "OUTCOMES"], []), self.FIX, "exec"), ns)
+        return found | set(ns["OUTCOMES"]), set(ns["OUTCOMES"])
+
+    def test_every_reason_and_outcome_documented(self):
+        doc = self.read(self.REFS, "fix.md")
+        found, outcomes = self.names()
+        self.assertGreater(len(found), 25, found)  # the walk found the Refuse calls
+        self.assertEqual(len(outcomes), 10, outcomes)
+        missing = sorted(r for r in found if "`%s`" % r not in doc)
+        self.assertEqual(missing, [], "fix.md has no backticked entry for these refusal reasons or outcomes")
+
+    def test_pointers(self):
+        self.assertIn("references/fix.md", self.read(SKILL))
+        self.assertIn("references/fix.md", self.read(self.REFS, "untrusted-input.md"))
+
+    def test_readme(self):
+        text = self.read(ROOT, "README.md")
+        for s in ("--fix", "references/fix.md", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"):
+            self.assertIn(s, text)
+        self.assertNotIn("fix mode does not exist yet", text)
+
+    def test_foreground_limit_documented(self):
+        for flat in (self.flat(self.REFS, "fix.md"), self.flat(ROOT, "README.md")):
+            self.assertIn("one fixer call at a time", flat)
+            self.assertIn("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1", flat)
+            self.assertIn("background", flat)
+
+    def test_new_import_limit_documented(self):
+        flat = self.flat(self.REFS, "fix.md")
+        self.assertIn("file-level", flat)
+        self.assertIn("new import", flat)
+
+    def test_untrusted_input(self):
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertIn("steps 9 and 12", flat)
+        self.assertNotIn("runs only through step 9 of the skill", flat)
+        self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
+
+
 class PostingDocs(unittest.TestCase):
     """05-04: posting.md names every refusal post.py can emit; the pointers and the README caveats exist."""
 

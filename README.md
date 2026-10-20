@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; fix mode does not exist yet. The tier defaults are unvalidated. Do not rely on it for review results.
+Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; `--fix` applies confirmed fixes one at a time after you confirm the plan and the exact test command, and reverts and stops at the first failing fix. The tier defaults are unvalidated. Do not rely on it for review results.
 
 ## Install
 
@@ -66,6 +66,10 @@ The default is a terminal report. `--json` prints the schema v1 review document 
 
 `--comment` on a PR or MR target posts the verified findings as one `COMMENT` review, never an approval or a request for changes. The skill first prints the exact payload and a digest and asks; only "Post as COMMENT" posts, and headless runs never post. Re-posting skips the findings you already posted. Secrets matching eleven regular expressions are redacted (no entropy check). MR posting is untested against a live GitLab; PR posting was run once against a live GitHub PR (one review posted, hidden markers survived, re-posting refused). Flow, markers, refusals and limits: `skills/review-code/references/posting.md`.
 
+## Fix mode
+`--fix` applies the verified findings' fixes to committed code of your own, after the report and any post. It stops early for staged, unstaged and working-tree targets. The skill shows every fix text, its model and effort and the exact test command, and asks once: only "Apply and run tests" applies anything, and headless runs never apply. The test command runs on the untouched tree first, and a red baseline stops the run before any edit. Then one fixer subagent edits one file per finding, the tests run, and the edit stays only if they pass; the first failing fix is restored and the run stops. Fix mode never commits, pushes, installs or changes a lockfile, manifest, CI or config file. Review the result with `git diff` before you commit.
+
+Limit: one fixer call at a time, and the main thread waits for it. The plugin cannot force a foreground subagent: Claude Code starts spawned subagents in the background, and setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` makes Claude wait for every subagent. Flow, refusals, outcomes and limits: `skills/review-code/references/fix.md`.
 ## Reproduction
 
 Reproduction covers your own code only. For a confirmed finding, the skill writes the smallest failing test and shows the exact command and the full test source before it asks to run it; the harness permission prompt follows on top. The test runs in a detached worktree under the run directory, which is removed afterwards. `PATH`, `LANG`, `LC_ALL` and `TERM` are kept, and `HOME` and `TMPDIR` move into the run directory. In-place targets get HEAD plus the tracked diff; untracked files are not carried. A run stops after 120 seconds.
