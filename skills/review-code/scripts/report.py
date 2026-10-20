@@ -50,12 +50,17 @@ if sys.version_info < (3, 9):
     print('{"reason": "python-too-old", "status": "refuse"}')
     sys.exit(1)
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+try:
+    import fcntl
+except ImportError:  # shortcut: no fcntl (Windows) means no run lock, so two concurrent ingests can lose a lane; add msvcrt.locking if Windows is ever supported
+    fcntl = None
 from urllib.parse import quote, urlsplit
 
 import ledger
@@ -319,6 +324,24 @@ def _dedupe(cands):
     return sorted(out, key=lambda c: c["id"]), merged
 
 
+@contextlib.contextmanager
+def _locked(run):
+    """Serialise every writer of a run (ingest, verdicts, discard, build): a lane ingest is a read-modify-write."""
+    if fcntl is None or not os.path.isdir(run):  # a missing run refuses in the caller's own load_json
+        yield
+        return
+    with open(os.path.join(run, ".lock"), "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield  # closing fh drops the lock
+
+
+def _put(path, text):
+    """write_private through a temp file and os.replace, so a reader never sees a half file."""
+    tmp = "%s.tmp%d" % (path, os.getpid())
+    target.write_private(tmp, text)
+    os.replace(tmp, path)
+
+
 def _plan(run):
     """plan.json as a dict, {} when the run has none."""
     try:
@@ -404,6 +427,11 @@ def _read_lane(text, lane, tree, run, shard=None):
 
 
 def ingest(run, text, lane="defects", shard=None):
+    with _locked(run):
+        return _ingest(run, text, lane, shard)
+
+
+def _ingest(run, text, lane, shard):
     target.load_json(run, "target.json")
     if shard is not None:
         sh = _plan(run).get("shards")
@@ -428,12 +456,12 @@ def ingest(run, text, lane="defects", shard=None):
     if os.path.exists(os.path.join(run, "verdicts.json")):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
-    os.makedirs(hand, mode=0o700)
+    os.makedirs(hand, mode=0o700, exist_ok=True)
     packs = _packs(run)
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
-    target.write_private(os.path.join(run, "candidates.json"), json.dumps(
+    _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
          "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut)}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
@@ -442,6 +470,11 @@ def ingest(run, text, lane="defects", shard=None):
 
 
 def verdicts(run, text):
+    with _locked(run):
+        return _verdicts(run, text)
+
+
+def _verdicts(run, text):
     cand = target.load_json(run, "candidates.json")
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
@@ -460,7 +493,7 @@ def verdicts(run, text):
             continue
         got[o["id"]] = {"verdict": o["verdict"], "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
-    target.write_private(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
+    _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
     return {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
@@ -469,6 +502,11 @@ def verdicts(run, text):
 def discard(run):
     """Drop every lane result, so a serial re-plan never renders lanes from the parallel attempt (SKILL step 7)."""
     target.load_json(run, "target.json")
+    with _locked(run):
+        return _discard(run)
+
+
+def _discard(run):
     for d in ("handoff", "repro"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
     for f in ("candidates.json", "verdicts.json"):
@@ -495,6 +533,11 @@ def _repro(run, fid):
 
 
 def build(run):
+    with _locked(run):
+        return _build(run)
+
+
+def _build(run):
     tj, led, cand = (target.load_json(run, n) for n in ("target.json", "ledger.json", "candidates.json"))
     try:
         ver = target.load_json(run, "verdicts.json")
