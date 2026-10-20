@@ -219,6 +219,22 @@ class Phase6Procedure(unittest.TestCase):
         self.assertNotIn("fix.py *", fm)
 
 
+class SerialModeNotice(unittest.TestCase):
+    """06.1-01, audit cross item 1: steps 11 and 12 say serial mode is why post and fix always refuse."""
+
+    def setUp(self):
+        with open(SKILL, encoding="utf-8") as fh:
+            self.text = fh.read()
+
+    def step(self, start, end):
+        return " ".join(self.text.split(start, 1)[1].split(end, 1)[0].split())
+
+    def test_step_11_names_serial_mode_and_nothing_to_post(self):
+        step11 = self.step("\n11. Post", "\n12. Fix")
+        self.assertIn("serial mode", step11)
+        self.assertIn("`nothing-to-post`", step11)
+
+
 class FixDocs(unittest.TestCase):
     """06-03: fix.md names every refusal and outcome fix.py can emit; the pointers, README and limits say what the code does."""
 
