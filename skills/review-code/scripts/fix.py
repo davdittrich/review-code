@@ -299,6 +299,7 @@ def _changed_lines(a: bytes, b: bytes) -> int:
     d = difflib.unified_diff(a.decode("latin-1").split("\n"), b.decode("latin-1").split("\n"), n=0, lineterm="")
     return sum(1 for ln in itertools.islice(d, 2, None) if ln[0] in "+-")  # islice drops the two headers
 
+
 def _tests(run: str, st: dict) -> dict:
     """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
     raw = _read(os.path.join(_fixdir(run), "plan.json"))

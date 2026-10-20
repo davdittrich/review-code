@@ -502,6 +502,10 @@ class Paths(Base):
 
 
 class Units(unittest.TestCase):
+    def test_top_level_defs_have_two_blank_lines(self):
+        with open(os.path.join(SCRIPTS, "fix.py"), encoding="utf-8") as fh:
+            self.assertEqual(re.findall(r"[^\n]\n\n(?:async def|def|class) .*", fh.read()), [])
+
     def test_tier(self):
         simple = {"category": "bug", "severity": "required", "line": 5, "end_line": 5, "fix": "return a + b"}
         self.assertEqual(fix._tier(simple), ("sonnet", "medium"))
