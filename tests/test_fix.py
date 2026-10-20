@@ -757,6 +757,21 @@ class FinishScope(Scope):
         self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "not-in-flight"}))
         self.assertEqual(self.state(run), before)
 
+    def test_save_is_atomic(self):
+        run, fid, bg = self.started()
+        path = os.path.join(run, "fix", "state.json")
+        before = slurp(path)
+        st = self.state(run)
+        st["halted"] = "x"
+        with mock.patch.object(fix.os, "replace", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                fix._save(run, st)
+        self.assertEqual(slurp(path), before)  # an interrupted write leaves the old file whole
+        self.assertEqual([n for n in os.listdir(os.path.join(run, "fix")) if n.startswith(".fix-")], [])
+        fix._save(run, st)
+        self.assertEqual(self.state(run)["halted"], "x")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
     def test_not_in_flight_and_usage(self):
         run, _ = self.ready()
         self.go(run)

@@ -114,7 +114,8 @@ def _state(run: str) -> dict:
 
 
 def _save(run: str, st: dict) -> None:
-    target.write_private(os.path.join(_fixdir(run), "state.json"), json.dumps(st, sort_keys=True, indent=2))
+    _restore(os.path.join(_fixdir(run), "state.json"), json.dumps(st, sort_keys=True, indent=2).encode("utf-8"),
+             0o600)  # temp file then replace: an interruption never leaves a partial state.json
 
 
 def _tier(f: dict) -> Tuple[str, str]:
