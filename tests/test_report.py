@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1179,6 +1180,51 @@ class Hostile(Base):
         self.assertTrue(self.rejected("serial").startswith("invalid-json "))
         with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
             self.assertNotIn(i, json.load(fh))
+
+class RepairBudget(Base):
+    """review-code-kdc: the quote repair costs a bounded time per line, per ingest and per verdicts call."""
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, QFEAT
+    LINES = ['[["quote","' + '"],' * n for n in (200, 400, 800, 1600)] + ['[["quote","' + '"]' * 3995]
+
+    def timed(self, fn, *a):
+        t = time.time()
+        out = fn(*a)
+        self.assertLess(time.time() - t, 2, "wall time")
+        return out
+
+    def test_pathological_lines_are_rejected_fast(self):
+        for ln in self.LINES:
+            out = self.timed(self.ingest, ln, {"inspected": ["src/calc.py"]})
+            self.assertEqual((out["ids"], out["repaired"], out["dropped"]["invalid"]), ([], 0, 1), len(ln))
+            with open(os.path.join(self.run_dir, "rejected", "defects.txt"), encoding="utf-8") as fh:
+                self.assertTrue(fh.read().startswith("invalid-json "))
+
+    def test_many_pathological_lines_in_one_ingest_share_a_budget(self):
+        out = self.timed(self.ingest, *([self.LINES[3]] * 40), {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["ids"], out["dropped"]["invalid"]), ([], 40))
+
+    def test_the_real_lines_fit_the_budget(self):
+        total = [report.INGEST_STEPS]
+        for ln in REAL_LANE + REAL_VERDICTS:
+            self.assertTrue(all(o is not None for _, o, _ in report._objects(ln, total)), ln)
+        self.assertGreater(total[0], report.INGEST_STEPS // 2)
+
+    def test_verdicts_over_many_stored_batches_stay_fast(self):
+        files = {"f%d.py" % k: "x = 1\n" for k in range(12)}
+        run = self.pin_run(files)
+        rc, out, _ = cli("report.py", ["ingest", "--run", run], self.repo, self.tmp, lines(
+            *[dict(CAND, path=p, line=1, quote="x = 1") for p in files], {"inspected": list(files)}))
+        self.assertEqual(rc, 0, out)
+        for k in range(1, 13):
+            t = time.time()
+            rc, out, _ = cli("report.py", ["verdicts", "--run", run, "--batch", str(k)], self.repo, self.tmp,
+                             self.LINES[3] + "\n")
+            self.assertEqual(rc, 0, out)
+            self.assertLess(time.time() - t, 2, "batch %d" % k)
+
+    def pin_run(self, files):
+        gitfix.commit(self.repo, files, "more")
+        return self.pin(self.pin_args)
 
 
 class Gate(Base):

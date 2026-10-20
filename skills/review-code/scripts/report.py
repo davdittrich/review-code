@@ -163,7 +163,8 @@ def _loads(s):
 
 
 REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
-REPAIR_STEPS = 2000  # readings it will try on one line
+REPAIR_STEPS = 2000  # string ends and values it will try on one line
+INGEST_STEPS = 10000  # ... and on all lines of one ingest or verdicts call
 LITERAL = ("title", "trigger", "quote", "fix", "reason")  # the only keys whose string may hold a raw quote (e7e)
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
     "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why"))
@@ -182,15 +183,19 @@ def _skip(s, i):
     return i
 
 
+def _charge(s, budget):
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _unrepairable(s)
+
+
 def _alts(s, i, budget, key=None):
     """Every reading of a JSON value at s[i:] as (value, end), shortest string first. `key` is the string before this
     value in a [key, value] pair: a value of a LITERAL key may end at any quote whose next non-space character is `,` or
     `]` (first those ending the pair), every other quote inside it is literal; any other string is read strictly. No
     object is read."""
     i = _skip(s, i)
-    budget[0] -= 1
-    if budget[0] < 0:
-        raise _unrepairable(s)
+    _charge(s, budget)
     c = s[i:i + 1]
     if c == "[":
         j = _skip(s, i + 1)
@@ -205,9 +210,12 @@ def _alts(s, i, budget, key=None):
             except ValueError:
                 pass
             return
-        ends = [q for q in range(i + 1, len(s)) if s[q] == '"' and s[q - 1] != "\\"
-                and s[_skip(s, q + 1):][:1] in (",", "]", "")]
-        for q in sorted(ends, key=lambda q: s[_skip(s, q + 1):][:1] != "]"):
+        if i not in budget[1]:  # once per offset: backtracking asks again
+            ends = [(q, s[_skip(s, q + 1):_skip(s, q + 1) + 1]) for q in range(i + 1, len(s))
+                    if s[q] == '"' and s[q - 1] != "\\"]
+            budget[1][i] = [q for q, c in sorted((e for e in ends if e[1] in (",", "]", "")), key=lambda e: e[1] != "]")]
+        for q in budget[1][i]:
+            _charge(s, budget)  # each end tried costs a decode of the string
             try:
                 yield json.loads('"%s"' % re.sub(r'(\\.)|"', lambda m: m.group(1) or '\\"', s[i + 1:q])), q + 1
             except ValueError:
@@ -240,13 +248,20 @@ def _tokens(v, n):
     return n
 
 
-def _repair(s):
+def _repair(s, total):
     """_loads for a line whose strings hold raw double quotes (seen live: models write quote and fix text unescaped).
     The first reading (see _alts) that is a pair array, with no repeated key, wins. Only string ends are chosen: no key,
     element or object appears that the line did not hold, and the caller still validates the result."""
     if len(s) > REPAIR_MAX_LEN:
         raise _unrepairable(s)
-    budget = [REPAIR_STEPS]
+    budget = [min(REPAIR_STEPS, total[0]), {}]  # steps left, string ends by offset
+    try:
+        return _repair_one(s, budget)
+    finally:
+        total[0] -= min(REPAIR_STEPS, total[0]) - max(budget[0], 0)
+
+
+def _repair_one(s, budget):
     for v, j in _alts(s, 0, budget):
         if _skip(s, j) == len(s):
             raw, got = {}, _tokens(v, {})
@@ -278,16 +293,18 @@ def _parse(ln, load):
     return False, None
 
 
-def _objects(text):
+def _objects(text, total=None):
     """(line, dict or None, repaired) of every wire line of the stream (`[[`, `["` or, for the retired object form, `{`):
     the dict is None when it is not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read
-    as if it had one. The strict parse comes first; only a line it could not parse at all goes to _repair."""
+    as if it had one. The strict parse comes first; only a line it could not parse at all goes to _repair, which draws
+    on `total` (a one-item list, INGEST_STEPS by default) shared by every line of the caller's call."""
+    total = [INGEST_STEPS] if total is None else total
     for ln in text.split("\n"):
         if re.match(r'\s*(\{|\[\s*[\["])', ln):
             # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
             if not parsed:
-                _, o = _parse(ln, _repair)
+                _, o = _parse(ln, lambda c: _repair(c, total))
             yield ln, o, not parsed and o is not None
 
 
@@ -699,13 +716,13 @@ def _replies(run):
     return os.path.join(run, "replies", "verify")
 
 
-def _one(text, allowed, cand_ids, trees, spec, copied, got, paths):
+def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
     """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
     repaired line count).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
     path, one that no other refuted id of the reply uses (review-code-8dt)."""
     foreign, mine, bad, fixed = 0, [], [], 0
-    for ln, o, fix in _objects(text):
+    for ln, o, fix in _objects(text, total):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
@@ -756,13 +773,13 @@ def _verdicts(run, text, batch):
                 os.remove(os.path.join(run, "rejected", n + ".txt"))
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
-    got, foreign, repaired = {}, 0, 0
+    got, foreign, repaired, total = {}, 0, 0, [INGEST_STEPS]  # one repair budget for every stored batch
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths)
+                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths, total)
             _reject(run, "serial" if k is None else "batch-%d" % k, bad)
             foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
