@@ -532,16 +532,24 @@ _SPAN = re.compile(r"(?<!\\)((?:\\\\)*)`(?:" + _REF.pattern + ")`")  # the only 
 _LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|(?<!\\)(?:\\\\)*\[")  # what _prose never leaves outside a fence
 
 
+# The only lines build writes outside the quote fence, besides an empty line, `---` and the marker lines.
+_SHAPE = re.compile(r"\*\*(?:Verdict|Location|Lines|Trigger|Evidence|Fix):\*\* |\*\*(?:%s)\*\* \(|(?:%s): \d+ findings?$"
+                    r"|Not posted: \d+ unverifiable items " % ("|".join(LABEL.values()), "|".join(a.capitalize() for a in report.AXES)))
+
+
 def _shown(ln: str) -> str:
-    """The text a forge renders for a guarded line outside the fence (spans already blanked): escapes and entities undone."""
-    return re.sub(r"\\(.)", r"\1", ln).replace("&lt;", "<").replace("&amp;", "&")
+    """The text a forge renders for a guarded line outside the fence (spans already blanked): escapes and entities undone.
+    CommonMark drops a backslash only before ASCII punctuation; before anything else it stays as text."""
+    return re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", ln).replace("&lt;", "<").replace("&amp;", "&")
 
 
 def _guard(text: str) -> None:
     """Refuse a line a forge or bot could run as a command or hide as markup, unless it is exactly one of our marker lines.
-    A CR refuses outright: a forge that turns it into a line break would start a line no `N: ` prefix covers. Outside
-    the quote fence every line must hold _prose's invariants (no raw `<`, `&`, backtick, reference or unescaped `[`),
-    so an edited payload is held to the rules build applies; any fence CommonMark could read differently refuses."""
+    A CR refuses outright: a forge that turns it into a line break would start a line no `N: ` prefix covers. Only the
+    line shapes build writes pass (an allowlist: a `~~~` or indented line would open a block the checks below cannot
+    see into). Outside the quote fence every line must also hold _prose's invariants (no raw `<`, `&`, backtick,
+    reference or unescaped `[`); inside it every line carries a `N: ` or `| ` prefix. So an edited payload is held to the
+    rules build applies; any fence CommonMark could read differently refuses."""
     if "\r" in text:
         raise Refuse("unsafe-text")
     fence = None
@@ -550,13 +558,17 @@ def _guard(text: str) -> None:
         if re.match(r"\s*(?:/|<!--)", ln) and not marker:
             raise Refuse("unsafe-text")
         if fence:
-            if re.fullmatch(r" {0,3}`{3,}\s*", ln):  # any backtick line of 3 or more may close a fence
-                if ln != fence:
-                    raise Refuse("unsafe-text")
+            if ln == fence:
                 fence = None
+            elif not re.match(r"\d+: |\| ", ln):  # nothing else, so no line can close the fence early
+                raise Refuse("unsafe-text")
         elif re.fullmatch(r"`{3,}text", ln):
             fence = ln[:-4]
-        elif not marker:
+        elif marker or ln in ("", "---"):
+            continue
+        elif not _SHAPE.match(ln):
+            raise Refuse("unsafe-text")
+        else:
             bare = _SPAN.sub(r"\1 ", ln)  # a space: a span is a code element, so text around it never joins into a reference
             if _LOOSE.search(bare) or _REF.search(_shown(bare)):
                 raise Refuse("unsafe-text")

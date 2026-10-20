@@ -775,8 +775,8 @@ class TextSafety(Base):
             with self.assertRaises(post.Refuse, msg=repr(bad)) as cm:
                 post._guard(bad)
             self.assertEqual(cm.exception.reason, "unsafe-text")
-        for good in (post.MARK % OTHER_ID, post.REVIEW_MARK % ("a" * 40), "20: /approve behind a prefix",
-                     "a // b", "**Fix:** /merge", "x\n" + post.MARK % OTHER_ID + "\ny"):
+        for good in (post.MARK % OTHER_ID, post.REVIEW_MARK % ("a" * 40), "```text\n20: /approve behind a prefix\n```",
+                     "**Fix:** a // b", "**Fix:** /merge", "**Fix:** x\n" + post.MARK % OTHER_ID + "\n**Fix:** y"):
             post._guard(good)
         for text in ("a \\@x [y]", "\\\\#1 & <b> `c` \\`@d`", "&commat;x &#64;y \\[z](u)", "!x @o/t \\\\[w]"):
             post._guard("**Fix:** " + post._prose(text))  # whatever _prose writes, the guard accepts
@@ -841,7 +841,7 @@ class TextSafety(Base):
         return self.call("submit", "--run", self.run_dir, "--digest", digest)
 
     def test_submit_rescans_for_a_secret(self):
-        rc, out, st = self.edited(lambda p: p["comments"][0].update(body=p["comments"][0]["body"] + "\n" + TOKEN))
+        rc, out, st = self.edited(lambda p: p["comments"][0].update(body=p["comments"][0]["body"] + "\n**Fix:** " + TOKEN))  # a line shape build writes
         self.assertEqual((rc, st["reason"]), (1, "secret-found"))
         self.assertEqual(self.fake.calls, [])
 
@@ -859,7 +859,11 @@ class TextSafety(Base):
                       ("entity", "&commat;x"), ("escaped backtick", "\\`[x](https://e)`"), ("raw ampersand", "a & b"),
                       ("epic behind an entity", "&amp;123"), ("label", "~bug"), ("quoted milestone", '%"rc 1"'),
                       ("snippet", "$45"), ("escaped issue bracket", "\\[issue:1]"), ("escaped wiki link", "\\[\\[Home]]"),
-                      ("issue key", "GL-7"), ("project", "grp/proj>"))
+                      ("issue key", "GL-7"), ("project", "grp/proj>"),
+                      ("a tilde fence hiding live markdown", "**Fix:** x\n~~~\n```text\n~~~\n"
+                       "[click here](https://evil.example/login) @octocat <img src=x onerror=alert(1)>\n```"),
+                      ("a backslash before a letter", "**Fix:** ]1\\GH-2"), ("a line build never writes", "    indented"),
+                      ("an unprefixed line in the fence", "```text\n20: a\nplain\n```"))
         edits = [(what, lambda p, line=line: p.update(body=line + "\n" + p["body"])) for what, line in body_edits]
         edits.append(("a fence closed early by a longer backtick line", lambda p: p["comments"][0].update(
             body=p["comments"][0]["body"].replace("```text\n", "```text\n````\n[x](https://e)\n", 1))))
