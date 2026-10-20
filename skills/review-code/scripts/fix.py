@@ -12,7 +12,9 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import bisect
+import difflib
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -31,7 +33,7 @@ import target
 
 ID_RE = report.ID_RE
 TIMEOUT = 600  # seconds; read at call time
-MAX_CHANGED = 60  # changed lines per fix (06-02 enforces it)
+MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 MAX_PREVIEW = 25000  # same bound and reason as post.py
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
 _MANIFEST = re.compile(
@@ -189,6 +191,7 @@ def _seal(run: str, fid: str) -> str:
 
 def _restore(path: str, data: bytes, mode: int) -> None:
     """Put data back byte-exact: temp file in the same directory, then an atomic replace."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".fix-")
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -202,6 +205,60 @@ def _restore(path: str, data: bytes, mode: int) -> None:
             pass
         raise
 
+
+def _quarantine(run: str, key: str, repo: str, paths: List[str], move: bool) -> List[str]:
+    """Keep bytes fix.py is about to overwrite or the fixer left behind: copy (move false) or move (move true)
+    each path into fix/quarantine/<key>/<relpath>, directories 0700. A repeat of one path gets .1, .2 ..."""
+    top, out = os.path.realpath(repo), []
+    for rel in paths:
+        src, parts = os.path.join(top, rel), ["quarantine", key] + rel.split("/")
+        isdir = os.path.isdir(src) and not os.path.islink(src)
+        if os.path.isabs(rel) or ".." in parts or not os.path.lexists(src) or isdir:
+            continue
+        d = _fixdir(run)
+        for part in parts[:-1]:
+            d = os.path.join(d, part)
+            try:
+                os.mkdir(d, 0o700)
+            except FileExistsError:
+                pass
+            os.chmod(d, 0o700)
+        dst, n = os.path.join(d, parts[-1]), 0
+        while os.path.lexists(dst):
+            n += 1
+            dst = os.path.join(d, "%s.%d" % (parts[-1], n))
+        if move:
+            shutil.move(src, dst)
+        else:
+            shutil.copy2(src, dst, follow_symlinks=False)
+        out.append(rel)
+    return out
+
+
+def _undo(run: str, key: str, repo: str, writes: dict, head: List[str], idx: List[str], stray: List[str]) -> None:
+    """The one restore path. Quarantine the current bytes first, then: writes {rel: (bytes, mode)} are put back,
+    idx lists paths whose index entry returns to HEAD, head lists tracked paths git restores from HEAD (index and
+    tree), stray lists new untracked paths that move into the quarantine."""
+    top = os.path.realpath(repo)
+    _quarantine(run, key, repo, list(writes) + head, False)
+    for rel, (data, mode) in writes.items():
+        _restore(os.path.join(top, rel), data, mode)
+    if idx:
+        target.git_bytes(["restore", "--source=HEAD", "--staged", "--"] + idx, repo)
+    if head:
+        target.git_bytes(["restore", "--source=HEAD", "--staged", "--worktree", "--"] + head, repo)
+    _quarantine(run, key, repo, stray, True)
+
+
+def _names(paths: List[str]) -> str:
+    shown = ", ".join(sanitize.escape_for_code(p)[0] for p in paths[:20])
+    return shown + (" and %d more" % (len(paths) - 20) if len(paths) > 20 else "")
+
+
+def _changed_lines(a: bytes, b: bytes) -> int:
+    """+ and - lines of a zero-context diff; latin-1 maps bytes 1:1 so only b"\n" splits lines."""
+    d = difflib.unified_diff(a.decode("latin-1").split("\n"), b.decode("latin-1").split("\n"), n=0, lineterm="")
+    return sum(1 for ln in itertools.islice(d, 2, None) if ln[0] in "+-")  # islice drops the two headers
 
 def _tests(run: str, st: dict) -> dict:
     """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
@@ -377,41 +434,111 @@ def begin(run: str) -> dict:
     return {"status": "done"}
 
 
+def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
+    """Judge one fixer call after the seal held: (outcome, detail, test result). Restores on every revert."""
+    repo, fid, path = tj["repo"], cur["id"], cur["path"]
+    top, fd = os.path.realpath(repo), _fixdir(run)
+    real = os.path.join(top, path)
+    pre = _read(os.path.join(fd, fid + ".pre"))
+    entry = {path: (pre, cur["mode"])}
+    moved = "head-moved" if target.git(["rev-parse", "HEAD"], repo).strip() != tj["head_sha"] else \
+        "refs-moved" if _refs(repo) != st["refs"] else None
+    if moved:
+        _undo(run, fid, repo, entry, [], [], [])
+        return "reverted-violation", moved, None
+    writes, head, idx, stray, bad = {}, [], [], [], []
+    for xy, p in _changes(repo):
+        a = st["accepted"].get(p)
+        staged = xy[0] not in " ?"
+        if p == path:
+            if xy != " M":
+                bad.append(p)
+                writes[p] = entry[p]
+                idx += [p] * staged
+        elif a is not None:
+            try:
+                kept = xy == " M" and hashlib.sha256(_read(os.path.join(top, p))).hexdigest() == a["sha"]
+            except OSError:
+                kept = False
+            if not kept:
+                bad.append(p)
+                try:
+                    mode = stat.S_IMODE(os.stat(os.path.join(top, p)).st_mode)
+                except OSError:
+                    mode = 0o644  # shortcut: a deleted accepted file loses its exec bit, upgrade by recording mode
+                writes[p] = (_read(os.path.join(fd, a["id"] + ".post")), mode)
+                idx += [p] * staged
+        elif xy == "??":
+            if p not in st["untracked"]:
+                bad.append(p)
+                stray.append(p)
+        else:
+            bad.append(p)
+            head.append(p)
+    try:
+        now = _read(real)
+    except OSError:
+        now = None
+    if status == "declined" and now != pre and path not in bad:
+        bad.append(path)
+    if bad:
+        if now != pre:
+            writes[path] = entry[path]
+        _undo(run, fid, repo, writes, head, idx, stray)
+        return "reverted-violation", _names(bad), None
+    if status == "declined":
+        return "declined", None, None
+    if now == pre:
+        return "no-change", None, None
+    n = _changed_lines(pre, now)
+    if n > MAX_CHANGED:
+        _undo(run, fid, repo, entry, [], [], [])
+        return "reverted-too-large", "%d changed lines, the limit is %d" % (n, MAX_CHANGED), None
+    res = _tests(run, st)
+    _note_untracked(repo, st)
+    if res["outcome"] == "pass":
+        _put(os.path.join(fd, fid + ".post"), now)
+        st["accepted"][path] = {"id": fid, "sha": hashlib.sha256(now).hexdigest()}
+        return "fixed", None, res
+    _undo(run, fid, repo, entry, [], [], [])
+    return "reverted-tests", None, res
+
+
+def _snapshots_hold(run: str, st: dict) -> bool:
+    """Plain reads: every kept fix's .post still hashes to the sha recorded when it was accepted."""
+    try:
+        return all(hashlib.sha256(_read(os.path.join(_fixdir(run), a["id"] + ".post"))).hexdigest() == a["sha"]
+                   for a in st["accepted"].values())
+    except OSError:
+        return False
+
+
 def finish(run: str, seal: str, status: str) -> dict:
+    if status not in ("applied", "declined") or not HEX.match(seal):
+        raise target.Refuse("usage", USAGE)
     tj = _target(run)
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
         raise target.Refuse("not-in-flight")
-    fid, rec, res = cur["id"], {}, None
-    if not secrets.compare_digest(_seal(run, fid), seal):
+    fid, detail, res = cur["id"], None, None
+    if not secrets.compare_digest(_seal(run, fid), seal) or not _snapshots_hold(run, st):
         outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
     else:
-        repo = tj["repo"]
-        real = os.path.join(os.path.realpath(repo), cur["path"])
-        pre, now = _read(os.path.join(_fixdir(run), fid + ".pre")), _read(real)
-        if status == "declined":
-            outcome = "declined"
-        elif now == pre:
-            outcome = "no-change"
-        else:
-            res = _tests(run, st)
-            _note_untracked(repo, st)
-            if res["outcome"] == "pass":
-                outcome = "fixed"
-                _put(os.path.join(_fixdir(run), fid + ".post"), now)
-                st["accepted"][cur["path"]] = {"id": fid, "sha": hashlib.sha256(now).hexdigest()}
-            else:
-                outcome = "reverted-tests"
-                _restore(real, pre, cur["mode"])
+        outcome, detail, res = _settle(run, tj, st, cur, status)
     st["done"][fid] = {"outcome": outcome, "exit": res["exit"] if res else None}
+    if detail:
+        st["done"][fid]["detail"] = detail
     st["in_flight"] = None
     if outcome in REVERTED:
         st["halted"] = outcome
     _save(run, st)
-    if outcome in REVERTED:
-        return {"status": "halted", "outcome": outcome, "exit": res["exit"] if res else None}
-    return {"status": "ok", "outcome": outcome}
+    out = {"status": "halted" if outcome in REVERTED else "ok", "outcome": outcome}
+    if detail:
+        out["detail"] = detail
+    if res and outcome in REVERTED:
+        out["exit"] = res["exit"]
+    return out
 
 
 def report_(run: str) -> dict:

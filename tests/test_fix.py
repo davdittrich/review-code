@@ -489,5 +489,258 @@ class Units(unittest.TestCase):
             ast.parse(fh.read(), feature_version=(3, 9))
 
 
+OTHER = "def other():\n    return 'o'\n"
+SECOND = "def mul(a, b):\n    return a / b\n"
+LOCK = '{"lock": 1}\n'
+
+
+def slurp(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+class Scope(Base):
+    feat_files = {"src/calc.py": FEAT, "src/other.py": OTHER, "src/second.py": SECOND, "package-lock.json": LOCK}
+
+    def p(self, rel):
+        return os.path.join(self.repo, rel)
+
+    def started(self, cand=CAND, *more):
+        """(run, fid, bg): baseline green, first fix handed out, nothing edited yet."""
+        run = self.pin()
+        cands = (cand,) + more
+        ids = self.ingest(run, *cands)
+        self.confirm(run, *[(i, dict(CITE, path=c["path"], quote=c["quote"], line=c["line"]))
+                            for i, c in zip(ids, cands)])
+        self.go(run)
+        bg = self.begin(run)[2]
+        self.assertEqual(bg["status"], "ok", bg)
+        return run, bg["id"], bg
+
+    def state(self, run):
+        with open(os.path.join(run, "fix", "state.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def quarantined(self, run, fid, rel):
+        return os.path.join(run, "fix", "quarantine", fid, rel)
+
+    def violation(self, run, bg, status="applied"):
+        rc, _, f = self.finish(run, bg["seal"], status)
+        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "reverted-violation"), f)
+        self.assertEqual(self.state(run)["halted"], "reverted-violation")
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+        return f
+
+
+class FinishScope(Scope):
+    def test_second_tracked_file(self):
+        run, fid, bg = self.started()
+        before = slurp(self.p("src/other.py"))
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.edit("src/other.py", "'o'", "'p'")
+        f = self.violation(run, bg)
+        self.assertIn("src/other.py", f["detail"])
+        self.assertEqual(slurp(self.p("src/other.py")), before)
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_new_untracked_file(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        with open(self.p("conftest.py"), "wb") as fh:
+            fh.write(b"import evil\n")
+        self.violation(run, bg)
+        self.assertFalse(os.path.exists(self.p("conftest.py")))
+        q = self.quarantined(run, fid, "conftest.py")
+        self.assertEqual(slurp(q), b"import evil\n")
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(q)).st_mode), 0o700)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_untracked_in_a_new_directory(self):
+        run, fid, bg = self.started()
+        os.makedirs(self.p("pkg/deep"))
+        with open(self.p("pkg/deep/x.py"), "wb") as fh:
+            fh.write(b"x\n")
+        self.violation(run, bg)
+        self.assertEqual(slurp(self.quarantined(run, fid, "pkg/deep/x.py")), b"x\n")
+
+    def test_staged_change(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.git("add", "src/calc.py")
+        self.violation(run, bg)
+        self.assertEqual(self.git("diff", "--cached"), "")
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+    def test_staged_new_file(self):
+        run, fid, bg = self.started()
+        with open(self.p("added.py"), "wb") as fh:
+            fh.write(b"y\n")
+        self.git("add", "added.py")
+        self.violation(run, bg)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(slurp(self.quarantined(run, fid, "added.py")), b"y\n")
+
+    def test_deleted_tracked_file_and_protected_file(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        os.remove(self.p("src/other.py"))
+        with open(self.p("package-lock.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"lock": 2}\n')
+        f = self.violation(run, bg)
+        for rel in ("src/other.py", "package-lock.json"):
+            self.assertIn(rel, f["detail"])
+        self.assertEqual(slurp(self.p("src/other.py")), OTHER.encode())
+        self.assertEqual(slurp(self.p("package-lock.json")), LOCK.encode())
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        self.assertEqual(slurp(self.quarantined(run, fid, "package-lock.json")), b'{"lock": 2}\n')
+
+    def test_deleted_entry_file(self):
+        run, fid, bg = self.started()
+        os.remove(self.p("src/calc.py"))
+        self.violation(run, bg)
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+    def test_accepted_file_changed_again(self):
+        second = two("src/second.py", 2, "return a / b", "return a * b")
+        run, fid, bg = self.started(CAND, second)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        kept = slurp(self.p("src/calc.py"))
+        bg2 = self.begin(run)[2]
+        self.assertEqual(bg2["path"], "src/second.py")
+        self.edit("src/second.py", "return a / b", "return a * b")
+        self.edit("src/calc.py", "return a + b", "return b + a")
+        f = self.violation(run, bg2)
+        self.assertIn("src/calc.py", f["detail"])
+        self.assertEqual(slurp(self.p("src/calc.py")), kept)
+        self.assertEqual(slurp(self.p("src/second.py")), SECOND.encode())
+        self.assertEqual(slurp(self.quarantined(run, bg2["id"], "src/calc.py")), kept.replace(b"a + b", b"b + a"))
+
+    def test_user_edit_survives(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        edited = slurp(self.p("src/calc.py"))
+        user = b"def other():\n    return 'mine'\n"
+        with open(self.p("src/other.py"), "wb") as fh:
+            fh.write(user)
+        self.violation(run, bg)
+        self.assertEqual(slurp(self.quarantined(run, fid, "src/other.py")), user)
+        self.assertEqual(slurp(self.quarantined(run, fid, "src/calc.py")), edited)
+        self.assertEqual(slurp(self.p("src/other.py")), OTHER.encode())
+
+    def test_second_copy_of_one_path_gets_a_suffix(self):
+        run, fid, bg = self.started()
+        with open(self.p("junk.txt"), "wb") as fh:
+            fh.write(b"1")
+        self.assertEqual(fix._quarantine(run, fid, self.repo, ["junk.txt"], False), ["junk.txt"])
+        with open(self.p("junk.txt"), "wb") as fh:
+            fh.write(b"2")
+        fix._quarantine(run, fid, self.repo, ["junk.txt"], False)
+        self.assertEqual(slurp(self.quarantined(run, fid, "junk.txt")), b"1")
+        self.assertEqual(slurp(self.quarantined(run, fid, "junk.txt.1")), b"2")
+
+    def test_declined_and_no_change(self):
+        second = two("src/second.py", 2, "return a / b", "return a * b")
+        run, fid, bg = self.started(CAND, second)
+        rc, _, f = self.finish(run, bg["seal"], "declined")
+        self.assertEqual((rc, f), (0, {"status": "ok", "outcome": "declined"}))
+        bg2 = self.begin(run)[2]
+        self.assertEqual(bg2["status"], "ok")
+        rc, _, f = self.finish(run, bg2["seal"], "applied")
+        self.assertEqual((rc, f), (0, {"status": "ok", "outcome": "no-change"}))
+        self.assertEqual(self.begin(run)[2]["status"], "done")
+        self.assertEqual({k: v["outcome"] for k, v in self.state(run)["done"].items()},
+                         {fid: "declined", bg2["id"]: "no-change"})
+
+    def test_declined_with_an_edit_is_a_violation(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.violation(run, bg, "declined")
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+    def test_too_large(self):
+        for n, outcome in ((58, "fixed"), (59, "reverted-too-large")):  # n comment lines, +1 line, -1 line
+            with self.subTest(added=n):
+                run, fid, bg = self.started()
+                self.edit("src/calc.py", QUOTE, "\n".join("# c%d" % i for i in range(n)) + "\n    return a + b")
+                rc, _, f = self.finish(run, bg["seal"])
+                self.assertEqual(f["outcome"], outcome, f)
+                if outcome != "fixed":
+                    self.assertEqual((rc, f["status"]), (1, "halted"))
+                    self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+                    self.assertTrue(os.path.exists(self.quarantined(run, fid, "src/calc.py")))
+                else:
+                    self.git("checkout", "--", "src/calc.py")
+                    self.git("clean", "-fdq")
+
+    def test_head_or_refs_moved(self):
+        for reason, mutate in (("head-moved", lambda: self.git("commit", "-q", "--allow-empty", "-m", "later")),
+                               ("refs-moved", lambda: self.git("branch", "other"))):
+            with self.subTest(reason=reason):
+                run, fid, bg = self.started()
+                self.edit("src/calc.py", QUOTE, "return a + b")
+                mutate()
+                f = self.violation(run, bg)
+                self.assertIn(reason, f["detail"])
+                self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+                if reason == "head-moved":
+                    self.git("reset", "-q", "--hard", "HEAD~1")
+                else:
+                    self.git("branch", "-D", "other")
+
+    def test_not_in_flight_and_usage(self):
+        run, _ = self.ready()
+        self.go(run)
+        rc, _, j = self.finish(run, "0" * 64)
+        self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "not-in-flight"}))
+        bg = self.begin(run)[2]
+        for args in (["--seal", "xyz", "--status", "applied"], ["--seal", bg["seal"], "--status", "maybe"]):
+            rc, out, j = self.fixrun(["finish", "--run", run] + args)
+            self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+        self.assertIsNotNone(self.state(run)["in_flight"])
+
+
+class Tamper(Scope):
+    def tampered(self, run, bg, fid):
+        calls = []
+        orig = target._run
+        with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)), \
+                gitfix.isolated(self.tmp):
+            f = fix.finish(run, bg["seal"], "applied")
+        self.assertEqual(calls, [])
+        self.assertEqual((f["status"], f["outcome"]), ("halted", "tampered"), f)
+        st = self.state(run)
+        self.assertEqual((st["done"][fid]["outcome"], st["halted"], st["in_flight"]), ("tampered", "tampered", None))
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+
+    def test_each_sealed_file(self):
+        targets = {"state.json": lambda run, fid: os.path.join(run, "fix", "state.json"),
+                   "pre": lambda run, fid: os.path.join(run, "fix", fid + ".pre"),
+                   "plan.json": lambda run, fid: os.path.join(run, "fix", "plan.json"),
+                   "git config": lambda run, fid: self.state(run)["git_files"][0]}
+        for name, where in targets.items():
+            with self.subTest(file=name):
+                run, fid, bg = self.started()
+                self.edit("src/calc.py", QUOTE, "return a + b")
+                edited = slurp(self.p("src/calc.py"))
+                path = where(run, fid)
+                with open(path, "ab") as fh:
+                    fh.write(b" ")
+                self.tampered(run, bg, fid)
+                self.assertEqual(slurp(self.p("src/calc.py")), edited)
+                self.git("checkout", "--", "src/calc.py")
+
+    def test_accepted_snapshot_rewritten(self):
+        second = two("src/second.py", 2, "return a / b", "return a * b")
+        run, fid, bg = self.started(CAND, second)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        bg2 = self.begin(run)[2]
+        with open(os.path.join(run, "fix", fid + ".post"), "ab") as fh:
+            fh.write(b"#")
+        self.tampered(run, bg2, bg2["id"])
+
+
 if __name__ == "__main__":
     unittest.main()
