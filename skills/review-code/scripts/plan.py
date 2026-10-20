@@ -44,7 +44,7 @@ TIERS = {
 LANE_AGENT = {"defects": "review-code:finder", "standards": "review-code:standards", "spec": "review-code:spec",
               "sota": "review-code:sota"}
 # Ceilings, not per-tier values: maxTurns is frontmatter-only (sub-agents doc), so a call cannot lower it.
-MAX_TURNS = {"finder": 40, "standards": 40, "spec": 30, "sota": 20, "verifier": 12, "spec-verifier": 12}
+MAX_TURNS = {"finder": 40, "standards": 40, "spec": 30, "sota": 20, "verifier": 30, "spec-verifier": 30}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
@@ -386,7 +386,9 @@ def _preview(doc):
         out.append("Call %s%s: %s, about %d input tokens (estimate)" % (
             c["lane"], ", shard %d" % c["shard"] if c["shard"] else "",
             "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c)))
-    out.append("Verifier calls: up to %d, %s" % (verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
+    b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one code path, so calls lie between cap/b and cap
+    out.append("Verifier ids: up to %d (calls of up to %d ids on one code path, so %d to %d calls), %s" % (
+        verifier_cap, b, -(-verifier_cap // b), verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
     out.append("Agent calls: %d (%d lane calls plus up to %d verifier calls)" % (agents + verifier_cap, agents, verifier_cap))
     out.append("Turn ceilings: " + ", ".join("%s %d" % kv for kv in sorted(doc["max_turns"].items())))
     out.append("Packs: " + (", ".join(x["name"] for x in doc["packs"]) or "none"))

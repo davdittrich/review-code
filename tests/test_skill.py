@@ -126,8 +126,9 @@ class Phase4Procedure(unittest.TestCase):
         self.assertNotRegex(self.text, r"(?i)foreground Agent")
 
     # documentation check (review-code-cmp, review-code-csd): a compound read and a split verdicts call both failed live
-    def test_verdict_step_reads_by_call_and_sends_one_verdicts_call(self):
-        for t in ("one Read call per file", "never a shell loop", "ONE quoted", "replaces the previous `verdicts.json`"):
+    def test_verdict_step_reads_by_call_and_sends_one_verdicts_call_per_batch(self):
+        for t in ("one Read call per file", "never a shell loop", "ONE call", "replaces all earlier verdicts", "--batch <batch>",
+                  "repeat of a batch replaces only that batch"):
             self.assertIn(t, self.flat)
 
     def test_cost_gate_and_serial(self):

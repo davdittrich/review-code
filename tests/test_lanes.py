@@ -175,6 +175,12 @@ class Verifier(unittest.TestCase):
     def test_default_model(self):
         self.assertIn("model: sonnet", self.fm)
 
+    def test_task_message_lists_one_to_five_handoffs(self):  # review-code-buj: a batch is up to report.VERIFY_BATCH paths
+        self.assertIn("1 to %d handoff" % report.VERIFY_BATCH, self.text)
+        self.assertIn("one line per handoff", self.text)
+        self.assertIn("each claim separately", self.text)
+        self.assertIn("not listed", self.text)
+
     def test_rule_property_and_do_not_flag_blocks(self):
         low = self.text.lower()
         for item in ("`rule:`", "check: rule", "check: property", "`do-not-flag:`", "shows the property"):
@@ -236,6 +242,12 @@ class SpecVerifier(unittest.TestCase):
         for w in report.VERDICTS:
             self.assertIn("`%s`" % w, self.text)
 
+    def test_task_message_lists_one_to_five_handoffs(self):
+        self.assertIn("1 to %d handoff" % report.VERIFY_BATCH, self.text)
+        self.assertIn("one line per handoff", self.text)
+        self.assertIn("each claim separately", self.text)
+        self.assertIn("not listed", self.text)
+
     def test_read_scope(self):
         self.assertIn("handoff file", self.text)
         for line in self.body:
@@ -250,7 +262,7 @@ class SpecVerifier(unittest.TestCase):
             self.assertIn(item, low)
 
     def test_frontmatter(self):
-        for line in ("tools: Read, Grep, Glob", "model: sonnet", "maxTurns: 12"):
+        for line in ("tools: Read, Grep, Glob", "model: sonnet", "maxTurns: 30"):
             self.assertIn(line, self.fm)
 
 

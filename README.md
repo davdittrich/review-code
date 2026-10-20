@@ -52,7 +52,7 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 - `default_tier`: tier used without a tier flag.
 - `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
 - `verifier_model`, `verifier_effort`: the same for the verifiers.
-- `max_verifier_calls` (1 to 200), `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
+- `max_verifier_calls` (1 to 200): cap on the findings sent to verifiers per run (ids, not calls; a call holds up to 5 handoffs of one code path). `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
 
 ## Serial mode
 

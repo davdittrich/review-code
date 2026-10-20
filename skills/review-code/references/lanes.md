@@ -8,7 +8,7 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 
 `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
-| Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier calls | Shards | Packs |
+| Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
 |------|-------|---------------------|-----------------------|----------------|--------|-------|
 | quick | defects, standards | sonnet/low | opus/medium | 10 | 3 | 2 |
 | standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 6 | 4 |
@@ -45,16 +45,16 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 
 | Cap | Meaning | Bounds |
 |-----|---------|--------|
-| `max_verifier_calls` | Verifier plus spec-verifier calls per run; in serial mode, where the preview shows 0 verifier calls, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
+| `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one code path per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
-Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 12, spec-verifier 12. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls`, each at most its ceiling in turns.
+Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 30, spec-verifier 30. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
 
 ## Cost preview and headless runs
 
-`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier-call cap, the agent-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues inside the caps. Use `--quick` or the cap settings to bound an unattended run.
+`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier-id cap and the range of calls it gives, the agent-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues inside the caps. Use `--quick` or the cap settings to bound an unattended run.
 
 ## Serial mode
 

@@ -733,8 +733,8 @@ class Preview(Fixture):
         self.assertEqual((out["confirm"], p["confirm"], out["preview"]), (True, True, p["preview"]))
         pv = "\n".join(p["preview"])
         self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
-        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier calls: up to 60, sonnet/high",
-                     "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 12", "Packs: python"):
+        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier ids: up to 60 (calls of up to 5 ids on one code path, so 12 to 60 calls), sonnet/high",
+                     "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 30", "Packs: python"):
             self.assertIn(want, pv)
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")
         self.assertNotRegex(pv, r"[$]|USD|EUR|price per")

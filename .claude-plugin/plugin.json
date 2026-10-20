@@ -47,7 +47,7 @@
     "max_verifier_calls": {
       "type": "number",
       "title": "Max verifier calls",
-      "description": "Cap on verifier calls per run, 1 to 200. Leave empty for the tier's value.",
+      "description": "Cap on the findings sent to verifiers per run (ids, not calls: a call holds up to 5), 1 to 200. Leave empty for the tier's value.",
       "min": 1,
       "max": 200
     },
