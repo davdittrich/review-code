@@ -277,6 +277,16 @@ def _repair_one(s, budget):
     raise _unrepairable(s)
 
 
+def _hostile(tree, path):
+    """True when the cited file holds a known-key wire token: a quote copied from it could carry keys into a repaired
+    line, so such a line keeps no fix, end_line or evidence (dc5)."""
+    real = _real(tree, path)
+    if real is None:
+        return False
+    with open(real, encoding="utf-8", errors="replace") as fh:
+        return _TOKEN.search(fh.read()) is not None
+
+
 def _parse(ln, load):
     """(read, dict or None) of a wire line under `load`; the second candidate is the line with its outer bracket restored.
     read is False only when no candidate is JSON syntax: a line that reads but is no pair array (repeated key, raw object,
@@ -657,6 +667,8 @@ def _read_lane(text, lane, tree, run, shard=None):
             continue
         if lane == "sota" and o is not None:  # the inventory, never the lane, picks the path and line
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
+        if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
+            o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
         c = _candidate(o, tree, lane, base, ctx) if o is not None else None
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c = None
@@ -763,11 +775,14 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
                  and _cited(trees[o["id"]], e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")
+        if fix and any(_hostile(trees[o["id"]], p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
+            cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             continue
         if allowed is not None and o["verdict"] == "refuted":
             cites = [e for e in cites if os.path.normpath(e["path"]) == paths[o["id"]]]
-        kind = "unverifiable" if allowed is not None and o["verdict"] == "refuted" and not cites else o["verdict"]
+        refuted = o["verdict"] == "refuted"  # a repaired line never refutes: text read from a quote must not drop a finding
+        kind = "unverifiable" if refuted and (fix or (allowed is not None and not cites)) else o["verdict"]
         got[o["id"]] = {"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
         mine.append(o["id"])
