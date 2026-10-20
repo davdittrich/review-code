@@ -582,7 +582,12 @@ def finish(run: str, seal: str, status: str) -> dict:
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
-        raise target.Refuse("not-in-flight")
+        if not any(n.endswith(".pre") for n in os.listdir(_fixdir(run))):
+            raise target.Refuse("not-in-flight")
+        # a brief was handed out, so state.json lost its in-flight entry: no seal to compare, no git call, no restore
+        st["halted"] = "tampered"
+        _save(run, st)
+        return {"status": "halted", "outcome": "tampered"}
     fid, detail, res = cur["id"], None, None
     if not secrets.compare_digest(_seal(run, fid), seal) or not _snapshots_hold(run, st):
         outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
@@ -618,7 +623,8 @@ def report_(run: str) -> dict:
     st = _state(run)
     fd, cur = _fixdir(run), st["in_flight"]
     tampered = st["halted"] == "tampered"
-    unsafe = tampered or cur is not None  # then no git command runs: a rewritten config may carry filters
+    pend = sorted(n[:-4] for n in os.listdir(fd) if n.endswith(".pre") and n[:-4] not in st["done"])
+    unsafe = tampered or cur is not None or bool(pend)  # then no git command runs: a rewritten config may carry filters
     repo = None if unsafe else _target(run)["repo"]
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
@@ -649,6 +655,10 @@ def report_(run: str) -> dict:
             _e(cur["path"]), os.path.join(fd, cur["id"] + ".pre")),
             "no git command ran: the fixer call did not finish and may have changed .git/config; check .git/config "
             "and git status by hand"]
+    elif pend:
+        text += ["== in flight =="] + ["snapshot: " + os.path.join(fd, i + ".pre") for i in pend]
+        text.append("no git command ran: a snapshot has no recorded outcome, so a fixer call did not finish "
+                    "normally and may have changed .git/config; check .git/config and git status by hand")
     if not unsafe:
         known = set(st["accepted"]) | set(st["untracked"]) | ({cur["path"]} if cur else set())
         odd = [p for _, p in _changes(repo) if p not in known]

@@ -817,6 +817,32 @@ class Tamper(Scope):
                 self.assertEqual(slurp(self.p("src/calc.py")), edited)
                 self.git("checkout", "--", "src/calc.py")
 
+    def test_in_flight_cleared_is_tampered(self):
+        run, fid, bg = self.started()
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        edited = slurp(self.p("src/calc.py"))
+        st = self.state(run)
+        st["in_flight"] = None
+        with open(os.path.join(run, "fix", "state.json"), "w", encoding="utf-8") as fh:
+            json.dump(st, fh)
+
+        def recorded():
+            calls = []
+            orig = target._run
+            with mock.patch.object(target, "_run", side_effect=lambda *a, **k: calls.append(a) or orig(*a, **k)), \
+                    gitfix.isolated(self.tmp):
+                r = fix.report_(run)
+            self.assertEqual((r["status"], calls), ("ok", []))
+            return r["text"]
+
+        self.assertIn("no git command ran", recorded())
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "tampered"), f)
+        self.assertEqual(self.state(run)["halted"], "tampered")
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+        self.assertEqual(slurp(self.p("src/calc.py")), edited)
+        self.assertIn("TAMPERED", recorded())
+
     def test_accepted_snapshot_rewritten(self):
         second = two("src/second.py", 2, "return a / b", "return a * b")
         run, fid, bg = self.started(CAND, second)

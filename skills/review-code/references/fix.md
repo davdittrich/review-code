@@ -40,7 +40,7 @@ No fix may touch a path with a dot component (`.github/`, `.env`), a lockfile (`
 | `reverted-tests` | The tests failed; the file is restored | yes |
 | `reverted-timeout` | The tests ran past 600 seconds (`TIMEOUT`); restored | yes |
 | `reverted-interrupt` | `finish` was interrupted (Ctrl-C, SIGTERM, an error); the file is restored from its snapshot | yes |
-| `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot or the git config changed while the fixer ran; nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
+| `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot or the git config changed while the fixer ran, or `state.json` shows no call in flight after a brief was handed out (a second `finish` for one brief included); nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
 
 ## Refusals
 
@@ -69,7 +69,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `halted` | An earlier outcome or a red baseline stopped the run | Read the report |
 | `tampered` | `fix/state.json` is not a JSON object holding every state key, because something rewrote it while a fixer ran; no git command ran and nothing was restored | Check `.git/config` and `git status` by hand; restore the file from its `.pre` snapshot in `<run>/fix/` if needed |
 | `in-flight` | A fixer call is outstanding; a second brief is refused | Wait for it, then `finish` |
-| `not-in-flight` | `finish` without a brief handed out | Run `begin` first |
+| `not-in-flight` | `finish` before any brief was handed out | Run `begin` first |
 | `head-moved` | `HEAD` is not the reviewed commit any more | Do not commit during a fix run |
 | `refs-moved` | A branch, tag or stash ref changed (a halted baseline also uses this reason) | Do not touch refs during a fix run |
 | `tree-changed` | A file other than an accepted fix or a test leftover differs from `HEAD` | Leave the tree alone while it runs |
