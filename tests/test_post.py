@@ -1043,6 +1043,16 @@ class GitLabSigils(Base):
         self.assertIsNone(re.search(r"[&~%$^]\w|[~%]\"|\*iteration|\[(?:issue|work_item)|\[\[|G[LH]-\d|/\w*>", outside), fix)
 
 
+    def test_an_emphasis_underscore_does_not_hide_a_reference(self):
+        self.review(20, fix="see _GH-12_ and __GL-7__ and _grp/proj>_ now")
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        fix = [ln for ln in self.payload()[1]["comments"][0]["body"].split("\n") if ln.startswith("**Fix:**")][0]
+        outside = re.sub(r"`[^`]*`", " ", fix)
+        for ref in ("GH-12", "GL-7", "proj>"):
+            self.assertNotIn(ref, outside, fix)
+
+
 class HtmlQuote(Base):
     inject = {20: "<!-- note -->"}
 

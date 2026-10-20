@@ -38,7 +38,9 @@ _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab 
 _REF = re.compile(r"[@#!&~%$^](?=\w)[\w./-]*"  # @user #1 !1 &epic ~label %milestone $snippet ^alert
                   r'|[~%]"[^"`]*"|\*iteration:(?:"[^"`]*"|[\w./-]+)'  # ~"two words" %"two words" *iteration:x
                   r"|\[\[[^\]`]*\]\]|\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):[^\]`]*\]"
-                  r"|\b(?:GL|GH)-\d+|\b[\w.-]+/[\w.-][\w./-]*>")  # GL-1 GH-1 issue keys, namespace/project>
+                  # GL-1 GH-1 issue keys, namespace/project>. Not `\b`: `_` is a word character, so `_GH-1_` (emphasis,
+                  # which renders `GH-1` as its own text) would slip through
+                  r"|(?<![A-Za-z0-9])(?:GL|GH)-\d+|(?<![A-Za-z0-9])[\w.-]+/[\w.-][\w./-]*>")
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
 # A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
 # CRLF, string literals), so a hit blanks every free-text field of the finding instead of guessing where the key ends.
