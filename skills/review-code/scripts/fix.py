@@ -1,0 +1,424 @@
+"""Apply verified findings' fixes to the user's tree, one at a time, behind a green test command.
+
+Stdlib only, Python 3.9 grammar. The plugin's only script that lets an agent edit the user's tree: the fixer
+agent holds Edit, this script owns everything around it (plan, baseline, snapshot, tests, revert, report).
+Runs the stored test command only after ledger.trust_gate passes. Creates no commit, ref or stash entry.
+Prints one JSON line; never a traceback.
+"""
+import sys
+
+if sys.version_info < (3, 9):
+    print('{"reason": "python-too-old", "status": "refuse"}')
+    sys.exit(1)
+
+import bisect
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import stat
+import tempfile
+from typing import List, Optional, Tuple
+
+import ledger
+import report
+import repro
+import sanitize
+import target
+
+ID_RE = report.ID_RE
+TIMEOUT = 600  # seconds; read at call time
+MAX_CHANGED = 60  # changed lines per fix (06-02 enforces it)
+MAX_PREVIEW = 25000  # same bound and reason as post.py
+TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
+_MANIFEST = re.compile(
+    r"(?:requirements.*\.txt|constraints.*\.txt|setup\.py|go\.mod|go\.work|Gemfile|.*\.gemspec|Pipfile|"
+    r"build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|pom\.xml|NAMESPACE|.*\.csproj|"
+    r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
+    r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
+OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
+            "reverted-timeout", "reverted-interrupt", "tampered")
+REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
+STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
+               "effort", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
+HEX = re.compile(r"[0-9a-f]{64}\Z")
+USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+         "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
+
+
+def _e(x) -> str:
+    """Untrusted text, one line, escaped for a terminal."""
+    return sanitize.escape_for_code(" ".join(str(x).split()))[0]
+
+
+def _fixdir(run: str) -> str:
+    return os.path.join(run, "fix")
+
+
+def _json(path: str):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _put(path: str, data: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.chmod(path, 0o600)
+
+
+def _target(run: str) -> dict:
+    try:
+        rec = _json(os.path.join(run, "target.json"))
+        rec["repo"], rec["kind"], rec["head_sha"]
+        return rec
+    except (OSError, ValueError, KeyError, TypeError):
+        raise target.Refuse("no-target")
+
+
+def _state(run: str) -> dict:
+    try:
+        return _json(os.path.join(_fixdir(run), "state.json"))
+    except FileNotFoundError:
+        raise target.Refuse("no-baseline")
+
+
+def _save(run: str, st: dict) -> None:
+    target.write_private(os.path.join(_fixdir(run), "state.json"), json.dumps(st, sort_keys=True, indent=2))
+
+
+def _tier(f: dict) -> Tuple[str, str]:
+    hard = (f["category"] in report.BLOCKING or f["severity"] == "blocking" or f["end_line"] - f["line"] >= 5
+            or len(f["fix"]) > 300)
+    return TIERS["complex" if hard else "simple"]
+
+
+def _live(repo: str, path) -> Optional[str]:
+    """Real path of a tracked regular file inside repo reached without a symlink, else None."""
+    if not isinstance(path, str) or not path or "\0" in path or os.path.isabs(path):
+        return None
+    norm = os.path.normpath(path)
+    if norm == ".." or norm.startswith("../"):
+        return None
+    joined = os.path.join(os.path.realpath(repo), norm)
+    if os.path.realpath(joined) != joined or not os.path.isfile(joined) or os.path.islink(joined):
+        return None
+    try:
+        listed = target.git_bytes(["ls-files", "-z", "--", norm], repo, check=False)
+        return joined if listed == norm.encode("utf-8") + b"\0" else None
+    except UnicodeError:
+        return None
+
+
+def _relocate(text: str, quote) -> Optional[int]:
+    """1-based line where the whitespace-folded quote starts, when it occurs exactly once in the folded text."""
+    q = report._ws(quote) if isinstance(quote, str) else ""
+    if not q:
+        return None
+    toks = [(m.start(), m.group()) for m in re.finditer(r"\S+", text)]
+    folded = " ".join(t for _, t in toks)
+    offs, o = [], 0
+    for _, t in toks:
+        offs.append(o)
+        o += len(t) + 1
+    first = folded.find(q)
+    if first < 0 or folded.find(q, first + 1) >= 0:
+        return None
+    return text.count("\n", 0, toks[bisect.bisect_right(offs, first) - 1][0]) + 1
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def _changes(repo: str) -> List[Tuple[str, str]]:
+    """(XY, path) per entry of `git status --porcelain=v1 -z`; a rename or copy yields both its paths."""
+    parts = target.git_bytes(["status", "--porcelain=v1", "-z", "--untracked-files=all"], repo).split(b"\0")
+    out, i = [], 0
+    while i < len(parts):
+        ent = parts[i]
+        i += 1
+        if len(ent) < 4:
+            continue
+        xy = ent[:2].decode("ascii", "replace")
+        out.append((xy, ent[3:].decode("utf-8", "replace")))
+        if ("R" in xy or "C" in xy) and i < len(parts):
+            out.append((xy, parts[i].decode("utf-8", "replace")))
+            i += 1
+    return out
+
+
+def _refs(repo: str) -> str:
+    head = target.git(["rev-parse", "HEAD"], repo).strip()
+    listing = target.git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags", "refs/stash"],
+                         repo)
+    return hashlib.sha256((head + "\n" + listing).encode("utf-8")).hexdigest()
+
+
+def _seal(run: str, fid: str) -> str:
+    """Hash of every file the fixer could rewrite to subvert the revert. Plain reads only: no git call."""
+    fd = _fixdir(run)
+    paths = [os.path.join(fd, "plan.json"), os.path.join(fd, "state.json"), os.path.join(fd, fid + ".pre")]
+    try:
+        files = _json(paths[1]).get("git_files", [])
+    except (OSError, ValueError, AttributeError):
+        files = []
+    h = hashlib.sha256()
+    for p in paths + [x for x in files if isinstance(x, str)]:
+        try:
+            data = _read(p)
+        except OSError:
+            data = None
+        h.update(p.encode("utf-8", "replace") + b"\0")
+        h.update(b"absent\0" if data is None else b"%d\0" % len(data) + data + b"\0")
+    return h.hexdigest()
+
+
+def _restore(path: str, data: bytes, mode: int) -> None:
+    """Put data back byte-exact: temp file in the same directory, then an atomic replace."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".fix-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _tests(run: str, st: dict) -> dict:
+    """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
+    raw = _read(os.path.join(_fixdir(run), "plan.json"))
+    if hashlib.sha256(raw).hexdigest() != st["digest"]:
+        raise target.Refuse("digest-mismatch")
+    command = json.loads(raw.decode("utf-8"))["command"]
+    ledger.trust_gate(run, command)
+    home, tmp = (os.path.join(_fixdir(run), n) for n in ("home", "tmp"))
+    for d in (home, tmp):
+        shutil.rmtree(d, ignore_errors=True)
+        os.mkdir(d, 0o700)
+    env = {k: os.environ[k] for k in repro.ENV_KEEP if k in os.environ}
+    env.update(HOME=home, TMPDIR=tmp)
+    saved, repro.TIMEOUT = repro.TIMEOUT, TIMEOUT
+    try:
+        res = repro._execute(command, _target(run)["repo"], env, "")  # empty id: only the exit code counts
+    finally:
+        repro.TIMEOUT = saved
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+    if res["outcome"] in ("timeout", "error"):
+        return {"outcome": res["outcome"], "exit": res["exit"]}
+    return {"outcome": "pass" if res["exit"] == 0 else "fail", "exit": res["exit"]}
+
+
+def _note_untracked(repo: str, st: dict) -> None:
+    """Files a test run left behind (caches, build output) are not an edit by anyone."""
+    for xy, p in _changes(repo):
+        if xy == "??" and p not in st["untracked"]:
+            st["untracked"].append(p)
+
+
+def plan(run: str, words: List[str]) -> dict:
+    tj = _target(run)
+    ledger.trust_gate(run, words)
+    repo = tj["repo"]
+    entries, skipped = [], []
+    for f in report.build(run)["findings"]:
+        fix_text = f.get("fix")
+        why, line = None, None
+        if not isinstance(fix_text, str) or not fix_text.strip():
+            why = "no-fix"
+        else:
+            real = _live(repo, f["path"])
+            line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
+            if line is None:
+                why = "stale"
+        if why:
+            skipped.append({"id": f["id"], "path": f["path"], "why": why})
+            continue
+        e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote", "fix")}
+        e["line"], e["end_line"] = line, line + (f["end_line"] - f["line"])
+        e["model"], e["effort"] = _tier(e)
+        entries.append(e)
+    doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
+    text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
+                                                                          _e(shlex.join(words)))]
+    for k, e in enumerate(entries, 1):
+        text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
+                                                      e["severity"], e["category"], e["origin"], e["model"],
+                                                      e["effort"]))
+        for label in ("title", "fix"):
+            rows = [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
+            text += ["  %s: %s" % (label, rows[0])] + ["      " + r for r in rows[1:]]
+    if skipped:
+        text.append("== skipped ==")
+        text += ["%s %s %s" % (s["id"], _e(s["path"]), s["why"]) for s in skipped]
+    body = "\n".join(text)
+    if len(body) > MAX_PREVIEW:
+        raise target.Refuse("preview-too-large")
+    fd = _fixdir(run)
+    os.makedirs(fd, mode=0o700, exist_ok=True)
+    os.chmod(fd, 0o700)
+    data = json.dumps(doc, sort_keys=True, indent=2).encode("utf-8")
+    _put(os.path.join(fd, "plan.json"), data)
+    return {"status": "ok", "text": body, "digest": hashlib.sha256(data).hexdigest(), "apply": len(entries),
+            "skipped": len(skipped)}
+
+
+def baseline(run: str, digest: str) -> dict:
+    tj = _target(run)
+    fd = _fixdir(run)
+    if os.path.exists(os.path.join(fd, "state.json")):
+        raise target.Refuse("already-run")
+    try:
+        raw = _read(os.path.join(fd, "plan.json"))
+    except OSError:
+        raise target.Refuse("no-plan")
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise target.Refuse("digest-mismatch")
+    ledger.trust_gate(run, json.loads(raw.decode("utf-8"))["command"])
+    repo = tj["repo"]
+    files = [os.path.join(repo, target.git(["rev-parse", "--git-path", p], repo).strip())
+             for p in ("config", "info/attributes")]
+    st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
+          "untracked": [], "in_flight": None, "halted": None, "side_effects": []}
+    _save(run, st)  # before the run: a second baseline or plan now refuses already-run
+    res = _tests(run, st)
+    _note_untracked(repo, st)
+    if res["outcome"] != "pass":
+        st["halted"] = "baseline-red"
+    _save(run, st)
+    if res["outcome"] != "pass":
+        return {"status": "halted", "reason": "baseline-red", "exit": res["exit"]}
+    return {"status": "ok"}
+
+
+def begin(run: str) -> dict:
+    tj = _target(run)
+    st = _state(run)
+    if st["halted"]:
+        raise target.Refuse("halted")
+    if st["in_flight"]:
+        raise target.Refuse("in-flight")
+    repo = tj["repo"]
+    fd = _fixdir(run)
+    for e in _json(os.path.join(fd, "plan.json"))["entries"]:
+        if e["id"] in st["done"]:
+            continue
+        real = _live(repo, e["path"])
+        line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), e["quote"])
+        if line is None:
+            st["done"][e["id"]] = {"outcome": "stale", "exit": None}
+            continue
+        data = _read(real)
+        _put(os.path.join(fd, e["id"] + ".pre"), data)
+        nonce = secrets.token_hex(8)
+        brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
+                 "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
+        brief += ["%s:\n%s" % (k, ledger._block(e[k], nonce)) for k in ("title", "trigger", "quote", "fix")]
+        target.write_private(os.path.join(fd, e["id"] + ".md"), "\n".join(brief) + "\n")
+        st["in_flight"] = {"id": e["id"], "path": e["path"], "mode": stat.S_IMODE(os.stat(real).st_mode)}
+        _save(run, st)
+        return {"status": "ok", "id": e["id"], "brief": os.path.join(fd, e["id"] + ".md"), "path": e["path"],
+                "line": line, "model": e["model"], "effort": e["effort"], "seal": _seal(run, e["id"])}
+    _save(run, st)
+    return {"status": "done"}
+
+
+def finish(run: str, seal: str, status: str) -> dict:
+    tj = _target(run)
+    st = _state(run)
+    cur = st["in_flight"]
+    if not cur:
+        raise target.Refuse("not-in-flight")
+    fid, rec, res = cur["id"], {}, None
+    if not secrets.compare_digest(_seal(run, fid), seal):
+        outcome = "tampered"  # decided on plain file reads: no git call, no restore of a possibly rewritten snapshot
+    else:
+        repo = tj["repo"]
+        real = os.path.join(os.path.realpath(repo), cur["path"])
+        pre, now = _read(os.path.join(_fixdir(run), fid + ".pre")), _read(real)
+        if status == "declined":
+            outcome = "declined"
+        elif now == pre:
+            outcome = "no-change"
+        else:
+            res = _tests(run, st)
+            _note_untracked(repo, st)
+            if res["outcome"] == "pass":
+                outcome = "fixed"
+                _put(os.path.join(_fixdir(run), fid + ".post"), now)
+                st["accepted"][cur["path"]] = {"id": fid, "sha": hashlib.sha256(now).hexdigest()}
+            else:
+                outcome = "reverted-tests"
+                _restore(real, pre, cur["mode"])
+    st["done"][fid] = {"outcome": outcome, "exit": res["exit"] if res else None}
+    st["in_flight"] = None
+    if outcome in REVERTED:
+        st["halted"] = outcome
+    _save(run, st)
+    if outcome in REVERTED:
+        return {"status": "halted", "outcome": outcome, "exit": res["exit"] if res else None}
+    return {"status": "ok", "outcome": outcome}
+
+
+def report_(run: str) -> dict:
+    tj = _target(run)
+    st = _state(run)
+    repo = tj["repo"]
+    text = ["%s %s:%d %s" % (e["id"], _e(e["path"]), e["line"], st["done"].get(e["id"], {}).get("outcome", "pending"))
+            for e in _json(os.path.join(_fixdir(run), "plan.json"))["entries"]]
+    text += ["== changes ==", sanitize.escape_for_code(target.git(["diff", "--stat", "--no-color", "--no-ext-diff"],
+                                                              repo))[0].rstrip("\n"),
+             "HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED")]
+    outs = [v.get("outcome") for v in st["done"].values()]
+    return {"status": "ok", "text": "\n".join(text), "fixed": outs.count("fixed"),
+            "reverted": sum(1 for o in outs if o in REVERTED), "declined": outs.count("declined"),
+            "halted": 1 if st["halted"] else 0}
+
+
+def main(argv: List[str], stdin: Optional[object] = None) -> int:
+    flags = {"plan": ["--run"], "baseline": ["--run", "--digest"], "begin": ["--run"],
+             "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
+    try:
+        sub, opts = (argv[0], argv[1:]) if argv else ("", [])
+        if sub not in flags or opts[0::2] != flags[sub] or len(opts) != 2 * len(flags[sub]):
+            raise target.Refuse("usage", USAGE)
+        v = dict(zip(flags[sub], opts[1::2]))
+        if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
+                or v.get("--status", "applied") not in ("applied", "declined"):
+            raise target.Refuse("usage", USAGE)
+        run = v["--run"]
+        if sub == "plan":
+            text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])
+        elif sub == "baseline":
+            out = baseline(run, v["--digest"])
+        elif sub == "begin":
+            out = begin(run)
+        elif sub == "finish":
+            out = finish(run, v["--seal"], v["--status"])
+        else:
+            out = report_(run)
+    except target.Refuse as r:
+        out = {"status": "refuse", "reason": r.reason}
+        if r.detail:
+            out["detail"] = r.detail
+    except (OSError, KeyError, ValueError, TypeError) as e:
+        out = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}
+    if out.get("text"):
+        print(out["text"])
+    print(json.dumps({k: x for k, x in out.items() if k in STDOUT_KEYS}, sort_keys=True))
+    return 0 if out["status"] in ("ok", "done") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

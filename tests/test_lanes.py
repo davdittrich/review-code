@@ -331,8 +331,10 @@ class TurnCeilings(unittest.TestCase):
     """LANE-09: maxTurns is frontmatter-only, so each agent file carries plan.py's ceiling."""
 
     def test_every_agent_declares_the_plan_ceiling(self):
-        self.assertEqual(sorted(plan.MAX_TURNS), sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents"))))
-        for name, n in plan.MAX_TURNS.items():
+        # the fixer is not a review lane: fix mode (not plan.py) spawns it, so it carries its own ceiling
+        self.assertEqual(sorted(plan.MAX_TURNS),
+                         sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents")) if f != "fixer.md"))
+        for name, n in dict(plan.MAX_TURNS, fixer=15).items():
             self.assertIn("maxTurns: %d" % n, parts(name)[0], name)
 
     def test_tool_sets(self):

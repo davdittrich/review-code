@@ -164,9 +164,10 @@ else
   fi
 fi
 
-# CTX-05: lane agents are read-only. tools: is an exclusive allowlist; an omitted line inherits every tool.
-# Required lanes must exist; every agents/*.md is checked, so an added lane cannot ship unchecked.
-for name in finder verifier standards spec spec-verifier sota; do
+# CTX-05: lane agents are read-only and the fixer alone holds Edit (no Write, no Bash). tools: is an exclusive
+# allowlist; an omitted line inherits every tool.
+# Required agents must exist; every agents/*.md is checked, so an added agent cannot ship unchecked.
+for name in finder verifier standards spec spec-verifier sota fixer; do
   [ -f "$tree/agents/$name.md" ] || bad "agent-$name-tools" "missing agents/$name.md"
 done
 for f in "$tree"/agents/*.md; do
@@ -184,7 +185,13 @@ for f in "$tree"/agents/*.md; do
   val=$(sed -n 's/^tools:[ \t]*//p' "$afm" | head -n 1)
   got=$(printf '%s\n' "$val" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | sort | tr '\n' ' ' | sed 's/ $//')
   # LANE-05: only sota holds web tools, and it holds no filesystem tool; every other lane is the reverse.
-  if [ "$name" = sota ]; then want="WebFetch WebSearch"; else want="Glob Grep Read"; fi
+  if [ "$name" = sota ]; then
+    want="WebFetch WebSearch"
+  elif [ "$name" = fixer ]; then
+    want="Edit Glob Grep Read"
+  else
+    want="Glob Grep Read"
+  fi
   if [ "$count" -eq 1 ] && [ "$got" = "$want" ]; then
     ok "agent-$name-tools"
   else

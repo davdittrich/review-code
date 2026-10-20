@@ -61,6 +61,30 @@ class GateMutations(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL - agent-spec-verifier-tools", out)
 
+    def test_gate_rejects_write_on_fixer(self):  # FIX-04: the fixer edits, it never creates files
+        self.mutate_agent("fixer", "tools: Read, Edit, Grep, Glob", "tools: Read, Edit, Grep, Glob, Write")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-fixer-tools", out)
+
+    def test_gate_rejects_bash_on_fixer(self):  # FIX-04: no shell for the only write-capable agent
+        self.mutate_agent("fixer", "tools: Read, Edit, Grep, Glob", "tools: Read, Edit, Grep, Glob, Bash")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-fixer-tools", out)
+
+    def test_gate_requires_fixer(self):
+        os.remove(os.path.join(self.tree, "agents", "fixer.md"))
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-fixer-tools", out)
+
+    def test_gate_rejects_edit_on_finder(self):  # the lanes stay read-only; the fixer alone holds Edit
+        self.mutate_agent("finder", "tools: Read, Grep, Glob", "tools: Read, Grep, Glob, Edit")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - agent-finder-tools", out)
+
     def test_gate_fails_when_listing_fails(self):
         # WR-06: a failing `find` must reach `bad hygiene-tracked`, not print ok
         fake = os.path.join(self._td.name, "bin")
