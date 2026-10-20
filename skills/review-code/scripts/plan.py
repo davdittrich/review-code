@@ -28,7 +28,8 @@ import report
 import sanitize
 import target
 
-STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview"}
+STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview",
+               "wave_size", "verifier", "spec_verifier"}
 DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
 # is opus so it differs from the sonnet finder (user's choice b at 04-06 Task 2, LANE-07).
@@ -492,7 +493,10 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc)
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
-    return {"status": "ok", "tier": tier, "mode": doc["mode"], "calls": len(calls), "skipped": skipped,
+    return {"status": "ok", "tier": tier, "mode": doc["mode"],
+            "calls": [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard", "input") if k != "input" or serial}
+                      for c in calls],  # SKILL steps 7 and 8 read these instead of plan.json
+            "wave_size": WAVE_SIZE, "verifier": doc["verifier"], "spec_verifier": doc["spec_verifier"], "skipped": skipped,
             "lost_guarantees": lost, "confirm": doc["confirm"], "preview": doc["preview"]}
 
 

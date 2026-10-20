@@ -242,7 +242,10 @@ class Tracer(Fixture):
 
     def test_standard_tier_without_spec(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "standard")
-        self.assertEqual((rc, out["status"], out["tier"], out["calls"]), (0, "ok", "standard", 2))
+        self.assertEqual((rc, out["status"], out["tier"], len(out["calls"])), (0, "ok", "standard", 2))
+        p = self.plan_json()
+        self.assertEqual(out["calls"], [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard")} for c in p["calls"]])
+        self.assertEqual((out["wave_size"], out["verifier"], out["spec_verifier"]), (p["caps"]["wave_size"], p["verifier"], p["spec_verifier"]))
         self.assertEqual(out["skipped"], [{"what": "spec", "why": "no spec"}])
         p = self.plan_json()
         self.assertEqual(set(p), self.KEYS)
@@ -267,7 +270,7 @@ class Tracer(Fixture):
         rc, out, _ = cli("ledger.py", ["build", "--run", self.run_dir, "--spec", "docs/spec.md"], self.repo, self.tmp)
         self.assertEqual(json.loads(out)["spec_status"], "found")
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
-        self.assertEqual((rc, out["calls"]), (0, 3))
+        self.assertEqual((rc, len(out["calls"])), (0, 3))
         self.assertEqual(out["skipped"], [{"what": "sota", "why": "no dependency or import names in the change"}])
         self.assertEqual([c["lane"] for c in self.plan_json()["calls"]], ["defects", "standards", "spec"])
 

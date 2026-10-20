@@ -144,14 +144,14 @@ before treating it as unavailable; it is unavailable only when that load fails o
    plan.py ignores a value that is empty or starts with `${` (an unset setting). Leave out a key whose
    value holds a line break or a line equal to `REVIEW_PLAN`. Read the one-line JSON `status`: on
    `refuse`, state `reason` and `detail` and stop. On `ok`, state `tier`, `mode`, the number of
-   `calls`, each `skipped` entry (`what`, `why`) and each `lost_guarantees` line. The plan is in
+   `calls` entries, each `skipped` entry (`what`, `why`) and each `lost_guarantees` line. The plan is in
    `<run>/plan.json`.
 6. Cost gate. When plan.py's `confirm` is true, make one AskUserQuestion showing the `preview` lines
    with options "Run" and "Stop"; on "Stop" or no answer, stop. When AskUserQuestion cannot be loaded
    (headless), print the `preview` and continue: the run stays inside the plan's caps. Never repeat
    this question in a run, also not after a re-plan in step 7.
-7. Lanes. Read `<run>/plan.json` `calls`. Parallel mode (`mode` is `parallel`): take the calls in
-   order, in waves of at most `caps.wave_size`. Make one Agent call per call with `subagent_type` the
+7. Lanes. Use step 5's `calls` (do not read plan.json). Parallel mode (`mode` is `parallel`): take the calls in
+   order, in waves of at most `wave_size`. Make one Agent call per call with `subagent_type` the
    call's `agent` (`review-code:finder` for defects, `review-code:standards`, `review-code:spec`,
    `review-code:sota`), `prompt` its `prompt` exactly, `model` its `model`, `effort` its `effort` and a short
    `description`. Fan-out rule: issue all calls of a wave in one message; wait until every call of the wave has returned or notified completion before the next step.
@@ -178,7 +178,7 @@ before treating it as unavailable; it is unavailable only when that load fails o
 8. Verify. Use the last ingest's stdout. Parallel mode: for each id in `ids` make one Agent call,
    `subagent_type` `review-code:verifier`, and for each id in `spec_ids` one with `subagent_type`
    `review-code:spec-verifier`. The `prompt` is exactly `<handoff>/<id>.md` and nothing else; `model` and
-   `effort` come from plan.json `verifier` or `spec_verifier`. Issue them in waves as in step 7, with the
+   `effort` come from step 5's `verifier` or `spec_verifier`. Issue them in waves as in step 7, with the
    same fan-out rule. Serial mode: self-score all ids in one batch: read each handoff file with one Read call per file
    (never a shell loop or other compound command) and the cited lines in `tree/`, and write one verdict line per id in the format of `agents/verifier.md`, trying to
    refute each claim (`unverifiable` when unsure). Pass every reply line that
