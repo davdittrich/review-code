@@ -42,8 +42,8 @@ _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
 _STOP = frozenset("main init test get set run new".split())
-_TEST_NAME = re.compile(r"(?:test_.*\.py|.*_test\.py|.*_test\.go|.*\.(?:test|spec)\.[jt]sx?|.*Test\.java|"
-                        r"test-.*\.R)\Z")
+_TEST_NAME = re.compile(r"(?:test_.*\.py|.*_test\.py|.*_test\.go|.*\.(?:test|spec)\.[cm]?[jt]sx?|.*Test\.java|"
+                        r"test-.*\.R|.*\.cy\.[jt]sx?|.*_spec\.rb|.*Tests?\.cs)\Z")
 _TEST_DIRS = frozenset(("test", "tests", "__tests__", "spec"))
 _FIX_DIRS = frozenset(("fixtures", "testdata", "__snapshots__"))
 _CFG_ROOT = re.compile(r"(?:pyproject\.toml|setup\.cfg|package\.json|tsconfig.*\.json|Makefile|Dockerfile.*|"

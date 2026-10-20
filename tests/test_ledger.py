@@ -94,6 +94,13 @@ def files_of(led, cat):
     return [e["file"] for e in led[cat]]
 
 
+class TestNames(unittest.TestCase):
+    def test_every_test_file_shape_counts_as_a_test(self):
+        for name in ("a.test.mjs", "a.test.cts", "a.cy.js", "a_spec.rb", "FooTests.cs", "FooTest.cs", "a.spec.ts"):
+            self.assertTrue(ledger._is_test("src/" + name), name)
+        self.assertFalse(ledger._is_test("src/a.mjs"))
+
+
 class Categories(Base):
     def test_ledger_full_categories(self):
         body = "".join("    x = %d\n" % i for i in range(12))

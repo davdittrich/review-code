@@ -44,8 +44,6 @@ _MANIFEST = re.compile(
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
 _RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
                      r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
-# test names ledger._TEST_NAME lacks
-_TEST_MORE = re.compile(r"(?:.*\.(?:test|spec)\.[cm][jt]s|.*\.cy\.[jt]sx?|.*_spec\.rb|.*Tests?\.cs)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered")
 REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
@@ -141,7 +139,7 @@ def _judges(path: str, cmd_files: set) -> bool:
     A spec/ directory counts only at the repo root (RSpec), so src/spec/parser.py stays fixable."""
     d, _, base = path.rpartition("/")
     dirs = d.split("/") if d else []
-    return (path in cmd_files or ledger._is_fixture(path) or bool(_RUNNER.match(base) or _TEST_MORE.match(base)
+    return (path in cmd_files or ledger._is_fixture(path) or bool(_RUNNER.match(base)
             or ledger._TEST_NAME.match(base) or (ledger._TEST_DIRS - {"spec"}) & set(dirs)) or dirs[:1] == ["spec"])
 
 
