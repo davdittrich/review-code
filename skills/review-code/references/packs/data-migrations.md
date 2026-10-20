@@ -20,4 +20,3 @@ Applies to files under `migrations/`, `alembic/` and similar, and to `*.sql` fil
 ## Sources
 
 - PostgreSQL docs, ALTER TABLE (most forms take an ACCESS EXCLUSIVE lock; DROP COLUMN), https://www.postgresql.org/docs/current/sql-altertable.html, read 2026. Other engines have their own lock rules; state which engine applies.
-- Pack scope and checks follow the phase 4 research plan for LANE-06 (data-migrations), own wording.

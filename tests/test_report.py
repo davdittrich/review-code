@@ -1018,7 +1018,7 @@ class WireForm(Base):
         self.assertEqual((out["ids"], out["dropped"]["invalid"]), ([], 2))  # the trailer is invalid too
         self.assertEqual(out["lanes"], {"defects": "incomplete"})
 
-    def test_line_missing_its_outer_bracket_is_still_ingested(self):  # review-code-1q1: a live finder dropped one "["
+    def test_line_missing_its_outer_bracket_is_still_ingested(self):  # a live finder dropped one "["
         raw = json.dumps(wire(CAND))[1:-1]
         self.assertTrue(raw.startswith('["path"'))
         out = self.ingest(raw, json.dumps(wire({"inspected": ["src/calc.py"]})))

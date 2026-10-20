@@ -32,7 +32,7 @@ STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped",
                "wave_size", "verifier", "spec_verifier"}
 DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
-# is opus so it differs from the sonnet finder (user's choice b at 04-06 Task 2, LANE-07).
+# is opus so it differs from the sonnet finder: the verifier must not share the finder's model.
 TIERS = {
     "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("opus", "medium"),
               "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},

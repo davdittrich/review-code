@@ -157,7 +157,7 @@ def _objects(text):
     for ln in text.split("\n"):
         if re.match(r'\s*(\{|\[\s*[\["])', ln):
             o = None
-            # shortcut: only the dropped-outer-bracket slip is repaired (seen live, review-code-1q1); other damage stays invalid
+            # shortcut: only the dropped-outer-bracket slip is repaired (seen live: a finder dropped one opening bracket); other damage stays invalid
             for cand in (ln, "[" + ln + "]"):
                 try:
                     o = json.loads(cand, object_pairs_hook=_no_object)

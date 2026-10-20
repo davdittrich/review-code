@@ -19,4 +19,3 @@ Applies to changes in public surface files: package exports (`__init__.py`, `ind
 ## Sources
 
 - Semantic Versioning 2.0.0 (public API and breaking changes), https://semver.org/, read 2026.
-- Pack scope follows the phase 4 research plan for LANE-06 (api-compat), own wording.

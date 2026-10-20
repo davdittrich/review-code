@@ -116,7 +116,7 @@ def _tier(f: dict) -> Tuple[str, str]:
 
 
 def _protected(path: str) -> bool:
-    """Paths no fix may touch: dot components, lockfiles, manifests, config and CI files (A5)."""
+    """Paths no fix may touch: dot components, lockfiles, manifests, config and CI files (the fixer's brief excludes them)."""
     parts = path.split("/")
     base = parts[-1]
     return (any(p.startswith(".") for p in parts) or base in target._LOCKFILES or base.endswith(".lock")
