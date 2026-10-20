@@ -140,6 +140,7 @@ class GitHub:
     refs = None  # GitLab only: the diff refs read by the last state()
     login = None  # the user existing() checked; a failed create deletes only a pending review of theirs
     ids = frozenset()  # the finding ids of the payload the last create sent
+    unknown = False  # the event's outcome could not be read: cleanup must leave the review alone
 
     def __init__(self, info: dict):
         self.i = info
@@ -266,13 +267,25 @@ class GitHub:
     def finish(self, handle: int) -> None:
         try:
             self._call("POST", "%s/reviews/%d/events" % (self.pr, handle), {"event": EVENT})
-        except Refuse as r:
+        except Refuse as r:  # GitHub may have applied the event although its answer was lost (5xx, timeout)
+            try:
+                got = self._call("GET", "%s/reviews/%d" % (self.pr, handle))
+                state = got.get("state") if isinstance(got, dict) else None
+            except Refuse:
+                state = None
+            if state is None or not isinstance(state, str):
+                self.unknown = True  # never delete: the review may be public, and a DELETE would fail on it anyway
+                raise Refuse("post-partial", "published unknown")
+            if state != "PENDING":
+                return  # it was submitted: the review is public
             raise Refuse("post-failed", r.detail) if r.reason == "gh-failed" else r
 
     def cleanup(self, handle: int) -> None:
         """Delete the pending review this run's own create made, only while every comment in it carries one of this
         payload's markers as a whole line. A comment the user starts in the web UI joins their one pending review, and
         the delete would take it too: then the review is kept (`review-kept`) for the user to submit or delete."""
+        if self.unknown:
+            return
         try:
             stored = _pages("gh", self.i["host"], "%s/reviews/%d/comments" % (self.pr, handle), self.i["run"])
         except Refuse:

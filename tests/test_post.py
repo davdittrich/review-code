@@ -187,6 +187,8 @@ class FakeGitHub:
             assert body == {"event": "COMMENT"}, body
             rev["state"] = "COMMENTED"
             return self.ok({"id": rev["id"], "state": rev["state"]})
+        if m.group(2) is None and method == "GET":
+            return self.ok({k: v for k, v in rev.items() if k != "comments"})
         if m.group(2) is None and method == "DELETE":
             if rev["state"] != "PENDING":
                 return self.fail(422)
@@ -595,6 +597,47 @@ class Safety(Base):
         self.refused(self.submit(digest), "post-failed", "HTTP 500")
         self.assertEqual(len(self.deletes()), 1)
         self.assertEqual(self.fake.pending(), [])
+
+    def event_lands_then(self, answer, also=None):
+        """GitHub applies the COMMENT event, then gh reports `answer` (the answer was lost); `also` runs right after."""
+        real = self.fake.route
+
+        def route(m, p, q, b):
+            got = real(m, p, q, b)
+            if (m, p) != ("POST", PR + "/reviews/100/events"):
+                return got
+            if also:
+                also()
+            return answer
+
+        self.fake.route = route
+
+    def landed(self, rc, out, st):
+        self.assertEqual((rc, st["status"], st.get("review_id")), (0, "ok", 100), out)
+        self.assertEqual(self.deletes(), [])
+        self.assertEqual(self.fake.reviews[100]["state"], "COMMENTED")
+
+    def test_an_event_that_landed_with_its_answer_lost_reports_ok(self):
+        digest = self.confirmed()
+        self.event_lands_then(self.fake.fail(502))
+        self.landed(*self.submit(digest))
+
+    def test_an_event_that_landed_before_a_timeout_reports_ok(self):
+        digest = self.confirmed()
+
+        def cli(tool, args, cwd, stdin=None):
+            got = self.fake(tool, args, cwd, stdin)
+            if args[5:6] == [PR + "/reviews/100/events"]:  # gh hung after GitHub applied the event: _cli's timeout
+                raise post.Refuse("gh-failed", "timeout")
+            return got
+
+        self.landed(*self.call("submit", "--run", self.run_dir, "--digest", digest, cli=cli))
+
+    def test_an_event_with_a_lost_answer_and_no_state_is_unknown(self):
+        digest = self.confirmed()
+        self.event_lands_then(self.fake.fail(502), also=lambda: self.fake.fail_map.update({"GET " + PR + "/reviews/100": 500}))
+        self.refused(self.submit(digest), "post-partial", "published unknown")
+        self.assertEqual(self.deletes(), [])
 
     def test_interrupt_after_create_deletes_the_review(self):
         digest = self.confirmed()
