@@ -164,6 +164,10 @@ def _loads(s):
 
 REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
 REPAIR_STEPS = 2000  # readings it will try on one line
+LITERAL = ("title", "trigger", "quote", "fix", "reason")  # the only keys whose string may hold a raw quote (e7e)
+KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
+    "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why"))
+_TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _LIT = {"true": True, "false": False, "null": None}
 
@@ -178,10 +182,11 @@ def _skip(s, i):
     return i
 
 
-def _alts(s, i, budget, pair=False):
-    """Every reading of a JSON value at s[i:] as (value, end), shortest string first (but, with `pair`, the value of a
-    [key, value] pair, first those ending the pair). A string may end at any quote whose next non-space character is `,` or
-    `]`; every other quote inside it is literal. No object is read."""
+def _alts(s, i, budget, key=None):
+    """Every reading of a JSON value at s[i:] as (value, end), shortest string first. `key` is the string before this
+    value in a [key, value] pair: a value of a LITERAL key may end at any quote whose next non-space character is `,` or
+    `]` (first those ending the pair), every other quote inside it is literal; any other string is read strictly. No
+    object is read."""
     i = _skip(s, i)
     budget[0] -= 1
     if budget[0] < 0:
@@ -194,9 +199,15 @@ def _alts(s, i, budget, pair=False):
         else:
             yield from _items(s, j, [], budget)
     elif c == '"':
+        if key not in LITERAL:
+            try:
+                yield json.decoder.scanstring(s, i + 1)
+            except ValueError:
+                pass
+            return
         ends = [q for q in range(i + 1, len(s)) if s[q] == '"' and s[q - 1] != "\\"
                 and s[_skip(s, q + 1):][:1] in (",", "]", "")]
-        for q in sorted(ends, key=lambda q: s[_skip(s, q + 1):][:1] != "]") if pair else ends:
+        for q in sorted(ends, key=lambda q: s[_skip(s, q + 1):][:1] != "]"):
             try:
                 yield json.loads('"%s"' % re.sub(r'(\\.)|"', lambda m: m.group(1) or '\\"', s[i + 1:q])), q + 1
             except ValueError:
@@ -211,12 +222,22 @@ def _alts(s, i, budget, pair=False):
 
 
 def _items(s, i, acc, budget):
-    for v, j in _alts(s, i, budget, len(acc) == 1 and isinstance(acc[0], str)):
+    for v, j in _alts(s, i, budget, acc[0] if len(acc) == 1 and isinstance(acc[0], str) else None):
         j = _skip(s, j)
         if s[j:j + 1] == "]":
             yield acc + [v], j + 1
         elif s[j:j + 1] == ",":
             yield from _items(s, j + 1, acc + [v], budget)
+
+
+def _tokens(v, n):
+    """Counts in n, at any depth, the lists of v whose first item is a known key."""
+    if isinstance(v, list):
+        if len(v) > 1 and isinstance(v[0], str) and v[0] in KEYS:
+            n[v[0]] = n.get(v[0], 0) + 1
+        for x in v:
+            _tokens(x, n)
+    return n
 
 
 def _repair(s):
@@ -228,6 +249,11 @@ def _repair(s):
     budget = [REPAIR_STEPS]
     for v, j in _alts(s, 0, budget):
         if _skip(s, j) == len(s):
+            raw, got = {}, _tokens(v, {})
+            for k in _TOKEN.findall(s):
+                raw[k] = raw.get(k, 0) + 1
+            if any(n > got.get(k, 0) for k, n in raw.items()):  # a `["k",` token swallowed into a string (e7e)
+                continue
             try:
                 if isinstance(_wire(v), dict):
                     return v
