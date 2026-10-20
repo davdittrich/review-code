@@ -46,7 +46,7 @@ def big(n):
     return dict(tr.CAND, path="src/big.py", line=3 * n - 1, quote="v%d = a - %d" % (n, n), title="t%d" % n)
 
 
-class Batches(tr.Base):
+class BigRun(tr.Base):
     base_files = {"src/big.py": "def f(a):\n    return a\n"}
     feat_files = {"src/big.py": BIG, "src/other.py": OTHER}
 
@@ -62,6 +62,8 @@ class Batches(tr.Base):
         with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
             return json.load(fh)["verify_calls"]
 
+
+class Batches(BigRun):
     def test_sixty_ids_on_one_path_make_twelve_calls_of_five(self):
         out = self.ingest(*[big(n) for n in range(1, 61)])
         calls = self.calls()
@@ -89,6 +91,69 @@ class Batches(tr.Base):
                                  dict(id="F-c", axis="defects", path="p", shard=2)], "/h")
         self.assertEqual([(c["agent"], c["ids"]) for c in calls], [
             ("review-code:verifier", ["F-a"]), ("review-code:spec-verifier", ["F-b"]), ("review-code:verifier", ["F-c"])])
+
+
+class Verdicts(BigRun):
+    def setUp(self):
+        super().setUp()
+        self.ids = self.ingest(*[big(n) for n in range(1, 8)])["ids"]  # batch 1: five ids, batch 2: two
+        self.by = {i: n for n in range(1, 8) for i in [tr.fid("src/big.py", "bug", "v%d = a - %d" % (n, n))]}
+        self.first, self.second = (c["ids"] for c in self.calls())
+
+    def line(self, i, kind="confirmed", cite=True):
+        n = self.by[i]
+        ev = [{"path": "src/big.py", "line": 3 * n - 1, "quote": "v%d = a - %d" % (n, n)}] if cite else []
+        return {"id": i, "verdict": kind, "evidence": ev, "reason": "r"}
+
+    def batch(self, k, *objs, rc=0):
+        r, out = self.rep("verdicts", tr.lines(*objs), extra=["--batch", str(k)])
+        self.assertEqual(r, rc, out)
+        return json.loads(out)
+
+    def stored(self):
+        with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_batches_accumulate_into_one_verdicts_file(self):
+        self.batch(1, *[self.line(i) for i in self.first])
+        out = self.batch(2, *[self.line(i, "unverifiable", False) for i in self.second])
+        self.assertEqual((out["confirmed"], out["foreign"]), (sorted(self.first), 0))
+        self.assertEqual(sorted(self.stored()), sorted(self.ids))
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "replies", "verify", "1.txt")))
+
+    def test_foreign_id_is_counted_and_never_applied(self):
+        out = self.batch(1, *[self.line(i) for i in self.first], self.line(self.second[0], "refuted"))
+        self.assertEqual((out["foreign"], out["refuted"]), (1, []))
+        self.assertNotIn(self.second[0], self.stored())
+
+    def test_resending_a_batch_replaces_it(self):
+        self.batch(1, *[self.line(i) for i in self.first])
+        self.batch(1, self.line(self.first[0], "unverifiable", False))
+        self.assertEqual(list(self.stored()), [self.first[0]])
+
+    def test_batched_refuted_needs_a_cite_but_serial_keeps_todays_rule(self):
+        out = self.batch(1, self.line(self.first[0], "refuted", False), self.line(self.first[1], "refuted"))
+        self.assertEqual(out["refuted"], [self.first[1]])
+        self.assertEqual(self.stored()[self.first[0]]["verdict"], "unverifiable")
+        out = self.verdicts(self.line(self.first[0], "refuted", False))
+        self.assertEqual(out["refuted"], [self.first[0]])
+
+    def test_unknown_batch_refuses_and_stores_nothing(self):
+        self.assertEqual(self.batch(9, self.line(self.first[0]), rc=1)["reason"], "bad-batch")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
+
+    def test_serial_call_replaces_every_stored_batch(self):
+        self.batch(1, *[self.line(i) for i in self.first])
+        self.verdicts(self.line(self.second[0]))
+        self.assertEqual(list(self.stored()), [self.second[0]])
+
+    def test_ingest_and_discard_clear_the_stored_replies(self):
+        self.batch(1, *[self.line(i) for i in self.first])
+        self.ingest(big(1))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
+        self.batch(1, self.line(self.ingest(big(1))["ids"][0]))
+        self.rep("discard")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
 
 
 if __name__ == "__main__":

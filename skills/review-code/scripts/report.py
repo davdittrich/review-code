@@ -13,9 +13,12 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
                                    additive per lane (key <lane>, or <lane>@N for shard N, a plan.json shard id:
                                    cites are checked in <run>/shards/N/tree, conventions in
                                    <run>/shards/N/conventions; else bad-shard)
-    report.py verdicts --run DIR   id, verdict, evidence (a list of path, line, quote), reason pair-array lines
+    report.py verdicts --run DIR [--batch K]   id, verdict, evidence (a list of path, line, quote), reason pair-array lines.
+                                   --batch K (a verify_calls batch of candidates.json) stores the reply in replies/verify/K.txt,
+                                   applies only ids of that batch (others count as foreign) and needs a cite to refute;
+                                   verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
     report.py render   --run DIR [--format text|json|sarif]
-    report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/ and repro/ (a re-plan starts clean)
+    report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/, replies/ and repro/ (a re-plan starts clean)
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
   schema_version, target{kind, head_sha, merge_base, label, not_a_change}, trust (own|external), verdict,
@@ -468,7 +471,7 @@ def _ingest(run, text, lane, shard):
                    key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
-    for stale in ("handoff", "repro"):
+    for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     if os.path.exists(os.path.join(run, "verdicts.json")):
         os.remove(os.path.join(run, "verdicts.json"))
@@ -487,21 +490,27 @@ def _ingest(run, text, lane, shard):
             "capped": len(cut), "lanes": state, "merged": merged}
 
 
-def verdicts(run, text):
+def verdicts(run, text, batch=None):
     with _locked(run):
-        return _verdicts(run, text)
+        return _verdicts(run, text, batch)
 
 
-def _verdicts(run, text):
-    cand = target.load_json(run, "candidates.json")
-    trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
-    ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
-    spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
-    copied = _spec_copy(run) if spec else None
-    got = {}
+def _replies(run):
+    return os.path.join(run, "replies", "verify")
+
+
+def _one(text, allowed, cand_ids, trees, spec, copied, got):
+    """Fold one stored reply into got (first verdict per id wins); returns the count of ids outside `allowed`.
+    allowed None is a serial reply (any queued id); a set is a batch, which also needs a cite to refute."""
+    foreign = 0
     for o in _objects(text):
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
-        if o is None or not isinstance(o.get("id"), str) or o["id"] not in ids or o["id"] in got or o.get("verdict") not in VERDICTS:
+        if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
+            continue
+        if allowed is not None and o["id"] not in allowed:
+            foreign += 1
+            continue
+        if o["id"] not in cand_ids or o["id"] in got:
             continue
         ev = o.get("evidence")
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
@@ -509,12 +518,39 @@ def _verdicts(run, text):
         reason = o.get("reason")
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             continue
-        got[o["id"]] = {"verdict": o["verdict"], "reason": reason if isinstance(reason, str) else "",
+        kind = "unverifiable" if allowed is not None and o["verdict"] == "refuted" and not cites else o["verdict"]
+        got[o["id"]] = {"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
+    return foreign
+
+
+def _verdicts(run, text, batch):
+    cand = target.load_json(run, "candidates.json")
+    trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
+    ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
+    spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
+    copied = _spec_copy(run) if spec else None
+    calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
+    if batch is not None and batch not in calls:
+        raise target.Refuse("bad-batch", "--batch is not a batch of candidates.json verify_calls")
+    store = _replies(run)
+    if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
+        shutil.rmtree(os.path.dirname(store), ignore_errors=True)
+    os.makedirs(store, mode=0o700, exist_ok=True)
+    _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
+    got, foreign = {}, 0
+    names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
+    for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
+        k = int(n[:-4]) if n[0].isdigit() else None
+        if k is None or k in calls:
+            with open(os.path.join(store, n), encoding="utf-8") as fh:
+                f = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got)
+            foreign += f if k == batch else 0
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
-    return {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
+    out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref))}
+    return out if batch is None else dict(out, foreign=foreign)
 
 
 def discard(run):
@@ -525,7 +561,7 @@ def discard(run):
 
 
 def _discard(run):
-    for d in ("handoff", "repro"):
+    for d in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
     for f in ("candidates.json", "verdicts.json"):
         if os.path.exists(os.path.join(run, f)):
@@ -742,7 +778,7 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR | render --run DIR [--format text|json|sarif] | discard --run DIR")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR [--batch K] | render --run DIR [--format text|json|sarif] | discard --run DIR")
 
 
 def main(argv):
@@ -762,15 +798,17 @@ def main(argv):
             print(json.dumps(discard(run), sort_keys=True))
             return 0
         opts = {}
-        while sub == "ingest" and len(tail) >= 2 and tail[0] in ("--lane", "--shard") and tail[0] not in opts:
+        while len(tail) >= 2 and tail[0] in (("--lane", "--shard") if sub == "ingest" else ("--batch",)) and tail[0] not in opts:
             opts[tail[0]], tail = tail[1], tail[2:]
         lane = opts.get("--lane", "defects")
         if tail or lane not in LANE_AXIS:
             raise _usage()
         if "--shard" in opts and not re.fullmatch(r"[1-9][0-9]{0,8}", opts["--shard"]):
             raise target.Refuse("bad-shard", "--shard is not a positive integer")
+        if "--batch" in opts and not re.fullmatch(r"[1-9][0-9]{0,8}", opts["--batch"]):
+            raise target.Refuse("bad-batch", "--batch is not a positive integer")
         text = sys.stdin.buffer.read().decode("utf-8", "replace")
-        out = ingest(run, text, lane, int(opts["--shard"]) if "--shard" in opts else None) if sub == "ingest" else verdicts(run, text)
+        out = ingest(run, text, lane, int(opts["--shard"]) if "--shard" in opts else None) if sub == "ingest" else verdicts(run, text, int(opts["--batch"]) if "--batch" in opts else None)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
