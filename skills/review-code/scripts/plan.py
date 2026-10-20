@@ -105,15 +105,20 @@ def _read_config():
 # change.diff for a change target, the first SCAN_BYTES of its tree/ copy for path and repo targets. Heuristics: a
 # hit loads a pack for the lane to read, it is never a finding. llm-generated-code loads only through the ai flag
 # or the deep tier (ccr-contract: authorship is not knowable from a diff). Names come from this table only.
+RISK_TOKENS = ("auth", "login", "passw", "secret", "token", "crypt", "session", "admin", "payment", "billing",
+               "upload", "sql", "migrat", "exec", "shell", "serial", "pickle", "permission")
+# security-owasp applies by path too: the risk words, minus the two that name their own packs. shortcut: lowercase
+# paths only (fnmatchcase), upgrade when a repo names its auth files in capitals.
+OWASP_PATHS = tuple("*%s*" % t for t in RISK_TOKENS if t not in ("sql", "migrat"))
 LLM_PACK = "llm-generated-code"
 PACKS = (
     ("python", ("*.py", "pyproject.toml"), None, None),
-    ("r", ("*.R", "*.r", "DESCRIPTION", "NAMESPACE"), None, None),
+    ("r", ("*.R", "*.r", "*.Rmd", "*.rmd", "DESCRIPTION", "NAMESPACE"), None, None),
     ("js-ts", ("*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs", "package.json"), None, None),
     ("sql", ("*.sql",), None, None),
-    ("data-migrations", ("migrations/*", "*/migrations/*", "migrate/*", "*/migrate/*"),
+    ("data-migrations", ("migrations/*", "*/migrations/*", "migrate/*", "*/migrate/*", "alembic/*", "*/alembic/*"),
      re.compile(r"\b(?:CREATE|ALTER|DROP)\b", re.I), ("*.sql",)),
-    ("security-owasp", (), re.compile(
+    ("security-owasp", OWASP_PATHS, re.compile(
         r"\bsubprocess\b|\beval\(|\bexec\(|innerHTML|\bpickle\b|yaml\.load\b|os\.system\b"
         r"|\b(?:select|insert\s+into|update|delete\s+from)\b[^\n]*(?:[\"']\s*(?:%|\+)|\.format\(|\{[^}]*\})", re.I), None),
     ("concurrency", (), re.compile(
@@ -210,8 +215,6 @@ def _install_packs(run, packs):
 SHARD_BYTES = 400000
 CHURN_DAYS = 180  # about two release cycles
 CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when a monorepo needs more
-RISK_TOKENS = ("auth", "login", "passw", "secret", "token", "crypt", "session", "admin", "payment", "billing",
-               "upload", "sql", "migrat", "exec", "shell", "serial", "pickle", "permission")
 
 
 def _file_stat(repo, p):

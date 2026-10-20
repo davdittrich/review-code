@@ -9,6 +9,7 @@ ROOT = os.path.dirname(HERE)
 REFS = os.path.join(ROOT, "skills", "review-code", "references")
 import paths  # noqa: F401
 
+import plan  # noqa: E402
 import report  # noqa: E402
 
 PACK_NAMES = ("security-owasp", "concurrency", "api-compat", "data-migrations", "llm-generated-code",
@@ -112,6 +113,27 @@ class ContractCoverage(unittest.TestCase):
     def test_all_nine_packs_exist(self):
         packs_dir = os.path.join(REFS, "packs")
         self.assertEqual(sorted(f[:-3] for f in os.listdir(packs_dir) if f.endswith(".md")), sorted(PACK_NAMES))
+
+
+class PathRouting(unittest.TestCase):
+    """A path alone loads the pack that its text says applies by path (review-code-sel)."""
+
+    def packs(self, path):
+        return [n for n, _ in plan._match_packs([path], {}, False)]
+
+    def test_alembic_change_loads_data_migrations(self):
+        for path in ("alembic/versions/0001_add.py", "svc/alembic/env.py"):
+            self.assertIn("data-migrations", self.packs(path), path)
+
+    def test_rmarkdown_loads_the_r_pack(self):
+        for path in ("analysis.Rmd", "docs/report.rmd"):
+            self.assertIn("r", self.packs(path), path)
+
+    def test_security_path_words_load_security_owasp(self):
+        for path in ("auth/session.py", "src/upload_handler.js", "lib/crypto.go"):
+            self.assertIn("security-owasp", self.packs(path), path)
+        self.assertNotIn("security-owasp", self.packs("src/calc.py"))
+        self.assertNotIn("security-owasp", self.packs("migrations/001_add.sql"))
 
 
 if __name__ == "__main__":
