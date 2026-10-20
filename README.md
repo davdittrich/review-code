@@ -21,7 +21,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## Requirements
 
-- Claude Code 2.1.292 or later. This floor is provisional; the plugin is tested on 2.1.303.
+- Claude Code 2.1.292 or later. This floor is provisional; the plugin is tested on 2.1.304 locally; CI pins 2.1.302.
 - `git`.
 - `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
 - `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; with `--comment` the review is posted to the PR through `gh api`.
@@ -47,7 +47,7 @@ Calls and token estimates are shown, never prices. The `deep` tier and path and 
 
 ## Plugin settings
 
-Reopen them with `/plugin configure review-code@<marketplace>`; empty means the tier's value. Tested on Claude Code 2.1.303. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` and `CLAUDE_CODE_EFFORT_LEVEL` disable the per-lane model and effort values; the report says so when the plugin can see them.
+Reopen them with `/plugin configure review-code@<marketplace>`; empty means the tier's value. Tested on Claude Code 2.1.304 locally; CI pins 2.1.302. On 2.1.304, a number outside `min` and `max` and a string outside `options`, set in settings, reach the skill text unchanged; plan.py then refuses the run with `bad-config`. `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` and `CLAUDE_CODE_EFFORT_LEVEL` disable the per-lane model and effort values; the report says so when the plugin can see them.
 
 - `default_tier`: tier used without a tier flag.
 - `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
