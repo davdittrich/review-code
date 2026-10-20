@@ -323,6 +323,46 @@ class Renders(Base):
         self.assertEqual([r["level"] for r in run["results"]], ["error", "warning"])
         self.assertEqual(run["properties"], {"inspectedAreas": ["src/calc.py"], "inspectedAreasOmitted": 0})  # CTX-02
 
+    def hide(self):
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led["hidden_text"] = [{"file": "change.diff", "path": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31}]
+        led["hidden_chars"] = [{"file": "change.diff", "line": 9, "codepoints": [8238]},
+                               {"file": "we\\u202ed.txt", "name": True, "codepoints": [8238]}]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+
+    def test_hidden_content_is_a_note_in_every_format(self):  # OUT-02: outside the evidence gate, never the payload
+        self.seed()
+        self.assertNotIn("hidden_content", self.doc())
+        self.hide()
+        d = self.doc()
+        want = [{"file": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31, "name": False},
+                {"file": "change.diff", "line": 9, "kind": "hidden-chars", "codepoints": [8238], "name": False},
+                {"file": "we\\u202ed.txt", "line": None, "kind": "hidden-chars", "codepoints": [8238], "name": True}]
+        self.assertEqual(d["hidden_content"], want)
+        self.assertEqual(len(d["findings"]), 2)  # not findings
+        rc, out = self.rep("render")
+        self.assertRegex(out, r"(?m)^Hidden content \(notes\)\n- src/calc.py:7  html-comment, length 31$")
+        self.assertIn("hidden-chars, codepoints 8238, file name", out)
+        run = json.loads(self.rep("render", extra=["--format", "sarif"])[1])["runs"][0]
+        notes = [r for r in run["results"] if r["ruleId"] == "hidden-content"]
+        self.assertEqual([r["level"] for r in notes], ["note"] * 3)
+        self.assertEqual(notes[0]["locations"][0]["physicalLocation"]["region"], {"startLine": 7})
+        self.assertIn({"id": "hidden-content"}, run["tool"]["driver"]["rules"])
+
+    def test_hidden_content_is_capped(self):
+        self.seed()
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led["hidden_text"] = [{"file": "change.diff", "path": "f%d" % i, "line": 1, "kind": "k", "length": 1} for i in range(45)]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        d = self.doc()
+        self.assertEqual((len(d["hidden_content"]), d["hidden_content_omitted"]), (40, 5))
+
     def test_text_sections_and_escape(self):
         self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")
         rc, out = self.rep("render")

@@ -61,6 +61,7 @@ import ledger
 import sanitize
 import target
 
+MAX_HIDDEN = 40
 MAX_AREAS = 20  # areas inspected shown in a PR/MR body and in SARIF; the text report lists all
 SCHEMA_VERSION = 1
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
@@ -559,7 +560,7 @@ def build(run):
         skipped.append({"what": "spec", "why": "no spec"})
     declined = sorted((d for v in cand.get("lanes", {}).values() for d in v.get("declined", [])),
                       key=lambda d: (d["spec_line"], d["why"]))
-    return {"schema_version": SCHEMA_VERSION,
+    doc = {"schema_version": SCHEMA_VERSION,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
@@ -570,23 +571,35 @@ def build(run):
             "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
+    hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False}
+          for h in led["hidden_text"]]
+    hc += [{"file": h["file"], "line": h.get("line"), "kind": "hidden-chars", "codepoints": h["codepoints"],
+            "name": h.get("name") is True} for h in led["hidden_chars"]]
+    if hc:  # OUT-02: notes outside the evidence gate; positions and sizes, never the payload
+        doc.update(hidden_content=hc[:MAX_HIDDEN], hidden_content_omitted=max(0, len(hc) - MAX_HIDDEN))
+    return doc
 
 
 _LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "noted": "note"}
 
 
 def _sarif(doc):
-    fs, areas = doc["findings"], doc["inspected"]["areas"]
+    fs, areas, hc = doc["findings"], doc["inspected"]["areas"], doc.get("hidden_content", [])
     return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0", "runs": [{
         "tool": {"driver": {"name": "review-code",
-                            "rules": [{"id": "review-code/" + c} for c in sorted({f["category"] for f in fs})]}},
+                            "rules": [{"id": "review-code/" + c} for c in sorted({f["category"] for f in fs})]
+                 + ([{"id": "hidden-content"}] if hc else [])}},
         "results": [{"ruleId": "review-code/" + f["category"], "level": _LEVEL[f["severity"]],
                      "message": {"text": f["title"]},
                      "locations": [{"physicalLocation": {"artifactLocation": {"uri": quote(f["path"])},
                                                          "region": {"startLine": f["line"], "endLine": f["end_line"]}}}],
                      "partialFingerprints": {"reviewCodeId/v1": f["id"]},
                      "properties": {"evidenceClass": f["evidence_class"], "severity": f["severity"],
-                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs],
+                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs]
+        + [{"ruleId": "hidden-content", "level": "note", "message": {"text": "hidden content in a change: " + h["kind"]},
+            "locations": [{"physicalLocation": dict({"artifactLocation": {"uri": quote(h["file"])}},
+                                                    **({"region": {"startLine": h["line"]}} if h["line"] is not None else {}))}],
+            "properties": {k: h[k] for k in ("length", "codepoints", "name") if k in h and h[k] is not None}} for h in hc],
         "properties": {"inspectedAreas": areas[:MAX_AREAS], "inspectedAreasOmitted": max(0, len(areas) - MAX_AREAS)}}]}
 
 
@@ -648,6 +661,13 @@ def _text(doc):
                 + ["    source: " + e(u) for u in i["sources"]])])
         if ax == "spec" and doc["declined"]:
             out += section("Declined", ["- inputs/spec.md:%d: %s" % (d["spec_line"], e(d["why"])) for d in doc["declined"]])
+    if doc.get("hidden_content"):
+        out += section("Hidden content (notes)", ["- %s%s  %s%s%s%s" % (
+            e(h["file"]), ":%d" % h["line"] if h["line"] is not None else "", h["kind"],
+            ", length %d" % h["length"] if "length" in h else "",
+            ", codepoints " + " ".join(str(c) for c in h["codepoints"]) if "codepoints" in h else "",
+            ", file name" if h["name"] else "") for h in doc["hidden_content"]]
+            + (["(+%d more)" % doc["hidden_content_omitted"]] if doc["hidden_content_omitted"] else []))
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
