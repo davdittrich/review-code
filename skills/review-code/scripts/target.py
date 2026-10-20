@@ -76,11 +76,17 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
     return git_bytes(args, cwd, stdin, check).decode("utf-8", "replace")
 
 
+CLI_TIMEOUT = 120  # seconds per gh or glab call
+
+
 def _cli_json(tool: str, args: List[str], cwd: str):
     try:
-        p = subprocess.run([tool] + list(args), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.run([tool] + list(args), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           timeout=CLI_TIMEOUT)
     except FileNotFoundError:
         raise Refuse(tool + "-missing", tool + " is not installed")
+    except subprocess.TimeoutExpired:  # a hung gh or glab would block the run for ever
+        raise Refuse(tool + "-failed", "timeout")
     if p.returncode != 0:
         raise Refuse(tool + "-failed", tool + " exited with an error")
     try:

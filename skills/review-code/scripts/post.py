@@ -64,7 +64,6 @@ MAX_BODY = 60000
 MAX_PREVIEW = 25000  # Claude Code saves Bash output over 30000 characters (its default) to a file, unseen by the user
 PER_PAGE = 100
 MAX_PAGES = 20
-CLI_TIMEOUT = 120  # seconds per gh or glab call
 LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggestion", "noted": "Noted"}
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "inline", "in_body", "skipped", "unverifiable", "redacted",
                "posted", "review_id")
@@ -77,7 +76,7 @@ def _cli(tool: str, args: List[str], cwd: str, stdin: Optional[bytes] = None):
     """The one subprocess seam: argv list, no shell. Returns (exit code, stdout bytes, stderr bytes)."""
     try:
         p = subprocess.run([tool] + list(args), cwd=cwd, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=CLI_TIMEOUT)
+                           timeout=target.CLI_TIMEOUT)
     except FileNotFoundError:
         raise Refuse(tool + "-missing")
     except subprocess.TimeoutExpired:  # a hung gh or glab would block build, or submit after its create, for ever

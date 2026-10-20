@@ -4,7 +4,7 @@ Load this when you need to know how `--comment` posts a review to a pull request
 
 ## When posting runs
 
-Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs (SCOPE-05); `post.py build` repeats the check as `not-a-forge-target`. Step 11 does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops. Headless `--comment` on a PR is unsupported: the two headless runs tried did not reach `post.py build`, because the approval prompt on the lane-ingest command is intermittent (review-code-02a.18).
+Only with `--comment`, only for a PR or MR target, only in an interactive session. SKILL.md step 1 removes the flag and, for any other target, stops before a lane runs (SCOPE-05); `post.py build` repeats the check as `not-a-forge-target`. Step 11 does the posting after the report. A headless run never posts: with no AskUserQuestion it states "not posted: confirmation needs an interactive session" and stops. Headless `--comment` on a PR is unsupported: the approval prompt on the lane-ingest command is intermittent.
 
 ## Flow
 
@@ -126,7 +126,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 Each is one line to change if the decision changes.
 
 - OQ1: `--comment` on a non-PR/MR target stops before any lane, so the user does not pay for a review that cannot be posted.
-- OQ2: no disclosure line; the global rule forbids AI attribution in PR text.
+- OQ2: no disclosure line; this plugin adds no AI attribution trailer to PR text.
 - OQ3: an unreadable diff refuses `diff-unavailable`; unvalidated anchors are never posted.
 - OQ4: unverifiable items post as a count only; their text may be speculative.
 - OQ5: any pending review or draft the user already has refuses; nothing of theirs is deleted.

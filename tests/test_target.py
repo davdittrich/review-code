@@ -202,6 +202,16 @@ class TestPR(PRWorld):
             self.assertEqual((rc, out["reason"]), (1, "gh-failed"), bad)
 
 
+class TestCliTimeout(unittest.TestCase):
+    def test_a_hung_forge_tool_refuses(self):
+        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
+        with mock.patch.object(target.subprocess, "run", hung):
+            with self.assertRaises(target.Refuse) as cm:
+                target.gh_json(["pr", "view"], ".")
+        self.assertEqual((cm.exception.reason, cm.exception.detail), ("gh-failed", "timeout"))
+        self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
+
+
 class Local(Base):
     def setUp(self):
         super().setUp()

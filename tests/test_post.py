@@ -668,10 +668,10 @@ class Safety(Base):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
 
     def test_a_hung_tool_times_out(self):
-        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], post.CLI_TIMEOUT))
+        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
         with mock.patch.object(post.subprocess, "run", hung):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
-        self.assertEqual(hung.call_args.kwargs["timeout"], post.CLI_TIMEOUT)
+        self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
 
     def test_a_failed_result_write_after_the_event_still_reports_ok(self):
         digest = self.confirmed()
