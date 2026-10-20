@@ -70,8 +70,8 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `tampered` | `fix/state.json` is not a JSON object holding every state key, because something rewrote it while a fixer ran; no git command ran and nothing was restored | Check `.git/config` and `git status` by hand; restore the file from its `.pre` snapshot in `<run>/fix/` if needed |
 | `in-flight` | A fixer call is outstanding; a second brief is refused | Wait for it, then `finish` |
 | `not-in-flight` | `finish` before any brief was handed out | Run `begin` first |
-| `head-moved` | `HEAD` is not the reviewed commit any more | Do not commit during a fix run |
-| `refs-moved` | A branch, tag or stash ref changed (a halted baseline also uses this reason) | Do not touch refs during a fix run |
+| `head-moved` | `HEAD` is not the reviewed commit any more (a halted baseline uses this reason when its tests moved `HEAD`) | Do not commit during a fix run |
+| `refs-moved` | A branch, tag or stash ref changed (a halted baseline uses this reason when its tests moved only a ref) | Do not touch refs during a fix run |
 | `tree-changed` | A file other than an accepted fix or a test leftover differs from `HEAD` | Leave the tree alone while it runs |
 | `baseline-red` | The command failed, timed out or could not start on the untouched tree; `exit` and `tail` are shown | Make the tests pass first. The test environment holds only `PATH`, `LANG`, `LC_ALL` and `TERM` with a private `HOME` and `TMPDIR`, so a command that needs other variables or your home directory fails here |
 | `baseline-interrupted` | `baseline` was interrupted or killed before it finished; no green baseline exists | Review again |

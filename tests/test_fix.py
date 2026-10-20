@@ -1018,6 +1018,16 @@ class TestRuns(Scope):
         self.assertEqual(self.state(run)["halted"], "baseline-interrupted")
         self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
 
+    def test_baseline_head_moved_halts(self):
+        run = self.pin()
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.arm()
+        j = self.plan(run, self.probe('os.system("git reset -q --soft HEAD~1")'))[2]
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"], b["reason"]), (1, "halted", "head-moved"), b)
+        self.assertEqual(self.begin(run)[2]["reason"], "halted")
+
     def test_test_cache_left(self):
         run, fid, bg = self.started(CAND, SECOND_CAND, words=self.probe('open("out.log", "w").write("x")'))
         self.edit("src/calc.py", QUOTE, "return a + b")

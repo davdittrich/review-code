@@ -453,7 +453,7 @@ def baseline(run: str, digest: str) -> dict:
         st["halted"] = "baseline-interrupted"  # no green baseline: begin must not hand out a fix
         _save(run, st)
         raise
-    reason = "baseline-red" if res["outcome"] != "pass" else "refs-moved" if moved else None
+    reason = "baseline-red" if res["outcome"] != "pass" else moved  # None, head-moved or refs-moved
     st["halted"] = reason
     _save(run, st)
     if reason:
