@@ -514,6 +514,13 @@ class Units(unittest.TestCase):
                 self.assertNotEqual(fix._seal(d, fid), base)
             self.assertEqual(g.call_count, 0)
 
+    def test_timeout_fits_the_bash_call(self):
+        with open(os.path.join(os.path.dirname(SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        step = " ".join(text.split("\n12. Fix")[1].split("\n13. ")[0].split())
+        self.assertIn("600000", step)
+        self.assertLessEqual(fix.TIMEOUT + 60, 600)  # 60 s for the group kill, restore and sweep inside the Bash ceiling
+
     def test_py39_grammar(self):
         with open(os.path.join(SCRIPTS, "fix.py"), encoding="utf-8") as fh:
             ast.parse(fh.read(), feature_version=(3, 9))
@@ -921,9 +928,10 @@ class TestRuns(Scope):
                          ("reverted-interrupt", "reverted-interrupt", None))
         self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
 
-    def test_sigterm_restores(self):
-        run, fid, bg = self.started(words=self.probe("open(%r, 'w').close(); time.sleep(60)" %
-                                                     os.path.join(self.tmp, "started")))
+    def signalled(self, sig):
+        started = os.path.join(self.tmp, "started")
+        run, fid, bg = self.started(words=self.probe("open(%r, 'w').write(str(os.getpid())); os.rename(%r, %r); "
+                                                     "time.sleep(60)" % (started + ".tmp", started + ".tmp", started)))
         self.edit("src/calc.py", QUOTE, "return a + b")
         self.arm()
         e = gitfix.env()
@@ -933,15 +941,30 @@ class TestRuns(Scope):
                                 stderr=subprocess.PIPE)
         self.addCleanup(proc.kill)
         deadline = time.monotonic() + 20
-        while not os.path.exists(os.path.join(self.tmp, "started")):
+        while not os.path.exists(started):
             self.assertLess(time.monotonic(), deadline, "the test command never started")
             time.sleep(0.05)
-        proc.send_signal(signal.SIGTERM)
+        with open(started, encoding="utf-8") as fh:
+            pgid = int(fh.read())
+
+        def reap():  # the probe leads its own session, so its pid is its group id
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(reap)
+        proc.send_signal(sig)
         out, err = proc.communicate(timeout=20)
         self.assertNotEqual(proc.returncode, 0)
         self.assertNotIn(b"Traceback", err)
         self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
         self.assertEqual(self.state(run)["done"][fid]["outcome"], "reverted-interrupt")
+
+    def test_sigterm_restores(self):
+        self.signalled(signal.SIGTERM)
+
+    def test_sighup_restores(self):
+        self.signalled(signal.SIGHUP)
 
     def test_side_effect_restored(self):
         body = 'open("src/other.py", "w").write("x")'

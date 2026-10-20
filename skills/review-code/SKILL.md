@@ -222,7 +222,8 @@ before treating it as unavailable; it is unavailable only when that load fails o
    from the preview's first line, with options "Apply and run tests" and "Stop". Every other answer, including a
    dismissed or empty one, applies nothing. Only on "Apply and run tests" run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py baseline --run <run> --digest <digest>`; when its `status` is not `ok`,
-   state `reason`, `exit` and `tail` and stop. Then loop: run `python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py begin --run <run>`;
+   state `reason`, `exit` and `tail` and stop. Give every `baseline` and `finish` Bash call a `timeout` of 600000,
+   because their test run may take up to 540 seconds. Then loop: run `python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py begin --run <run>`;
    on `done` or `refuse` leave the loop. On `ok` make one Agent call, `subagent_type` `review-code:fixer`, `prompt`
    exactly the brief path and nothing else, `model` and `effort` from begin's output and a short `description`.
    Make one fixer call at a time: wait for its reply or its completion notification before the next command, and do

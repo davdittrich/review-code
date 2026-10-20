@@ -33,7 +33,7 @@ import sanitize
 import target
 
 ID_RE = report.ID_RE
-TIMEOUT = 600  # seconds; read at call time
+TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 MAX_PREVIEW = 25000  # same bound and reason as post.py
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
@@ -701,7 +701,9 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
-            signal.signal(signal.SIGTERM, _term)
+            for name in ("SIGTERM", "SIGHUP"):  # a hangup would otherwise skip the restore; Windows has no SIGHUP
+                if getattr(signal, name, None):
+                    signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
             out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])

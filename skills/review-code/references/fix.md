@@ -38,7 +38,7 @@ No fix may touch a path with a dot component (`.github/`, `.env`), a lockfile (`
 | `reverted-violation` | Any other change `git status` reports: a second or deleted file, a protected file, staged changes, new untracked files, an accepted file touched again, a moved `HEAD` or ref, an edit during a declined entry, or a test run that changed the entry's file. Everything is restored; the current bytes are kept in `fix/quarantine/` | yes |
 | `reverted-too-large` | The edit changed more than 60 lines (`MAX_CHANGED`); restored | yes |
 | `reverted-tests` | The tests failed; the file is restored | yes |
-| `reverted-timeout` | The tests ran past 600 seconds (`TIMEOUT`); restored | yes |
+| `reverted-timeout` | The tests ran past 540 seconds (`TIMEOUT`); restored | yes |
 | `reverted-interrupt` | `finish` was interrupted (Ctrl-C, SIGTERM, an error); the file is restored from its snapshot | yes |
 | `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot, the git config or `.git/info/exclude` changed while the fixer ran, or `state.json` shows no call in flight after a brief was handed out (a second `finish` for one brief included); nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
 
