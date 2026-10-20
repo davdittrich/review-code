@@ -683,7 +683,7 @@ class SpecAxis(Base):
         self.assertEqual(self.rep("discard")[0], 0)  # nothing left to remove is fine
         self.assertEqual(self.ingest({"inspected": []})["spec_ids"], [])
         d = self.doc()
-        self.assertEqual((d["mode"], d["findings"], d["unverifiable"], sorted(d["lanes"])), ("serial", [], [], ["defects"]))
+        self.assertEqual((d["mode"], d["findings"], d["unverifiable"], sorted(d["lanes"])), ("serial", [], [], ["defects", "standards"]))  # standards: planned, never ingested
         self.assertEqual(self.rep("discard", extra=["--x"])[0], 1)
 
     def test_quick_tier_with_a_spec_says_spec_skipped(self):  # CR-05

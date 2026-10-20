@@ -156,5 +156,52 @@ class Verdicts(BigRun):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "replies")))
 
 
+class Status(Verdicts):
+    def status(self, rc=0):
+        r, out = self.rep("status")
+        self.assertEqual(r, rc, out)
+        return json.loads(out)
+
+    def snapshot(self):
+        out = {}
+        for d, _, fs in os.walk(self.run_dir):
+            for f in fs:
+                if "tree" not in d:
+                    with open(os.path.join(d, f), "rb") as fh:
+                        out[os.path.join(d, f)] = fh.read()
+        return out
+
+    def test_status_lists_ids_calls_and_what_is_missing_without_writing(self):
+        before = self.snapshot()
+        st = self.status()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual((st["ids"], st["spec_ids"], st["confirmed"], st["missing_batches"], st["missing_lanes"]),
+                         (self.ids, [], [], [1, 2], []))
+        self.assertEqual([c["ids"] for c in st["verify_calls"]], [self.first, self.second])
+        self.assertTrue(st["verify_calls"][0]["prompt"].startswith("Verify. Handoffs:\n/"))
+        self.assertEqual(st["lane_state"], {"defects": "incomplete"})
+        self.batch(1, *[self.line(i) for i in self.first])
+        st = self.status()
+        self.assertEqual((st["missing_batches"], st["confirmed"]), ([2], sorted(self.first)))
+        self.verdicts(self.line(self.second[0]))  # a serial reply covers every batch
+        self.assertEqual(self.status()["missing_batches"], [])
+
+    def test_status_before_ingest_refuses(self):
+        os.remove(os.path.join(self.run_dir, "candidates.json"))
+        self.assertEqual(self.status(rc=1)["reason"], "no-candidates")
+
+    def test_a_planned_lane_never_ingested_renders_not_ingested(self):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 60},
+                       "calls": [{"lane": "defects", "shard": None}, {"lane": "standards", "shard": None},
+                                 {"lane": "defects", "shard": 2}]}, fh)
+        self.assertEqual(self.status()["missing_lanes"], ["defects@2", "standards"])
+        self.assertEqual(self.doc()["lanes"], {"defects": "incomplete", "defects@2": "not-ingested",
+                                               "standards": "not-ingested"})
+        r, text = self.rep("render")
+        for n in ("defects@2", "standards"):
+            self.assertIn("lane %s not-ingested: its reply was never ingested" % n, text)
+
+
 if __name__ == "__main__":
     unittest.main()

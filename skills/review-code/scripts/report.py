@@ -18,6 +18,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
                                    verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
     report.py render   --run DIR [--format text|json|sarif]
+    report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed
     report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/, replies/ and repro/ (a re-plan starts clean)
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
@@ -29,7 +30,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
-Document also: lanes{lane: complete|incomplete} (incomplete = the reply had no `inspected` line), merged (candidates
+Document also: lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged; cut ids render as
@@ -302,6 +303,40 @@ def _handoff(c, run, nonce, packs=()):
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
+def _queue(cands):
+    """Candidates a verifier may judge, in verification order; SOTA is advisory: no verifier call."""
+    return sorted((c for c in cands if c["category"] != "sota"),
+                  key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
+
+
+def _planned(run):
+    """Lane keys of plan.json calls, spelled as ingest keys them (<lane>, or <lane>@N for shard N)."""
+    calls = _plan(run).get("calls")
+    return [c["lane"] if c.get("shard") is None else "%s@%d" % (c["lane"], c["shard"])
+            for c in (calls if isinstance(calls, list) else []) if isinstance(c, dict) and isinstance(c.get("lane"), str)
+            and (c.get("shard") is None or _int(c["shard"]))]
+
+
+def status(run):
+    """Read-only: what the verify step needs and what is still missing. No lock: files are replaced whole."""
+    cand = target.load_json(run, "candidates.json")
+    cut = set(cand.get("capped_ids", []))
+    queue = [c for c in _queue(cand["candidates"]) if c["id"] not in cut]
+    calls = [c for c in cand.get("verify_calls", []) if isinstance(c, dict)]
+    store = _replies(run)
+    have = set(os.listdir(store)) if os.path.isdir(store) else set()
+    try:
+        ver = target.load_json(run, "verdicts.json")
+    except target.Refuse:
+        ver = {}
+    state = cand.get("lane_state", {})
+    return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
+            "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "verify_calls": calls, "lane_state": state,
+            "missing_lanes": sorted(set(_planned(run)) - set(state)),
+            "missing_batches": [] if "serial.txt" in have else [c["batch"] for c in calls if "%d.txt" % c["batch"] not in have],
+            "confirmed": sorted(i for i, v in ver.items() if v.get("verdict") == "confirmed" and v.get("cites"))}
+
+
 def _batches(queue, hand):
     """verify_calls: queue ids grouped by (agent, shard, code path), at most VERIFY_BATCH per call, queue order kept.
     Same-path groups keep one verifier on one file's code; the prompt lists absolute handoff paths."""
@@ -467,8 +502,7 @@ def _ingest(run, text, lane, shard):
     cap = _cap_of(run)
     lanes[lane if shard is None else "%s@%d" % (lane, shard)] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
-    queue = sorted((c for c in cands if c["category"] != "sota"),  # SOTA is advisory: no verifier call
-                   key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
+    queue = _queue(cands)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro", "replies"):
@@ -666,7 +700,7 @@ def _build(run):
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
             if isinstance(plan.get("lost_guarantees"), list) else [],
-            "lanes": cand.get("lane_state", {}), "merged": cand.get("merged", 0),
+            "lanes": dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {})), "merged": cand.get("merged", 0),
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False}
@@ -733,6 +767,8 @@ def _text(doc):
             for x in sh["skipped"]]
     out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "incomplete"]
+    out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
+            if v == "not-ingested"]
     out.append("")
 
     def section(head, rows):
@@ -778,13 +814,13 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR [--batch K] | render --run DIR [--format text|json|sarif] | discard --run DIR")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR [--batch K] | render --run DIR [--format text|json|sarif] | discard --run DIR | status --run DIR")
 
 
 def main(argv):
     try:
         sub, rest = (argv[0], argv[1:]) if argv else ("", [])
-        if sub not in ("ingest", "verdicts", "render", "discard") or rest[:1] != ["--run"] or len(rest) < 2:
+        if sub not in ("ingest", "verdicts", "render", "discard", "status") or rest[:1] != ["--run"] or len(rest) < 2:
             raise _usage()
         run, tail = rest[1], rest[2:]
         if sub == "render":
@@ -792,10 +828,10 @@ def main(argv):
                 raise _usage()
             sys.stdout.write(render(run, tail[1] if tail else "text"))
             return 0
-        if sub == "discard":
+        if sub in ("discard", "status"):
             if tail:
                 raise _usage()
-            print(json.dumps(discard(run), sort_keys=True))
+            print(json.dumps((discard if sub == "discard" else status)(run), sort_keys=True))
             return 0
         opts = {}
         while len(tail) >= 2 and tail[0] in (("--lane", "--shard") if sub == "ingest" else ("--batch",)) and tail[0] not in opts:
