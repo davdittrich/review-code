@@ -342,6 +342,47 @@ class CrossFileSkips(Base):
                 self.setUp()
 
 
+class Only(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n",
+                  "src/neg.py": "def h(x):\n    return x - 1\n"}
+    CANDS = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3"), two("src/neg.py", 2, "return x - 1", "return x + 1")]
+
+    def chosen(self):
+        run = self.pin()
+        ids = self.ingest(run, *self.CANDS)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in self.CANDS])
+        return run, [report_id(c) for c in self.CANDS]
+
+    def only(self, run, ids):
+        words = "".join(w + "\n" for w in self.cmd())
+        return self.fixrun(["plan", "--run", run, "--only", ids], words)
+
+    def test_only_limits_plan_and_digest_to_the_chosen_ids(self):
+        run, ids = self.chosen()
+        full = self.plan(run)[2]
+        self.assertEqual(full["apply"], 3)
+        rc, out, j = self.only(run, ",".join((ids[0], ids[2])))
+        self.assertEqual((rc, j["status"], j["apply"], j["skipped"]), (0, "ok", 2, 0), out)
+        self.assertNotEqual(j["digest"], full["digest"])
+        with open(os.path.join(run, "fix", "plan.json"), "rb") as fh:
+            raw = fh.read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), j["digest"])
+        self.assertEqual([e["id"] for e in json.loads(raw)["entries"]], [ids[0], ids[2]])
+        self.assertNotIn(ids[1], out)
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"]), (0, "ok"), b)
+
+    def test_unknown_or_malformed_id_is_refused_and_writes_nothing(self):
+        run, ids = self.chosen()
+        rc, out, j = self.only(run, ids[0] + ",F-0123456789")
+        self.assertEqual((rc, j["reason"], j["detail"]), (1, "unknown-id", "F-0123456789"), out)
+        self.assertFalse(os.path.exists(os.path.join(run, "fix")))
+        for bad in ("F-xyz", "", ids[0] + ";id", "$(id)"):
+            with self.subTest(bad=bad):
+                rc, out, j = self.only(run, bad)
+                self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+
+
 RUN = "# runner\nrun 3 - 1\n"
 SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
            "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs")
