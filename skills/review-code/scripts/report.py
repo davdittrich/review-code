@@ -1012,6 +1012,8 @@ def _build(run):
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
+    if label == "No blocking findings" and any(x.get("what") == "defects" for x in skipped):
+        label = "Needs discussion"  # a tier that never ran Defects proves nothing about bugs (review-code-2og)
     done = sorted({int(n.split("@")[1]) for n in cand.get("lane_state", {}) if "@" in n})
     sh = plan.get("shards") if isinstance(plan.get("shards"), list) else []
     count = {x["id"]: len(x["files"]) if isinstance(x.get("files"), list) else x.get("files") for x in sh

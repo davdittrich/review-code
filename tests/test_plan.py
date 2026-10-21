@@ -246,6 +246,10 @@ class Tiers(Fixture):
             _, p = self.lanes(*args)
             self.assertIn("standards", [c["lane"] for c in p["calls"]], args)
 
+    def test_lean_tier_with_sota_says_sota_skipped(self):  # review-code-00e
+        _, p = self.lanes("--tier", "lean", "--sota")
+        self.assertIn({"what": "sota", "why": "tier lean"}, p["skipped"])
+
     def test_lean_tier_runs_only_the_standards_lane_and_the_verifier(self):
         out, p = self.lanes("--tier", "lean")
         self.assertEqual((out["tier"], [c["lane"] for c in p["calls"]]), ("lean", ["standards"]))

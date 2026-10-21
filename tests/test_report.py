@@ -740,6 +740,13 @@ class SpecAxis(Base):
         self.ingest({"inspected": ["src/calc.py"]})
         self.assertRegex(self.rep("render")[1], r"\nSpec\nSpec: skipped \(tier quick\)\n")
 
+    def test_lean_tier_never_reports_the_all_clear(self):  # review-code-2og
+        rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "lean"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        rc, o = self.rep("ingest", lines({"inspected": ["src/calc.py"]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(self.doc()["verdict"], "Needs discussion")  # Defects never ran: no all-clear
+
     def test_lean_tier_says_defects_skipped(self):
         rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "lean"], self.repo, self.tmp)
         self.assertEqual(rc, 0, out)

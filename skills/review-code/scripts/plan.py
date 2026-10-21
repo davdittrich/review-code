@@ -479,7 +479,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             lost.append("verifier not on a different tier: the Standards lane and the verifier both run on " + vm)
         lost += _env_lost()
     if tier == "lean":  # the report must say which axes never ran
-        skipped += [{"what": w, "why": "tier lean"} for w in ("defects", "spec") if not any(x["what"] == w for x in skipped)]
+        skipped += [{"what": w, "why": "tier lean"} for w in ("defects", "spec") + (("sota",) if sota else ())
+                    if not any(x["what"] == w for x in skipped)]
     lines = _scan_lines(run, tj)
     inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
