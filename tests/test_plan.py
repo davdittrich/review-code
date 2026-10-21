@@ -214,6 +214,7 @@ class Overrides(Fixture):
     def test_default_tier_lean_is_refused_because_lean_is_a_flag_only(self):  # review-code-0ah
         rc, out = self.run_plan([("default_tier", "lean")])
         self.assertEqual((rc, out["reason"]), (1, "bad-config"), out)
+        self.assertIn("--lean flag", out["detail"])
         rc, out = self.run_plan([("default_tier", "quick")], "--tier", "lean")
         self.assertEqual(rc, 0, out)  # the flag still selects lean
 
