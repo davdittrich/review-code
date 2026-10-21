@@ -265,10 +265,10 @@ def _helpers(repo: str, listing: Optional[dict], names: List[str], included: Lis
             continue
         if listing is not None and listing.get(p, ("",))[0] not in _REGULAR:
             continue
-        if _HELPER_NAME.search(p):
-            cand.append((0, p, "helper-named file"))
-        elif p.rpartition("/")[0] in cdirs:
-            cand.append((1, p, "sibling of a changed file"))
+        if p.rpartition("/")[0] in cdirs:
+            cand.append((0, p, "sibling of a changed file"))
+        elif _HELPER_NAME.search(p):
+            cand.append((1, p, "helper-named file"))
     cand.sort()
     if listing is not None:  # sizes by object id from the pinned listing, never the working copy
         oids = sorted({listing[p][1] for _, p, _ in cand})

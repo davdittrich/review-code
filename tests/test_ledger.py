@@ -432,8 +432,8 @@ class Tree(Base):
         out, led = self.build()
         self.assertEqual(self.tree_files(), ["lib/x.py", "pkg/utils.py", "src/a.py", "src/sibling.py"])
         self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("lib/x.py", "helper-named file"), ("pkg/utils.py", "helper-named file"),
-                          ("src/sibling.py", "sibling of a changed file")])
+                         [("src/sibling.py", "sibling of a changed file"), ("lib/x.py", "helper-named file"),
+                          ("pkg/utils.py", "helper-named file")])
         self.assertEqual(out["counts"], {c: 0 for c in ledger.CATEGORIES})  # context, not reviewed files
         self.assertEqual(led["tree"]["skipped"], [])
 
@@ -446,6 +446,17 @@ class Tree(Base):
         self.assertEqual(files_of(led, "helpers"), ["src/b_util.py"])
         self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
         self.assertTrue(led["capped"]["helpers"])
+
+    def test_same_directory_siblings_rank_before_helper_named_trees(self):  # review-code-oen
+        self.base({"lib/a.py": "x = 1\n", "lib/zz.py": "z" * 60 + "\n", "lib/sub/big1.py": "b" * 60 + "\n",
+                   "lib/sub/big2.py": "c" * 60 + "\n"})
+        self.branch({"lib/a.py": "x = 2\n"})
+        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
+            _, led = self.build()
+        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
+                         [("lib/zz.py", "sibling of a changed file")])
+        self.assertEqual(led["tree"]["skipped"], [{"path": "lib/sub/big1.py", "reason": "helper-cap"},
+                                                  {"path": "lib/sub/big2.py", "reason": "helper-cap"}])
 
     def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
         self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
