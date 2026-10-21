@@ -72,10 +72,14 @@ class Structure(unittest.TestCase):
         text = read(os.path.join(REFS, "smells.md"))
         self.assertEqual(text.splitlines()[0], "# Code smells")
         smells = bullets(sections(text)["Smells"])
-        self.assertEqual(len(smells), 12)
+        self.assertEqual(len(smells), 13)
         for b in smells:
             self.assertRegex(b, r"\(`smell`\)\s*$")
             self.assertIn("->", b)  # what it is -> how to fix it
+        mixed = [b for b in smells if b.startswith("- **Mixed Jobs**")]
+        self.assertEqual(len(mixed), 1)
+        self.assertNotRegex(mixed[0].lower(), r"\blines?\b")  # split by job, never by line count
+        self.assertRegex(text, r"Mixed Jobs[^\n]*project addition")
         low = text.lower()
         for phrase in ("judgement call", "repo standard", "overrides", "tooling", "never a blocking"):
             self.assertIn(phrase, low)

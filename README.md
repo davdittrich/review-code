@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, automatic spec discovery, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; `--fix` applies confirmed fixes one at a time after you confirm the plan and the exact test command, and reverts and stops at the first failing fix. The tier defaults are unvalidated. Do not rely on it for review results.
+Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers plus a `--lean` cleanup-only tier, domain packs, shards for directory and repo targets, a serial fallback, automatic spec discovery, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; `--fix` applies confirmed fixes one at a time after you confirm the plan and the exact test command, and reverts and stops at the first failing fix. The tier defaults are unvalidated. Do not rely on it for review results.
 
 ## Install
 
@@ -35,7 +35,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## Tiers and flags
 
-Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode.
+Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--lean` runs only the Standards lane and its verifier, for a cleanup pass; it is a flag only, not a `default_tier` value, and its report says Defects and Spec were skipped. `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode.
 
 | Tier | Lanes | Finder | Verifier |
 |------|-------|--------|----------|

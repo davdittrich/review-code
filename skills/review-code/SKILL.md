@@ -73,7 +73,7 @@ Style findings are Required or Suggestions at most, and only when a linter would
 Follow the steps in order. Ask each question at most once per run. Edit files only through the fixer in step 12, post only through step 11, and run target code only in steps 9 and 12.
 
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
-   `--comment` (step 11), `--fix` (step 12), and `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
+   `--comment` (step 11), `--fix` (step 12), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai` (step 5; two different tier flags: stop and say so). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
@@ -131,7 +131,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    entry (file, line, kind, length or codepoints; `name: true` marks a file name; never guess the
    payload) as a note, not a finding: hidden content in a change. Both list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
-   only fixed literals as arguments: `--tier quick|standard|deep` for a tier flag, `--sota` or
+   only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
    `--no-sota`, `--serial`, `--ai`, each only when step 1 removed that flag. The plugin settings go on
    stdin, one `key=value` line each:
 

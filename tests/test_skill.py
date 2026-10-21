@@ -234,6 +234,10 @@ class Phase6Procedure(unittest.TestCase):
         self.text = procedure()  # SKILL.md plus the Flow sections steps 11 and 12 hand over to
         self.flat = " ".join(self.text.split())
 
+    def test_subset_question_split_is_even_so_no_question_has_one_option(self):  # review-code-jku
+        self.assertIn("sizes differ by at most one", self.flat)
+        self.assertNotIn("at least two options each", self.flat)
+
     def test_steps_in_order(self):
         steps = ["report.py render", "post.py build --run", "fix.py plan --run", "fix.py baseline --run",
                  "fix.py begin --run", "review-code:fixer", "fix.py finish --run", "fix.py report --run"]

@@ -130,6 +130,14 @@ class Derivation(Base):
         self.assertEqual((un[n]["reason"], un[n]["evidence_class"]), ("no-valid-cite", "speculative"))
         self.assertEqual((un[o]["reason"], un[o]["evidence_class"], un[o]["score"]), ("no-verdict", "speculative", 25))
 
+    def test_confirmed_finding_shows_the_verifier_reason_as_impact(self):  # review-code-d14.4
+        self.ingest(cand(Q_ADD, 8), {"inspected": ["src/calc.py"]})
+        self.verdicts(verdict((Q_ADD, 8), reason="data loss on retry"))
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["impact"], f["reason"]), ("data loss on retry", "data loss on retry"))
+        self.assertIn("\n    impact: data loss on retry\n", self.rep("render")[1])
+        self.assertNotIn("impact", json.dumps(json.loads(self.rep("render", extra=["--format", "sarif"])[1])))
+
     def test_first_verdict_wins_and_unknown_id_ignored(self):
         self.ingest(cand(Q_ADD, 8))
         self.verdicts("{broken", verdict((Q_ADD, 8), "refuted"), verdict((Q_ADD, 8)),
@@ -473,6 +481,50 @@ class MultiLane(Lanes):
         out = self.lane("standards", mc(2, "lean"))
         self.assertEqual((len(out["ids"]), out["merged"]), (2, 0))
 
+    def test_altitude_is_a_standards_category_capped_at_suggestion(self):  # review-code-3ea.1
+        out = self.lane("standards", mc(3, "altitude", severity="required"))
+        self.assertEqual(len(out["ids"]), 1)
+        self.assertEqual(self.lane("defects", mc(6, "altitude"))["dropped"]["invalid"], 1)  # not a Defects category
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["category"], f["severity"]), ("altitude", "suggestion"))
+
+    def test_lean_lines_tally_sums_the_spans_of_verified_lean_findings(self):  # review-code-d14.9
+        self.assertNotIn("Lean:", self.rep("render")[1])
+        self.lane("standards", mc(2, "lean", end_line=4), mc(7, "lean", end_line=8), mc(5, "smell", end_line=5), "{garbage")  # 7 is 3 past 4: not merged
+        self.verdicts(*[{"id": i["id"], "verdict": "confirmed", "evidence": [dict(CITE, line=i["line"], quote=MQ[i["line"]])],
+                         "reason": "r"} for i in self.doc()["unverifiable"]])
+        d = self.doc()
+        self.assertEqual(sorted(f["category"] for f in d["findings"]), ["lean", "lean", "smell"])
+        self.assertEqual(d["lean_lines"], 5)  # 3 + 2; the smell does not count
+        self.assertIn("\nLean: -5 lines possible (estimate)\n", self.rep("render")[1])
+        t = self.rep("render")[1]
+        self.assertLess(t.index("Lean:"), t.index("\nWarning\n"))  # a rejected line opens the Warning block: the tally is not a warning
+
+    def test_summary_record_is_kept_escaped_and_labelled_model_text(self):  # review-code-d14.7
+        text = 'Adds add() and a "load" helper.\x1b[31m red \u202e'
+        out = self.lane("defects", [["summary", text]], mc(3))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))  # a summary is no candidate
+        d = self.doc()
+        self.assertEqual(d["summary"], [{"lane": "defects", "text": text}])
+        t = self.rep("render")[1]
+        self.assertTrue(t.startswith("Summary\ndefects change summary (model text, unverified): Adds add() and a \"load\" helper."), t)
+        self.assertNotIn("\x1b", t)
+        self.assertNotIn("\u202e", t)
+        self.assertEqual(d["lanes"], {"defects": "incomplete"})  # only an inspected line completes a lane
+
+    def test_summary_over_length_second_and_wrong_lane_are_invalid(self):
+        out = self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]])
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # rejected, never truncated
+        out = self.lane("defects", [["summary", "first"]], [["summary", "second"]])
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, [{"lane": "defects", "text": "first"}]))
+        self.rep("discard")
+        self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]], {"inspected": ["src/calc.py"]})
+        self.assertEqual((self.doc()["verdict"], "Warning" in self.rep("render")[1]), ("No blocking findings", False))  # a bad summary hides no finding
+        self.rep("discard")
+        out = self.lane("standards", [["summary", "s"]])  # only the Defects lane summarises
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))
+
     def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
         self.set_cap(1)
         out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
@@ -688,6 +740,21 @@ class SpecAxis(Base):
         self.ingest({"inspected": ["src/calc.py"]})
         self.assertRegex(self.rep("render")[1], r"\nSpec\nSpec: skipped \(tier quick\)\n")
 
+    def test_lean_tier_never_reports_the_all_clear(self):  # review-code-2og
+        rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "lean"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        rc, o = self.rep("ingest", lines({"inspected": ["src/calc.py"]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, o)
+        self.assertEqual(self.doc()["verdict"], "Needs discussion")  # Defects never ran: no all-clear
+
+    def test_lean_tier_says_defects_skipped(self):
+        rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "lean"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        self.assertIn({"what": "defects", "why": "tier lean"}, json.loads(out)["skipped"])
+        rc, o = self.rep("ingest", lines({"inspected": ["src/calc.py"]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, o)
+        self.assertRegex(self.rep("render")[1], r"\nDefects\nDefects: skipped \(tier lean\)\n")
+
     def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
         rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
         os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))
@@ -876,6 +943,16 @@ class Shards(Lanes):
         out = self.shard(2, mc(3))
         self.assertEqual(out["dropped"]["invalid"], 1)  # dropped sums lanes: shard 1 had none
         self.assertEqual(out["lanes"], {"defects@1": "incomplete", "defects@2": "incomplete"})
+
+    def test_each_shard_keeps_its_own_summary_ordered_by_shard(self):  # review-code-d14.7
+        self.shard(2, [["summary", "two"]])
+        self.shard(1, [["summary", "one"]])
+        self.assertEqual(self.doc()["summary"], [{"lane": "defects@1", "text": "one"}, {"lane": "defects@2", "text": "two"}])
+        t = self.rep("render")[1]  # review-code-r4j: each rendered line names its shard
+        self.assertIn("defects@1 change summary (model text, unverified): one\n", t)
+        self.assertIn("defects@2 change summary (model text, unverified): two\n", t)
+        self.shard(2, [["summary", "two again"]])  # a re-ingest replaces only that shard
+        self.assertEqual([x["text"] for x in self.doc()["summary"]], ["one", "two again"])
 
     def test_bad_shard_refuses_with_one_json_line(self):
         for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):

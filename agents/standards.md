@@ -40,13 +40,20 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 4. `lean`: the change adds more than it needs:
    - needless code: code that nothing calls or needs, or a branch that cannot be reached;
    - reimplemented logic: a loop or helper that repeats a standard-library function or a helper
-     already in tree/; name that function, or its path and line, in `fix`;
+     already in tree/ (tree/ also holds capped helper files beside the changed ones and shared-named
+     modules, listed in the ledger under `helpers`: context to search for reuse, not code under
+     review); name that function, or its path and line, in `fix`;
    - over-engineering: an abstraction, wrapper, option or layer with one caller and no stated need;
    - logic duplicated across the changed branches, or calls repeated in each branch that one call
      before the branch would cover;
    - sprawl: a new dependency, file or module the change could do without.
+5. `altitude`: the change patches a symptom where the cause sits deeper: it layers a special case
+   (an extra branch, flag or exception) onto shared code instead of fixing the mechanism that
+   produces the problem. Name the special case's `path:line` and the shared mechanism it works
+   around in `trigger`. Name the more general change to that mechanism in `fix`. A special case the
+   shared code cannot express, or one the surrounding code already treats as the norm, is not a finding.
 
-For `comment`, `smell` and `lean`, the claim is about the code as written, not about a failure. Name
+For `comment`, `smell`, `lean` and `altitude`, the claim is about the code as written, not about a failure. Name
 in `trigger` the evidence it rests on: the second site of a duplicate as `path:line`, the existing
 helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the
 claim by reading those cites.
@@ -55,13 +62,14 @@ claim by reading those cites.
 
 Severity is one of `required`, `suggestion`, `noted`. Never use `blocking`.
 `convention` and a `comment` that would mislead a reader are at most `required`. A comment that only
-restates its line, every `smell` and every `lean` finding are `suggestion` or `noted`.
-Category is one of `convention`, `comment`, `smell`, `lean`. Nothing else is accepted.
+restates its line, every `smell`, `lean` and `altitude` finding are `suggestion` or `noted`.
+Category is one of `convention`, `comment`, `smell`, `lean`, `altitude`. Nothing else is accepted.
 
 ## Do not flag
 
 - Anything a linter, formatter or type checker the repo configures would catch.
 - Lines carrying a deliberate lint-ignore marker (noqa, eslint-disable, @ts-ignore and the like).
+- A `shortcut:` comment that names its limit is a decision, not a finding, unless the `## Expected load` in the input, when present, already crosses that limit.
 - Suggestions and noted points on unchanged lines.
 - A smell the repo's own standards allow.
 - Taste with no rule behind it: a different valid style is not a finding.
