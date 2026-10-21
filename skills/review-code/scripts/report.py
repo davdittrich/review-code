@@ -15,7 +15,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
 `render`, which prints the report):
 
     report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N]
-                                   candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers);
+                                   candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers); Defects lane only: one ["summary", text] line (text up to SUMMARY_MAX characters, first wins, others invalid);
                                    additive per lane (key <lane>, or <lane>@N for shard N, a plan.json shard id:
                                    cites are checked in <run>/shards/N/tree, conventions in
                                    <run>/shards/N/conventions; else bad-shard)
@@ -37,7 +37,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
-Document also: lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
+Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged; cut ids render as
@@ -165,9 +165,10 @@ def _loads(s):
 REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
 REPAIR_STEPS = 250  # string ends and values it will try on one line (the 15 real lines need at most 47)
 INGEST_STEPS = 20000  # ... and on all lines of one ingest call or one stored verdicts batch
-LITERAL = ("title", "trigger", "quote", "fix", "reason")  # the only keys whose string may hold a raw quote (e7e)
+SUMMARY_MAX = 600  # characters of a change summary: one to three sentences
+LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only keys whose string may hold a raw quote (e7e)
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
-    "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why"))
+    "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _LIT = {"true": True, "false": False, "null": None}
@@ -680,12 +681,21 @@ def _declined(o, ctx, copied):
 
 def _read_lane(text, lane, tree, run, shard=None):
     kept, areas, invalid, ignored, complete, declined, rejected, repaired = {}, [], 0, 0, False, [], [], 0
+    summary = None
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     for ln, o, fixed in _objects(text):
         repaired += fixed
         why = "invalid-json" if o is None else "failed-validation"
+        if o is not None and "path" not in o and "summary" in o and lane == "defects":  # the one summary per lane: the first valid wins
+            text = o["summary"]
+            if summary is None and isinstance(text, str) and _ws(text) and len(text) <= SUMMARY_MAX:
+                summary = _ws(text)
+            else:
+                invalid += 1
+                rejected.append((why, ln))
+            continue
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
@@ -713,7 +723,7 @@ def _read_lane(text, lane, tree, run, shard=None):
         else:
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
-            "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}, "rejected": rejected,
+            **({"summary": summary} if summary else {}), "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}, "rejected": rejected,
             "repaired": repaired}
 
 
@@ -982,7 +992,9 @@ def _build(run):
         skipped.append({"what": "spec", "why": "no spec"})
     declined = sorted((d for v in cand.get("lanes", {}).values() for d in v.get("declined", [])),
                       key=lambda d: (d["spec_line"], d["why"]))
-    doc = {"schema_version": SCHEMA_VERSION,
+    summary = [{"lane": n, "text": v["summary"]} for n, v in sorted(
+        cand.get("lanes", {}).items(), key=lambda kv: (kv[0].partition("@")[0], int(kv[0].partition("@")[2] or 0))) if v.get("summary")]
+    doc = {"schema_version": SCHEMA_VERSION, "summary": summary,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger._stored(led) == "own" else "external",
@@ -1045,7 +1057,8 @@ def _text(doc):
         return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
 
     t, d, fs = doc["target"], doc["dropped"], doc["findings"]
-    out = ["Summary", "verdict: " + doc["verdict"], "target: %s %s (merge base %s), ledger %s" % (
+    out = ["Summary"] + ["change summary (model text, unverified): " + e(x["text"]) for x in doc["summary"]]
+    out += ["verdict: " + doc["verdict"], "target: %s %s (merge base %s), ledger %s" % (
         e(t["kind"]), e(t["head_sha"]), e(t["merge_base"]), e(t["label"]))]
     if t["not_a_change"]:
         out.append("Target is not a change: whole-file findings")

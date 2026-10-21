@@ -59,7 +59,7 @@ performance or test gaps, and `noted` for a minor point worth one mention. Other
 
 ## Output
 
-One line per finding, nothing else. A line is a JSON array of [key, value] pairs, never an object, with exactly these keys:
+One line per finding, plus the summary and inspected lines below, nothing else. A line is a JSON array of [key, value] pairs, never an object, with exactly these keys:
 
 [["path", "src/calc.py"], ["line", 41], ["end_line", 42], ["severity", "required"], ["category", "bug"], ["title", "Average divides by zero on an empty list"], ["trigger", "mean([]) reaches len(xs) == 0"], ["quote", "return sum(xs) / len(xs)"], ["fix", "Return None when xs is empty"]]
 
@@ -69,8 +69,13 @@ One line per finding, nothing else. A line is a JSON array of [key, value] pairs
 - In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
+Before the findings, one line with a one-to-three sentence summary of what the change does, written
+from the code in tree/ and change.diff only, never from PR, MR, issue or commit text, in at most 600 characters (apply the same `\u007b` and `\u0022` rule to its text). The skill shows it labelled as model text.
+
+[["summary", "Adds add() to src/calc.py and a test for it."]]
+
 Last, one line listing every file you read, relative to tree/:
 
 [["inspected", ["src/calc.py", "tests/test_calc.py"]]]
 
-With no findings, output only the inspected line. Return findings only; never offer options or next steps.
+With no findings, output only the summary and inspected lines. Return findings only; never offer options or next steps.

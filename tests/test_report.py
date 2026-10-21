@@ -499,6 +499,27 @@ class MultiLane(Lanes):
         self.assertEqual(d["lean_lines"], 5)  # 3 + 2; the smell does not count
         self.assertIn("\nLean: -5 lines possible (estimate)\n", self.rep("render")[1])
 
+    def test_summary_record_is_kept_escaped_and_labelled_model_text(self):  # review-code-d14.7
+        text = 'Adds add() and a "load" helper.\x1b[31m red \u202e'
+        out = self.lane("defects", [["summary", text]], mc(3))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))  # a summary is no candidate
+        d = self.doc()
+        self.assertEqual(d["summary"], [{"lane": "defects", "text": text}])
+        t = self.rep("render")[1]
+        self.assertTrue(t.startswith("Summary\nchange summary (model text, unverified): Adds add() and a \"load\" helper."), t)
+        self.assertNotIn("\x1b", t)
+        self.assertNotIn("\u202e", t)
+        self.assertEqual(d["lanes"], {"defects": "incomplete"})  # only an inspected line completes a lane
+
+    def test_summary_over_length_second_and_wrong_lane_are_invalid(self):
+        out = self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]])
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # rejected, never truncated
+        out = self.lane("defects", [["summary", "first"]], [["summary", "second"]])
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, [{"lane": "defects", "text": "first"}]))
+        self.rep("discard")
+        out = self.lane("standards", [["summary", "s"]])  # only the Defects lane summarises
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))
+
     def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
         self.set_cap(1)
         out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
@@ -878,6 +899,13 @@ class Shards(Lanes):
         out = self.shard(2, mc(3))
         self.assertEqual(out["dropped"]["invalid"], 1)  # dropped sums lanes: shard 1 had none
         self.assertEqual(out["lanes"], {"defects@1": "incomplete", "defects@2": "incomplete"})
+
+    def test_each_shard_keeps_its_own_summary_ordered_by_shard(self):  # review-code-d14.7
+        self.shard(2, [["summary", "two"]])
+        self.shard(1, [["summary", "one"]])
+        self.assertEqual(self.doc()["summary"], [{"lane": "defects@1", "text": "one"}, {"lane": "defects@2", "text": "two"}])
+        self.shard(2, [["summary", "two again"]])  # a re-ingest replaces only that shard
+        self.assertEqual([x["text"] for x in self.doc()["summary"]], ["one", "two again"])
 
     def test_bad_shard_refuses_with_one_json_line(self):
         for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):
