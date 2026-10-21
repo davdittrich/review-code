@@ -1370,6 +1370,13 @@ class Gate(Base):
         with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
             self.assertTrue(fh.read().startswith("invalid-json "))
 
+    def test_a_verdict_line_with_a_bad_value_is_rejected_with_one_prefix(self):
+        (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
+        rc, out = self.rep("verdicts", lines({"id": i, "verdict": "maybe"}), extra=["--batch", "1"])
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("failed-validation:bad-type "))
+
     def test_render_warns_and_keeps_needs_discussion_while_a_line_is_lost(self):
         self.ingest({"inspected": ["src/calc.py"]})
         self.assertEqual(self.doc()["verdict"], "No blocking findings")

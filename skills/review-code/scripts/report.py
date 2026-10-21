@@ -124,22 +124,30 @@ def _real(tree, path):
     return real if real.startswith(tree + os.sep) and os.path.isfile(real) else None
 
 
-def _cited(tree, path, line, end, quote):
-    """The cited lines when path, range and quote all hold in tree/, else None."""
+def _cite(tree, path, line, end, quote):
+    """(the cited lines, None) when path, range and quote all hold in tree/, else (None, the failing check)."""
     real = _real(tree, path)
-    if real is None or not (_int(line) and _int(end) and 1 <= line <= end) or not isinstance(quote, str):
-        return None
+    if real is None:
+        return None, "path-not-in-tree"
+    if not (_int(line) and _int(end) and 1 <= line <= end):
+        return None, "line-out-of-range"
     try:
         with open(real, encoding="utf-8", errors="replace") as fh:
             rows = fh.read().split("\n")
     except OSError:
-        return None
+        return None, "unreadable"
     if rows[-1] == "":
         rows.pop()
     if end > len(rows):
-        return None
+        return None, "line-out-of-range"
     got = rows[line - 1:end]
-    return got if _ws(quote) and _ws(quote) in _ws(" ".join(got)) else None
+    ok = isinstance(quote, str) and _ws(quote) and _ws(quote) in _ws(" ".join(got))
+    return (got, None) if ok else (None, "quote-not-at-line")
+
+
+def _cited(tree, path, line, end, quote):
+    """The cited lines when path, range and quote all hold in tree/, else None."""
+    return _cite(tree, path, line, end, quote)[0]
 
 
 def _wire(v):
@@ -414,22 +422,6 @@ def _sources(x):
     return x
 
 
-def _uncited(tree, path, line, end):
-    """Why _cited failed for a quote of type str: path-not-in-tree, line-out-of-range, unreadable or quote-not-at-line."""
-    real = _real(tree, path)
-    if real is None:
-        return "path-not-in-tree"
-    if not (_int(line) and _int(end) and 1 <= line <= end):
-        return "line-out-of-range"
-    try:
-        with open(real, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return "unreadable"  # _cited rejected the same read error
-    n = len(text.removesuffix("\n").split("\n")) if text else 0  # as _cited counts rows
-    return "line-out-of-range" if end > n else "quote-not-at-line"
-
-
 def _candidate(o, tree, lane, base, ctx=None):
     """(candidate, None), or (None, the failing check)."""
     for k in CANDIDATE_REQUIRED:
@@ -449,9 +441,9 @@ def _candidate(o, tree, lane, base, ctx=None):
         if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
             return None, "sota-invalid"
         c["sources"] = src
-    c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
+    c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
     if c["rows"] is None:
-        return None, _uncited(tree, c["path"], c["line"], end)
+        return None, why
     if c["category"] == "convention":
         r, why = _rule(o, base)
         if r is None:
@@ -731,7 +723,7 @@ def _read_lane(text, lane, tree, run, shard=None):
         if c is None or c["id"] in kept:
             invalid += 1
             if c is None:  # a duplicate loses nothing
-                rejected.append((why or "failed-validation:" + check, ln))
+                rejected.append((why or check, ln))
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
         else:
@@ -747,7 +739,7 @@ def _reject(run, name, rows):
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        _put(path, "".join("%s %s\n" % (why, ln) for why, ln in rows))
+        _put(path, "".join("%s %s\n" % (why if why == "invalid-json" else "failed-validation:" + why, ln) for why, ln in rows))
     elif os.path.exists(path):
         os.remove(path)
 
@@ -803,7 +795,7 @@ def _ingest(run, text, lane, shard):
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
             "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired,
-            "rejected": [{"lane": key, "index": i, "check": why.partition(":")[2] or why} for i, (why, _) in enumerate(rejected, 1)]}
+            "rejected": [{"lane": key, "index": i, "check": why} for i, (why, _) in enumerate(rejected, 1)]}
 
 
 def verdicts(run, text, batch=None):
@@ -825,7 +817,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
-            bad.append(("invalid-json" if o is None else "failed-validation", ln))
+            bad.append(("invalid-json" if o is None else "bad-type", ln))
             continue
         if allowed is not None and o["id"] not in allowed:
             foreign += 1
