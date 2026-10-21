@@ -147,7 +147,7 @@ class Categories(Base):
             for e in led[cat]:
                 self.assertTrue(e["how"], (cat, e))
         self.assertEqual(led["capped"], {c: False for c in
-                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues")})
+                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues", "helpers")})
 
     def test_crlf_change_diff_reads_like_text_mode(self):
         # 6xl.54: a change.diff written in text mode on Windows ends lines with CRLF; discovery must not change
@@ -424,6 +424,28 @@ class Tree(Base):
             self.assertEqual(fh.read(), want)
         self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "source": "head commit", "skipped": []})
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
+
+    def test_tree_copies_helper_files_as_context(self):  # review-code-3ea.2
+        self.base({"src/a.py": "x = 1\n", "src/sibling.py": "def s(): pass\n", "pkg/utils.py": "def u(): pass\n",
+                   "lib/x.py": "def l(): pass\n", "other/zzz.py": "z = 1\n"})
+        self.branch({"src/a.py": "x = 2\n"})
+        out, led = self.build()
+        self.assertEqual(self.tree_files(), ["lib/x.py", "pkg/utils.py", "src/a.py", "src/sibling.py"])
+        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
+                         [("lib/x.py", "helper-named file"), ("pkg/utils.py", "helper-named file"),
+                          ("src/sibling.py", "sibling of a changed file")])
+        self.assertEqual(out["counts"], {c: 0 for c in ledger.CATEGORIES})  # context, not reviewed files
+        self.assertEqual(led["tree"]["skipped"], [])
+
+    def test_helper_copy_is_capped_by_bytes(self):  # review-code-3ea.2
+        self.base({"src/a.py": "x = 1\n", "src/b_util.py": "b" * 60 + "\n", "src/c_util.py": "c" * 60 + "\n"})
+        self.branch({"src/a.py": "x = 2\n"})
+        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
+            _, led = self.build()
+        self.assertEqual(self.tree_files(), ["src/a.py", "src/b_util.py"])
+        self.assertEqual(files_of(led, "helpers"), ["src/b_util.py"])
+        self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
+        self.assertTrue(led["capped"]["helpers"])
 
     def test_tree_symlink_never_created(self):
         secret = os.path.join(self.tmp, "secret.txt")

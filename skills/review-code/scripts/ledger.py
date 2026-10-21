@@ -42,6 +42,8 @@ INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
+CAP_HELPER_BYTES = 200000  # tree/ bytes for helper files copied as reuse context; surplus is skipped as helper-cap
+_HELPER_NAME = re.compile(r"(?<![a-z])(?:utils?|helpers?|common|shared|lib)(?![a-z])", re.I)
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
@@ -248,6 +250,48 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     return found, capped
 
 
+def _helpers(repo: str, listing: Optional[dict], names: List[str], included: List[str],
+             claimed: set) -> Tuple[List[dict], List[str]]:
+    """(kept, over the byte cap): files of the same directory as a changed file, and tracked paths named like a
+    shared helper, in that order of priority, each path-sorted. Context for reuse checks, never reviewed files."""
+    inc, cdirs = set(included), {p.rpartition("/")[0] for p in included}
+    cand = []
+    for p in names:
+        if p in claimed or p in inc or _is_test(p) or _is_fixture(p) or target.shown(p) != p:
+            continue
+        if listing is not None and listing.get(p, ("",))[0] not in _REGULAR:
+            continue
+        if _HELPER_NAME.search(p):
+            cand.append((0, p, "helper-named file"))
+        elif p.rpartition("/")[0] in cdirs:
+            cand.append((1, p, "sibling of a changed file"))
+    cand.sort()
+    if listing is not None:  # sizes by object id from the pinned listing, never the working copy
+        oids = sorted({listing[p][1] for _, p, _ in cand})
+        raw = target.git_bytes(["cat-file", "--batch-check=%(objectname) %(objectsize)"], repo,
+                               stdin="".join(o + "\n" for o in oids).encode())
+        size = {p: dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing")).get(listing[p][1])
+                for _, p, _ in cand}
+    else:
+        size = {}
+        for _, p, _ in cand:
+            try:
+                st = os.lstat(os.path.join(repo, p))
+                size[p] = st.st_size if stat.S_ISREG(st.st_mode) else None
+            except OSError:
+                size[p] = None
+    kept, over, used = [], [], 0
+    for _, p, how in cand:
+        if size[p] is None:
+            continue
+        if used + int(size[p]) > CAP_HELPER_BYTES:
+            over.append(p)
+        else:
+            used += int(size[p])
+            kept.append({"file": p, "how": how})
+    return kept, over
+
+
 def _conv_paths(names, included: List[str]) -> set:
     """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory."""
     dirs = {""}
@@ -345,7 +389,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     it as hidden-name."""
     skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
     tree = os.path.join(run, "tree")
-    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
+    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs", "helpers")
                                      for e in led[c]}):
         if p in named or target.shown(p) != p:
             skipped.append({"path": target.shown(p), "reason": "hidden-name"})
@@ -669,11 +713,16 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    claimed = set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs") for e in led[c]}
+    led["helpers"], over = _helpers(repo, idx if idx is not None else head_ls, files, included, claimed)
+    capped["helpers"] = bool(over)
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
         {h["file"] for h in tj["hidden_chars"] if h.get("name")})
-    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
+    led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
+                                    key=lambda k: k["path"])
+    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "helpers"):
         for e in led[c]:  # 6xl.51/.64: file and symbol names (also inside "how") reach ledger.json escaped
             for k, v in e.items():
                 if isinstance(v, str):

@@ -40,7 +40,9 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 4. `lean`: the change adds more than it needs:
    - needless code: code that nothing calls or needs, or a branch that cannot be reached;
    - reimplemented logic: a loop or helper that repeats a standard-library function or a helper
-     already in tree/; name that function, or its path and line, in `fix`;
+     already in tree/ (tree/ also holds capped helper files beside the changed ones and shared-named
+     modules, listed in the ledger under `helpers`: context to search for reuse, not code under
+     review); name that function, or its path and line, in `fix`;
    - over-engineering: an abstraction, wrapper, option or layer with one caller and no stated need;
    - logic duplicated across the changed branches, or calls repeated in each branch that one call
      before the branch would cover;
