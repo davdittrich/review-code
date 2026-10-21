@@ -110,6 +110,10 @@ def glab_json(args: List[str], cwd: str):
     return _cli_json("glab", args, cwd)
 
 
+def bd_json(args: List[str], cwd: str):
+    return _cli_json("bd", args, cwd)
+
+
 def load_target(run: str) -> dict:
     """<run>/target.json, or Refuse("no-target") when it is missing or lacks what every consumer reads."""
     try:

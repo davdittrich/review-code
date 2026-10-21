@@ -14,7 +14,6 @@ import time
 import unittest
 from unittest import mock
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
 SCRIPTS = paths.SCRIPTS
@@ -32,20 +31,8 @@ CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "b
 CITE = {"path": "src/calc.py", "line": 5, "quote": QUOTE}
 
 
-class Base(unittest.TestCase):
+class Base(gitfix.FeatureRepo):
     base_files, feat_files = BASE, {"src/calc.py": FEAT}
-
-    def setUp(self):
-        self._td = tempfile.TemporaryDirectory()
-        self.addCleanup(self._td.cleanup)
-        self.tmp = os.path.realpath(self._td.name)
-        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, self.base_files, "base")
-        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
-        gitfix.commit(self.repo, self.feat_files, "feat")
-
-    def git(self, *a):
-        return gitfix.run(["git"] + list(a), self.repo).strip()
 
     def tool(self, script, args, stdin=""):
         rc, out, err = cli(script, args, self.repo, self.tmp, stdin.encode("utf-8"))

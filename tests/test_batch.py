@@ -227,6 +227,10 @@ class Status(Verdicts):
             self.assertIn("lane %s not-ingested: its reply was never ingested" % n, text)
 
 
+for _name in [n for n in dir(Verdicts) if n.startswith("test_") and n not in Status.__dict__]:
+    setattr(Status, _name, None)  # Status reuses Verdicts' setUp and helpers only; its own tests are the ones above
+
+
 class CleanGate(tr.Lanes):  # review-code-0c4
     def plan(self, *lanes):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:

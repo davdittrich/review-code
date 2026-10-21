@@ -14,8 +14,8 @@
 |---|---|---|---|---|
 | L1-L4 | Frontmatter: name `code-review`, trigger description | replace | The skill is named `review-code`; its description was reworded after the trigger trials (docs/trigger-prompts.md) and the current text is not trial-tested. | SKILL.md frontmatter |
 | L6-L9 | Review the diff from a fixed point on two axes: Standards and Spec | keep | Core design. | SKILL.md "Two axes" |
-| L11 | Both axes run as parallel sub-agents, then are aggregated | adapt | Sub-agent lanes arrive in a later phase; the v0.1 stub reviews both axes in one pass in the main thread. | later phases |
-| L13 | Tell the user to run `/setup-matt-pocock-skills` when no tracker is given | replace | No dependency on another skill; ask the user for the spec instead. | SKILL.md |
+| L11 | Both axes run as parallel sub-agents, then are aggregated | adapt | Shipped: Standards and Spec each run as a plugin subagent lane beside the Defects lane, then `report.py` aggregates them. | `agents/`, SKILL.md steps 7-8 |
+| L13 | Tell the user to run `/setup-matt-pocock-skills` when no tracker is given | replace | No dependency on another skill; the spec is discovered (PR or MR text, issues, bd tickets, spec files), never asked for. | SKILL.md |
 | L17-L21 | Pin the fixed point (SHA, branch, tag, `main`, `HEAD~n`); ask if absent; use `git diff <fp>...HEAD` and the commit list | keep | Three-dot diff compares against the merge-base. Working-tree and PR targets are added by the target-resolution phase. | target resolution |
 | L23 | Fail early on a bad ref or empty diff, before any sub-agent | keep | Cheap check that avoids wasted lanes. | target resolution |
 | L25-L32 | Find the spec: issue refs in commits, user path, `docs/`/`specs/`/`.scratch/`, else ask; none means skip Spec | keep | PR body is added as a source when a PR is the target. | Spec axis |

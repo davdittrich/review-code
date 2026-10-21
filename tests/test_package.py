@@ -16,6 +16,7 @@ class GateMutations(unittest.TestCase):
         self.addCleanup(self._td.cleanup)
         self.tree = os.path.join(self._td.name, "tree")
         os.mkdir(self.tree)
+        # the gate runs on the committed HEAD, not the working tree: an uncommitted edit shows only after it is committed
         tar = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE, check=True)
         subprocess.run(["tar", "-x", "-C", self.tree], input=tar.stdout, check=True)
 

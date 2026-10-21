@@ -54,6 +54,11 @@ def strip_invisible(text: str) -> str:
     return "".join(c for c in text if not _invisible(c))
 
 
+def escape_line(x) -> str:
+    """Untrusted text as one escaped line (whitespace runs collapse), so no CR overwrites the terminal."""
+    return escape_for_code(" ".join(str(x).split()))[0]
+
+
 def escape_for_code(text: str) -> Tuple[str, List[dict]]:
     """Replace each invisible character with `<U+XXXX>`, and a run of variation selectors, Tags or lone
     surrogates with one `<VS:n>`, `<TAGS:n>` or `<BYTES:n>`, so the escape never carries the payload. A single

@@ -12,7 +12,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: npm install -g @anthropic-ai/claude-code@2.1.302
       - run: shellcheck scripts/check-package.sh
-      - run: python3 -m unittest discover -s tests -q
+      # the python-floor jobs skip this module (no claude CLI), so only it runs here
+      - run: python3 -m unittest discover -s tests -p test_package.py -q
       - run: sh scripts/check-package.sh
   python-floor:
     # The skill promises Python 3.9 and later; run the unit tests on the floor and a current release.

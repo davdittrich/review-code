@@ -13,7 +13,6 @@ import sys
 import tempfile
 import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
 SCRIPTS = paths.SCRIPTS

@@ -112,6 +112,12 @@ class ProseTests(unittest.TestCase):
         self.assertIn("shown", out)
 
 
+class EscapeLineTests(unittest.TestCase):
+    def test_one_line_and_escaped(self):
+        self.assertEqual(sanitize.escape_line("a\r\n  b\u202ec"), "a b<U+202E>c")
+        self.assertEqual(sanitize.escape_line(7), "7")
+
+
 class EscapeTests(unittest.TestCase):
     def test_escape_trojan_source(self):
         src = "\r\n".join([

@@ -95,7 +95,7 @@ Each run writes its pinned target, diff, context ledger and lane inputs to a mod
 
 ## What ships
 
-The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `agents/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the matt.md and ccr.md keep-or-replace contracts and the trigger-prompt record) and `scripts/`. The GSD planning record under `.planning/` is gitignored and never ships. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
+The plugin root is the repository root, so every tracked file ships to installers: `skills/`, `agents/`, `.claude-plugin/`, `LICENSE`, `NOTICE`, `README.md`, `docs/` (the matt.md and ccr.md keep-or-replace contracts and the trigger-prompt record), `scripts/`, `tests/`, `.github/` and `.gitignore`. The GSD planning record under `.planning/` is gitignored and never ships. Tooling, agent pointer files (including `.claude/CLAUDE.md`) and third-party reference text are not tracked (see `.gitignore`) and never ship. `scripts/check-package.sh` fails if any of them become tracked.
 
 ## Releasing
 

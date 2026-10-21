@@ -653,6 +653,8 @@ class Shards(ShardBase):
         self.assertEqual(sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] != "spec"),
                          [("defects", 1), ("defects", 2), ("standards", 1), ("standards", 2)])
         for c in p["calls"]:
+            if c["lane"] == "spec":  # a repo target finds docs/guide.md as its spec; the spec lane is never sharded
+                continue
             self.assertEqual(c["input"], os.path.join(self.run_dir, "shards", str(c["shard"]), "inputs",
                                                       c["lane"] + ".md"))
 

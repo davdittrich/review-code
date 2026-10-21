@@ -31,8 +31,7 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self._td.cleanup)
         self.tmp = os.path.realpath(self._td.name)
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, {"src/cfg.py": "def load():\n    return 1\n", "CLAUDE.md": "# rules\n"}, "base")
-        self.base = gitfix.run(["git", "rev-parse", "HEAD"], self.repo).strip()
+        self.base = gitfix.commit(self.repo, {"src/cfg.py": "def load():\n    return 1\n", "CLAUDE.md": "# rules\n"}, "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
 
     def git(self, *a):

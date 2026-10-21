@@ -5,17 +5,15 @@ import json
 import os
 import re
 import shutil
-import subprocess
-import sys
-import tempfile
 import time
 import unittest
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "review-code", "scripts")
 import paths  # noqa: F401
 
+SCRIPTS = paths.SCRIPTS
+
 import gitfix  # noqa: E402
+from gitfix import cli, fid, lines, wire  # noqa: E402,F401
 import report  # noqa: E402
 
 BASE = {"src/calc.py": "def load():\n    return 1\n"}
@@ -25,41 +23,12 @@ CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "b
 CITE = {"path": "src/calc.py", "line": 5, "quote": "return a - b"}
 
 
-def cli(script, args, cwd, tmp, stdin=""):
-    e = gitfix.env()
-    e["TMPDIR"] = tmp
-    p = subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + args, cwd=cwd, env=e,
-                       input=stdin.encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
-
-
-def wire(o):
-    """dict -> [[key, value], ...], recursively: the brace-free wire form (g1x.10, the Bash guard denies a brace and a quote)."""
-    if isinstance(o, dict):
-        return [[k, wire(v)] for k, v in o.items()]
-    return [wire(v) for v in o] if isinstance(o, list) else o
-
-
-def lines(*objs):
-    return "\n".join(o if isinstance(o, str) else json.dumps(wire(o)) for o in objs) + "\n"
-
-
-def fid(path, category, quote):
-    return "F-" + hashlib.sha256("\0".join((path, category, " ".join(quote.split()))).encode()).hexdigest()[:10]
-
-
-class Base(unittest.TestCase):
+class Base(gitfix.FeatureRepo):
     pin_args = ["main"]
     base_files, feat_files = BASE, {"src/calc.py": FEAT}
 
     def setUp(self):
-        self._td = tempfile.TemporaryDirectory()
-        self.addCleanup(self._td.cleanup)
-        self.tmp = os.path.realpath(self._td.name)
-        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, self.base_files, "base")
-        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
-        gitfix.commit(self.repo, self.feat_files, "feat")
+        super().setUp()
         self.run_dir = self.pin(self.pin_args)
 
     def pin(self, args):

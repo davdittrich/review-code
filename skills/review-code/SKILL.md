@@ -106,15 +106,16 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    counts from its stdout. For `triage`, print "Triage only: no repository context found".
 3. Questions, once per run, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
-   or an external or untrusted change?", options "My own code" and "External or untrusted code") and,
-   only when the build's `spec_status` is `none`, the spec question (options: give a spec path, or
-   "There is no spec"). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
+   or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
+   spec is never asked for: the build already took it from PR or MR text, closing issues, bd tickets named in the
+   commit messages, and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
+   paths (every file there for a `repo` target). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
-   unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path re-runs the
-   build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --spec -` with the path as
+   unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path the user
+   named in their words re-runs the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --spec -` with the path as
    the single line of a here-document on stdin (stdin rule); the script reads only files inside
    the repository (any other path is refused as `bad-spec`: ask the user to copy the file into the
-   repository); no spec means the Spec axis is stated as skipped.
+   repository); when `spec_status` is `none` the Spec axis is stated as skipped (no spec found).
 4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
    (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
    path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a

@@ -8,7 +8,7 @@ Only when the user's words held `--fix`; a review without it never edits a file.
 
 ## Flow
 
-1. Derive the test command from `ledger.json` `tests` and `config` entries (the runner config names), to run from the repository top. With none derivable, state "not applied: no test command found" and stop. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py plan --run <run>` with the command's words on stdin (stdin rule, delimiter `REVIEW_FIX_CMD`):
+1. Derive the test command from `ledger.json` `tests`, `config` and `ci` entries, to run from the repository top: the runner config names, or the test step a `ci` file runs (`run:` line). A whole-file target (`repo`, `path`) lists its own test files under `tests`, so a repo that has tests always has a command to derive. With none derivable, state "not applied: no test command found" and stop. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py plan --run <run>` with the command's words on stdin (stdin rule, delimiter `REVIEW_FIX_CMD`):
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/fix.py plan --run <run> <<'REVIEW_FIX_CMD'
@@ -47,7 +47,7 @@ No fix may touch a path with a dot component (`.github/`, `.env`), a lockfile (`
 | `reverted-tests` | The tests failed; the file is restored | yes |
 | `reverted-timeout` | The tests ran past 540 seconds (`TIMEOUT`); restored | yes |
 | `reverted-interrupt` | `finish` was interrupted (Ctrl-C, SIGTERM, an error); the file is restored from its snapshot | yes |
-| `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot, the git config or `.git/info/exclude` changed while the fixer ran, or `state.json` shows no call in flight after a brief was handed out (a second `finish` for one brief included); nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
+| `tampered` | The seal, the plan, the state, the run's `target.json` or `ledger.json`, a snapshot, the git config or `.git/info/exclude` changed while the fixer ran, or `state.json` shows no call in flight after a brief was handed out; nothing is restored and no git command runs. Check `.git/config` and `git status` by hand | yes |
 
 ## Refusals
 
@@ -67,7 +67,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `trust-external` | The code was recorded as external or untrusted | Fix mode runs on your own code only |
 | `head-not-checked-out` | The checked-out `HEAD` is not the reviewed `head_sha` | Check out the reviewed commit |
 | `dirty-tree` | The working tree has changes or untracked files | Commit, or remove them |
-| `already-run` | This run already has a plan or a baseline | Review again for a new run |
+| `already-run` | This run already has a baseline (`fix/state.json`); a second `plan` before `baseline` replaces `plan.json` | Review again for a new run |
 | `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons. A serial-mode run lands here unless another refusal comes first, because serial mode verifies nothing | Nothing to do; review again in parallel mode for a fix |
 | `preview-too-large` | The preview is over 25,000 characters | Review a smaller change |
 | `no-plan` | `baseline` found no `fix/plan.json` | Run `plan` first |
@@ -76,7 +76,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `halted` | An earlier outcome or a red baseline stopped the run | Read the report |
 | `tampered` | `fix/state.json` is not a JSON object holding every state key, because something rewrote it while a fixer ran; no git command ran and nothing was restored | Check `.git/config` and `git status` by hand; restore the file from its `.pre` snapshot in `<run>/fix/` if needed |
 | `in-flight` | A fixer call is outstanding; a second brief is refused | Wait for it, then `finish` |
-| `not-in-flight` | `finish` before any brief was handed out | Run `begin` first |
+| `not-in-flight` | `finish` with no call in flight: before any brief was handed out, or a repeat after its outcome was recorded | Run `begin` first |
 | `head-moved` | `HEAD` is not the reviewed commit any more (a halted baseline uses this reason when its tests moved `HEAD`) | Do not commit during a fix run |
 | `refs-moved` | A branch, tag or stash ref changed (a halted baseline uses this reason when its tests moved only a ref) | Do not touch refs during a fix run |
 | `tree-changed` | A file other than an accepted fix or a test leftover differs from `HEAD` | Leave the tree alone while it runs |

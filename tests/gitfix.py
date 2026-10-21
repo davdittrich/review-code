@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 
 import paths
 
@@ -51,6 +52,23 @@ def commit(repo, files, message):
         run(["git", "add", "--", rel], repo)
     run(["git", "commit", "-q", "-m", message], repo)
     return run(["git", "rev-parse", "HEAD"], repo).strip()
+
+
+class FeatureRepo(unittest.TestCase):
+    """A temp repo with a `base_files` commit on main and a `feat_files` commit on branch feat."""
+    base_files, feat_files = {}, {}
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = make_repo(os.path.join(self.tmp, "repo"))
+        commit(self.repo, self.base_files, "base")
+        run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        commit(self.repo, self.feat_files, "feat")
+
+    def git(self, *a):
+        return run(["git"] + list(a), self.repo).strip()
 
 
 @contextlib.contextmanager

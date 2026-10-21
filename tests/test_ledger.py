@@ -12,7 +12,6 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
 SCRIPTS = paths.SCRIPTS
@@ -102,6 +101,18 @@ class TestNames(unittest.TestCase):
 
 
 class Categories(Base):
+    def test_whole_file_target_lists_its_own_test_files(self):  # review-code-2i7
+        self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
+        out, led = self.build(kind="repo", included=["src/a.py", "tests/test_a.py"])
+        self.assertEqual(files_of(led, "tests"), ["tests/test_a.py"])
+        self.assertEqual(led["tests"][0]["how"], "test file in the target")
+
+    def test_a_diff_still_lists_only_tests_it_did_not_change(self):
+        self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
+        self.branch({"src/a.py": "x = 2\n", "tests/test_a.py": "import unittest\n# edit\n"})
+        _, led = self.build()
+        self.assertEqual(files_of(led, "tests"), [])
+
     def test_ledger_full_categories(self):
         body = "".join("    x = %d\n" % i for i in range(12))
         self.base({
@@ -780,6 +791,42 @@ class Spec(Base):
         self.assertIn("abs.md", [s["ref"] for s in led["spec"]["sources"]])
         self.assertIn("ABS-TEXT", self.read("inputs/spec.md"))
 
+    def test_repo_target_takes_every_spec_dir_file(self):  # review-code-jwv
+        self.base({"README.md": "r\n", "docs/design.md": "DESIGN-TEXT\n", "specs/x.md": "X-TEXT\n", "src/a.py": "a = 1\n"})
+        out, led = self.build(kind="repo", included=["README.md", "docs/design.md", "specs/x.md", "src/a.py"])
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["docs/design.md", "specs/x.md"])
+        self.assertEqual(out["spec_status"], "found")
+        self.assertIn("X-TEXT", self.read("inputs/spec.md"))
+
+    def test_path_target_matches_spec_files_by_its_path_names(self):
+        self.base({"README.md": "r\n", "docs/parser-notes.md": "PARSER-TEXT\n", "docs/other.md": "OTHER-TEXT\n",
+                   "src/parser.py": "p = 1\n"})
+        _, led = self.build(kind="path", included=["src/parser.py"])
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["docs/parser-notes.md"])
+
+    def test_path_target_never_takes_a_file_under_review_as_its_spec(self):
+        self.base({"README.md": "r\n", "docs/parser-notes.md": "PARSER-TEXT\n"})
+        _, led = self.build(kind="path", included=["docs/parser-notes.md"])
+        self.assertEqual(led["spec"]["sources"], [])
+
+    def test_bd_ticket_named_in_a_commit_message_is_the_spec(self):
+        self.base({"README.md": "r\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (repo-ab1)")
+        with mock.patch.object(ledger, "_bd_show", return_value="TICKET-TEXT") as bd:
+            _, led = self.build(commits=[sha])
+        bd.assert_called_once_with(self.repo, "repo-ab1")
+        self.assertEqual(led["spec"], {"status": "found", "sources": [{"kind": "ticket", "ref": "repo-ab1", "fetched": True}]})
+        self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
+
+    def test_bd_ticket_lookup_failure_is_not_a_spec(self):
+        self.base({"README.md": "r\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (repo-ab1)")
+        with mock.patch.object(ledger, "_bd_show", return_value=None):
+            out, led = self.build(commits=[sha])
+        self.assertEqual((out["spec_status"], led["spec"]["sources"]), ("none", [{"kind": "ticket", "ref": "repo-ab1", "fetched": False}]))
+
     def test_spec_flag_refuses_missing_and_escaping_paths(self):
         self.base({"README.md": "r\n"})
         self.branch({"a.txt": "a\n"})
@@ -952,11 +999,8 @@ class Spec(Base):
 
 class Trust(Base):
     def cli(self, *args):
-        e = gitfix.env()
-        p = subprocess.run([sys.executable, os.path.join(SCRIPTS, "ledger.py")] + list(args), cwd=self.repo, env=e,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out = p.stdout.decode("utf-8")
-        return p.returncode, json.loads(out) if out.strip() else None
+        rc, out, _ = gitfix.cli("ledger.py", list(args), self.repo, self.tmp)
+        return rc, json.loads(out) if out.strip() else None
 
     def trust(self, *a):
         return self.cli("trust", *a)

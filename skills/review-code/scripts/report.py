@@ -1012,8 +1012,7 @@ def _sarif(doc):
 
 
 def _text(doc):
-    def e(x):  # repo and LLM text reaches the terminal only through here; one line each, so no CR overwrite
-        return sanitize.escape_for_code(" ".join(str(x).split()))[0]
+    e = sanitize.escape_line  # repo and LLM text reaches the terminal only through here; one line each, so no CR overwrite
 
     def item(i):
         out = ["- [%s] %s:%d  %s (%s, score %d, %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]),

@@ -504,7 +504,7 @@ def _prose(s) -> str:
     """One line of repository-derived text that pings, links and renders nothing: references in code spans, the rest
     with `&`, `\\`, `<` and `[` escaped. `&` goes first, or `&commat;x` would render `@x`; `\\` is doubled, or it would
     escape the escape. A code span shows its text as written, so nothing inside one is escaped."""
-    t = sanitize.escape_for_code(" ".join(str(s).split()))[0].replace("`", "'")
+    t = sanitize.escape_line(s).replace("`", "'")
     out, at = [], 0
     for m in _REF.finditer(t):
         out += [_escape(t[at:m.start()]), "`" + m.group() + "`"]

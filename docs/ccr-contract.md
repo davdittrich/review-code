@@ -73,7 +73,7 @@
 | L81 | Cross-file and documentation integrity section heading | keep | D-15 and LANE-01: these checks need full repository context. | Defects lane | v1.3-only |
 | L83 | Code consistency sub-heading | keep | D-15: part of the Defects lane. | Defects lane | v1.3-only |
 | L84 | Constructor divergence: construction sites with different defaults | keep | D-13 keeps it as a Blocking category; evidence is a search of all construction sites (`traced`). | Defects lane | v1.3-only |
-| L85 | Removing an import breaks tests that patch that name | keep | Blocking when a test target is shown to reference the removed name (`traced`). | Defects lane | v1.3-only |
+| L85 | Removing an import breaks tests that patch that name | keep | Required when a test target is shown to reference the removed name (`traced`); a test finding is never in the Blocking categories. | Defects lane | v1.3-only |
 | L87 | Doc versus source divergence sub-heading | keep | D-15: part of the Defects lane. | Defects lane | v1.3-only |
 | L88 | Trust the source over comments; check algorithms, constants, thresholds and symbols | keep | D-13 keeps doc/source mismatch as a Blocking category; the verifier compares the claim to the body (VERI-01). | Defects lane + verifier | v1.3-only |
 | L89 | Do not present compile-time guards as runtime alternatives | keep | Same category as L88. | Defects lane | v1.3-only |

@@ -5,13 +5,11 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
 SCRIPTS = paths.SCRIPTS
@@ -24,18 +22,8 @@ FID = "F-0123456789"
 PASS_SRC = "import sys\nprint('REPRO-%s')\nsys.exit(1)\n" % FID
 
 
-class Base(unittest.TestCase):
-    def setUp(self):
-        self._td = tempfile.TemporaryDirectory()
-        self.addCleanup(self._td.cleanup)
-        self.tmp = os.path.realpath(self._td.name)
-        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        gitfix.commit(self.repo, {"src/calc.py": "V = 1\n"}, "base")
-        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
-        gitfix.commit(self.repo, {"src/calc.py": "V = 2\n"}, "feat")
-
-    def git(self, *a):
-        return gitfix.run(["git"] + list(a), self.repo).strip()
+class Base(gitfix.FeatureRepo):
+    base_files, feat_files = {"src/calc.py": "V = 1\n"}, {"src/calc.py": "V = 2\n"}
 
     def start(self, arg="main", trust="own"):
         rc, out, _ = cli("target.py", [arg], self.repo, self.tmp)

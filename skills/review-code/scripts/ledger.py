@@ -200,6 +200,9 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
             found[cat].append({"file": p, "how": how})
 
     for p in files:  # tests: a test file for a changed file, or one that calls a changed symbol
+        if diff is None and p in inc and _is_test(p):  # a whole-file target reviews its tests too: they are the runner's input
+            found["tests"].append({"file": p, "how": "test file in the target"})
+            continue
         if p in claimed or not _is_test(p):
             continue
         base = posixpath.basename(p).lower()
@@ -431,13 +434,29 @@ def _issue_text(tj: dict, n: int) -> Optional[str]:
         return None
 
 
-def _spec_files(repo: str, head_ls: dict, spec: Optional[str], branch: str) -> Dict[str, str]:
-    """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a branch
-    token, plus the --spec file. Branch names stay in memory; only paths reach the ledger."""
-    toks = {t for t in re.split(r"[/_-]", branch.lower()) if len(t) >= 3 and t not in _BRANCH_SKIP}
+def _tokens(text: str) -> set:
+    return {t for t in re.split(r"[/_.-]", text.lower()) if len(t) >= 3 and t not in _BRANCH_SKIP}
+
+
+def _bd_show(repo: str, ref: str) -> Optional[str]:
+    """Title and description of the bd ticket `ref`; None when the repo has no .beads, bd is missing or the lookup fails."""
+    if not os.path.isdir(os.path.join(repo, ".beads")):
+        return None
+    try:
+        j = target.bd_json(["show", ref, "--json"], repo)
+        o = j[0] if isinstance(j, list) else j
+        return _clean(o.get("title")) + "\n\n" + _clean(o.get("description"))
+    except (target.Refuse, AttributeError, IndexError, KeyError, TypeError):
+        return None
+
+
+def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=()) -> Dict[str, str]:
+    """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a token of the
+    branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), plus the --spec file. Branch names stay in
+    memory; only paths reach the ledger."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
-    want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and any(t in posixpath.basename(p).lower()
-                                                                    for t in toks))[:CAP_SPEC_FILES]
+    want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and (every or any(t in posixpath.basename(p).lower()
+                                                                                         for t in toks)))[:CAP_SPEC_FILES]
     blobs = _blobs(repo, [reg[p] for p in want])
     out = {}
     for p in want:
@@ -485,8 +504,11 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
         pr_blocks.append(("%s %s" % (kind, mark), (title + "\n\n" + body).strip()))
     body = forge["body"] if forge else ""
     branch = forge["branch"] if forge else ""
-    if kind in ("branch", "worktree"):
+    if kind in ("branch", "worktree", "path", "repo"):
         branch = target.git(["symbolic-ref", "--short", "-q", "HEAD"], tj["repo"], check=False).strip()
+    toks = _tokens(branch)
+    if kind == "path":
+        toks |= _tokens(" ".join(tj["included"]))
 
     prose = messages + [body]
     ids = {int(n) for t in prose for n in _ISSUE.findall(t)} | (forge["closing"] if forge else set())
@@ -503,12 +525,20 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
             texts[n] = t
     sources += [{"kind": "issue", "ref": "#%d" % n, "fetched": n in texts} for n in ids]
 
-    files = _spec_files(tj["repo"], head_ls, spec, branch)
+    # bd tickets named `<repo-dir>-xyz` in the commit messages (a whole-file target reads the recent history instead)
+    recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in ("path", "repo") else ""
+    pre = re.escape(os.path.basename(tj["repo"]).lower())
+    refs = sorted({m for t in prose + [recent] for m in re.findall(r"\b(%s-[a-z0-9]{2,5})\b" % pre, t.lower())})[:CAP_ISSUES]
+    tickets = {r: t for r in refs for t in [_bd_show(tj["repo"], r)] if t is not None}
+    sources += [{"kind": "ticket", "ref": r, "fetched": r in tickets} for r in refs]
+
+    files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else ())
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)],
+    sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
+                [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
                           for p in sorted(files)]}
-    found = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "file")))
+    found = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "ticket", "file")))
     return sources, len(ids) > CAP_ISSUES, sections, found
 
 

@@ -52,9 +52,7 @@ USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
 
 
-def _e(x) -> str:
-    """Untrusted text, one line, escaped for a terminal."""
-    return sanitize.escape_for_code(" ".join(str(x).split()))[0]
+_e = sanitize.escape_line
 
 
 def _fixdir(run: str) -> str:
@@ -64,13 +62,6 @@ def _fixdir(run: str) -> str:
 def _json(path: str):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
-
-
-def _put(path: str, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    os.chmod(path, 0o600)
 
 
 STATE_KEYS = ("version", "digest", "refs", "git_files", "done", "accepted", "untracked", "in_flight", "halted",
@@ -427,7 +418,7 @@ def plan(run: str, words: List[str]) -> dict:
     os.makedirs(fd, mode=0o700, exist_ok=True)
     os.chmod(fd, 0o700)
     data = json.dumps(doc, sort_keys=True, indent=2).encode("utf-8")
-    _put(os.path.join(fd, "plan.json"), data)
+    target.write_atomic(os.path.join(fd, "plan.json"), data)
     return {"status": "ok", "text": body, "digest": hashlib.sha256(data).hexdigest(), "apply": len(entries),
             "skipped": len(skipped)}
 
@@ -504,7 +495,7 @@ def begin(run: str) -> dict:
             st["done"][e["id"]] = {"outcome": "stale", "exit": None}
             continue
         data = _read(real)
-        _put(os.path.join(fd, e["id"] + ".pre"), data)
+        target.write_atomic(os.path.join(fd, e["id"] + ".pre"), data)
         nonce = secrets.token_hex(8)
         brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
                  "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
@@ -575,7 +566,7 @@ def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
         _undo(run, fid, repo, entry, [], [], [])
         return "reverted-violation", broke, res
     if res["outcome"] == "pass":
-        _put(os.path.join(fd, fid + ".post"), now)
+        target.write_atomic(os.path.join(fd, fid + ".post"), now)
         st["accepted"][path] = {"id": fid, "sha": hashlib.sha256(now).hexdigest()}
         return "fixed", None, res
     _undo(run, fid, repo, entry, [], [], [])
