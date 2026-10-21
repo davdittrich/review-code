@@ -597,6 +597,11 @@ class PromptRules(unittest.TestCase):
         _, body = parts(name)
         return " ".join(" ".join(body).split())
 
+    def test_fixer_may_read_the_file_a_reuse_fix_names_but_edits_only_the_brief_file(self):  # review-code-3ea.6
+        t = self.text("fixer")
+        self.assertIn("any repository file the fix text names", t)
+        self.assertIn("Edit only the one file the brief names", t)
+
     def test_finder_efficiency_checklist(self):
         t = self.text("finder")
         for item in ("repeated I/O or recomputation", "independent operations run in sequence",

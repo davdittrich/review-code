@@ -305,7 +305,7 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
 
 
-class CrossFileSkips(Base):
+class SecondFileNamed(Base):
     feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n", "src/utils.py": "def helper():\n    pass\n"}
 
     def skipped(self, lane, cand):
@@ -318,13 +318,14 @@ class CrossFileSkips(Base):
         rc, _, j = self.plan(run)
         return rc, j
 
-    def test_standards_fix_naming_a_second_tracked_file_is_skipped(self):
+    def test_fix_naming_a_second_tracked_file_is_kept_for_the_fixer_to_decline_or_apply(self):
+        # review-code-3ea.6: a reuse fix names the helper it calls; only finish enforces one edited file
         for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
                           ("altitude", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
             with self.subTest(cat=cat, text=text):
                 cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
                 rc, j = self.skipped("standards", cand)
-                self.assertEqual((rc, j["reason"], j["detail"]), (1, "nothing-to-fix", "skipped: cross-file 1"), j)
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
                 self.tearDown()
                 self.setUp()
 
