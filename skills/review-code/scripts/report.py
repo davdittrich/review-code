@@ -92,9 +92,9 @@ SEVERITIES = ("blocking", "required", "suggestion", "noted")  # rank order
 CATEGORIES = ("security", "data-loss", "race", "accessibility", "doc-mismatch", "constructor-divergence",
               "bug", "test", "performance", "other")
 BLOCKING = CATEGORIES[:6]
-LANE_CATEGORIES = {"defects": CATEGORIES, "standards": ("convention", "comment", "smell", "lean"),
+LANE_CATEGORIES = {"defects": CATEGORIES, "standards": ("convention", "comment", "smell", "lean", "altitude"),
                    "sota": ("sota",), "spec": ("spec-missing", "spec-partial", "spec-wrong", "scope-creep")}
-CEILING = {"convention": "required", "comment": "required", "smell": "suggestion", "lean": "suggestion",
+CEILING = {"convention": "required", "comment": "required", "smell": "suggestion", "lean": "suggestion", "altitude": "suggestion",
            "sota": "suggestion", "spec-missing": "required", "spec-partial": "required", "spec-wrong": "required",
            "scope-creep": "required"}  # strongest severity a non-Defects category may reach
 LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source"), "sota": ("sources",), "spec": ("spec_line",)}

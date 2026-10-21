@@ -473,6 +473,14 @@ class MultiLane(Lanes):
         out = self.lane("standards", mc(2, "lean"))
         self.assertEqual((len(out["ids"]), out["merged"]), (2, 0))
 
+    def test_altitude_is_a_standards_category_capped_at_suggestion(self):  # review-code-3ea.1
+        out = self.lane("standards", mc(3, "altitude", severity="required"))
+        self.assertEqual(len(out["ids"]), 1)
+        self.assertEqual(self.lane("defects", mc(6, "altitude"))["dropped"]["invalid"], 1)  # not a Defects category
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["category"], f["severity"]), ("altitude", "suggestion"))
+
     def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
         self.set_cap(1)
         out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
