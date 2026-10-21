@@ -775,6 +775,7 @@ def _reject(run, name, rows):
 
 
 def ingest(run, text, lane="defects", shard=None, agent=None):
+    """Ingest one lane's reply (stdin text, or the agent's capture) under the run lock; the status dict."""
     with _locked(run):
         if agent is None:
             return _ingest(run, text, lane, shard)
@@ -830,6 +831,7 @@ def _consume(run, agent, key):
 
 
 def _drop(run, agent):
+    """Remove both capture files of `agent`."""
     for kind in capture.KINDS:
         with contextlib.suppress(OSError):
             os.remove(capture.path(os.path.dirname(os.path.abspath(run)), agent, kind))
@@ -886,6 +888,7 @@ def _ingest(run, text, lane, shard):
 
 
 def verdicts(run, text, batch=None, agent=None):
+    """Store one verifier batch's reply (stdin text, or the agent's capture) under the run lock."""
     with _locked(run):
         return _verdicts(run, text, batch, agent)
 
@@ -935,6 +938,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
 
 
 def _verdicts(run, text, batch, agent=None):
+    """verdicts() without the lock."""
     cand = target.load_json(run, "candidates.json")
     _counts(run)
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
@@ -993,6 +997,7 @@ def discard(run):
 
 
 def _discard(run):
+    """Remove the derived files of a run so a re-plan starts clean; captures are left alone."""
     for d in ("handoff", "repro", "replies", "rejected"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
     for f in ("candidates.json", "verdicts.json", "counters.json", "agents.json"):
@@ -1241,10 +1246,12 @@ def render(run, fmt):
 
 
 def _usage():
+    """The refusal for a bad command line."""
     return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] [--agent ID] | verdicts --run DIR [--batch K] [--agent ID] | render --run DIR [--format text|json|sarif] | discard --run DIR | status --run DIR")
 
 
 def main(argv):
+    """CLI entry: run one subcommand and print its one JSON line (render prints the report)."""
     try:
         sub, rest = (argv[0], argv[1:]) if argv else ("", [])
         if sub not in ("ingest", "verdicts", "render", "discard", "status") or rest[:1] != ["--run"] or len(rest) < 2:
