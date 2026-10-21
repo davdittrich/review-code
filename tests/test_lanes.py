@@ -522,14 +522,14 @@ class ModelOverride(unittest.TestCase):
     def test_user_config_keys(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
             cfg = json.load(f)["userConfig"]
-        for key in ("finder_model", "verifier_model"):
+        for key in ("finder_model", "standards_model", "verifier_model"):
             self.assertEqual(set(cfg[key]), {"type", "title", "description"})
             self.assertEqual(cfg[key]["type"], "string")
 
     def test_skill_placeholders_and_unset_rule(self):
         with open(os.path.join(ROOT, "skills", "review-code", "SKILL.md"), encoding="utf-8") as f:
             text = f.read()
-        for key in ("finder_model", "verifier_model"):
+        for key in ("finder_model", "standards_model", "verifier_model"):
             self.assertIn("${user_config.%s}" % key, text)
         self.assertIn("starts with `${`", text)
 

@@ -67,8 +67,9 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 
 - `default_tier`: tier used without a tier flag.
 - `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
+- `standards_model`, `standards_effort`: the same for the Standards lane only; empty means the finder's values. The Standards lane never reports Blocking and its findings still go through a verifier, so a cheaper model there costs recall on convention findings and not precision. Nothing has measured that recall yet. The report flags a Standards model equal to the verifier's.
 - `verifier_model`, `verifier_effort`: the same for the verifiers.
-- `max_verifier_calls` (1 to 200): cap on the findings sent to verifiers per run (ids, not calls; a call holds up to 5 handoffs of one code path). `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
+- `max_verifier_calls` (1 to 200): cap on the findings sent to verifiers per run (ids, not calls; a call holds up to 5 handoffs of one shard). `max_shards` (1 to 50), `max_packs` (1 to 9): caps per run.
 - `agent_prefix`: plugin whose agents run the lanes (`<prefix>:finder`, `standards`, `spec`, `sota`, `verifier`, `spec-verifier`, `spec-finder`, `fixer`); default `review-code`. Lowercase letters, digits and hyphens, at most 64.
 - `nav_hint`: one line (at most 300 characters, `${` removed) added to each lane's input as `Navigation preference: ...`. The lanes treat it as a preference; it never widens their `tools:` list.
 

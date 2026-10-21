@@ -195,6 +195,22 @@ class Derivation(Base):
         d = self.doc()
         self.assertEqual((d["findings"], d["unverifiable"], d["dropped"]["do_not_flag"]), ([], [], 2))
 
+    def test_pre_existing_suggestions_never_reach_a_verifier(self):  # review-code-rg6
+        out = self.ingest(cand(Q_OLD, 5, severity="suggestion", category="security"),
+                          cand("return 1", 2, severity="required", category="security"),
+                          cand(Q_ADD, 8, severity="suggestion"))
+        old, one, add = (fid("src/calc.py", c, q) for q, c in ((Q_OLD, "security"), ("return 1", "security"), (Q_ADD, "bug")))
+        self.assertEqual(sorted(out["ids"]), sorted([one, add]))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "handoff", old + ".md")))
+        rc, st = self.rep("status")
+        st = json.loads(st)
+        self.assertEqual((rc, old in st["ids"], sorted(i for c in st["verify_calls"] for i in c["ids"])), (0, False, sorted([one, add])))
+        self.verdicts(dict(verdict(("return 1", 2)), id=one), verdict((Q_ADD, 8)))
+        st = json.loads(self.rep("status")[1])
+        self.assertEqual(st["no_verdict"], [])  # the doomed id is not owed a verdict
+        d = self.doc()
+        self.assertEqual((sorted(i["id"] for i in d["findings"]), d["dropped"]["do_not_flag"]), (sorted([one, add]), 1))
+
     def test_origin_spans_the_cited_range(self):
         self.ingest(cand(Q_OLD, 5, end_line=7))
         self.verdicts(verdict((Q_OLD, 5)))
@@ -1179,7 +1195,7 @@ class RepairBudget(Base):
         self.assertGreater(total[0], report.INGEST_STEPS // 2)
 
     def test_verdicts_over_many_stored_batches_stay_fast(self):
-        files = {"f%d.py" % k: "x = 1\n" for k in range(12)}
+        files = {"f%d.py" % k: "x = 1\n" for k in range(60)}  # five ids to a call: twelve stored batches
         run = self.pin_run(files)
         rc, out, _ = cli("report.py", ["ingest", "--run", run], self.repo, self.tmp, lines(
             *[dict(CAND, path=p, line=1, quote="x = 1") for p in files], {"inspected": list(files)}))
@@ -1202,14 +1218,14 @@ class RepairBudget(Base):
         self.assertEqual((len(out["ids"]), out["repaired"], out["dropped"]["invalid"]), (1, 1, 40))
 
     def test_hostile_lines_in_one_stored_batch_do_not_starve_another_batch(self):  # review-code-dc5 (3)
-        files = {"f1.py": "x = 1\n", "f2.py": "x = 1\n"}
+        files = {"f%d.py" % k: "x = 1\n" for k in range(1, 7)}  # six ids: a call of five and a call of one
         run = self.pin_run(files)
         cli("report.py", ["ingest", "--run", run], self.repo, self.tmp, lines(
             *[dict(CAND, path=p, line=1, quote="x = 1") for p in files], {"inspected": list(files)}))
         rc, out, _ = cli("report.py", ["status", "--run", run], self.repo, self.tmp)
         b1, b2 = json.loads(out)["verify_calls"][:2]
         for b, text in ((b1, "\n".join([self.LINES[3]] * 8) + "\n"), (b2, '[["id","%s"],["verdict","confirmed"],'
-                        '["evidence",[[["path","f2.py"],["line",1],["quote","x = 1"]]]],["reason","says "ok" here"]]\n' % b2["ids"][0])):
+                        '["evidence",[[["path","f6.py"],["line",1],["quote","x = 1"]]]],["reason","says "ok" here"]]\n' % b2["ids"][0])):
             rc, out, _ = cli("report.py", ["verdicts", "--run", run, "--batch", str(b["batch"])], self.repo, self.tmp, text)
             self.assertEqual(rc, 0, out)
         self.assertEqual((json.loads(out)["confirmed"], json.loads(out)["repaired"]), (b2["ids"], 1))

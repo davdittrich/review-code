@@ -51,8 +51,8 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
 CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_shards": (1, 50), "max_packs": (1, 9)}
-CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort", "agent_prefix",
-               "nav_hint"} | set(CAP_BOUNDS)
+CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "standards_model", "standards_effort", "verifier_model",
+               "verifier_effort", "agent_prefix", "nav_hint"} | set(CAP_BOUNDS)
 MAX_STDIN = 65536
 # The harness refuses a 9th concurrent subagent ("You can run 8 subagents at once", live run 2026-10-19), so a wave stops at 8.
 WAVE_SIZE = 8
@@ -231,7 +231,7 @@ def _file_stat(repo, p):
 
 def _groups(files, size):
     """Ordered file lists: top-level directory groups (root files form "."), a group above SHARD_BYTES split by its
-    second path component, consecutive small groups merged in path order up to SHARD_BYTES. shortcut: one level of
+    second path component, small groups packed first-fit decreasing up to SHARD_BYTES (shards ordered by first path). shortcut: one level of
     split only, so a single huge directory below that stays one shard; upgrade when one appears."""
     by = {}
     for p in sorted(files):
@@ -246,14 +246,15 @@ def _groups(files, size):
             groups += [sub[k] for k in sorted(sub)]
         else:
             groups.append(by[top])
-    out, cur, tot = [], [], 0
-    for g in groups:
+    bins = []  # first-fit decreasing: a small group fills an earlier gap, so fewer shards (each pays a fixed start)
+    for g in sorted(groups, key=lambda g: -sum(size[p] for p in g)):
         n = sum(size[p] for p in g)
-        if cur and tot + n > SHARD_BYTES:
-            out.append(cur)
-            cur, tot = [], 0
-        cur, tot = cur + g, tot + n
-    return out + [cur] if cur else out
+        b = next((b for b in bins if b[1] + n <= SHARD_BYTES), None)
+        if b:
+            b[0], b[1] = b[0] + g, b[1] + n
+        else:
+            bins.append([list(g), n])
+    return sorted((sorted(b[0]) for b in bins), key=lambda fs: fs[0])
 
 
 def _churn(repo, names):
@@ -410,8 +411,8 @@ def _preview(doc):
         out.append("Call %s%s: %s, about %d input tokens (estimate)" % (
             c["lane"], ", shard %d" % c["shard"] if c["shard"] else "",
             "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c)))
-    b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one code path, so calls lie between cap/b and cap
-    out.append("Verifier ids: up to %d (calls of up to %d ids on one code path, so %d to %d calls), %s" % (
+    b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one shard, so calls lie between cap/b and cap
+    out.append("Verifier ids: up to %d (calls of up to %d ids in one shard, so %d to %d calls), %s" % (
         verifier_cap, b, -(-verifier_cap // b), verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
     out.append("Agent calls: %d (%d lane calls plus up to %d verifier calls)" % (agents + verifier_cap, agents, verifier_cap))
     out.append("Turn ceilings: " + ", ".join("%s %d" % kv for kv in sorted(doc["max_turns"].items())))
@@ -446,6 +447,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     t = TIERS[tier]
     fm, fe = cfg.get("finder_model", t["finder"][0]), cfg.get("finder_effort", t["finder"][1])
     vm, ve = cfg.get("verifier_model", t["verifier"][0]), cfg.get("verifier_effort", t["verifier"][1])
+    lane_me = {"standards": (cfg.get("standards_model", fm), cfg.get("standards_effort", fe))}  # other lanes: the finder's
     caps = {k: cfg.get(k, t[k]) for k in CAP_BOUNDS}
     prefix = cfg.get("agent_prefix", DEFAULT_PREFIX)
     agent = {lane: prefix + ":" + n for lane, n in LANE_AGENT.items()}
@@ -470,6 +472,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         elif not {fm.lower(), vm.lower()} <= set(ALIASES):
             lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
                         "compared" % (fm, vm))
+        if "standards_model" in cfg and cfg["standards_model"].lower() == vm.lower():
+            lost.append("verifier not on a different tier: the Standards lane and the verifier both run on " + vm)
         lost += _env_lost()
     lines = _scan_lines(run, tj)
     inventory = _inventory(lines) if "sota" in lanes else []
@@ -504,8 +508,9 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
                 _put_nav(path, hint)
+                lm, le = lane_me.get(lane, (fm, fe))
                 calls.append({"lane": lane, "axis": report.LANE_AXIS[lane], "agent": "main-thread" if serial else agent[lane],
-                              "model": None if serial else fm, "effort": None if serial else fe, "input": path,
+                              "model": None if serial else lm, "effort": None if serial else le, "input": path,
                               "shard": sh["id"] if sh else None,
                               "prompt": "%s lane%s. Input: %s" % (lane.capitalize(), ", shard %d" % sh["id"] if sh else "", path)})
     ver = {"model": vm, "effort": ve}

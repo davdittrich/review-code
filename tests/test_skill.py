@@ -133,8 +133,8 @@ class Phase4Procedure(unittest.TestCase):
                   "--quick", "--standard", "--deep", "--sota", "--no-sota", "--serial", "--ai"):
             self.assertIn(s, self.text)
         block = re.search(r"<<'REVIEW_PLAN'\n(.*?)\n\s*REVIEW_PLAN", self.text, re.S).group(1)
-        keys = ["default_tier", "finder_model", "finder_effort", "verifier_model", "verifier_effort",
-                "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
+        keys = ["default_tier", "finder_model", "finder_effort", "standards_model", "standards_effort", "verifier_model",
+                "verifier_effort", "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
     def test_spec_file_is_never_opened(self):

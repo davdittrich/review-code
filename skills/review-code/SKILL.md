@@ -140,6 +140,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    default_tier=${user_config.default_tier}
    finder_model=${user_config.finder_model}
    finder_effort=${user_config.finder_effort}
+   standards_model=${user_config.standards_model}
+   standards_effort=${user_config.standards_effort}
    verifier_model=${user_config.verifier_model}
    verifier_effort=${user_config.verifier_effort}
    max_verifier_calls=${user_config.max_verifier_calls}

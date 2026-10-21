@@ -70,6 +70,25 @@ class Overrides(Fixture):
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
         self.assertEqual(p["effective_overrides"], {"finder_effort": "high", "finder_model": "sonnet"})
 
+    def test_standards_override_reaches_only_the_standards_calls(self):  # review-code-cn9
+        rc, _ = self.run_plan([("standards_model", "haiku"), ("standards_effort", "low")])
+        self.assertEqual(rc, 0)
+        p = self.plan_json()
+        got = {c["lane"]: (c["model"], c["effort"]) for c in p["calls"]}
+        self.assertEqual((got["defects"], got["standards"]), (("opus", "medium"), ("haiku", "low")))
+        self.assertEqual(p["effective_overrides"], {"standards_effort": "low", "standards_model": "haiku"})
+
+    def test_standards_follow_the_finder_when_unset(self):
+        self.run_plan([("finder_model", "sonnet"), ("finder_effort", "high")])
+        self.assertEqual({(c["model"], c["effort"]) for c in self.plan_json()["calls"]}, {("sonnet", "high")})
+
+    def test_standards_model_equal_to_the_verifier_is_reported(self):
+        self.run_plan([("standards_model", "sonnet")])
+        lost = self.plan_json()["lost_guarantees"]
+        self.assertTrue(any("Standards lane and the verifier" in x for x in lost), lost)
+        self.run_plan([("standards_model", "haiku")])
+        self.assertFalse(any("Standards lane" in x for x in self.plan_json()["lost_guarantees"]))
+
     def test_default_agent_prefix(self):
         self.run_plan([])
         p = self.plan_json()
@@ -178,7 +197,7 @@ class Overrides(Fixture):
         self.assertEqual((caps["max_verifier_calls"], caps["max_packs"], caps["max_shards"]), (5, 9, 6))
 
     def test_bad_config_refuses_and_never_echoes(self):
-        bad = [("bogus", "1"), ("finder_effort", "turbo"), ("finder_model", "a b"), ("finder_model", "$(id)"),
+        bad = [("bogus", "1"), ("finder_effort", "turbo"), ("standards_effort", "turbo"), ("standards_model", "a b"), ("finder_model", "a b"), ("finder_model", "$(id)"),
                ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "0"), ("max_verifier_calls", "2.5"),
                ("max_verifier_calls", "201"), ("default_tier", "huge"), ("max_packs", "\u00b2")]
         for kv in bad:
@@ -589,14 +608,39 @@ class ShardBase(Fixture):
         return json.loads(self.read_text(*rel))
 
 
+class ShardPacking(unittest.TestCase):
+    def groups(self, sizes, limit=400):
+        import plan as mod
+        with mock.patch.object(mod, "SHARD_BYTES", limit):
+            return mod._groups(sorted(sizes), sizes)
+
+    def test_small_groups_fill_earlier_gaps(self):  # review-code-q2r: consecutive merging left a 4-group set in 3 shards
+        self.assertEqual(self.groups({"a/x": 300, "b/x": 250, "c/x": 100, "d/x": 60}), [["a/x", "c/x"], ["b/x", "d/x"]])
+
+    def test_every_file_lands_once_and_no_shard_exceeds_the_limit_unless_one_group_does(self):
+        sizes = {"a/x": 500, "b/x": 120, "c/x": 90, "d/y": 200, "d/z": 150, "e/x": 380}
+        out = self.groups(sizes)
+        self.assertEqual(sorted(p for g in out for p in g), sorted(sizes))
+        self.assertTrue(all(sum(sizes[p] for p in g) <= 400 or len(g) == 1 for g in out))
+        self.assertEqual(out, sorted(out, key=lambda g: g[0]))
+
+    def test_one_small_group_is_one_shard(self):
+        self.assertEqual(self.groups({"a/x": 10, "b/x": 10}), [["a/x", "b/x"]])
+
+
 class ShardMerge(ShardBase):
     base_files = {"big/a/x.py": BIG, "big/b/y.py": BIG, "small1/m.py": SMALL, "small2/n.py": SMALL}
     feat_files = {"small1/m.py": SMALL + "#\n"}
 
     def test_big_group_splits_and_small_groups_merge(self):
         p = self.run_plan(shard_bytes=100)
-        self.assertEqual(sorted(sorted(s["files"]) for s in p["shards"]),
-                         [["big/a/x.py"], ["big/b/y.py", "small1/m.py", "small2/n.py", ]])
+        files = [sorted(s["files"]) for s in p["shards"]]
+        self.assertEqual(len(files), 2)  # the two big groups stay apart; the small ones share one shard
+        self.assertEqual(sorted(len(f) for f in files), [1, 3])
+        self.assertNotIn(["big/a/x.py", "big/b/y.py"], files)
+        self.assertEqual(sorted(p for f in files for p in f), ["big/a/x.py", "big/b/y.py", "small1/m.py", "small2/n.py"])
+        small = [f for f in files if "small1/m.py" in f][0]
+        self.assertIn("small2/n.py", small)
 
     def test_one_group_is_not_sharded(self):
         p = self.run_plan(shard_bytes=10 ** 9)
@@ -807,7 +851,7 @@ class Preview(Fixture):
         self.assertEqual((out["confirm"], p["confirm"], out["preview"]), (True, True, p["preview"]))
         pv = "\n".join(p["preview"])
         self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
-        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier ids: up to 60 (calls of up to 5 ids on one code path, so 12 to 60 calls), sonnet/high",
+        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier ids: up to 60 (calls of up to 5 ids in one shard, so 12 to 60 calls), sonnet/high",
                      "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 30", "Packs: python"):
             self.assertIn(want, pv)
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")

@@ -18,6 +18,16 @@
       "title": "Finder model",
       "description": "Model for the finder lane: opus, sonnet, haiku, fable or a full model ID. Leave empty for the tier's value."
     },
+    "standards_model": {
+      "type": "string",
+      "title": "Standards model",
+      "description": "Model for the Standards lane: opus, sonnet, haiku, fable or a full model ID. Leave empty to use the finder model."
+    },
+    "standards_effort": {
+      "type": "string",
+      "title": "Standards effort",
+      "description": "Effort for the Standards lane. Levels: low, medium, high, xhigh, max. Leave empty to use the finder effort."
+    },
     "verifier_model": {
       "type": "string",
       "title": "Verifier model",

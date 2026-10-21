@@ -458,9 +458,28 @@ def _handoff(c, run, nonce, packs=()):
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
-def _queue(cands):
-    """Candidates a verifier may judge, in verification order; SOTA is advisory: no verifier call."""
-    return sorted((c for c in cands if c["category"] != "sota"),
+def _added_lines(run):
+    """(whole, added): the target is no change (every finding `existing`), and path -> lines the diff adds."""
+    tj = target.load_json(run, "target.json")
+    added = {}
+    with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
+        for _, p, tag, _, n, _, _ in sanitize.walk(fh.read()):
+            if tag == "+":
+                added.setdefault(p, set()).add(n)
+    return tj["kind"] in WHOLE, added
+
+
+def _doomed(run, cands):
+    """Ids render always drops (VERI-05): a suggestion or noted candidate wholly on unchanged lines of a change. A verdict can
+    only worsen a severity, and the drop does not read the verdict, so no verifier call can change the outcome."""
+    whole, added = _added_lines(run)
+    return {c["id"] for c in cands if not whole and c["severity"] in SEVERITIES[2:]
+            and not any(n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1))}
+
+
+def _queue(cands, skip=()):
+    """Candidates a verifier may judge, in verification order; SOTA is advisory: no verifier call; `skip` ids are doomed."""
+    return sorted((c for c in cands if c["category"] != "sota" and c["id"] not in skip),
                   key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
 
 
@@ -513,7 +532,7 @@ def _no_verdict(run, cand, ver):
     store = _replies(run)
     have = set(os.listdir(store)) if os.path.isdir(store) else set()
     cut = set(cand.get("capped_ids", []))
-    queue = [c["id"] for c in _queue(cand["candidates"]) if c["id"] not in cut]
+    queue = [c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ())) if c["id"] not in cut]
     asked = set(queue) if "serial.txt" in have else {i for c in cand.get("verify_calls", []) if isinstance(c, dict)
                                                        and "%d.txt" % c["batch"] in have for i in c["ids"]}
     return sorted(asked - set(ver))
@@ -523,7 +542,7 @@ def status(run):
     """Read-only: what the verify step needs and what is still missing. No lock: files are replaced whole."""
     cand = target.load_json(run, "candidates.json")
     cut = set(cand.get("capped_ids", []))
-    queue = [c for c in _queue(cand["candidates"]) if c["id"] not in cut]
+    queue = [c for c in _queue(cand["candidates"], cand.get("doomed_ids", ())) if c["id"] not in cut]
     calls = [c for c in cand.get("verify_calls", []) if isinstance(c, dict)]
     store = _replies(run)
     have = set(os.listdir(store)) if os.path.isdir(store) else set()
@@ -547,14 +566,17 @@ def status(run):
 
 
 def _batches(queue, hand, prefix="review-code"):
-    """verify_calls: queue ids grouped by (agent, shard, code path), at most VERIFY_BATCH per call, queue order kept.
-    Same-path groups keep one verifier on one file's code; the prompt lists absolute handoff paths."""
+    """verify_calls: queue ids grouped by (agent, shard), at most VERIFY_BATCH per call. Each call pays a fixed start
+    (about 9k tokens in a lean setup, 29k measured here), so a shard's ids share calls; within one, ids of a path stay
+    together in queue order, and a refuted verdict still needs a cite in its own path (review-code-8dt). The prompt
+    lists absolute handoff paths."""
     groups = {}
     for c in queue:
         agent = "%s:%sverifier" % (prefix, "spec-" if c["axis"] == "spec" else "")
-        groups.setdefault((agent, c.get("shard"), c["path"]), []).append(c["id"])
+        groups.setdefault((agent, c.get("shard")), []).append(c)
     out = []
-    for (agent, _, _), ids in groups.items():
+    for (agent, _), cs in groups.items():
+        ids = [c["id"] for c in sorted(cs, key=lambda c: c["path"])]  # stable: queue order within a path
         for i in range(0, len(ids), VERIFY_BATCH):
             chunk = ids[i:i + VERIFY_BATCH]
             out.append({"batch": len(out) + 1, "agent": agent, "ids": chunk, "prompt": "Verify. Handoffs:\n" + "\n".join(
@@ -732,7 +754,8 @@ def _ingest(run, text, lane, shard):
     lanes[key] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
     rejected, repaired = lanes[key].pop("rejected"), lanes[key].pop("repaired")
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
-    queue = _queue(cands)
+    doomed = _doomed(run, cands)
+    queue = _queue(cands, doomed)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     for stale in ("handoff", "repro", "replies"):
@@ -751,7 +774,7 @@ def _ingest(run, text, lane, shard):
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
-         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut),
+         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut), "doomed_ids": sorted(doomed),
          "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
@@ -895,12 +918,7 @@ def _build(run):
         if r.reason != "no-verdicts":
             raise
         ver = {}
-    whole = tj["kind"] in WHOLE
-    with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
-        added = {}
-        for _, p, tag, _, n, _, _ in sanitize.walk(fh.read()):
-            if tag == "+":
-                added.setdefault(p, set()).add(n)
+    whole, added = _added_lines(run)
     capped = set(cand.get("capped_ids", []))
     plan = _plan(run)
     serial = plan.get("mode") == "serial"

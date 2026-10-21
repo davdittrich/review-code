@@ -45,7 +45,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 
 | Cap | Meaning | Bounds |
 |-----|---------|--------|
-| `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one code path per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
+| `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one shard per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |

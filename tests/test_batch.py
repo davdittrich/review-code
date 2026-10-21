@@ -77,13 +77,24 @@ class Batches(BigRun):
                 os.path.join(hand, i + ".md") for i in c["ids"]))
             self.assertTrue(all(os.path.isfile(os.path.join(hand, i + ".md")) for i in c["ids"]))
 
-    def test_batches_never_mix_paths_and_the_cap_still_cuts_ids(self):
+    def test_one_shard_shares_calls_across_paths_and_the_cap_still_cuts_ids(self):  # review-code-25q
         other = dict(tr.CAND, path="src/other.py", line=2, quote="w1 = a + 1")
         out = self.ingest(big(1), big(2), other, big(3))
-        self.assertEqual(sorted(len(c["ids"]) for c in self.calls()), [1, 3])
+        self.assertEqual([len(c["ids"]) for c in self.calls()], [4])
         self.set_cap(2)
         out = self.ingest(big(1), big(2), other, big(3))
         self.assertEqual((len(out["ids"]), out["capped"], sum(len(c["ids"]) for c in self.calls())), (2, 2, 2))
+
+    def test_a_call_lists_one_paths_ids_together(self):
+        paths = {"F-a": "b.py", "F-b": "a.py", "F-c": "b.py", "F-d": "a.py"}
+        calls = report._batches([dict(id=i, axis="defects", path=p, shard=None) for i, p in paths.items()], "/h")
+        self.assertEqual([c["ids"] for c in calls], [["F-b", "F-d", "F-a", "F-c"]])
+
+    def test_shards_and_agents_never_share_a_call(self):
+        calls = report._batches([dict(id="F-a", axis="defects", path="p", shard=1), dict(id="F-b", axis="defects", path="p", shard=2),
+                                 dict(id="F-c", axis="spec", path="p", shard=1), dict(id="F-d", axis="defects", path="q", shard=1)], "/h")
+        self.assertEqual([(c["agent"], c["ids"]) for c in calls], [("review-code:verifier", ["F-a", "F-d"]),
+                         ("review-code:verifier", ["F-b"]), ("review-code:spec-verifier", ["F-c"])])
 
     def test_spec_ids_use_the_spec_verifier(self):
         calls = report._batches([dict(id="F-a", axis="defects", path="p", shard=None),
