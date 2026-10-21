@@ -460,7 +460,7 @@ def _candidate(o, tree, lane, base, ctx=None):
 
 
 def _refs(run, shard=None):
-    """{symbol: (defining file, lines naming it outside that file, whole pinned tree)} from the ledger; {} when unreadable."""
+    """{symbol: (defining file, count of lines naming it outside that file across the whole pinned tree)} from the ledger; {} when unreadable."""
     try:
         led = target.load_json(run if shard is None else os.path.join(run, "shards", str(shard)), "ledger.json")
         return {s["name"]: (s.get("file"), s["refs"]) for s in led["symbols"] if isinstance(s.get("refs"), int)}

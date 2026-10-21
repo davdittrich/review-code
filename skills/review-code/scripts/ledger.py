@@ -29,6 +29,7 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
+_CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
@@ -401,7 +402,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     it as hidden-name."""
     skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
     tree = os.path.join(run, "tree")
-    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs", "helpers")
+    for p in sorted(set(included) | {e["file"] for c in _CTX + ("helpers",)
                                      for e in led[c]}):
         if p in named or target.shown(p) != p:
             skipped.append({"path": target.shown(p), "reason": "hidden-name"})
@@ -725,7 +726,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    claimed = set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs") for e in led[c]}
+    claimed = set(included) | {e["file"] for c in _CTX for e in led[c]}
     led["helpers"], over = _helpers(repo, idx if idx is not None else head_ls, files, included, claimed)
     capped["helpers"] = bool(over)
     led["load"] = _load(files)
@@ -735,7 +736,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         {h["file"] for h in tj["hidden_chars"] if h.get("name")})
     led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
                                     key=lambda k: k["path"])
-    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "helpers"):
+    for c in ("symbols",) + _CTX + ("helpers",):
         for e in led[c]:  # 6xl.51/.64: file and symbol names (also inside "how") reach ledger.json escaped
             for k, v in e.items():
                 if isinstance(v, str):

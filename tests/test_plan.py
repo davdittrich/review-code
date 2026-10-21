@@ -211,6 +211,12 @@ class Overrides(Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="no equals sign\n")
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))
 
+    def test_default_tier_lean_is_refused_because_lean_is_a_flag_only(self):  # review-code-0ah
+        rc, out = self.run_plan([("default_tier", "lean")])
+        self.assertEqual((rc, out["reason"]), (1, "bad-config"), out)
+        rc, out = self.run_plan([("default_tier", "quick")], "--tier", "lean")
+        self.assertEqual(rc, 0, out)  # the flag still selects lean
+
     def test_oversized_stdin_refuses(self):
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="finder_model=x\n" * 5000)
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))

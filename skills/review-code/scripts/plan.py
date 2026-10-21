@@ -88,7 +88,7 @@ def parse_config(text):
         elif key.endswith("_model"):
             ok = MODEL_RE.fullmatch(val) is not None
         else:
-            ok = val in (EFFORTS if key.endswith("_effort") else TIERS)
+            ok = val in (EFFORTS if key.endswith("_effort") else TIERS) and not (key == "default_tier" and val == "lean")  # lean is flag-only
         if not ok:
             raise target.Refuse("bad-config", "invalid value for " + key)
         cfg[key] = int(val) if key in CAP_BOUNDS else val
@@ -470,9 +470,11 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             skipped.append({"what": "spec", "why": "tier " + tier})
         # shortcut: only two distinct plain aliases prove different tiers; inherit or a full ID is unknown, upgrade
         # when a model registry ships.
-        if "defects" in lanes and fm.lower() == vm.lower():  # no finder runs in the lean tier
+        if "defects" not in lanes:  # no finder runs in the lean tier
+            pass
+        elif fm.lower() == vm.lower():
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
-        elif "defects" in lanes and not {fm.lower(), vm.lower()} <= set(ALIASES):
+        elif not {fm.lower(), vm.lower()} <= set(ALIASES):
             lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
                         "compared" % (fm, vm))
         if lane_me["standards"][0].lower() == vm.lower():

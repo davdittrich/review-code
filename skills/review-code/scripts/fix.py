@@ -374,7 +374,8 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     entries, skipped = [], []
     found = report.build(run)["findings"]
     if only is not None:
-        unknown = [i for i in only if i not in {f["id"] for f in found}]
+        have = {f["id"] for f in found}
+        unknown = [i for i in only if i not in have]
         if unknown:
             raise target.Refuse("unknown-id", ",".join(unknown))
         found = [f for f in found if f["id"] in only]
