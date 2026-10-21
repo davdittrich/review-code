@@ -101,7 +101,7 @@ def _blobs(repo: str, oids) -> Dict[str, bytes]:
 
 def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool = False,
           pathspec: Optional[str] = None) -> List[tuple]:
-    """git grep -w -F: [(path, line)] or, with names_only, [(path, 0)]. Exit 1 (no match) yields nothing."""
+    """git grep -w -F: [(path, line, text)] or, with names_only, [(path, 0)]. Exit 1 (no match) yields nothing."""
     args = ["--literal-pathspecs", "grep", "-z", "-a", "--no-color", "--no-column", "-w", "-F", "-l" if names_only else "-n"]
     for p in patterns:
         args += ["-e", p]
@@ -117,7 +117,7 @@ def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool =
         if b < 0:
             break
         c = raw.find(b"\n", b + 1)
-        hits.append((_dec(raw[i + pre:a]), int(raw[a + 1:b])))
+        hits.append((_dec(raw[i + pre:a]), int(raw[a + 1:b]), _dec(raw[b + 1:] if c < 0 else raw[b + 1:c])))
         i = n if c < 0 else c + 1
     return hits
 
@@ -197,11 +197,15 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     callers, capped["callers"] = [], False
     for s in symbols:
         every = _grep(repo, rev, [s["name"]])
-        s["refs"] = sum(1 for f, _ in every if f != s["file"])  # whole pinned tree, tests and config too, beyond the cap
+        # whole pinned tree, tests and config too, beyond the cap; another file's same-name definition is not a use
+        s["refs"] = 0
+        for f, _, t in every:
+            m = _DEF.match(t)
+            s["refs"] += f != s["file"] and not (m and m.group(1) == s["name"])
         hits = sorted(h for h in every if h[0] not in inc)
         capped["callers"] = capped["callers"] or len(hits) > CAP_CALLERS
         callers += [{"symbol": s["name"], "file": f, "line": ln, "how": "git grep -w -F"}
-                    for f, ln in hits[:CAP_CALLERS]]
+                    for f, ln, _ in hits[:CAP_CALLERS]]
     callers.sort(key=lambda e: (e["file"], e["line"], e["symbol"]))
     hit_files = {e["file"]: e["symbol"] for e in callers}
 

@@ -94,6 +94,12 @@ def files_of(led, cat):
     return [e["file"] for e in led[cat]]
 
 
+class TestCategoryLists(unittest.TestCase):
+    def test_context_categories_are_the_ledger_categories_between_symbols_and_conventions(self):  # review-code-wyb
+        cats = ledger.CATEGORIES
+        self.assertEqual(list(ledger._CTX), cats[cats.index("symbols") + 1:cats.index("conventions")])
+
+
 class TestNames(unittest.TestCase):
     def test_every_test_file_shape_counts_as_a_test(self):
         for name in ("a.test.mjs", "a.test.cts", "a.cy.js", "a_spec.rb", "FooTests.cs", "FooTest.cs", "a.spec.ts"):
@@ -547,6 +553,21 @@ class Tree(Base):
         self.assertRegex(own, r'references: "helper_fn" \d+ outside src/cfg\.py ')
         other = report._handoff(dict(self.lean_candidate(), path="src/other.py"), self.run_dir, "n", (), refs)
         self.assertIn("references: unknown\n", other)
+
+    def test_reference_count_skips_same_name_definitions_in_other_files(self):  # review-code-s55
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "src/other.py": "def helper_fn(x):\n    return x\n",
+                   "app/a.py": "def run_it():\n    return 1\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n"})
+        _, led = self.build()
+        self.assertEqual([(s["name"], s["file"], s["refs"]) for s in led["symbols"]], [("helper_fn", "src/cfg.py", 0)])
+
+    def test_reference_count_still_counts_a_call_beside_other_definitions(self):  # review-code-s55
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "src/other.py": "def helper_fn(x):\n    return x\n",
+                   "app/a.py": "def run_it():\n    return 1\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n",
+                     "app/a.py": "def run_it():\n    return helper_fn(1)\n"})
+        _, led = self.build()
+        self.assertEqual([(s["name"], s["refs"]) for s in led["symbols"] if s["name"] == "helper_fn"], [("helper_fn", 1)])
 
     def test_verifier_confirms_unused_only_at_reference_count_zero(self):  # review-code-d14.2
         with open(os.path.join(os.path.dirname(paths.HERE), "agents", "verifier.md"), encoding="utf-8") as fh:
