@@ -489,6 +489,16 @@ class MultiLane(Lanes):
         (f,) = self.doc()["findings"]
         self.assertEqual((f["category"], f["severity"]), ("altitude", "suggestion"))
 
+    def test_lean_lines_tally_sums_the_spans_of_verified_lean_findings(self):  # review-code-d14.9
+        self.assertNotIn("Lean:", self.rep("render")[1])
+        self.lane("standards", mc(2, "lean", end_line=4), mc(7, "lean", end_line=8), mc(5, "smell", end_line=5))  # 7 is 3 past 4: not merged
+        self.verdicts(*[{"id": i["id"], "verdict": "confirmed", "evidence": [dict(CITE, line=i["line"], quote=MQ[i["line"]])],
+                         "reason": "r"} for i in self.doc()["unverifiable"]])
+        d = self.doc()
+        self.assertEqual(sorted(f["category"] for f in d["findings"]), ["lean", "lean", "smell"])
+        self.assertEqual(d["lean_lines"], 5)  # 3 + 2; the smell does not count
+        self.assertIn("\nLean: -5 lines possible (estimate)\n", self.rep("render")[1])
+
     def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
         self.set_cap(1)
         out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
