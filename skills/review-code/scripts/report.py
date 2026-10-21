@@ -7,7 +7,7 @@ A line that is not JSON because a string holds raw double quotes is read again b
 where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
 but is no pair array is never repaired.
 Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, or `failed-validation:<check>` with check one of missing-field,
-bad-field, path-not-in-tree, line-out-of-range, quote-not-at-line, rule-malformed, rule-source-unknown, rule-not-in-conventions) in <run>/rejected/<lane or batch>.txt (batch-K,
+bad-type, spec-line-invalid, sota-invalid, copied-from-spec, path-not-in-tree, line-out-of-range, unreadable, quote-not-at-line, rule-malformed, rule-source-unknown, rule-not-in-conventions) in <run>/rejected/<lane or batch>.txt (batch-K,
 serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
 `render` shows a Warning section and does not go above Needs discussion while either is nonzero.
 
@@ -415,7 +415,7 @@ def _sources(x):
 
 
 def _uncited(tree, path, line, end):
-    """Why _cited failed for a quote of type str: path-not-in-tree, line-out-of-range or quote-not-at-line."""
+    """Why _cited failed for a quote of type str: path-not-in-tree, line-out-of-range, unreadable or quote-not-at-line."""
     real = _real(tree, path)
     if real is None:
         return "path-not-in-tree"
@@ -425,7 +425,7 @@ def _uncited(tree, path, line, end):
         with open(real, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
-        return "quote-not-at-line"  # _cited rejected the same read error
+        return "unreadable"  # _cited rejected the same read error
     n = len(text.removesuffix("\n").split("\n")) if text else 0  # as _cited counts rows
     return "line-out-of-range" if end > n else "quote-not-at-line"
 
@@ -440,14 +440,14 @@ def _candidate(o, tree, lane, base, ctx=None):
     end, fix = c["end_line"], c["fix"]
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
-        return None, "bad-field"
+        return None, "bad-type"
     if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
-        return None, "bad-field"
+        return None, "spec-line-invalid"
     c["path"] = os.path.normpath(c["path"])
     if lane == "sota":
         src = _sources(o.get("sources"))
         if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
-            return None, "bad-field"
+            return None, "sota-invalid"
         c["sources"] = src
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
     if c["rows"] is None:
@@ -725,9 +725,9 @@ def _read_lane(text, lane, tree, run, shard=None):
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c, check = _candidate(o, tree, lane, base, ctx) if o is not None else (None, "bad-field")
+        c, check = _candidate(o, tree, lane, base, ctx) if o is not None else (None, "sota-invalid")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
-            c, check = None, "bad-field"
+            c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
             invalid += 1
             if c is None:  # a duplicate loses nothing

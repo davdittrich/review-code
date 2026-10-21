@@ -597,6 +597,12 @@ class SpecAxis(Base):
         bad = [1, opn, cls, len(rows) + 5, 0, -1, True, "7", None]
         out = self.lane(*[self.spec(n) for n in bad])
         self.assertEqual((out["spec_ids"], out["dropped"]["invalid"]), ([], len(bad)))
+        self.assertEqual({r["check"] for r in out["rejected"]}, {"spec-line-invalid"})
+
+    def test_text_copied_from_the_spec_is_rejected_as_copied(self):
+        rows, inner, opn, cls = self.spec_rows()
+        out = self.lane(self.spec(inner, title=rows[inner - 1]))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["copied-from-spec"])
 
     def test_spec_line_is_required_and_defects_never_carries_it(self):
         rows, inner, _, _ = self.spec_rows()
@@ -748,6 +754,7 @@ class Sota(Lanes):
                 {k: v for k, v in self.sota().items() if k != "sources"}]
         out = self.lane("sota", *bad)
         self.assertEqual(out["dropped"]["invalid"], len(bad))
+        self.assertEqual({r["check"] for r in out["rejected"]}, {"sota-invalid"})
         self.assertEqual(self.doc()["unverifiable"], [])
 
     def test_lane_path_and_line_never_choose_the_target(self):  # gaz.33: the inventory resolves the item
@@ -940,6 +947,7 @@ class Ctx06Integration(Lanes):  # CTX-06 across ledger.py, plan.py and report.py
         mk = lambda rule: dict(CAND, category="convention", rule=rule, rule_source="conventions/REVIEW.md")
         out = self.lane("standards", mk(RULE_REVIEW), mk(RULE_HEAD))
         self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 1))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-not-in-conventions"])
         self.assertEqual(self.rep("verdicts", lines({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), extra=["--batch", "1"])[0], 0)  # parallel plan: review-code-3k5
         d = self.doc()
         (f,) = d["findings"]
@@ -1326,7 +1334,7 @@ class Gate(Base):
         """gh#3: the row and the ingest JSON say which check failed, so a re-send can change the right field."""
         bad = [dict(self.GOOD, path="nope.py"), dict(self.GOOD, quote="not in the file"), dict(self.GOOD, line=99),
                {k: v for k, v in self.GOOD.items() if k != "title"}, dict(self.GOOD, severity="huge")]
-        checks = ["path-not-in-tree", "quote-not-at-line", "line-out-of-range", "missing-field", "bad-field"]
+        checks = ["path-not-in-tree", "quote-not-at-line", "line-out-of-range", "missing-field", "bad-type"]
         out = self.ingest(*bad)
         self.assertEqual(out["rejected"], [{"lane": "defects", "index": i + 1, "check": c} for i, c in enumerate(checks)])
         conv = dict(self.GOOD, category="convention", rule_source="conventions/none.md")
@@ -1337,6 +1345,14 @@ class Gate(Base):
         with open(os.path.join(self.run_dir, "rejected", "defects.txt"), encoding="utf-8") as fh:
             rows = fh.read().splitlines()
         self.assertEqual([r.split(" ", 1)[0] for r in rows], ["failed-validation:" + c for c in checks])
+
+    def test_an_unreadable_cited_file_is_rejected_as_unreadable(self):
+        f = os.path.join(self.run_dir, "tree", "src", "calc.py")
+        os.chmod(f, 0)
+        self.addCleanup(os.chmod, f, 0o600)
+        if os.access(f, os.R_OK):
+            self.skipTest("file modes are not enforced for this user")
+        self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "unreadable")
 
     def test_a_line_cited_in_an_empty_file_is_out_of_range(self):
         os.makedirs(os.path.join(self.run_dir, "tree", "src"), exist_ok=True)
