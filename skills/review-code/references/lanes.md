@@ -6,13 +6,16 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 
 ## Tiers
 
-`--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
+`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
 | Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
 |------|-------|---------------------|-----------------------|----------------|--------|-------|
+| lean | standards | none (no Defects or Spec lane) | sonnet/high | 10 | 3 | 2 |
 | quick | defects, standards | sonnet/low | opus/medium | 10 | 3 | 2 |
 | standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 6 | 4 |
 | deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 12 | 9 |
+
+`--lean` is the cleanup tier: it runs only the Standards lane and its verifier, so Defects and Spec never run, the plan lists both as skipped with the reason `tier lean`. Use it to tidy a change, alone or with `--fix`; fix mode keeps its own gates. `--sota` adds nothing to it.
 
 The Standards lane runs on `haiku`/`medium` in every tier, whatever the finder setting; `standards_model` and `standards_effort` change it. It never reports Blocking and its findings still go through a verifier, so a smaller model there costs recall on convention and lean-code findings, not precision. That recall has not been measured.
 

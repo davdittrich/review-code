@@ -1,6 +1,6 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
-    plan.py plan --run DIR [--tier quick|standard|deep] [--sota|--no-sota] [--serial] [--ai]
+    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai]
                                     stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
                                     skipped, lost_guarantees, confirm, preview)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
@@ -34,6 +34,8 @@ DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
 # is opus so it differs from the sonnet finder: the verifier must not share the finder's model.
 TIERS = {
+    "lean": {"lanes": ("standards",), "finder": ("opus", "medium"), "verifier": ("sonnet", "high"),
+             "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},  # cleanup only: no Defects or Spec lane
     "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("opus", "medium"),
               "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},
     "standard": {"lanes": ("defects", "standards", "spec"), "finder": ("opus", "medium"),
@@ -454,12 +456,12 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     agent = {lane: prefix + ":" + n for lane, n in LANE_AGENT.items()}
     hint = cfg.get("nav_hint")
     lanes = [x for x in t["lanes"] if x != "sota" or sota is not False]
-    if sota and "sota" not in lanes:
+    if sota and "sota" not in lanes and tier != "lean":
         lanes.append("sota")
     skipped, calls = [], []
     lost = []
     if serial:
-        lanes = ["defects", "standards"]
+        lanes = [x for x in ("defects", "standards") if x in t["lanes"]]
         skipped = [{"what": "spec", "why": "serial: the main thread never opens inputs/spec.md"},
                    {"what": "sota", "why": "serial: no isolated web lane"}]
         lost = list(SERIAL_LOST)
@@ -468,14 +470,16 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             skipped.append({"what": "spec", "why": "tier " + tier})
         # shortcut: only two distinct plain aliases prove different tiers; inherit or a full ID is unknown, upgrade
         # when a model registry ships.
-        if fm.lower() == vm.lower():
+        if "defects" in lanes and fm.lower() == vm.lower():  # no finder runs in the lean tier
             lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
-        elif not {fm.lower(), vm.lower()} <= set(ALIASES):
+        elif "defects" in lanes and not {fm.lower(), vm.lower()} <= set(ALIASES):
             lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
                         "compared" % (fm, vm))
         if lane_me["standards"][0].lower() == vm.lower():
             lost.append("verifier not on a different tier: the Standards lane and the verifier both run on " + vm)
         lost += _env_lost()
+    if tier == "lean":  # the report must say which axes never ran
+        skipped += [{"what": w, "why": "tier lean"} for w in ("defects", "spec") if not any(x["what"] == w for x in skipped)]
     lines = _scan_lines(run, tj)
     inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
@@ -537,7 +541,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier quick|standard|deep] "
+    return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
                                   "[--sota|--no-sota] [--serial] [--ai]")
 
 
