@@ -393,7 +393,7 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
             why = "protected-path"
         elif _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
-        elif f["category"] in report.LANE_CATEGORIES["standards"] and _elsewhere(fix_text, f["path"], tracked):
+        elif f["category"] in ("smell", "lean", "altitude") and _elsewhere(fix_text, f["path"], tracked):
             why = "cross-file"  # one file per fixer: a cleanup that reaches a second file is out of scope
         else:
             real = _live(repo, f["path"])

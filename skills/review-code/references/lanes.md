@@ -28,7 +28,7 @@ The verifier runs on a different model from the finders, so one model's blind sp
 | Lane | Agent | Axis | Reads | Notes |
 |------|-------|------|-------|-------|
 | defects | `review-code:finder` | Defects | `inputs/defects.md`, `tree/` | Bugs, with a concrete trigger |
-| standards | `review-code:standards` | Standards | `inputs/standards.md`, `conventions/`, `tree/` | Documented repo conventions and baseline smells. The Ponytail checks (needless code, reimplemented stdlib or helpers, over-engineering, stale or restating comments) are folded in here, category `lean`, so there is one Standards call per shard |
+| standards | `review-code:standards` | Standards | `inputs/standards.md`, `conventions/`, `tree/` | Documented repo conventions and baseline smells. The Ponytail checks (needless code, reimplemented stdlib or helpers, over-engineering, stale or restating comments) are folded in here, category `lean`, so there is one Standards call per shard. Root-cause depth (a special case layered on shared code) is category `altitude`, a Suggestion |
 | spec | `review-code:spec` | Spec | `inputs/spec.md` | The only reader of the spec text; lists what it declined to judge; skipped with a stated reason when there is no spec or the tier has no Spec lane (quick) |
 | sota | `review-code:sota` | advisory | a numbered inventory of names and pinned versions in its prompt; paths and lines stay in `plan.json` | Web research on library, algorithm and API choices; 1 to 5 https sources per item; never verified, never counts toward the verdict |
 

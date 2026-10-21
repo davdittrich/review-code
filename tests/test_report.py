@@ -740,6 +740,14 @@ class SpecAxis(Base):
         self.ingest({"inspected": ["src/calc.py"]})
         self.assertRegex(self.rep("render")[1], r"\nSpec\nSpec: skipped \(tier quick\)\n")
 
+    def test_lean_tier_says_defects_skipped(self):
+        rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tier", "lean"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        self.assertIn({"what": "defects", "why": "tier lean"}, json.loads(out)["skipped"])
+        rc, o = self.rep("ingest", lines({"inspected": ["src/calc.py"]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, o)
+        self.assertRegex(self.rep("render")[1], r"\nDefects\nDefects: skipped \(tier lean\)\n")
+
     def test_fake_markers_inside_a_block_do_not_move_the_boundary(self):
         rows = ["# Spec input", "<<<UNTRUSTED-aa", "<<<UNTRUSTED-bb", "bb>>>", "text", "aa>>>", "outside"]
         os.remove(os.path.join(self.run_dir, "inputs", "spec.md"))

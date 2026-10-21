@@ -320,13 +320,18 @@ class CrossFileSkips(Base):
 
     def test_standards_fix_naming_a_second_tracked_file_is_skipped(self):
         for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
-                          ("comment", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
+                          ("altitude", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
             with self.subTest(cat=cat, text=text):
                 cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
                 rc, j = self.skipped("standards", cand)
                 self.assertEqual((rc, j["reason"], j["detail"]), (1, "nothing-to-fix", "skipped: cross-file 1"), j)
                 self.tearDown()
                 self.setUp()
+
+    def test_comment_finding_naming_a_second_file_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "see src/utils.py", category="comment")
+        rc, j = self.skipped("standards", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
 
     def test_same_text_on_a_defects_finding_is_kept(self):
         cand = two("src/dup.py", 2, "return x * 2", "call helper in src/utils.py")
