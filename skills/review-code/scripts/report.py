@@ -761,8 +761,7 @@ def ingest(run, text, lane="defects", shard=None, agent=None):
         key = lane if shard is None else "%s@%d" % (lane, shard)
         _bind(run, agent, key)
         out = _ingest(run, _take(run, agent, want, True), lane, shard)
-        _bind(run, agent, key, True)
-        _drop(run, agent)
+        _consume(run, agent, key)
         return out
 
 
@@ -781,9 +780,9 @@ def _bind(run, agent, key, record=False):
         raise target.Refuse("agent-reused", "this agent id already served another call of the run")
 
 
-def _take(run, agent, want, lane):
+def _take(run, agent, want, needs_inspected):
     """The reply the capture hook stored for `agent` (handback before stop), when it came from agent type `want` and
-    holds what the step needs: an `inspected` line for a lane (`lane` true), else any wire line. Else empty-capture,
+    holds what the step needs: an `inspected` line for a lane (`needs_inspected` true), else any wire line. Else empty-capture,
     so closing words alone never stand in for a reply."""
     target.load_json(run, "target.json")
     for kind in capture.KINDS:
@@ -795,10 +794,16 @@ def _take(run, agent, want, lane):
         if isinstance(got, dict) and isinstance(got.get("message"), str):
             if got.get("agent_type") != want:
                 raise target.Refuse("agent-mismatch", "the capture is of another agent type than the plan's")
-            if not any(o is not None and "inspected" in o and "path" not in o if lane else True for _, o, _ in _objects(got["message"])):
-                raise target.Refuse("empty-capture", "the capture holds no " + ("inspected" if lane else "verdict") + " line")
+            if not any(o is not None and "inspected" in o and "path" not in o if needs_inspected else True for _, o, _ in _objects(got["message"])):
+                raise target.Refuse("empty-capture", "the capture holds no " + ("inspected" if needs_inspected else "verdict") + " line")
             return got["message"].encode("utf-8", "replace").decode("utf-8")  # a lone surrogate cannot be stored
     raise target.Refuse("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin")
+
+
+def _consume(run, agent, key):
+    """After a successful --agent call: bind the agent id to its call and drop the capture."""
+    _bind(run, agent, key, True)
+    _drop(run, agent)
 
 
 def _drop(run, agent):
@@ -948,8 +953,7 @@ def _verdicts(run, text, batch, agent=None):
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     _counts(run, "serial" if batch is None else "batch-%d" % batch, lost, fixes, lambda n: n == "serial" or n.startswith("batch-"))
     if agent is not None:
-        _bind(run, agent, "batch-%d" % batch, True)
-        _drop(run, agent)
+        _consume(run, agent, "batch-%d" % batch)
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref)),
