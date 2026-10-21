@@ -951,6 +951,8 @@ def _build(run):
                           verified=cls in ("reproduced", "traced"), origin=origin, reason=reason))
     items.sort(key=lambda i: (AXES.index(i["axis"]), SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
     findings = [i for i in items if i["verified"]]
+    for i in findings:
+        i["impact"] = i["reason"]  # the verifier names the production impact in its reason (verifier.md)
     unverifiable = [i for i in items if not i["verified"]]
     rank = {i["severity"] for i in findings}
     # Defects: any unverifiable item needs discussion. Standards and Spec: only an item at required does, so
@@ -1038,6 +1040,7 @@ def _text(doc):
                "    trigger: " + e(i["trigger"])]
         out += ["    spec: inputs/spec.md:%d" % i["spec_line"]] if "spec_line" in i else []
         out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
+        out += ["    impact: " + e(i["impact"])] if i["impact"] else []
         return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
 
     t, d, fs = doc["target"], doc["dropped"], doc["findings"]

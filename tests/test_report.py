@@ -130,6 +130,14 @@ class Derivation(Base):
         self.assertEqual((un[n]["reason"], un[n]["evidence_class"]), ("no-valid-cite", "speculative"))
         self.assertEqual((un[o]["reason"], un[o]["evidence_class"], un[o]["score"]), ("no-verdict", "speculative", 25))
 
+    def test_confirmed_finding_shows_the_verifier_reason_as_impact(self):  # review-code-d14.4
+        self.ingest(cand(Q_ADD, 8), {"inspected": ["src/calc.py"]})
+        self.verdicts(verdict((Q_ADD, 8), reason="data loss on retry"))
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["impact"], f["reason"]), ("data loss on retry", "data loss on retry"))
+        self.assertIn("\n    impact: data loss on retry\n", self.rep("render")[1])
+        self.assertNotIn("impact", json.dumps(json.loads(self.rep("render", extra=["--format", "sarif"])[1])))
+
     def test_first_verdict_wins_and_unknown_id_ignored(self):
         self.ingest(cand(Q_ADD, 8))
         self.verdicts("{broken", verdict((Q_ADD, 8), "refuted"), verdict((Q_ADD, 8)),
