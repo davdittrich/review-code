@@ -268,7 +268,7 @@ def _changed_lines(a: bytes, b: bytes) -> int:
 
 
 def _tests(run: str, st: dict) -> dict:
-    """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
+    """Run the stored command once in the checkout `_root` returns (the worktree holding the reviewed head; else the repository top). pass: exit 0 and no timeout or launch error."""
     raw = _read(os.path.join(_fixdir(run), "plan.json"))
     if hashlib.sha256(raw).hexdigest() != st["digest"]:
         raise target.Refuse("digest-mismatch")
@@ -294,6 +294,11 @@ def _tests(run: str, st: dict) -> dict:
 def _root(tj: dict) -> str:
     """The checkout holding the reviewed head: where fix mode tests and edits. Runs from before the key fall back to repo."""
     return tj.get("root") or tj["repo"]
+
+
+def _elsewhere(tj: dict) -> bool:
+    """The reviewed head sits in a worktree other than the repository top (realpath: root is stored resolved)."""
+    return os.path.realpath(_root(tj)) != os.path.realpath(tj["repo"])
 
 
 def _moved(tj: dict, st: dict) -> Optional[str]:
@@ -413,6 +418,8 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
     text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
                                                                           _e(shlex.join(words)))]
+    if _elsewhere(tj):
+        text.append("checkout: " + _e(repo))
     for k, e in enumerate(entries, 1):
         text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
                                                       e["severity"], e["category"], e["origin"], e["model"],
@@ -644,7 +651,8 @@ def report_(run: str) -> dict:
     tampered = st["halted"] == "tampered"
     pend = sorted(n[:-4] for n in os.listdir(fd) if n.endswith(".pre") and n[:-4] not in st["done"])
     unsafe = tampered or cur is not None or bool(pend)  # then no git command runs: a rewritten config may carry filters
-    repo = None if unsafe else _root(target.load_target(run))
+    tj = None if unsafe else target.load_target(run)
+    repo = None if unsafe else _root(tj)
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):
@@ -693,7 +701,10 @@ def report_(run: str) -> dict:
             text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger.block(d["tail"], nonce)]
     if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
-    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",
+    if not unsafe and _elsewhere(tj):
+        text.insert(0, "checkout: " + _e(repo))
+    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff%s before committing" %
+             (" in " + _e(repo) if not unsafe and _elsewhere(tj) else ""),
             "passing tests do not prove a fix is right where the tests do not cover it",
             "a new import of a package no manifest declares is not checked"]
     outs = [v.get("outcome") for v in st["done"].values()]

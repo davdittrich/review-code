@@ -264,6 +264,29 @@ class PlanGates(Base):
         self.git("-C", wt, "checkout", "-q", "--detach", "main")  # the recorded root lost the head
         self.refused(stale, "head-not-checked-out", fixdir=False)
 
+    def test_checkout_path_shown_only_when_it_differs_from_repo(self):
+        run, _ = self.ready()
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertNotIn("checkout: ", out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertNotIn("checkout: ", out)
+        self.assertIn("git diff before committing", out)
+        self.git("checkout", "-q", "main")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "feat")
+        run = self.pin("main...feat")
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        rc, out, j = self.plan(run)  # preview names the worktree
+        self.assertIn("checkout: " + wt, out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertIn("checkout: " + wt, out)
+        self.assertIn("git diff in " + wt, out)
+
     def test_tree_must_be_clean(self):
         run = self.pin()
         append(os.path.join(self.repo, "src/calc.py"), "# edit\n")
