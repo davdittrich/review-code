@@ -268,7 +268,7 @@ def _changed_lines(a: bytes, b: bytes) -> int:
 
 
 def _tests(run: str, st: dict) -> dict:
-    """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
+    """Run the stored command once in the checkout `_root` returns (the worktree holding the reviewed head; else the repository top). pass: exit 0 and no timeout or launch error."""
     raw = _read(os.path.join(_fixdir(run), "plan.json"))
     if hashlib.sha256(raw).hexdigest() != st["digest"]:
         raise target.Refuse("digest-mismatch")
@@ -281,7 +281,7 @@ def _tests(run: str, st: dict) -> dict:
     env = {k: os.environ[k] for k in repro.ENV_KEEP if k in os.environ}
     env.update(HOME=home, TMPDIR=tmp)
     try:
-        res = repro._execute(command, target.load_target(run)["repo"], env, "", timeout=TIMEOUT)  # empty id: only the exit counts
+        res = repro._execute(command, _root(target.load_target(run)), env, "", timeout=TIMEOUT)  # empty id: only the exit counts
     finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -291,10 +291,20 @@ def _tests(run: str, st: dict) -> dict:
     return {"outcome": "pass" if res["exit"] == 0 else "fail", "exit": res["exit"], "tail": tail}
 
 
+def _root(tj: dict) -> str:
+    """The checkout holding the reviewed head: where fix mode tests and edits. Runs from before the key fall back to repo."""
+    return tj.get("root") or tj["repo"]
+
+
+def _elsewhere(tj: dict) -> bool:
+    """The reviewed head sits in a worktree other than the repository top (realpath: root is stored resolved)."""
+    return os.path.realpath(_root(tj)) != os.path.realpath(tj["repo"])
+
+
 def _moved(tj: dict, st: dict) -> Optional[str]:
-    if target.git(["rev-parse", "HEAD"], tj["repo"]).strip() != tj["head_sha"]:
+    if target.git(["rev-parse", "HEAD"], _root(tj)).strip() != tj["head_sha"]:
         return "head-moved"
-    return "refs-moved" if _refs(tj["repo"]) != st["refs"] else None
+    return "refs-moved" if _refs(_root(tj)) != st["refs"] else None
 
 
 def _kept(top: str, xy: str, p: str, a: dict) -> bool:
@@ -318,7 +328,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     from their .post, the rest from HEAD) and are listed in side_effects; new untracked files stay and are listed
     in untracked. entry (path, bytes) is the fix under test. Answers head-moved, refs-moved or "tests changed
     <path>" when the run broke the fix under test, else None."""
-    repo = tj["repo"]
+    repo = _root(tj)
     top = os.path.realpath(repo)
     moved = _moved(tj, st)
     if moved:
@@ -362,7 +372,7 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     if any("\0" in w for w in words):
         raise target.Refuse("bad-command")
     ledger.trust_gate(run, words)
-    repo = tj["repo"]
+    repo = _root(tj)
     if target.git(["rev-parse", "HEAD"], repo).strip() != tj["head_sha"]:
         raise target.Refuse("head-not-checked-out")
     if _changes(repo):
@@ -408,6 +418,8 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
     text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
                                                                           _e(shlex.join(words)))]
+    if _elsewhere(tj):
+        text.append("checkout: " + _e(repo))
     for k, e in enumerate(entries, 1):
         text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
                                                       e["severity"], e["category"], e["origin"], e["model"],
@@ -442,7 +454,7 @@ def baseline(run: str, digest: str) -> dict:
     if hashlib.sha256(raw).hexdigest() != digest:
         raise target.Refuse("digest-mismatch")
     ledger.trust_gate(run, json.loads(raw.decode("utf-8"))["command"])
-    repo = tj["repo"]
+    repo = _root(tj)
     files = [os.path.join(repo, target.git(["rev-parse", "--git-path", p], repo).strip())
              for p in ("config", "info/attributes", "info/exclude")]
     st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
@@ -478,7 +490,7 @@ def begin(run: str) -> dict:
     if st["in_flight"]:
         raise target.Refuse("in-flight")
     tj = target.load_target(run)
-    repo = tj["repo"]
+    repo = _root(tj)
     fd = _fixdir(run)
     raw = _read(os.path.join(fd, "plan.json"))
     if hashlib.sha256(raw).hexdigest() != st["digest"]:
@@ -518,7 +530,7 @@ def begin(run: str) -> dict:
 
 def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
     """Judge one fixer call after the seal held: (outcome, detail, test result). Restores on every revert."""
-    repo, fid, path = tj["repo"], cur["id"], cur["path"]
+    repo, fid, path = _root(tj), cur["id"], cur["path"]
     top, fd = os.path.realpath(repo), _fixdir(run)
     real = os.path.join(top, path)
     pre = _read(os.path.join(fd, fid + ".pre"))
@@ -610,7 +622,7 @@ def finish(run: str, seal: str, status: str) -> dict:
         try:
             outcome, detail, res = _settle(run, tj, st, cur, status)
         except BaseException as e:  # Ctrl-C, SIGTERM (as SystemExit), any error: the tree goes back, then re-raise
-            _undo(run, fid, tj["repo"], {cur["path"]: (_read(os.path.join(_fixdir(run), fid + ".pre")), cur["mode"])},
+            _undo(run, fid, _root(tj), {cur["path"]: (_read(os.path.join(_fixdir(run), fid + ".pre")), cur["mode"])},
                   [], [], [])
             st["done"][fid] = {"outcome": "reverted-interrupt", "exit": None, "detail": type(e).__name__}
             st["in_flight"], st["halted"] = None, "reverted-interrupt"
@@ -639,7 +651,8 @@ def report_(run: str) -> dict:
     tampered = st["halted"] == "tampered"
     pend = sorted(n[:-4] for n in os.listdir(fd) if n.endswith(".pre") and n[:-4] not in st["done"])
     unsafe = tampered or cur is not None or bool(pend)  # then no git command runs: a rewritten config may carry filters
-    repo = None if unsafe else target.load_target(run)["repo"]
+    tj = None if unsafe else target.load_target(run)
+    repo = None if unsafe else _root(tj)
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):
@@ -688,7 +701,10 @@ def report_(run: str) -> dict:
             text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger.block(d["tail"], nonce)]
     if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
-    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",
+    if not unsafe and _elsewhere(tj):
+        text.insert(0, "checkout: " + _e(repo))
+    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff%s before committing" %
+             (" in " + _e(repo) if not unsafe and _elsewhere(tj) else ""),
             "passing tests do not prove a fix is right where the tests do not cover it",
             "a new import of a package no manifest declares is not checked"]
     outs = [v.get("outcome") for v in st["done"].values()]

@@ -249,6 +249,44 @@ class PlanGates(Base):
         self.git("checkout", "-q", "main")
         self.refused(run, "head-not-checked-out", fixdir=False)
 
+    def test_head_held_by_another_worktree(self):
+        self.git("checkout", "-q", "main")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "feat")
+        run, stale = self.pin("main...feat"), self.pin("main...feat")
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.go(run)
+        rc, _, bg = self.begin(run)
+        self.assertEqual((rc, bg["status"]), (0, "ok"), bg)
+        with open(bg["brief"], encoding="utf-8") as fh:
+            self.assertIn("file: " + json.dumps(os.path.join(wt, "src/calc.py")), fh.read())
+        self.git("-C", wt, "checkout", "-q", "--detach", "main")  # the recorded root lost the head
+        self.refused(stale, "head-not-checked-out", fixdir=False)
+
+    def test_checkout_path_shown_only_when_it_differs_from_repo(self):
+        run, _ = self.ready()
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertNotIn("checkout: ", out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertNotIn("checkout: ", out)
+        self.assertIn("git diff before committing", out)
+        self.git("checkout", "-q", "main")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "feat")
+        run = self.pin("main...feat")
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        rc, out, j = self.plan(run)  # preview names the worktree
+        self.assertIn("checkout: " + wt, out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertIn("checkout: " + wt, out)
+        self.assertIn("git diff in " + wt, out)
+
     def test_tree_must_be_clean(self):
         run = self.pin()
         append(os.path.join(self.repo, "src/calc.py"), "# edit\n")

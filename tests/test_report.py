@@ -1512,6 +1512,19 @@ class Gate(Base):
         self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
         self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 0}})
 
+    def test_status_withholds_verify_calls_while_a_lane_retry_is_open(self):  # GitHub #4
+        bad = "[[\"truncated\", \"x"
+        self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})
+        st = self.status()
+        self.assertEqual((st["rejected_total"], st["blocked"], st["verify_calls"]), (1, "lane-retry-open", []))
+        self.assertTrue(st["ids"])  # the queue stays visible; only the calls are withheld
+        self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})  # second try: cap reached, nothing left to retry
+        st = self.status()
+        self.assertEqual((st["rejected_total"], st["blocked"]), (1, None))
+        self.assertTrue(st["verify_calls"])
+        self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
+        self.assertIsNone(self.status()["blocked"])
+
     def test_a_line_lost_once_keeps_the_verdict_open_and_shows_in_status_and_render(self):  # review-code-dc5 (4)
         bad = "[[\"truncated\", \"x"
         self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})

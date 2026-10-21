@@ -852,6 +852,16 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
     return hidden, stripped
 
 
+def _checkout_root(top: str, head: str) -> str:
+    """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
+    held = []
+    for blk in git(["worktree", "list", "--porcelain"], top, check=False).split("\n\n"):
+        f = {k: v for k, _, v in (ln.partition(" ") for ln in blk.split("\n"))}
+        if f.get("HEAD") == head and "bare" not in f and "prunable" not in f and os.path.isdir(f.get("worktree", "")):
+            held.append(os.path.realpath(f["worktree"]))
+    return os.path.realpath(top) if os.path.realpath(top) in held or not held else held[0]
+
+
 def pin(candidate: dict, cwd: str) -> dict:
     top = git(["rev-parse", "--show-toplevel"], cwd).strip()
     kind = candidate["kind"]
@@ -898,7 +908,7 @@ def pin(candidate: dict, cwd: str) -> dict:
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
     rec = {
-        "version": 1, "kind": kind, "repo": top, "run": run, "arg": shown(candidate.get("arg", "")),
+        "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
