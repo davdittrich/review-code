@@ -47,8 +47,13 @@ Look only at changed lines. Report a problem when the evidence is on the page.
    - logic duplicated across the changed branches, or calls repeated in each branch that one call
      before the branch would cover;
    - sprawl: a new dependency, file or module the change could do without.
+5. `altitude`: the change patches a symptom where the cause sits deeper: it layers a special case
+   (an extra branch, flag or exception) onto shared code instead of fixing the mechanism that
+   produces the problem. Name the special case's `path:line` and the shared mechanism it works
+   around in `trigger`. Name the more general change to that mechanism in `fix`. A special case the
+   shared code cannot express, or one the surrounding code already treats as the norm, is not a finding.
 
-For `comment`, `smell` and `lean`, the claim is about the code as written, not about a failure. Name
+For `comment`, `smell`, `lean` and `altitude`, the claim is about the code as written, not about a failure. Name
 in `trigger` the evidence it rests on: the second site of a duplicate as `path:line`, the existing
 helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the
 claim by reading those cites.
@@ -57,8 +62,8 @@ claim by reading those cites.
 
 Severity is one of `required`, `suggestion`, `noted`. Never use `blocking`.
 `convention` and a `comment` that would mislead a reader are at most `required`. A comment that only
-restates its line, every `smell` and every `lean` finding are `suggestion` or `noted`.
-Category is one of `convention`, `comment`, `smell`, `lean`. Nothing else is accepted.
+restates its line, every `smell`, `lean` and `altitude` finding are `suggestion` or `noted`.
+Category is one of `convention`, `comment`, `smell`, `lean`, `altitude`. Nothing else is accepted.
 
 ## Do not flag
 
