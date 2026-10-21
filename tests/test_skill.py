@@ -386,6 +386,9 @@ class FixDocs(unittest.TestCase):
             self.assertIn("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1", flat)
             self.assertIn("background", flat)
 
+    def test_calls_on_one_file_are_sequential(self):
+        self.assertIn("calls on one file are sequential", self.flat(self.REFS, "fix.md"))
+
     def test_new_import_limit_documented(self):
         flat = self.flat(self.REFS, "fix.md")
         self.assertIn("file-level", flat)

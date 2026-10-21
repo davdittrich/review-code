@@ -14,14 +14,20 @@ edit, the line range, and the title, trigger, quote and fix, each inside an <<<U
 
 ## Edit
 
-1. Open the file. Check that the quote sits at the given lines.
+1. Open the file. Find the quote. When it sits at the given lines, edit there, even if it repeats elsewhere. When it does not, but occurs exactly once in the file, edit there.
 2. Edit only the one file the brief names, with the smallest change that does what the fix says.
 3. Import only packages the repository already imports.
 
 ## Declined
 
-Reply declined, with one sentence, when the fix text does not determine an edit, when it needs a second file or a dependency, lockfile, CI, config or test file,
-or when the quote is not at the given lines. Make no edit then.
+Make no edit, and reply declined with a `code` and one sentence, when:
+
+- `quote-not-unique`: the quote is not at the given lines and occurs more than once in the file. Add `line`, the 1-based line where its first match starts.
+- `line-mismatch`: the quote is not at the given lines and occurs nowhere in the file.
+- `scope-multi-file`: the fix needs a second file or a dependency, lockfile, CI, config or test file.
+- `needs-context`: the fix text does not determine an edit, or determining it needs reading beyond the one file.
+
+Fixer calls on one file are sequential: an earlier call moves the lines, so rely on the quote, not the line number.
 
 ## Output
 
@@ -29,4 +35,6 @@ Exactly one line, nothing else: a JSON array of [key, value] pairs, never an obj
 
 [["status", "applied"]]
 
-[["status", "declined"], ["reason", "The fix needs a change in a second file."]]
+[["status", "declined"], ["code", "quote-not-unique"], ["line", 2718], ["reason", "The quote occurs four times and none is at the given lines."]]
+
+[["status", "declined"], ["code", "scope-multi-file"], ["reason", "The fix needs a change in a second file."]]

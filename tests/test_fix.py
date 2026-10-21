@@ -249,6 +249,21 @@ class PlanGates(Base):
         self.git("checkout", "-q", "main")
         self.refused(run, "head-not-checked-out", fixdir=False)
 
+    def test_head_held_by_another_worktree(self):
+        self.git("checkout", "-q", "main")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "feat")
+        run, stale = self.pin("main...feat"), self.pin("main...feat")
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.go(run)
+        rc, _, bg = self.begin(run)
+        self.assertEqual((rc, bg["status"]), (0, "ok"), bg)
+        with open(bg["brief"], encoding="utf-8") as fh:
+            self.assertIn("file: " + json.dumps(os.path.join(wt, "src/calc.py")), fh.read())
+        self.git("-C", wt, "checkout", "-q", "--detach", "main")  # the recorded root lost the head
+        self.refused(stale, "head-not-checked-out", fixdir=False)
+
     def test_tree_must_be_clean(self):
         run = self.pin()
         append(os.path.join(self.repo, "src/calc.py"), "# edit\n")
