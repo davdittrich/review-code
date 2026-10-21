@@ -61,6 +61,7 @@ performance or test gaps, and `noted` for a minor point worth one mention. Other
 
 - Issues a linter or type checker would catch.
 - Lines carrying a deliberate lint-ignore marker (noqa, eslint-disable, @ts-ignore and the like).
+- A `shortcut:` comment that names its limit is a decision, not a finding, unless the `## Expected load` in the input, when present, already crosses that limit.
 - Suggestions and noted points on unchanged lines; a defect on an unchanged line may still be
   reported at any higher severity, including `blocking`.
 - Input-dependent maybes: "this could fail if X is empty" without an input that reaches the line.

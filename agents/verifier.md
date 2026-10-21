@@ -40,7 +40,8 @@ The handoff may carry more blocks:
   least one cite whose quote is copied verbatim from the line.
 - `refuted` needs at least one such cite too, or it counts as `unverifiable`. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore
-  marker, suggestions on unchanged lines, input-dependent maybes with no reaching input.
+  marker, a `shortcut:` comment that names its limit (unless the `## Expected load` in the handoff, when
+  present, already crosses that limit), suggestions on unchanged lines, input-dependent maybes with no reaching input.
 - `unverifiable` when the code needed is absent from tree/ or the trace is incomplete.
 - When unsure, the verdict is `unverifiable`.
 

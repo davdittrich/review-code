@@ -617,6 +617,15 @@ class PromptRules(unittest.TestCase):
                      "one good test, never a coverage figure"):
             self.assertIn(item, t)
 
+    def test_shortcut_comment_naming_a_limit_is_a_decision(self):
+        rule = ("A `shortcut:` comment that names its limit is a decision, not a finding, "
+                "unless the `## Expected load` in the input, when present, already crosses that limit.")
+        for name in ("finder", "standards"):
+            self.assertIn(rule, self.text(name), name)
+        v = self.text("verifier")
+        self.assertIn("a `shortcut:` comment that names its limit", v)
+        self.assertIn("Expected load", v)
+
 
 if __name__ == "__main__":
     unittest.main()
