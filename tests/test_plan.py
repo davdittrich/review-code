@@ -66,7 +66,7 @@ class Overrides(Fixture):
         rc, out = self.run_plan([("finder_model", "sonnet"), ("finder_effort", "high")])
         self.assertEqual(rc, 0)
         p = self.plan_json()
-        self.assertEqual({(c["model"], c["effort"]) for c in p["calls"]}, {("sonnet", "high")})
+        self.assertEqual({(c["model"], c["effort"]) for c in p["calls"] if c["lane"] != "standards"}, {("sonnet", "high")})
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
         self.assertEqual(p["effective_overrides"], {"finder_effort": "high", "finder_model": "sonnet"})
 
@@ -78,9 +78,11 @@ class Overrides(Fixture):
         self.assertEqual((got["defects"], got["standards"]), (("opus", "medium"), ("haiku", "low")))
         self.assertEqual(p["effective_overrides"], {"standards_effort": "low", "standards_model": "haiku"})
 
-    def test_standards_follow_the_finder_when_unset(self):
-        self.run_plan([("finder_model", "sonnet"), ("finder_effort", "high")])
-        self.assertEqual({(c["model"], c["effort"]) for c in self.plan_json()["calls"]}, {("sonnet", "high")})
+    def test_standards_default_to_haiku_medium_in_every_tier_and_ignore_the_finder_override(self):
+        for tier in ("quick", "standard", "deep"):
+            self.run_plan([("finder_model", "sonnet"), ("finder_effort", "high")], "--tier", tier)
+            got = {c["lane"]: (c["model"], c["effort"]) for c in self.plan_json()["calls"]}
+            self.assertEqual((got["standards"], got["defects"]), (("haiku", "medium"), ("sonnet", "high")), tier)
 
     def test_standards_model_equal_to_the_verifier_is_reported(self):
         self.run_plan([("standards_model", "sonnet")])
@@ -166,7 +168,7 @@ class Overrides(Fixture):
         p = self.plan_json()
         for v in (p["verifier"], p["spec_verifier"]):
             self.assertEqual((v["model"], v["effort"]), ("opus", "low"))
-        self.assertEqual({c["model"] for c in p["calls"]}, {"opus"})  # finders untouched
+        self.assertEqual({c["model"] for c in p["calls"] if c["lane"] != "standards"}, {"opus"})  # finders untouched
 
     def test_unset_references_are_ignored(self):
         rc, out = self.run_plan([("verifier_model", "${user_config.verifier_model}"), ("max_shards", ""),
@@ -249,7 +251,8 @@ class Tiers(Fixture):
                                     ("standard", ("opus", "medium"), ("sonnet", "high"), 25),
                                     ("deep", ("opus", "xhigh"), ("sonnet", "high"), 60)):
             _, p = self.lanes("--tier", tier)
-            self.assertEqual({(c["model"], c["effort"]) for c in p["calls"]}, {fin}, tier)
+            self.assertEqual({(c["model"], c["effort"]) for c in p["calls"] if c["lane"] != "standards"}, {fin}, tier)
+            self.assertEqual({(c["model"], c["effort"]) for c in p["calls"] if c["lane"] == "standards"}, {("haiku", "medium")}, tier)
             for v in (p["verifier"], p["spec_verifier"]):
                 self.assertEqual((v["model"], v["effort"]), ver, tier)
             self.assertEqual((p["caps"]["max_verifier_calls"], p["lost_guarantees"]), (cap, []), tier)
@@ -261,11 +264,11 @@ class Tiers(Fixture):
         _, p = self.lanes("--tier", "quick", stdin="verifier_model=sonnet\n")
         self.assertEqual(p["lost_guarantees"], [DIFFERENT_TIER + "sonnet"])
         _, p = self.lanes(stdin="verifier_model=haiku\nfinder_model=haiku\n")  # case-insensitive equality below
-        self.assertEqual(len(p["lost_guarantees"]), 1)
+        self.assertEqual(len(p["lost_guarantees"]), 2)  # finders and the Standards lane (haiku by default) match the verifier
         _, p = self.lanes(stdin="verifier_model=OPUS\n")
         self.assertEqual(len(p["lost_guarantees"]), 1)
-        _, p = self.lanes(stdin="verifier_model=haiku\n")
-        self.assertEqual(p["lost_guarantees"], [])
+        _, p = self.lanes(stdin="verifier_model=haiku\n")  # the Standards lane defaults to haiku
+        self.assertEqual(p["lost_guarantees"], ["verifier not on a different tier: the Standards lane and the verifier both run on haiku"])
 
     def test_models_that_cannot_be_compared_lose_the_guarantee(self):  # CR-06
         for cfg, fm, vm in (("verifier_model=claude-opus-4-5\n", "opus", "claude-opus-4-5"),
@@ -342,7 +345,7 @@ class Tracer(Fixture):
         self.assertEqual(set(p), self.KEYS)
         self.assertEqual([(c["lane"], c["axis"], c["agent"], c["model"], c["effort"], c["shard"]) for c in p["calls"]],
                          [("defects", "defects", "review-code:finder", "opus", "medium", None),
-                          ("standards", "standards", "review-code:standards", "opus", "medium", None)])
+                          ("standards", "standards", "review-code:standards", "haiku", "medium", None)])
         self.assertEqual(p["calls"][0]["input"], os.path.join(self.run_dir, "inputs", "defects.md"))
         self.assertEqual(p["calls"][1]["prompt"], "Standards lane. Input: " + p["calls"][1]["input"])
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
@@ -851,7 +854,7 @@ class Preview(Fixture):
         self.assertEqual((out["confirm"], p["confirm"], out["preview"]), (True, True, p["preview"]))
         pv = "\n".join(p["preview"])
         self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
-        for want in ("Call defects: opus/xhigh", "Call standards: opus/xhigh", "Verifier ids: up to 60 (calls of up to 5 ids in one shard, so 12 to 60 calls), sonnet/high",
+        for want in ("Call defects: opus/xhigh", "Call standards: haiku/medium", "Verifier ids: up to 60 (calls of up to 5 ids in one shard, so 12 to 60 calls), sonnet/high",
                      "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 30", "Packs: python"):
             self.assertIn(want, pv)
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")

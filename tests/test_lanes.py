@@ -127,7 +127,7 @@ class Standards(tp.Fixture):
             self.assertNotIn(w, low)
 
     def test_frontmatter(self):
-        for line in (NAV_TOOLS, "model: opus", "maxTurns: 40"):
+        for line in (NAV_TOOLS, "model: haiku", "maxTurns: 40"):
             self.assertIn(line, self.fm)
 
     def test_example_line_ingests_on_a_real_run_dir(self):

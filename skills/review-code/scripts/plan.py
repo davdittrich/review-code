@@ -41,6 +41,7 @@ TIERS = {
     "deep": {"lanes": ("defects", "standards", "spec", "sota"), "finder": ("opus", "xhigh"),
              "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_shards": 12, "max_packs": 9},
 }
+STANDARDS_DEFAULT = ("haiku", "medium")  # the Standards lane never reports Blocking and its findings are verified; every tier
 DEFAULT_PREFIX = "review-code"
 LANE_AGENT = {"defects": "finder", "standards": "standards", "spec": "spec", "sota": "sota"}  # agent name; the prefix is a plugin option
 PREFIX_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -447,7 +448,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     t = TIERS[tier]
     fm, fe = cfg.get("finder_model", t["finder"][0]), cfg.get("finder_effort", t["finder"][1])
     vm, ve = cfg.get("verifier_model", t["verifier"][0]), cfg.get("verifier_effort", t["verifier"][1])
-    lane_me = {"standards": (cfg.get("standards_model", fm), cfg.get("standards_effort", fe))}  # other lanes: the finder's
+    lane_me = {"standards": (cfg.get("standards_model", STANDARDS_DEFAULT[0]), cfg.get("standards_effort", STANDARDS_DEFAULT[1]))}
     caps = {k: cfg.get(k, t[k]) for k in CAP_BOUNDS}
     prefix = cfg.get("agent_prefix", DEFAULT_PREFIX)
     agent = {lane: prefix + ":" + n for lane, n in LANE_AGENT.items()}
@@ -472,7 +473,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
         elif not {fm.lower(), vm.lower()} <= set(ALIASES):
             lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
                         "compared" % (fm, vm))
-        if "standards_model" in cfg and cfg["standards_model"].lower() == vm.lower():
+        if lane_me["standards"][0].lower() == vm.lower():
             lost.append("verifier not on a different tier: the Standards lane and the verifier both run on " + vm)
         lost += _env_lost()
     lines = _scan_lines(run, tj)
