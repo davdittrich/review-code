@@ -159,7 +159,8 @@ class Phase4Procedure(unittest.TestCase):
     def test_steps_7_and_8_are_not_done_while_a_line_or_verdict_is_lost(self):  # review-code-19l
         for t in ("`rejected_total` is 0", "<run>/rejected/<lane>.txt", "SendMessage to the agentId", "at most 2 tries",
                   "`no_verdict` are empty", "exact count of lines still lost", "exact ids still unverified",
-                  "`attempts` for that lane in `status`", "`rejected_batches`", "`attempts` of `batch-<batch>`"):
+                  "`attempts` for that lane in `status`", "`rejected_batches`", "`attempts` of `batch-<batch>`",
+                  "`lost` in `status`"):
             self.assertIn(t, self.flat)
 
     def test_cost_gate_and_serial(self):

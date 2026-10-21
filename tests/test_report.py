@@ -1369,6 +1369,30 @@ class Gate(Base):
         self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
         self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 0}})
 
+    def test_a_line_lost_once_keeps_the_verdict_open_and_shows_in_status_and_render(self):  # review-code-dc5 (4)
+        bad = "[[\"truncated\", \"x"
+        self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})
+        self.ingest({"inspected": ["src/calc.py"]})  # the retry dropped the lost line instead of re-sending it
+        self.assertEqual(self.status()["rejected_total"], 0)
+        st = self.status()
+        self.assertEqual((st["lost"], st["lost_total"]), ({"defects": 1}, 1))
+        d = self.doc()
+        self.assertEqual((d["verdict"], d["lost"]), ("Needs discussion", {"defects": 1}))
+        rc, text = self.rep("render")
+        self.assertIn("Warning\nlost lines: 1 (defects 1)", text)
+
+    def test_a_corrupt_counters_file_refuses_ingest_and_verdicts_and_is_not_reset(self):  # review-code-dc5 (6)
+        (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
+        path = os.path.join(self.run_dir, "counters.json")
+        for junk in ("{not json", "[]", '{"attempts": []}'):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(junk)
+            for sub, text, extra in (("ingest", lines(self.GOOD), ()), ("verdicts", lines({"id": i, "verdict": "confirmed"}), ())):
+                rc, out = self.rep(sub, text, extra)
+                self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), junk)
+
     def test_verdict_batches_count_attempts_too(self):
         (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
         self.rep("verdicts", "[[\"id\", \"%s\"], [\"verdict\", \"confirmed\"\n" % i, extra=["--batch", "1"])

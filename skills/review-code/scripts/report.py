@@ -494,9 +494,13 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False):
     try:
         with open(path, encoding="utf-8") as fh:
             c = json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         c = {}
-    c = {k: c.get(k) if isinstance(c.get(k), dict) else {} for k in ("attempts", "lost", "repaired")}
+    except (OSError, ValueError):
+        c = None
+    if c is None or not isinstance(c, dict) or any(k in c and not isinstance(c[k], dict) for k in ("attempts", "lost", "repaired")):
+        raise target.Refuse("bad-counters", "counters.json is unreadable: discard the run (it would reset the retry counts)")
+    c = {k: c.get(k, {}) for k in ("attempts", "lost", "repaired")}
     if name is not None:
         c["attempts"][name], c["lost"][name] = c["attempts"].get(name, 0) + 1, c["lost"].get(name, 0) + lost
         c["repaired"] = dict({n: k for n, k in c["repaired"].items() if not drop(n)}, **(repaired or {}))
@@ -531,7 +535,8 @@ def status(run):
     rej, rejb = _rejected(run)
     cnt = _counts(run)
     repaired = {n: k for n, k in cnt["repaired"].items() if k}
-    return {"status": "ok", "rejected": rej, "rejected_batches": rejb, "rejected_total": sum(rej.values()) + sum(rejb.values()),
+    gone = {n: k for n, k in cnt["lost"].items() if k}
+    return {"status": "ok", "lost": gone, "lost_total": sum(gone.values()), "rejected": rej, "rejected_batches": rejb, "rejected_total": sum(rej.values()) + sum(rejb.values()),
             "attempts": {n: {"attempts": k, "lost": cnt["lost"].get(n, 0)} for n, k in sorted(cnt["attempts"].items())},
             "repaired": repaired, "repaired_total": sum(repaired.values()),
             "no_verdict": _no_verdict(run, cand, ver), "ids": [c["id"] for c in queue if c["axis"] != "spec"],
@@ -708,6 +713,7 @@ def ingest(run, text, lane="defects", shard=None):
 
 def _ingest(run, text, lane, shard):
     target.load_json(run, "target.json")
+    _counts(run)  # refuse a corrupt counters.json before anything is replaced
     if os.path.exists(_replies(run)) or os.path.exists(os.path.join(run, "verdicts.json")):  # it would drop the verdicts
         raise target.Refuse("late-reply", "verification already started: discard the run to re-ingest a lane")
     if shard is not None:
@@ -803,6 +809,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
 
 def _verdicts(run, text, batch):
     cand = target.load_json(run, "candidates.json")
+    _counts(run)
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
@@ -937,8 +944,9 @@ def _build(run):
     if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] in ("defects", "spec")):
         label = "Needs discussion"  # a defects or spec lane that was never ingested or never finished proves nothing (review-code-0c4)
     (rej, rejb), lost = _rejected(run), _no_verdict(run, cand, ver)
-    repaired = {n: k for n, k in _counts(run)["repaired"].items() if k}
-    if label == "No blocking findings" and (rej or rejb or lost):
+    cnt = _counts(run)
+    repaired, gone = ({n: k for n, k in cnt[w].items() if k} for w in ("repaired", "lost"))
+    if label == "No blocking findings" and (rej or rejb or lost or gone):
         label = "Needs discussion"  # a lane line or verdict that was dropped may have held a finding or a refutation (review-code-19l)
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
@@ -973,6 +981,8 @@ def _build(run):
         doc.update(rejected=rej, rejected_batches=rejb, no_verdict=lost)
     if repaired:
         doc.update(repaired=repaired)
+    if gone:  # lines dropped by any ingest, kept until discard: a retry that omits them must not clear the warning (dc5)
+        doc.update(lost=gone)
     if hc:  # OUT-02: notes outside the evidence gate; positions and sizes, never the payload
         doc.update(hidden_content=hc[:MAX_HIDDEN], hidden_content_omitted=max(0, len(hc) - MAX_HIDDEN))
     return doc
@@ -1035,7 +1045,7 @@ def _text(doc):
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "not-ingested"]
-    if doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired"):
+    if doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired") or doc.get("lost"):
         out += ["", "Warning"]
         out += ["rejected lines: %d (%s)" % (sum(doc["rejected"].values()), ", ".join(
             "%s %d" % (e(n), k) for n, k in sorted(doc["rejected"].items())))] if doc.get("rejected") else []
@@ -1043,6 +1053,8 @@ def _text(doc):
             "batch %s %d" % (e(n), k) for n, k in sorted(doc["rejected_batches"].items())))] if doc.get("rejected_batches") else []
         out += ["repaired lines: %d (%s)" % (sum(doc["repaired"].values()), ", ".join(
             "%s %d" % (e(n), k) for n, k in sorted(doc["repaired"].items())))] if doc.get("repaired") else []
+        out += ["lost lines: %d (%s)" % (sum(doc["lost"].values()), ", ".join(
+            "%s %d" % (e(n), k) for n, k in sorted(doc["lost"].items())))] if doc.get("lost") else []
         out += ["no verdict: %d (%s)" % (len(doc["no_verdict"]), ", ".join(doc["no_verdict"]))] if doc.get("no_verdict") else []
     out.append("")
 
