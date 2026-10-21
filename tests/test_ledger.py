@@ -548,6 +548,21 @@ class Tree(Base):
         other = report._handoff(dict(self.lean_candidate(), path="src/other.py"), self.run_dir, "n", (), refs)
         self.assertIn("references: unknown\n", other)
 
+    def test_reference_count_skips_same_name_definitions_in_other_files(self):  # review-code-s55
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "src/other.py": "def helper_fn(x):\n    return x\n",
+                   "app/a.py": "def run_it():\n    return 1\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n"})
+        _, led = self.build()
+        self.assertEqual([(s["name"], s["file"], s["refs"]) for s in led["symbols"]], [("helper_fn", "src/cfg.py", 0)])
+
+    def test_reference_count_still_counts_a_call_beside_other_definitions(self):  # review-code-s55
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "src/other.py": "def helper_fn(x):\n    return x\n",
+                   "app/a.py": "def run_it():\n    return 1\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n",
+                     "app/a.py": "def run_it():\n    return helper_fn(1)\n"})
+        _, led = self.build()
+        self.assertEqual([(s["name"], s["refs"]) for s in led["symbols"] if s["name"] == "helper_fn"], [("helper_fn", 1)])
+
     def test_verifier_confirms_unused_only_at_reference_count_zero(self):  # review-code-d14.2
         with open(os.path.join(os.path.dirname(paths.HERE), "agents", "verifier.md"), encoding="utf-8") as fh:
             text = " ".join(fh.read().split())
