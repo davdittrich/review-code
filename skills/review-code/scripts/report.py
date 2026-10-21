@@ -1090,7 +1090,7 @@ def _text(doc):
         return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
 
     t, d, fs = doc["target"], doc["dropped"], doc["findings"]
-    out = ["Summary"] + ["change summary (model text, unverified): " + e(x["text"]) for x in doc["summary"]]
+    out = ["Summary"] + ["%s change summary (model text, unverified): %s" % (e(x["lane"]), e(x["text"])) for x in doc["summary"]]
     out += ["verdict: " + doc["verdict"], "target: %s %s (merge base %s), ledger %s" % (
         e(t["kind"]), e(t["head_sha"]), e(t["merge_base"]), e(t["label"]))]
     if t["not_a_change"]:
