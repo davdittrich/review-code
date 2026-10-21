@@ -32,6 +32,11 @@ The handoff may carry more blocks:
 - `check: property`: the claim is a property of the cited code, such as a duplicate, an existing helper that
   already does the job, or a comment that restates the code. It need not fail when run. `confirmed` when the
   quoted code at the cites shows the property; `refuted` when the quoted code shows the property is absent.
+- `references:` (a `lean` claim): the number of lines that name the symbol in files other than its own,
+  searched across the whole pinned repository, including tests, config and docs that tree/ may not hold.
+  A claim that code is unused, dead or never called is `confirmed` only when the count is 0 and tree/
+  shows no use in the symbol's own file; with a count above 0 it is `refuted` when tree/ shows one of
+  those uses, else `unverifiable`; `references: unknown` makes it `unverifiable`.
 - `do-not-flag:` blocks: each item is a kind of claim to refute. Treat them like the list below.
 
 ## Verdict

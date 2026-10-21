@@ -195,7 +195,9 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
     callers, capped["callers"] = [], False
     for s in symbols:
-        hits = sorted(h for h in _grep(repo, rev, [s["name"]]) if h[0] not in inc)
+        every = _grep(repo, rev, [s["name"]])
+        s["refs"] = sum(1 for f, _ in every if f != s["file"])  # whole pinned tree, tests and config too, beyond the cap
+        hits = sorted(h for h in every if h[0] not in inc)
         capped["callers"] = capped["callers"] or len(hits) > CAP_CALLERS
         callers += [{"symbol": s["name"], "file": f, "line": ln, "how": "git grep -w -F"}
                     for f, ln in hits[:CAP_CALLERS]]

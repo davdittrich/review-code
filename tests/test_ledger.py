@@ -470,6 +470,36 @@ class Tree(Base):
                      "a query or call per item", "O(n^2)", "per-process state", "at most `suggestion`"):
             self.assertIn(item, text)
 
+    def unused_claim_fixture(self):
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "app/a.py": "helper_fn(1)\n",
+                   "svc/b.py": "helper_fn(2)\n", "svc/c.py": "helper_fn(3)\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n"})
+
+    def lean_candidate(self, quote="def helper_fn(x):"):
+        return {"id": "F-1", "title": "helper_fn is never called", "trigger": "no caller", "path": "src/cfg.py",
+                "line": 1, "end_line": 1, "axis": "standards", "category": "lean", "quote": quote}
+
+    def test_unused_claim_handoff_carries_whole_repo_reference_count(self):  # review-code-d14.2
+        # reproduction: callers past CAP_CALLERS are outside tree/, so the lean handoff alone cannot show them
+        self.unused_claim_fixture()
+        with mock.patch.object(ledger, "CAP_CALLERS", 1):
+            _, led = self.build()
+        self.assertEqual(len(led["callers"]), 1)  # one caller copied; the rest are invisible to the verifier
+        self.assertEqual(self.tree_files(), ["app/a.py", "src/cfg.py"])
+        self.assertEqual([(s["name"], s["refs"]) for s in led["symbols"]], [("helper_fn", 3)])
+        import report
+        refs = {None: report._refs(self.run_dir)}
+        body = report._handoff(self.lean_candidate(), self.run_dir, "nonce", (), refs)
+        self.assertIn('references: "helper_fn" 3 outside src/cfg.py (git grep -w at head_sha)\n', body)
+        self.assertNotIn("references", report._handoff(dict(self.lean_candidate(), category="smell"), self.run_dir, "n", (), refs))
+        self.assertIn("references: unknown\n", report._handoff(self.lean_candidate("def other_fn():"), self.run_dir, "n", (), refs))
+
+    def test_verifier_confirms_unused_only_at_reference_count_zero(self):  # review-code-d14.2
+        with open(os.path.join(os.path.dirname(paths.HERE), "agents", "verifier.md"), encoding="utf-8") as fh:
+            text = " ".join(fh.read().split())
+        for item in ("`references:`", "unused", "only when the count is 0"):
+            self.assertIn(item, text)
+
     def test_tree_symlink_never_created(self):
         secret = os.path.join(self.tmp, "secret.txt")
         with open(secret, "w", encoding="utf-8") as fh:

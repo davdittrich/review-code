@@ -442,7 +442,16 @@ def _candidate(o, tree, lane, base, ctx=None):
     return c
 
 
-def _handoff(c, run, nonce, packs=()):
+def _refs(run, shard=None):
+    """{symbol: lines naming it outside its own file, whole pinned tree} from the ledger; {} when unreadable."""
+    try:
+        led = target.load_json(run if shard is None else os.path.join(run, "shards", str(shard)), "ledger.json")
+        return {s["name"]: s["refs"] for s in led["symbols"] if isinstance(s.get("refs"), int)}
+    except (target.Refuse, KeyError, TypeError):
+        return {}
+
+
+def _handoff(c, run, nonce, packs=(), refs=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
@@ -455,6 +464,11 @@ def _handoff(c, run, nonce, packs=()):
                             "spec" if c["axis"] == "spec" else "property")
     if c["axis"] == "spec":
         out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
+    if c["category"] == "lean":  # an unused-code claim needs the whole-repo count, not only what tree/ holds
+        m = ledger._DEF.match(c["quote"])
+        n, have = m.group(1) if m else "", (refs or {}).get(c.get("shard"), {})
+        out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n], c["path"])
+                if n in have else "references: unknown\n")
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
@@ -767,8 +781,9 @@ def _ingest(run, text, lane, shard):
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700, exist_ok=True)
     packs = _packs(run)
+    refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
     for c in queue:
-        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
+        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs))
     _reject(run, key, rejected)
     _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"))
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
