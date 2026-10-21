@@ -882,6 +882,58 @@ class Spec(Base):
         _, led, calls = self.xref_build("feat: a\n\n" + refs)
         self.assertEqual((len(calls), len(led["spec"]["sources"])), (ledger.CAP_ISSUES, 8))
 
+    def adr_build(self, files, **kw):
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        return self.build(**kw)
+
+    def test_adr_folder_is_an_independent_spec_set(self):  # review-code-2kz
+        out, led = self.adr_build({"docs/adr/0001-db.md": "ADR-ONE\n", "arch/decisions/0002-q.md": "ADR-TWO\n",
+                                   "docs/adr/img.png": "x", "docs/adr/notes.py": "x = 1\n"})
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]],
+                         [("adr", "arch/decisions/0002-q.md"), ("adr", "docs/adr/0001-db.md")])
+        self.assertEqual((out["spec_status"], out["adr_only"], led["spec"]["adr_only"]), ("found", True, True))
+        spec = self.read("inputs/spec.md")
+        self.assertIn("## Decision records", spec)
+        found, _ = blocks(spec)
+        self.assertEqual(sorted(c for _, c in found if "ADR-" in c), ["ADR-ONE", "ADR-TWO"])
+
+    def test_adrs_beside_a_ticket_are_both_spec_and_the_ticket_is_not_capped_out(self):
+        files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (repo-ab1)")
+        with mock.patch.object(ledger, "_bd_show", return_value="TICKET-TEXT"):
+            out, led = self.build(commits=[sha])
+        kinds = [s["kind"] for s in led["spec"]["sources"]]
+        self.assertEqual((kinds.count("adr"), kinds.count("ticket")), (ledger.CAP_ADR, 1))
+        self.assertNotIn("adr_only", out)
+        self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
+
+    def test_adr_set_has_a_byte_budget(self):
+        big = "x" * 150000
+        _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
+                                 "docs/adr/0004-d.md": big})
+        self.assertEqual(len(led["spec"]["sources"]), 2)
+
+    def test_adr_already_matched_by_name_is_not_listed_twice(self):
+        self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "ADR-P\n"})
+        self.g("checkout", "-q", "-b", "feat-parser")
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        _, led = self.build()
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("file", "docs/adr/0001-parser.md")])
+
+    def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
+        _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])
+        self.assertEqual(led["spec"]["sources"], [])
+
+    def test_a_directory_named_by_the_finder_is_a_record_set(self):
+        out, led = self.adr_build({"notes/records/a.md": "REC-A\n", "notes/records/sub/b.rst": "REC-B\n",
+                                   "notes/other.md": "O\n"}, found=["notes/records"])
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]],
+                         [("adr", "notes/records/a.md"), ("adr", "notes/records/sub/b.rst")])
+
     def test_found_paths_are_read_when_tracked_and_the_rest_dropped(self):  # review-code-zu2
         self.base({"README.md": "r\n", "notes/prd.md": "PRD-TEXT\n", "src/a.py": "a = 1\n"})
         self.g("checkout", "-q", "-b", "wip")

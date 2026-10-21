@@ -108,14 +108,15 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    stdout has `asked` true, skip to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
    spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
-   commit messages, and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
+   commit messages, decision records (every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions`
+   directory, up to 30, each its own entry and counted apart from tickets) and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
    paths (every file there for a `repo` target). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
    unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path the user
    named in their words re-runs the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --spec -` with the path as
    the single line of a here-document on stdin (stdin rule); the script reads only files inside
    the repository (any other path is refused as `bad-spec`: ask the user to copy the file into the
-   repository). Spec finder: when `spec_status` is `none` and the Agent tool is available, make one Agent call,
+   repository). Spec finder: when `spec_status` is `none` or the build printed `adr_only` (only decision records were found), and the Agent tool is available, make one Agent call,
    `subagent_type` `review-code:spec-finder`, `model` `haiku`, `effort` `low`, `prompt` exactly
    `Spec finder. Input: <run>/inputs/spec-find.md`, and a short `description`. It names spec files by content.
    Re-run the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --found -` with the `path`

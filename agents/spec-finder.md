@@ -16,7 +16,7 @@ You find the files that state what the reviewed code should do: specifications, 
 
 1. Search the prose files with Grep for the reviewed symbols and file names, and for words such as requirement, must, shall, acceptance, goal, scope.
 2. Read the best candidates and keep a file only when it states what the reviewed code is meant to do. A changelog, a how-to, a license, a plain API listing and a file under review that only describes itself are not specs.
-3. Name at most 5 files, best first. Name none when nothing fits: that is a valid answer.
+3. Name at most 5 files, best first. Name a directory instead when it holds a set of records that are each part of the spec (decision records, numbered requirements); the skill expands it to its tracked prose files. Decision records under an `adr` or `decisions` directory are already included: do not name them. Name none when nothing fits: that is a valid answer.
 
 ## Output
 
@@ -24,5 +24,5 @@ One line per file, nothing else. A line is a JSON array holding one [key, value]
 
 [["path", "docs/design/parser.md"]]
 
-- path is relative to the repository root and must be a tracked file from the prose list or a Grep hit; the skill drops any other path.
+- path is relative to the repository root and must be a tracked file or a directory of tracked files from the prose list or a Grep hit; the skill drops any other path.
 - Write no reason, quote or summary: file text never leaves this task. Never offer options or next steps.

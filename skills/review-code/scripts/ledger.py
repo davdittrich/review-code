@@ -30,7 +30,7 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
-               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more"}
+               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -44,6 +44,8 @@ CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
+_ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
+CAP_ADR, CAP_ADR_BYTES = 30, 400000  # the decision-record set has its own caps: tickets and spec files never share them
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -486,6 +488,25 @@ def _bd_show(repo: str, ref: str) -> Optional[str]:
         return None
 
 
+def _adr_files(repo: str, head_ls: dict, named, taken, skip) -> Dict[str, str]:
+    """path -> text of the decision records: prose files under an adr, adrs, decisions or architecture-decisions
+    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry."""
+    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
+    dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
+
+    def record(p: str) -> bool:
+        return p.lower().endswith(_PROSE_EXT) and (
+            bool(_ADR_DIRS & set(p.lower().split("/")[:-1])) or any(p.startswith(d + "/") for d in dirs))
+    want = sorted(p for p in reg if record(p) and p not in taken and p not in skip)[:CAP_ADR]
+    blobs = _blobs(repo, [reg[p] for p in want])
+    out, used = {}, 0
+    for p in want:
+        text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
+        if text is not None and used + len(text) <= CAP_ADR_BYTES:
+            out[p], used = text, used + len(text)
+    return out
+
+
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
     """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a token of the
     branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
@@ -538,7 +559,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
 
 
 def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[str], found=()) -> tuple:
-    """(sources, capped_issues, sections, found). sources hold kinds and ids only; every text is in sections."""
+    """(sources, capped_issues, sections, found, adr_only). sources hold kinds and ids only; every text is in sections."""
     kind, sources, pr_blocks = tj["kind"], [], []
     forge = None
     if kind in ("pr", "mr"):
@@ -586,12 +607,15 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
 
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
+    adrs = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else ())
+    sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
+    sections = {"adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
+                "pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
                 [("issue " + r, xtexts[r]) for r in sorted(xtexts)] + [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
                           for p in sorted(files)]}
-    found = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "ticket", "file")))
-    return sources, len(ids) > CAP_ISSUES or len(xrefs) > CAP_ISSUES, sections, found
+    other = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "ticket", "file")))
+    return sources, len(ids) > CAP_ISSUES or len(xrefs) > CAP_ISSUES, sections, other or bool(adrs), bool(adrs) and not other
 
 
 def block(text: str, nonce: str) -> str:
@@ -629,7 +653,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
     tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
-    sources, capped["issues"], sections, found_spec = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
+    sources, capped["issues"], sections, found_spec, adr_only = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
 
     led = {
@@ -639,7 +663,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         "symbols": found["symbols"], "callers": found["callers"], "tests": found["tests"],
         "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"],
         "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
-        "spec": {"status": spec_status, "sources": sources},
+        "spec": dict({"status": spec_status, "sources": sources}, **({"adr_only": True} if adr_only else {})),
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -669,7 +693,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
            "\n".join((_section("PR or MR", sections["pr"], nonce),
                       _section("Commit messages", [("commit " + c, m) for c, m in zip(tj["commits"], messages)], nonce),
                       _section("Issues", sections["issues"], nonce),
-                      _section("Spec files", sections["files"], nonce))))
+                      _section("Spec files", sections["files"], nonce),
+                      _section("Decision records", sections["adrs"], nonce))))
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
                    if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
@@ -701,7 +726,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none"))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": _stored(led), "asked": led["trust_asked"] is True}
+            "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {})}
 
 
 TRUST_VALUES = ("own", "external")
