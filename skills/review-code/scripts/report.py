@@ -27,7 +27,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
     --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
                                    (capture.py) instead of stdin: handback capture before stop capture, and the stored agent
                                    type must be the plan's agent for the lane (plan.json calls) or the batch (verify_calls),
-                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. A successful call consumes the capture;
+                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced. A successful call consumes the capture;
                                    verdicts needs --batch. The reply then goes through the stdin validation unchanged.
     report.py render   --run DIR [--format text|json|sarif]
     report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
@@ -45,7 +45,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
 Document also: lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
-folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
+folded into a same-axis neighbour), lost{lane: n} and, when non-empty, recovered{lane: n} (a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
 [{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
@@ -138,18 +138,44 @@ def _cite(tree, path, line, end, quote):
         return None, "path-not-in-tree"
     if not (_int(line) and _int(end) and 1 <= line <= end):
         return None, "line-out-of-range"
-    try:
-        with open(real, encoding="utf-8", errors="replace") as fh:
-            rows = fh.read().split("\n")
-    except OSError:
+    rows = _rows(real)
+    if rows is None:
         return None, "unreadable"
-    if rows[-1] == "":
-        rows.pop()
     if end > len(rows):
         return None, "line-out-of-range"
     got = rows[line - 1:end]
     ok = isinstance(quote, str) and _ws(quote) and _ws(quote) in _ws(" ".join(got))
     return (got, None) if ok else (None, "quote-not-at-line")
+
+
+def _rows(real):
+    try:
+        with open(real, encoding="utf-8", errors="replace") as fh:
+            rows = fh.read().split("\n")
+    except OSError:
+        return None
+    if rows[-1] == "":
+        rows.pop()
+    return rows
+
+
+def _relocate(tree, path, line, end, quote):
+    """(line, end) of the one place nearest the cited range where the file holds `quote` across as many lines as were
+    cited, else None: a tie, or no such place, keeps the refusal. The quote check itself stays as strict as _cite's."""
+    real = _real(tree, path)
+    rows = _rows(real) if real else None
+    if rows is None or not _ws(quote):
+        return None
+    n = end - line + 1
+    at = sorted((abs(s - (line - 1)), s) for s in range(len(rows) - n + 1) if _ws(quote) in _ws(" ".join(rows[s:s + n])))
+    if not at or at[1:2] and at[1][0] == at[0][0]:
+        return None
+    lo, hi = at[0][1], at[0][1] + n  # the window holds the quote; trim it to the rows that do
+    while hi - lo > 1 and _ws(quote) in _ws(" ".join(rows[lo + 1:hi])):
+        lo += 1
+    while hi - lo > 1 and _ws(quote) in _ws(" ".join(rows[lo:hi - 1])):
+        hi -= 1
+    return lo + 1, hi
 
 
 def _cited(tree, path, line, end, quote):
@@ -311,11 +337,14 @@ def _hostile(tree, path):
 def _parse(ln, load):
     """(read, dict or None) of a wire line under `load`; the second candidate is the line with its outer bracket restored.
     read is False only when no candidate is JSON syntax: a line that reads but is no pair array (repeated key, raw object,
-    wrong shape) is final and never repaired."""
+    wrong shape) is final and never repaired, except a `["` line that loads flat: `["k", v]` is never a pair array, so it
+    is the one-pair line with its outer bracket dropped and the restored candidate is tried."""
     for cand in (ln, "[" + ln + "]"):
         try:
             o = load(cand)
             o = _wire(o) if isinstance(o, list) else None
+            if not isinstance(o, dict) and cand is ln and ln.lstrip().startswith('["'):
+                continue
             return True, o if isinstance(o, dict) else None
         except json.JSONDecodeError:
             pass
@@ -340,12 +369,19 @@ def _objects(text, total=None):
             yield ln, o, not parsed and o is not None
 
 
+def _plain(s):
+    """`s` as rendered prose, whitespace collapsed: link syntax reduced to its text, emphasis markers dropped (a `_` inside
+    a word, as in snake_case, stays). The lane sees the rendered rule, the conventions file holds the Markdown."""
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    return _ws(re.sub(r"\*+|__+|(?<!\w)_|_(?!\w)", "", s))
+
+
 def _rule(o, run):
     """((rule, rule_source), None) of a convention line when the rule text occurs in the named conventions/ file, else
     (None, the failing check)."""
     rule, src = o.get("rule"), o.get("rule_source")
     # a stated rule: at least 3 words, matched on word boundaries, so a letter or a word fragment proves nothing
-    if not (isinstance(rule, str) and len(rule.split()) >= 3 and len(rule) <= 500):
+    if not (isinstance(rule, str) and len(rule.split()) >= 3 and _plain(rule) and len(rule) <= 500):
         return None, "rule-malformed"
     if not isinstance(src, str):
         return None, "rule-source-unknown"
@@ -356,7 +392,7 @@ def _rule(o, run):
     if real is None:
         return None, "rule-source-unknown"
     with open(real, encoding="utf-8", errors="replace") as fh:
-        if re.search(r"(?<!\w)%s(?!\w)" % re.escape(_ws(rule)), _ws(fh.read())):
+        if re.search(r"(?<!\w)%s(?!\w)" % re.escape(_plain(rule)), _plain(fh.read())):
             return (rule, rel), None
     return None, "rule-not-in-conventions"
 
@@ -449,6 +485,11 @@ def _candidate(o, tree, lane, base, ctx=None):
             return None, "sota-invalid"
         c["sources"] = src
     c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
+    if c["rows"] is None and why == "quote-not-at-line" and lane != "sota":  # sota cites its checklist item, not a line to move
+        moved = _relocate(tree, c["path"], c["line"], end, c["quote"])
+        if moved:
+            c["line"], c["end_line"] = moved
+            c["rows"], why = _cite(tree, c["path"], c["line"], c["end_line"], c["quote"])
     if c["rows"] is None:
         return None, why
     if c["category"] == "convention":
@@ -459,10 +500,23 @@ def _candidate(o, tree, lane, base, ctx=None):
     if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
         c["spec_line"] = o["spec_line"]
     c["axis"], c["source_lane"] = LANE_AXIS[lane], lane
-    key = (c["path"], c["category"], _ws(c["quote"]))  # Defects keeps the Phase 3 input; other axes salt it
-    c["id"] = "F-" + hashlib.sha256("\0".join(key if c["axis"] == "defects" else (c["axis"],) + key).encode(
-        "utf-8", "surrogatepass")).hexdigest()[:10]
+    c["id"] = _fid(c["axis"], c["path"], c["category"], c["quote"])
     return c, None
+
+
+def _fid(axis, path, category, quote):
+    key = (os.path.normpath(path), category, _ws(quote))  # Defects keeps the Phase 3 input; other axes salt it
+    return "F-" + hashlib.sha256("\0".join(key if axis == "defects" else (axis,) + key).encode(
+        "utf-8", "surrogatepass")).hexdigest()[:10]
+
+
+def _lost_id(ln, lane):
+    """The finding id a rejected wire line names, or None: the line must parse as it stands and carry a path, category
+    and quote. A sota line takes its path from the inventory, so it names none."""
+    _, o = _parse(ln, _loads)
+    if lane == "sota" or not o or not all(isinstance(o.get(k), str) for k in ("path", "category", "quote")):
+        return None
+    return _fid(LANE_AXIS[lane], o["path"], o["category"], o["quote"])
 
 
 def _handoff(c, run, nonce, packs=()):
@@ -527,11 +581,17 @@ def _rejected(run):
     return lanes, batches
 
 
-def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False):
-    """<run>/counters.json: {"attempts": {name: n}, "lost": {name: n}, "repaired": {name: n}} per lane key and per
-    verify batch ("batch-K", "serial"). The script keeps them so the 2-try cap never rests on the model's memory (bgq):
-    attempts and lost add up over every ingest of `name` and only discard resets them; repaired is the latest reading
-    of each name, replaced by `repaired` after `drop` removes the names it covers. Returns the stored counters."""
+COUNTERS = ("attempts", "lost", "repaired", "recovered", "lost_ids")
+
+
+def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=None, found=()):
+    """<run>/counters.json: {"attempts": {name: n}, "lost": {name: n}, "repaired": {name: n}, "recovered": {name: n},
+    "lost_ids": {name: [id or None]}} per lane key and per verify batch ("batch-K", "serial"). The script keeps them so
+    the 2-try cap never rests on the model's memory (bgq): attempts and lost add up over every ingest of `name` and only
+    discard resets them, except that a lane ingest moves a lost line to recovered once its finding id arrives; repaired is the latest reading of each name, replaced by `repaired` after `drop` removes the
+    names it covers. A lane ingest passes `ids`, the finding id of each line it lost (None when the line named none),
+    and `found`, the ids it accepted: a lost line whose id is in `found` moves from lost to recovered. Returns the
+    stored counters."""
     path = os.path.join(run, "counters.json")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -540,11 +600,20 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False):
         c = {}
     except (OSError, ValueError):
         c = None
-    if c is None or not isinstance(c, dict) or any(k in c and not isinstance(c[k], dict) for k in ("attempts", "lost", "repaired")):
+    if c is None or not isinstance(c, dict) or any(k in c and not isinstance(c[k], dict) for k in COUNTERS):
         raise target.Refuse("bad-counters", "counters.json is unreadable: discard the run (it would reset the retry counts)")
-    c = {k: c.get(k, {}) for k in ("attempts", "lost", "repaired")}
+    c = {k: c.get(k, {}) for k in COUNTERS}
     if name is not None:
-        c["attempts"][name], c["lost"][name] = c["attempts"].get(name, 0) + 1, c["lost"].get(name, 0) + lost
+        c["attempts"][name] = c["attempts"].get(name, 0) + 1
+        if ids is None:
+            c["lost"][name] = c["lost"].get(name, 0) + lost
+        else:
+            prior = c["lost_ids"].get(name, [])
+            prior += [None] * (c["lost"].get(name, 0) - len(prior))  # counted before the ids were kept
+            keep = [i for i in prior if i is None or i not in found]
+            c["recovered"][name] = c["recovered"].get(name, 0) + len(prior) - len(keep)
+            c["lost_ids"][name] = keep + ids
+            c["lost"][name] = len(c["lost_ids"][name])
         c["repaired"] = dict({n: k for n, k in c["repaired"].items() if not drop(n)}, **(repaired or {}))
         _put(path, json.dumps(c, sort_keys=True))
     return c
@@ -829,7 +898,13 @@ def _ingest(run, text, lane, shard):
     lanes = lanes if isinstance(lanes, dict) else {}
     cap = _cap_of(run)
     key = lane if shard is None else "%s@%d" % (lane, shard)
-    lanes[key] = _read_lane(text, lane, tree, run, shard)  # a re-ingest replaces only that lane
+    new = _read_lane(text, lane, tree, run, shard)
+    if (lanes.get(key, {}).get("complete") is True and new.get("complete") is not True
+            and (new["candidates"] or new["rejected"])):  # a partial retry of findings would lose the rest
+        _counts(run, key)  # a refused retry is still a try
+        raise target.Refuse("no-inspected-line", "the reply has findings but no inspected line, so it would replace the complete "
+                            "lane with an incomplete one: send the full corrected reply, the inspected line included")
+    lanes[key] = new  # a re-ingest replaces only that lane
     rejected, repaired = lanes[key].pop("rejected"), lanes[key].pop("repaired")
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
     doomed = _doomed(run, cands)
@@ -848,7 +923,8 @@ def _ingest(run, text, lane, shard):
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs))
     _reject(run, key, rejected)
-    _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"))
+    _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
+            [_lost_id(ln, lane) for _, ln in rejected], {c["id"] for c in lanes[key]["candidates"]})
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
@@ -1090,6 +1166,9 @@ def _build(run):
         doc.update(repaired=repaired)
     if gone:  # lines dropped by any ingest, kept until discard: a retry that omits them must not clear the warning (dc5)
         doc.update(lost=gone)
+    won = {n: k for n, k in cnt["recovered"].items() if k}
+    if won:  # lost lines whose finding a later ingest of the lane carried (_counts): reported, but they no longer force Needs discussion
+        doc.update(recovered=won)
     if hc:  # OUT-02: notes outside the evidence gate; positions and sizes, never the payload
         doc.update(hidden_content=hc[:MAX_HIDDEN], hidden_content_omitted=max(0, len(hc) - MAX_HIDDEN))
     return doc
@@ -1151,7 +1230,8 @@ def _text(doc):
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "not-ingested"]
-    if doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired") or doc.get("lost"):
+    if (doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired") or doc.get("lost")
+            or doc.get("recovered")):
         out += ["", "Warning"]
         out += ["rejected lines: %d (%s)" % (sum(doc["rejected"].values()), ", ".join(
             "%s %d" % (e(n), k) for n, k in sorted(doc["rejected"].items())))] if doc.get("rejected") else []
@@ -1161,6 +1241,8 @@ def _text(doc):
             "%s %d" % (e(n), k) for n, k in sorted(doc["repaired"].items())))] if doc.get("repaired") else []
         out += ["lost lines: %d (%s)" % (sum(doc["lost"].values()), ", ".join(
             "%s %d" % (e(n), k) for n, k in sorted(doc["lost"].items())))] if doc.get("lost") else []
+        out += ["recovered lines: %d (%s)" % (sum(doc["recovered"].values()), ", ".join(
+            "%s %d" % (e(n), k) for n, k in sorted(doc["recovered"].items())))] if doc.get("recovered") else []
         out += ["no verdict: %d (%s)" % (len(doc["no_verdict"]), ", ".join(doc["no_verdict"]))] if doc.get("no_verdict") else []
     out.append("")
 

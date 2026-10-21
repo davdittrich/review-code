@@ -530,6 +530,25 @@ class MultiLane(Lanes):
         for n in ("defects", "standards"):
             self.assertIn("lane %s incomplete: reply had no inspected line" % n, text)
 
+    def test_one_pair_inspected_line_without_its_outer_bracket_completes_the_lane(self):  # gh-14
+        rc, out = self.rep("ingest", lines(mc(2), '["inspected",["src/calc.py"]]'), extra=["--lane", "defects"])
+        self.assertEqual(rc, 0, out)
+        got = json.loads(out)
+        self.assertEqual((len(got["ids"]), got["lanes"]), (1, {"defects": "complete"}))
+
+    def test_a_retry_without_an_inspected_line_is_refused_and_keeps_the_complete_lane(self):  # gh-14
+        first = self.lane("defects", mc(2), mc(6), {"inspected": ["src/calc.py"]})
+        out = self.lane("defects", mc(2), rc=1)
+        self.assertEqual(out["reason"], "no-inspected-line")
+        self.assertEqual(self.doc()["lanes"], {"defects": "complete"})
+        self.assertEqual(self.lane("defects", mc(2), mc(6), {"inspected": ["src/calc.py"]})["ids"], first["ids"])  # full retry still replaces
+
+    def test_a_refused_retry_still_counts_as_a_try(self):  # SKILL.md step 7: the script counts every ingest
+        self.lane("defects", mc(2), mc(6), {"inspected": ["src/calc.py"]})
+        self.lane("defects", mc(2), rc=1)
+        rc, out = self.rep("status")
+        self.assertEqual(json.loads(out)["attempts"]["defects"]["attempts"], 2)
+
     def test_reingest_replaces_only_that_lane(self):
         self.lane("defects", mc(2))
         self.lane("standards", mc(3, "lean"))
@@ -990,6 +1009,100 @@ class Ctx06Integration(Lanes):  # CTX-06 across ledger.py, plan.py and report.py
         self.assertEqual((f["category"], f["rule_source"], f["rule"]), ("convention", "conventions/REVIEW.md", RULE_REVIEW))
         rc, text = self.rep("render")
         self.assertNotIn("INJECT-CTX06", json.dumps(d) + text)
+
+
+class CaptureOnePair(Captured, Lanes):  # gh-14: the --agent path, where the lane's inspected line is the single-bracket pair
+    def test_a_capture_of_three_findings_and_a_one_pair_inspected_line_ingests(self):
+        with open(os.path.join(self.run_dir, "plan.json"), "w", encoding="utf-8") as fh:
+            json.dump({"caps": {"max_verifier_calls": 9}, "calls": [{"lane": "defects", "agent": "review-code:finder", "shard": None}]}, fh)
+        self.capture(lines(mc(2), mc(5), mc(8), '["inspected",["src/calc.py"]]'))
+        rc, out = self.rep("ingest", extra=["--lane", "defects", "--agent", AID])
+        self.assertEqual(rc, 0, out)
+        got = json.loads(out)
+        self.assertEqual((len(got["ids"]), got["lanes"]), (3, {"defects": "complete"}))
+
+
+class Relocate(Lanes):  # gh-14: a quote cited at the wrong line is moved to where the file holds it
+    base_files = MBASE
+    feat_files = {"src/calc.py": "def f(a):\n    y = a - 1\n    z = a - 2\n    w = a - 3\n    v = a - 4\n    y = a - 1\n    return y\n"}
+
+    def cite(self, line, quote="y = a - 1", end=None):
+        return self.lane("defects", dict(CAND, line=line, end_line=end or line, quote=quote))
+
+    def test_a_multi_line_cite_moves_to_the_lines_that_hold_the_quote_not_a_window_around_them(self):
+        out = self.cite(1, "return y", end=2)
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [dict(CITE, line=7, quote="return y")], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["line"], f["end_line"]), (7, 7))
+
+    def test_a_quote_cited_off_line_is_kept_at_the_nearest_line_that_holds_it(self):
+        out = self.cite(3)
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [dict(CITE, line=2, quote="y = a - 1")], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["line"], f["end_line"]), (2, 2))
+
+    def test_a_quote_equally_near_two_lines_is_still_dropped(self):
+        out = self.cite(4)
+        self.assertEqual([r["check"] for r in out["rejected"]], ["quote-not-at-line"])
+
+    def test_a_quote_the_file_does_not_hold_is_still_dropped(self):
+        out = self.cite(3, "q = a - 9")
+        self.assertEqual([r["check"] for r in out["rejected"]], ["quote-not-at-line"])
+
+
+class LostRecovery(Lanes):  # gh-14: a lost line counts as recovered only when the retry carries its finding; an omission never clears it (dc5)
+    base_files = dict(BASE, **{"REVIEW.md": RULE_REVIEW + "\n"})
+    feat_files = {"src/calc.py": FEAT}
+    INS = {"inspected": ["src/calc.py"]}
+
+    def conv(self, rule):
+        return dict(CAND, category="convention", rule=rule, rule_source="conventions/REVIEW.md")
+
+    def test_a_retry_that_carries_the_lost_finding_recovers_it(self):
+        out = self.lane("standards", self.conv("Always subtract where the name says add."), self.INS)
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-not-in-conventions"])
+        self.assertEqual(self.doc()["lost"], {"standards": 1})
+        out = self.lane("standards", self.conv(RULE_REVIEW), self.INS)
+        self.assertEqual((len(out["ids"]), out["lanes"]), (1, {"standards": "complete"}))
+        d = self.doc()
+        self.assertEqual((d.get("lost"), d["recovered"]), (None, {"standards": 1}))
+        rc, text = self.rep("render")
+        self.assertIn("recovered lines: 1 (standards 1)", text)
+
+    def test_a_retry_that_omits_the_lost_finding_keeps_the_warning(self):
+        self.lane("standards", self.conv("Always subtract where the name says add."), self.INS)
+        self.lane("standards", self.INS)
+        d = self.doc()
+        self.assertEqual((d["lost"], d.get("recovered"), d["verdict"]), ({"standards": 1}, None, "Needs discussion"))
+
+    def test_a_line_that_never_parsed_stays_lost_after_a_full_retry(self):
+        self.lane("standards", '[["path","src/calc.py"],', self.INS)
+        self.lane("standards", self.conv(RULE_REVIEW), self.INS)
+        d = self.doc()
+        self.assertEqual((d["lost"], d.get("recovered")), ({"standards": 1}, None))
+
+
+class RuleMarkdown(Lanes):  # gh-14: convention files are Markdown, the lane quotes the rendered rule
+    base_files = dict(BASE, **{"REVIEW.md": "Never **subtract** where the __name__ says add, see [the guide](docs/g.md).\n"})
+    feat_files = {"src/calc.py": FEAT}
+
+    def test_rendered_prose_rule_matches_a_marked_up_convention_and_is_stored_as_written(self):
+        rule = "Never subtract where the name says add, see the guide."
+        out = self.lane("standards", dict(CAND, category="convention", rule=rule, rule_source="conventions/REVIEW.md"))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual(f["rule"], rule)
+
+    def test_a_rule_of_markers_only_is_malformed(self):
+        out = self.lane("standards", dict(CAND, category="convention", rule="** __ **", rule_source="conventions/REVIEW.md"))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-malformed"])
+
+    def test_a_rule_with_other_words_is_still_rejected(self):
+        out = self.lane("standards", dict(CAND, category="convention", rule="Never add where the name says subtract.",
+                                          rule_source="conventions/REVIEW.md"))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-not-in-conventions"])
 
 
 class DoNotFlag(Lanes):
