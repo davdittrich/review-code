@@ -519,6 +519,16 @@ class TestRunDirPruning(Local):
         for p in (fresh, other, keep, link, out["run"]):
             self.assertTrue(os.path.exists(p), p)
 
+    def test_an_old_captures_directory_is_pruned_and_a_fresh_one_kept(self):  # gh#8
+        caps = os.path.join(self.repo, ".git", "review-code", "captures")
+        for age, kept in ((target.RETENTION_DAYS + 1, False), (0, True)):
+            os.makedirs(caps, exist_ok=True)
+            with open(os.path.join(caps, "aid.stop.json"), "w") as fh:
+                fh.write("{}")
+            os.utime(caps, (time.time() - age * 86400,) * 2)
+            self.assertEqual(self.pin("feat~1..feat")[0], 0)
+            self.assertEqual(os.path.exists(caps), kept)
+
     def test_a_write_deep_in_a_run_keeps_it_past_the_cutoff(self):  # review-code-j2w
         for write in (target.write_private, lambda p, t: target.write_atomic(p, t.encode())):
             run = self.mk("review-code.TOUCH1", target.RETENTION_DAYS + 1)

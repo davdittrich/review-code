@@ -184,14 +184,15 @@ RETENTION_DAYS = 14
 
 
 def _prune(base: str) -> None:
-    """IN-01: remove run directories not touched for RETENTION_DAYS. Runs before the new one is made, so the
-    current run is never a candidate; links and other names are left alone; a removal that fails is skipped."""
+    """IN-01: remove run directories, and the hook's captures directory, not touched for RETENTION_DAYS. Runs before
+    the new one is made, so the current run is never a candidate; links and other names are left alone; a removal that
+    fails is skipped."""
     cutoff = time.time() - RETENTION_DAYS * 86400
     for name in os.listdir(base):
         path = os.path.join(base, name)
         try:
             st = os.lstat(path)
-            if name.startswith("review-code.") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
+            if (name.startswith("review-code.") or name == "captures") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
         except OSError:
             pass

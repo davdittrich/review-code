@@ -824,6 +824,23 @@ class Serial(Lanes):
         self.assertEqual((d["mode"], d["tier"], d["lost_guarantees"]), ("parallel", None, []))
 
 
+AID = "aad7165a6e7d7a840"
+
+
+class Captured:
+    """Mixin: feed the capture hook as Claude Code would, then look at what it kept."""
+
+    def capture(self, text, kind="handback", agent_type="review-code:finder", aid=AID):
+        ev = ({"hook_event_name": "SubagentStop", "last_assistant_message": text} if kind == "stop" else
+              {"hook_event_name": "PostToolUse", "tool_name": "SubagentHandback", "tool_input": {"message": text}})
+        rc, out, err = cli("capture.py", [], self.repo, self.tmp, json.dumps(dict(ev, agent_id=aid, agent_type=agent_type)))
+        self.assertEqual((rc, out, err), (0, "", ""))
+
+    def held(self):
+        caps = os.path.join(os.path.dirname(self.run_dir), "captures")
+        return sorted(os.listdir(caps)) if os.path.isdir(caps) else []
+
+
 class Shards(Lanes):
     def setUp(self):
         super().setUp()
@@ -912,6 +929,25 @@ class Shards(Lanes):
         c = dict(mc(3, "convention", severity="required"), rule="Never subtract operands.", rule_source="conventions/CLAUDE.md")
         self.assertEqual(self.shard(1, c, lane="standards")["dropped"]["invalid"], 0)
         self.assertEqual(self.lane("standards", c)["dropped"]["invalid"], 1)  # the parent run has no such file
+
+
+class ShardAgent(Captured, Shards):
+    def test_a_reply_for_another_shard_lands_as_rejected_lines(self):  # the shard's own tree is the check
+        plan = os.path.join(self.run_dir, "plan.json")
+        with open(plan, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        doc["calls"] = [{"lane": "defects", "agent": "review-code:finder", "shard": n} for n in (1, 2)]
+        with open(plan, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        # shard 2's tree has `return a` at line 2; shard 1's has `return 1` there
+        self.capture(lines(dict(CAND, line=2, quote="return a"), {"inspected": ["src/calc.py"]}))
+        r, out = self.rep("ingest", extra=["--lane", "defects", "--shard", "1", "--agent", AID])
+        self.assertEqual(r, 0, out)
+        r, out = self.rep("status")
+        self.assertEqual(r, 0, out)
+        st = json.loads(out)
+        self.assertEqual(st["rejected"], {"defects@1": 1})
+        self.assertGreater(st["rejected_total"], 0)
 
 
 RULE_REVIEW = "Never subtract where the name says add."
@@ -1457,6 +1493,185 @@ class Gate(Base):
         self.ingest("[[\"truncated\", \"x", {"inspected": ["src/calc.py"]})
         self.rep("discard")
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected")))
+
+
+QBASE = {"src/calc.py": "def load():\n    return 1\n"}
+QFEAT = "def load():\n    return 1\n\nx = \"a\"\ny = \"b\"\n"  # lines 4 and 5 hold double quotes
+QCAND = dict(CAND, line=4, end_line=5, quote='x = "a"\ny = "b"')  # a two-line quote that holds double quotes
+QID = fid("src/calc.py", "bug", QCAND["quote"])
+
+
+class AgentReply(Captured, Base):
+    """gh#8: ingest and verdicts --agent read the reply the capture hook stored, byte for byte."""
+    base_files, feat_files = QBASE, {"src/calc.py": QFEAT}
+
+    def setUp(self):
+        super().setUp()
+        write_plan(self.run_dir, calls=[{"lane": "defects", "agent": "review-code:finder", "shard": None}])
+
+    def agent_ingest(self, aid=AID, lane="defects", rc=0, extra=()):
+        r, out = self.rep("ingest", extra=["--lane", lane, "--agent", aid] + list(extra))
+        self.assertEqual(r, rc, out)
+        return json.loads(out)
+
+    REPLY = lines("prose before", QCAND, {"inspected": ["src/calc.py"]}, "prose after")
+
+    def test_ingest_takes_a_reply_with_quotes_and_a_multiline_quote_whole_and_consumes_it(self):
+        self.capture(self.REPLY)
+        out = self.agent_ingest()
+        self.assertEqual((out["status"], out["ids"], out["rejected"], out["repaired"]), ("ok", [QID], [], 0))
+        self.assertEqual(self.status()["rejected_total"], 0)
+        self.assertEqual(self.held(), [])
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")  # consumed: it cannot be replayed
+
+    def test_the_handback_text_wins_over_the_stop_text(self):
+        self.capture("closing words only", kind="stop")
+        self.capture(self.REPLY)
+        self.assertEqual(self.agent_ingest()["ids"], [QID])
+        self.assertEqual(self.held(), [])
+
+    def test_a_stop_capture_alone_is_enough(self):
+        self.capture(self.REPLY, kind="stop")
+        self.assertEqual(self.agent_ingest()["ids"], [QID])
+
+    def test_no_capture_refuses_and_stores_nothing(self):
+        self.assertEqual(self.agent_ingest(rc=1), {"reason": "no-capture", "status": "refuse"})
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
+        self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")
+
+    def test_a_capture_of_another_agent_type_is_refused_and_kept(self):
+        self.capture(self.REPLY, agent_type="review-code:standards")
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "agent-mismatch")
+        self.assertEqual(self.agent_ingest(lane="standards", rc=1)["reason"], "agent-mismatch")  # the plan has no such call
+        self.assertEqual(self.agent_ingest(extra=["--shard", "1"], rc=1)["reason"], "agent-mismatch")  # nor a shard 1 call
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+
+    def test_a_malformed_agent_id_is_refused(self):
+        for bad in ("../x", "a/b", "", "x" * 65, "-x"):
+            rc, out = self.rep("ingest", extra=["--agent", bad])
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "bad-agent"), bad)
+
+    def test_a_reader_refusal_keeps_the_capture(self):
+        self.capture(self.REPLY)
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        self.rep("verdicts", lines({"id": QID, "verdict": "confirmed", "evidence": [], "reason": "r"}), extra=["--batch", "1"])
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "late-reply")  # verification already started
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+
+    def test_verdicts_agent_takes_a_reply_with_quotes_and_consumes_it(self):
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        reply = lines("prose", {"id": QID, "verdict": "confirmed", "reason": 'it holds "a"\nand "b"',
+                                "evidence": [{"path": "src/calc.py", "line": 4, "quote": 'x = "a"'}]})
+        self.capture(reply, agent_type="review-code:verifier")
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["confirmed"], json.loads(out)["repaired"]), (0, [QID], 0))
+        self.assertEqual((self.status()["rejected_total"], self.held()), (0, []))
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "no-capture"))
+        with open(os.path.join(self.run_dir, "replies", "verify", "1.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), reply)  # the stored batch reply is the captured text, byte for byte
+
+    def test_verdicts_agent_checks_the_batch_agent_and_needs_a_batch(self):
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        self.capture("[]", agent_type="review-code:spec-verifier")
+        for extra, why in ((["--batch", "1"], "agent-mismatch"), ([], "batch-required"), (["--batch", "9"], "bad-batch")):
+            r, out = self.rep("verdicts", extra=extra + ["--agent", AID])
+            self.assertEqual((r, json.loads(out)["reason"]), (1, why), extra)
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
+    def test_an_agent_id_serves_one_call_per_run(self):
+        self.capture(self.REPLY)
+        self.agent_ingest()
+        self.capture(self.REPLY)  # a resumed agent's corrected retry is captured again under the same id
+        self.assertEqual(self.agent_ingest()["status"], "ok")
+        self.capture(self.REPLY, agent_type="review-code:standards")
+        self.assertEqual(self.agent_ingest(lane="standards", rc=1)["reason"], "agent-reused")
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+        self.capture("x", agent_type="review-code:verifier")  # nor can it verify a batch
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "agent-reused"))
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+        self.capture(self.REPLY, aid="d" * 17)  # another id is free
+        self.assertEqual(self.agent_ingest("d" * 17)["status"], "ok")
+
+    def test_a_verdicts_agent_is_bound_to_its_batch_and_discard_forgets_the_binding(self):
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        reply = lines({"id": QID, "verdict": "unverifiable", "evidence": [], "reason": "r"})
+        self.capture(reply, agent_type="review-code:verifier")
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual(r, 0, out)
+        self.capture(self.REPLY)
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "agent-reused")
+        self.rep("discard")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "agents.json")))
+
+    def test_a_verdicts_reply_naming_none_of_the_batch_ids_is_refused_and_kept(self):
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        self.capture(lines({"id": "F-0000000000", "verdict": "confirmed", "evidence": [], "reason": "r"}),
+                     agent_type="review-code:verifier")  # another batch's verdicts
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "agent-mismatch"))
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
+    def test_a_corrupt_or_non_object_agents_file_refuses_and_is_left_alone(self):
+        path = os.path.join(self.run_dir, "agents.json")
+        for bad in ("[1,", "[]", '"s"', ""):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(bad)
+            self.capture(self.REPLY)
+            self.assertEqual(self.agent_ingest(rc=1)["reason"], "bad-agents", bad)
+            self.assertEqual(self.held(), [AID + ".handback.json"])
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), bad)
+            self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
+
+    def test_a_planted_deeply_nested_capture_is_a_clean_refusal(self):
+        caps = os.path.join(os.path.dirname(self.run_dir), "captures")
+        os.makedirs(caps, mode=0o700)
+        with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
+            fh.write("[" * 200000)
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
+        self.assertEqual((rc, json.loads(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+
+    def test_discard_leaves_the_captures_alone(self):  # they belong to the repository, not to this run
+        self.capture(self.REPLY)
+        self.capture(self.REPLY, kind="stop", aid="c" * 17)
+        self.rep("discard")
+        self.assertEqual(self.held(), [AID + ".handback.json", "c" * 17 + ".stop.json"])
+
+    def test_a_capture_without_an_inspected_line_is_refused_and_kept(self):
+        self.capture("All done, see my report above.", kind="stop")
+        out = self.agent_ingest(rc=1)
+        self.assertEqual(out["reason"], "empty-capture")
+        self.assertEqual(self.held(), [AID + ".stop.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
+        self.capture(lines(QCAND))  # a candidate line alone does not complete the lane either
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "empty-capture")
+
+    def test_a_capture_without_a_verdict_line_is_refused_and_kept(self):
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        self.capture("Verified all of them, thanks.", agent_type="review-code:verifier")
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "empty-capture"))
+        self.assertEqual(self.held(), [AID + ".handback.json"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
+    def test_no_capture_detail_says_to_rerun_on_stdin(self):
+        with self.assertRaises(report.target.Refuse) as cm:  # the CLI prints the reason only, so read the detail in-process
+            report._take(self.run_dir, AID, "review-code:finder", True)
+        self.assertEqual((cm.exception.reason, cm.exception.detail),
+                         ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
+
+    def status(self):
+        rc, out = self.rep("status")
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)
 
 
 if __name__ == "__main__":

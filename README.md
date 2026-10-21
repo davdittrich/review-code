@@ -23,7 +23,8 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 - Claude Code 2.1.292 or later. This floor is provisional; the plugin is tested on 2.1.304 locally; CI pins 2.1.302.
 - `git`.
-- `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
+- `python3` 3.9 or later, for target pinning, the context ledger, the untrusted-text sanitizer and the reply-capture hook. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
+- Reply capture: the plugin's hook (`hooks/hooks.json`, run with `python3`) stores each lane and verifier reply under the repository's `review-code` git directory, so `report.py ingest` and `verdicts` read it with `--agent <agentId>` instead of the model retyping it. The hook never creates that directory and never blocks an agent. With hooks disabled, without `python3`, or with a custom `agent_prefix` setting, the skill passes the reply on stdin as before.
 - `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; with `--comment` the review is posted to the PR through `gh api`.
 - `gh` and `glab` also fetch issues named in commit or PR text.
 - Optional: `bd` (beads), to read tickets named in commit messages.

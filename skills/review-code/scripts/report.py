@@ -15,19 +15,25 @@ Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this scri
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
 `render`, which prints the report):
 
-    report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N]
+    report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N] [--agent ID]
                                    candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers);
                                    additive per lane (key <lane>, or <lane>@N for shard N, a plan.json shard id:
                                    cites are checked in <run>/shards/N/tree, conventions in
                                    <run>/shards/N/conventions; else bad-shard)
-    report.py verdicts --run DIR [--batch K]   id, verdict, evidence (a list of path, line, quote), reason pair-array lines.
+    report.py verdicts --run DIR [--batch K] [--agent ID]   id, verdict, evidence (a list of path, line, quote), reason pair-array lines.
                                    --batch K (a verify_calls batch of candidates.json) stores the reply in replies/verify/K.txt,
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
                                    verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
+    --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
+                                   (capture.py) instead of stdin: handback capture before stop capture, and the stored agent
+                                   type must be the plan's agent for the lane (plan.json calls) or the batch (verify_calls),
+                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. A successful call consumes the capture;
+                                   verdicts needs --batch. The reply then goes through the stdin validation unchanged.
     report.py render   --run DIR [--format text|json|sarif]
     report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
                                    rejected {lane or batch: count}, rejected_total, no_verdict (ids of a stored batch without a verdict)
-    report.py discard  --run DIR   removes candidates.json, verdicts.json, handoff/, replies/ and repro/ (a re-plan starts clean)
+    report.py discard  --run DIR   removes candidates.json, verdicts.json, agents.json, handoff/, replies/ and repro/ (a re-plan starts clean;
+                                   the captures belong to the repository and stay)
 
 Document (json output; no run path, no timestamps, so it is byte-reproducible):
   schema_version, target{kind, head_sha, merge_base, label, not_a_change}, trust (own|external), verdict,
@@ -76,6 +82,7 @@ except ImportError:  # shortcut: no fcntl (Windows) means no run lock, so two co
     fcntl = None
 from urllib.parse import quote, urlsplit
 
+import capture
 import ledger
 import sanitize
 import target
@@ -744,9 +751,60 @@ def _reject(run, name, rows):
         os.remove(path)
 
 
-def ingest(run, text, lane="defects", shard=None):
+def ingest(run, text, lane="defects", shard=None, agent=None):
     with _locked(run):
-        return _ingest(run, text, lane, shard)
+        if agent is None:
+            return _ingest(run, text, lane, shard)
+        calls = _plan(run).get("calls")
+        want = next((c.get("agent") for c in calls if isinstance(c, dict) and c.get("lane") == lane and c.get("shard") == shard),
+                    None) if isinstance(calls, list) else None
+        key = lane if shard is None else "%s@%d" % (lane, shard)
+        _bind(run, agent, key)
+        out = _ingest(run, _take(run, agent, want, True), lane, shard)
+        _bind(run, agent, key, True)
+        _drop(run, agent)
+        return out
+
+
+def _bind(run, agent, key, record=False):
+    """<run>/agents.json maps an agent id to the one call it served (a captures file knows only the id): another call
+    key refuses agent-reused, the same key again is a retry. `record` stores the binding after a success."""
+    try:
+        bound = target.load_json(run, "agents.json")
+    except target.Refuse as r:  # only a missing file starts empty: a corrupt one would reset every binding
+        if r.reason != "no-agents":
+            raise
+        bound = {}
+    if record:
+        _put(os.path.join(run, "agents.json"), json.dumps(dict(bound, **{agent: key}), sort_keys=True))
+    elif bound.get(agent, key) != key:
+        raise target.Refuse("agent-reused", "this agent id already served another call of the run")
+
+
+def _take(run, agent, want, lane):
+    """The reply the capture hook stored for `agent` (handback before stop), when it came from agent type `want` and
+    holds what the step needs: an `inspected` line for a lane (`lane` true), else any wire line. Else empty-capture,
+    so closing words alone never stand in for a reply."""
+    target.load_json(run, "target.json")
+    for kind in capture.KINDS:
+        try:
+            with open(capture.path(os.path.dirname(os.path.abspath(run)), agent, kind), encoding="utf-8") as fh:
+                got = json.load(fh)
+        except (OSError, ValueError, RecursionError):
+            continue
+        if isinstance(got, dict) and isinstance(got.get("message"), str):
+            if got.get("agent_type") != want:
+                raise target.Refuse("agent-mismatch", "the capture is of another agent type than the plan's")
+            if not any(o is not None and "inspected" in o and "path" not in o if lane else True for _, o, _ in _objects(got["message"])):
+                raise target.Refuse("empty-capture", "the capture holds no " + ("inspected" if lane else "verdict") + " line")
+            return got["message"].encode("utf-8", "replace").decode("utf-8")  # a lone surrogate cannot be stored
+    raise target.Refuse("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin")
+
+
+def _drop(run, agent):
+    for kind in capture.KINDS:
+        with contextlib.suppress(OSError):
+            os.remove(capture.path(os.path.dirname(os.path.abspath(run)), agent, kind))
 
 
 def _ingest(run, text, lane, shard):
@@ -798,9 +856,9 @@ def _ingest(run, text, lane, shard):
             "rejected": [{"lane": key, "index": i, "check": why} for i, (why, _) in enumerate(rejected, 1)]}
 
 
-def verdicts(run, text, batch=None):
+def verdicts(run, text, batch=None, agent=None):
     with _locked(run):
-        return _verdicts(run, text, batch)
+        return _verdicts(run, text, batch, agent)
 
 
 def _replies(run):
@@ -847,7 +905,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
     return foreign, bad, fixed
 
 
-def _verdicts(run, text, batch):
+def _verdicts(run, text, batch, agent=None):
     cand = target.load_json(run, "candidates.json")
     _counts(run)
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
@@ -860,6 +918,13 @@ def _verdicts(run, text, batch):
         raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
     if batch is not None and batch not in calls:
         raise target.Refuse("bad-batch", "--batch is not a batch of candidates.json verify_calls")
+    if agent is not None:
+        if batch is None:
+            raise target.Refuse("batch-required", "--agent needs --batch")
+        _bind(run, agent, "batch-%d" % batch)
+        text = _take(run, agent, next(c.get("agent") for c in cand["verify_calls"] if isinstance(c, dict) and c.get("batch") == batch), False)
+        if not any(o is not None and isinstance(o.get("id"), str) and o["id"] in calls[batch] for _, o, _ in _objects(text)):  # another batch's reply
+            raise target.Refuse("agent-mismatch", "the capture names none of the batch's ids")
     store = _replies(run)
     if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
@@ -882,6 +947,9 @@ def _verdicts(run, text, batch):
             foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     _counts(run, "serial" if batch is None else "batch-%d" % batch, lost, fixes, lambda n: n == "serial" or n.startswith("batch-"))
+    if agent is not None:
+        _bind(run, agent, "batch-%d" % batch, True)
+        _drop(run, agent)
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref)),
@@ -899,7 +967,7 @@ def discard(run):
 def _discard(run):
     for d in ("handoff", "repro", "replies", "rejected"):
         shutil.rmtree(os.path.join(run, d), ignore_errors=True)
-    for f in ("candidates.json", "verdicts.json", "counters.json"):
+    for f in ("candidates.json", "verdicts.json", "counters.json", "agents.json"):
         if os.path.exists(os.path.join(run, f)):
             os.remove(os.path.join(run, f))
     return {"status": "ok"}
@@ -1135,7 +1203,7 @@ def render(run, fmt):
 
 
 def _usage():
-    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] | verdicts --run DIR [--batch K] | render --run DIR [--format text|json|sarif] | discard --run DIR | status --run DIR")
+    return target.Refuse("usage", "usage: report.py ingest --run DIR [--lane defects|standards|spec|sota] [--shard N] [--agent ID] | verdicts --run DIR [--batch K] [--agent ID] | render --run DIR [--format text|json|sarif] | discard --run DIR | status --run DIR")
 
 
 def main(argv):
@@ -1155,7 +1223,7 @@ def main(argv):
             print(json.dumps((discard if sub == "discard" else status)(run), sort_keys=True))
             return 0
         opts = {}
-        while len(tail) >= 2 and tail[0] in (("--lane", "--shard") if sub == "ingest" else ("--batch",)) and tail[0] not in opts:
+        while len(tail) >= 2 and tail[0] in (("--lane", "--shard", "--agent") if sub == "ingest" else ("--batch", "--agent")) and tail[0] not in opts:
             opts[tail[0]], tail = tail[1], tail[2:]
         lane = opts.get("--lane", "defects")
         if tail or lane not in LANE_AXIS:
@@ -1164,8 +1232,12 @@ def main(argv):
             raise target.Refuse("bad-shard", "--shard is not a positive integer")
         if "--batch" in opts and not re.fullmatch(r"[1-9][0-9]{0,8}", opts["--batch"]):
             raise target.Refuse("bad-batch", "--batch is not a positive integer")
-        text = sys.stdin.buffer.read().decode("utf-8", "replace")
-        out = ingest(run, text, lane, int(opts["--shard"]) if "--shard" in opts else None) if sub == "ingest" else verdicts(run, text, int(opts["--batch"]) if "--batch" in opts else None)
+        agent = opts.get("--agent")
+        if agent is not None and not capture.ID.fullmatch(agent):
+            raise target.Refuse("bad-agent", "--agent is not an agent id")
+        text = None if agent else sys.stdin.buffer.read().decode("utf-8", "replace")  # the capture replaces stdin
+        shard, batch = (int(opts[k]) if k in opts else None for k in ("--shard", "--batch"))
+        out = ingest(run, text, lane, shard, agent) if sub == "ingest" else verdicts(run, text, batch, agent)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback

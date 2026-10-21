@@ -168,6 +168,17 @@ class Phase4Procedure(unittest.TestCase):
                   "`lost` in `status`"):
             self.assertIn(t, self.flat)
 
+    def test_steps_7_and_8_ingest_by_agent_id_with_stdin_as_the_fallback(self):  # gh#8
+        for t in ("report.py ingest --run <run> --lane <lane> --agent <agentId>",
+                  "report.py verdicts --run <run> --batch <batch> --agent <agentId>",
+                  "its full corrected reply"):
+            self.assertIn(t, self.flat)
+        self.assertIn("On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`;", self.flat)
+        self.assertIn("without `--agent`", self.flat)
+        self.assertEqual(self.flat.count("On any `--agent` refusal"), 2)  # the stdin fallback in step 7 and in step 8
+        self.assertNotIn("re-send only them", self.flat)
+        self.assertNotIn("plus the re-sent ones", self.flat)
+
     def test_cost_gate_and_serial(self):
         flat = self.flat + " " + " ".join(ref("lanes.md").split())  # serial mode's procedure lives in lanes.md
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
