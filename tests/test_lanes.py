@@ -605,6 +605,11 @@ class PromptRules(unittest.TestCase):
         self.assertIn("never read", t)
         self.assertIn("Edit only the one file the brief names", t)
 
+    def test_verifier_reference_count_governs_only_unused_code_claims(self):  # review-code-hlj
+        t = self.text("verifier")
+        self.assertIn("any other `lean` property", t)
+        self.assertIn("judge the quoted code and tree/ evidence directly, with no reference count needed", t)
+
     def test_finder_efficiency_checklist(self):
         t = self.text("finder")
         for item in ("repeated I/O or recomputation", "independent operations run in sequence",
