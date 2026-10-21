@@ -274,8 +274,8 @@ def _helpers(repo: str, listing: Optional[dict], names: List[str], included: Lis
         oids = sorted({listing[p][1] for _, p, _ in cand})
         raw = target.git_bytes(["cat-file", "--batch-check=%(objectname) %(objectsize)"], repo,
                                stdin="".join(o + "\n" for o in oids).encode())
-        size = {p: dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing")).get(listing[p][1])
-                for _, p, _ in cand}
+        got = dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing"))
+        size = {p: got.get(listing[p][1]) for _, p, _ in cand}
     else:
         size = {}
         for _, p, _ in cand:

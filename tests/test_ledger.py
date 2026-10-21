@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tracemalloc
 import unittest
 from contextlib import redirect_stdout
@@ -457,6 +458,17 @@ class Tree(Base):
                          [("lib/zz.py", "sibling of a changed file")])
         self.assertEqual(led["tree"]["skipped"], [{"path": "lib/sub/big1.py", "reason": "helper-cap"},
                                                   {"path": "lib/sub/big2.py", "reason": "helper-cap"}])
+
+    def test_helper_sizes_are_looked_up_in_one_pass(self):  # review-code-cag
+        n = 6000
+        listing = {"d/f%d.py" % i: ("100644", "%040x" % i) for i in range(n)}
+        raw = "".join("%040x 10\n" % i for i in range(n)).encode()
+        with mock.patch.object(target, "git_bytes", return_value=raw):
+            t0 = time.monotonic()
+            kept, over = ledger._helpers("/unused", listing, sorted(listing), ["d/a.py"], set())
+            took = time.monotonic() - t0
+        self.assertEqual((len(kept), over), (n, []))
+        self.assertLess(took, 2.0)
 
     def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
         self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
