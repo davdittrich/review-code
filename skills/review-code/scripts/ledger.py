@@ -34,7 +34,8 @@ STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "cou
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
-_XREF = re.compile(r"(?<![\w/.-])([A-Za-z0-9][\w.-]{0,38}/[\w.-]{1,100})#([0-9]{1,9})\b")  # owner/repo#N: GitHub
+_XREF = re.compile(r"(?<![\w/.-])([A-Za-z0-9][A-Za-z0-9-]{0,38}/[\w.-]{1,100})#([0-9]{1,9})\b")  # owner/repo#N: GitHub
+_FILE_EXT = re.compile(r"\.(?:py|js|ts|tsx|jsx|md|rst|txt|go|rs|java|c|h|cpp|rb|php|json|ya?ml|toml|sh|cfg|ini|html|css)\Z", re.I)
 _GH_URL = re.compile(r"https?://(%s)/([\w.-]+/[\w.-]+)/issues/([0-9]{1,9})\b" % _HOST)
 _GL_URL = re.compile(r"https?://(%s)/([\w.-]+(?:/[\w.-]+)+?)/-/issues/([0-9]{1,9})\b" % _HOST)
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
@@ -447,7 +448,8 @@ def _xrefs(prose: List[str]) -> List[tuple]:
     owner/repo#N and GitHub issue URLs (gh) and GitLab issue URLs (glab). Other trackers cannot be fetched."""
     seen, out = set(), []
     for t in prose:
-        hits = [(m.start(), "gh", m.group(1), m.group(2), m.group(1) + "#" + m.group(2)) for m in _XREF.finditer(t)]
+        hits = [(m.start(), "gh", m.group(1), m.group(2), m.group(1) + "#" + m.group(2)) for m in _XREF.finditer(t)
+                if not _FILE_EXT.search(m.group(1))]  # src/app.py#12 is a file and a line, not a repository
         for m in _GH_URL.finditer(t):
             repo = m.group(2) if m.group(1) == "github.com" else m.group(1) + "/" + m.group(2)
             hits.append((m.start(), "gh", repo, m.group(3), repo + "#" + m.group(3)))
@@ -524,7 +526,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
             out[p] = text
     for p in found:
         rel = posixpath.normpath(str(p).replace(os.sep, "/"))
-        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out:
+        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out or rel in skip:
             continue
         data = _blobs(repo, [reg[rel]]).get(reg[rel])
         text = _text(data) if data is not None else None

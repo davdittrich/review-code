@@ -943,6 +943,15 @@ class Spec(Base):
         self.assertEqual(out["spec_status"], "found")
         self.assertIn("PRD-TEXT", self.read("inputs/spec.md"))
 
+    def test_a_finder_named_file_under_review_is_not_its_own_spec_for_a_path_target(self):
+        self.base({"README.md": "r\n", "notes/prd.md": "PRD\n", "notes/other.md": "OTHER\n"})
+        _, led = self.build(kind="path", included=["notes/prd.md"], found=["notes/prd.md", "notes/other.md"])
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["notes/other.md"])
+
+    def test_file_fragments_are_not_cross_repo_refs(self):
+        refs = ledger._xrefs(["see src/app.py#12, docs/guide.md#3 and Makefile#4 but acme/widgets#7"])
+        self.assertEqual([r[3] for r in refs], ["acme/widgets#7"])
+
     def test_found_paths_are_capped(self):
         files = {"notes/p%d.md" % i: "T%d\n" % i for i in range(9)}
         self.base(dict(files, **{"README.md": "r\n"}))
