@@ -605,9 +605,10 @@ def _snapshots_hold(run: str, st: dict) -> bool:
 
 def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: Optional[int] = None) -> dict:
     if status not in ("applied", "declined") or not HEX.match(seal) or \
-            ((code is not None or line is not None) and status != "declined") or \
-            (code is not None and code not in DECLINE_CODES):
+            ((code is not None or line is not None) and status != "declined"):
         raise target.Refuse("usage", USAGE)
+    if code not in DECLINE_CODES:
+        code = None  # the code is LLM output: an unknown one is dropped, never a reason to leave the entry in flight
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
@@ -746,8 +747,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
         if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined") \
-                or not re.fullmatch(r"[1-9][0-9]{0,8}", v.get("--line", "1")):
+                or v.get("--status", "applied") not in ("applied", "declined"):
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
@@ -762,7 +762,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         elif sub == "begin":
             out = begin(run)
         elif sub == "finish":
-            out = finish(run, v["--seal"], v["--status"], v.get("--code"), int(v["--line"]) if "--line" in v else None)
+            out = finish(run, v["--seal"], v["--status"], v.get("--code"),
+                         int(v["--line"]) if re.fullmatch(r"[1-9][0-9]{0,8}", v.get("--line", "")) else None)
         else:
             out = report_(run)
     except target.Refuse as r:

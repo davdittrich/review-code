@@ -891,11 +891,17 @@ class FinishScope(Scope):
     def test_decline_code_misuse_is_usage_and_changes_nothing(self):
         run, fid, bg = self.started()
         base = ["finish", "--run", run, "--seal", bg["seal"], "--status"]
-        for args in (["applied", "--code", "needs-context"], ["applied", "--line", "3"],
-                     ["declined", "--code", "bogus"], ["declined", "--line", "x"], ["declined", "--line", "0"]):
+        for args in (["applied", "--code", "needs-context"], ["applied", "--line", "3"]):
             rc, out, j = self.fixrun(base + args)
             self.assertEqual((rc, j["reason"]), (1, "usage"), out)
         self.assertIsNotNone(self.state(run)["in_flight"])
+
+    def test_off_list_code_and_bad_line_are_dropped_not_refused(self):
+        run, fid, bg = self.started()
+        rc, _, f = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
+                                "--code", "stale", "--line", "0"])
+        self.assertEqual((rc, f["outcome"]), (0, "declined"))
+        self.assertEqual(self.state(run)["done"][fid], {"outcome": "declined", "exit": None})
 
     def test_declined_with_an_edit_is_a_violation(self):
         run, fid, bg = self.started()
