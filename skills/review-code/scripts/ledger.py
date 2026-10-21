@@ -44,8 +44,8 @@ CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 CAP_HELPER_BYTES = 200000  # tree/ bytes for helper files copied as reuse context; surplus is skipped as helper-cap
 _HELPER_NAME = re.compile(r"(?<![a-z])(?:utils?|helpers?|common|shared|lib)(?![a-z])", re.I)
-_LOAD_FILE = re.compile(r"(?:Dockerfile.*|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
-                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.[A-Za-z]+)\Z")
+_LOAD_FILE = re.compile(r"(?:Dockerfile(?:\.[\w-]+)?|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
+                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.(?:py|js|ts|rb|go|java|php|rs|cs|ex))\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
@@ -265,17 +265,17 @@ def _helpers(repo: str, listing: Optional[dict], names: List[str], included: Lis
             continue
         if listing is not None and listing.get(p, ("",))[0] not in _REGULAR:
             continue
-        if _HELPER_NAME.search(p):
-            cand.append((0, p, "helper-named file"))
-        elif p.rpartition("/")[0] in cdirs:
-            cand.append((1, p, "sibling of a changed file"))
+        if p.rpartition("/")[0] in cdirs:
+            cand.append((0, p, "sibling of a changed file"))
+        elif _HELPER_NAME.search(p):
+            cand.append((1, p, "helper-named file"))
     cand.sort()
     if listing is not None:  # sizes by object id from the pinned listing, never the working copy
         oids = sorted({listing[p][1] for _, p, _ in cand})
         raw = target.git_bytes(["cat-file", "--batch-check=%(objectname) %(objectsize)"], repo,
                                stdin="".join(o + "\n" for o in oids).encode())
-        size = {p: dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing")).get(listing[p][1])
-                for _, p, _ in cand}
+        got = dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing"))
+        size = {p: got.get(listing[p][1]) for _, p, _ in cand}
     else:
         size = {}
         for _, p, _ in cand:

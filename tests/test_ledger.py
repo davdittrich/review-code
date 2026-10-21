@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tracemalloc
 import unittest
 from contextlib import redirect_stdout
@@ -432,8 +433,8 @@ class Tree(Base):
         out, led = self.build()
         self.assertEqual(self.tree_files(), ["lib/x.py", "pkg/utils.py", "src/a.py", "src/sibling.py"])
         self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("lib/x.py", "helper-named file"), ("pkg/utils.py", "helper-named file"),
-                          ("src/sibling.py", "sibling of a changed file")])
+                         [("src/sibling.py", "sibling of a changed file"), ("lib/x.py", "helper-named file"),
+                          ("pkg/utils.py", "helper-named file")])
         self.assertEqual(out["counts"], {c: 0 for c in ledger.CATEGORIES})  # context, not reviewed files
         self.assertEqual(led["tree"]["skipped"], [])
 
@@ -447,6 +448,28 @@ class Tree(Base):
         self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
         self.assertTrue(led["capped"]["helpers"])
 
+    def test_same_directory_siblings_rank_before_helper_named_trees(self):  # review-code-oen
+        self.base({"lib/a.py": "x = 1\n", "lib/zz.py": "z" * 60 + "\n", "lib/sub/big1.py": "b" * 60 + "\n",
+                   "lib/sub/big2.py": "c" * 60 + "\n"})
+        self.branch({"lib/a.py": "x = 2\n"})
+        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
+            _, led = self.build()
+        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
+                         [("lib/zz.py", "sibling of a changed file")])
+        self.assertEqual(led["tree"]["skipped"], [{"path": "lib/sub/big1.py", "reason": "helper-cap"},
+                                                  {"path": "lib/sub/big2.py", "reason": "helper-cap"}])
+
+    def test_helper_sizes_are_looked_up_in_one_pass(self):  # review-code-cag
+        n = 6000
+        listing = {"d/f%d.py" % i: ("100644", "%040x" % i) for i in range(n)}
+        raw = "".join("%040x 10\n" % i for i in range(n)).encode()
+        with mock.patch.object(target, "git_bytes", return_value=raw):
+            t0 = time.monotonic()
+            kept, over = ledger._helpers("/unused", listing, sorted(listing), ["d/a.py"], set())
+            took = time.monotonic() - t0
+        self.assertEqual((len(kept), over), (n, []))
+        self.assertLess(took, 2.0)
+
     def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
         self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
@@ -455,6 +478,24 @@ class Tree(Base):
         for lane in ("defects", "standards"):
             self.assertIn('## Expected load\n\nservice\n\nSignals:\n- "Dockerfile"\n- "src/server.py"\n',
                           self.read("inputs/%s.md" % lane))
+
+    def test_expected_load_ignores_docs_and_styles_named_like_entry_points(self):  # review-code-oaj
+        self.base({"docs/app.md": "x\n", "static/app.css": "x\n", "web/server.html": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "script", "files": []})
+
+    def test_expected_load_ignores_dockerfile_backups(self):  # review-code-oaj
+        self.base({"Dockerfile.prod.orig": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "script", "files": []})
+
+    def test_expected_load_accepts_code_entry_points_and_dockerfile_variants(self):  # review-code-oaj
+        self.base({"app.py": "x\n", "Dockerfile.prod": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "service", "files": ["Dockerfile.prod", "app.py"]})
 
     def test_expected_load_of_a_plain_script_repo_is_script(self):  # review-code-d14.1
         self.base({"tools/run.py": "a = 1\n", "tests/test_server.py": "x = 1\n", "tests/Dockerfile": "FROM x\n"})
@@ -493,6 +534,19 @@ class Tree(Base):
         self.assertIn('references: "helper_fn" 3 outside src/cfg.py (git grep -w at head_sha)\n', body)
         self.assertNotIn("references", report._handoff(dict(self.lean_candidate(), category="smell"), self.run_dir, "n", (), refs))
         self.assertIn("references: unknown\n", report._handoff(self.lean_candidate("def other_fn():"), self.run_dir, "n", (), refs))
+
+    def test_unused_claim_count_belongs_to_the_defining_file_only(self):  # review-code-d2u
+        self.base({"src/cfg.py": "def helper_fn(x):\n    return x\n", "src/other.py": "def helper_fn(x):\n    return x\n",
+                   "app/a.py": "helper_fn(1)\n"})
+        self.branch({"src/cfg.py": "def helper_fn(x):\n    return x + 1\n",
+                     "src/other.py": "def helper_fn(x):\n    return x + 2\n"})
+        self.build()
+        import report
+        refs = {None: report._refs(self.run_dir)}
+        own = report._handoff(self.lean_candidate(), self.run_dir, "n", (), refs)
+        self.assertRegex(own, r'references: "helper_fn" \d+ outside src/cfg\.py ')
+        other = report._handoff(dict(self.lean_candidate(), path="src/other.py"), self.run_dir, "n", (), refs)
+        self.assertIn("references: unknown\n", other)
 
     def test_verifier_confirms_unused_only_at_reference_count_zero(self):  # review-code-d14.2
         with open(os.path.join(os.path.dirname(paths.HERE), "agents", "verifier.md"), encoding="utf-8") as fh:

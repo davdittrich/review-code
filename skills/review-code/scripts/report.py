@@ -460,10 +460,10 @@ def _candidate(o, tree, lane, base, ctx=None):
 
 
 def _refs(run, shard=None):
-    """{symbol: lines naming it outside its own file, whole pinned tree} from the ledger; {} when unreadable."""
+    """{symbol: (defining file, lines naming it outside that file, whole pinned tree)} from the ledger; {} when unreadable."""
     try:
         led = target.load_json(run if shard is None else os.path.join(run, "shards", str(shard)), "ledger.json")
-        return {s["name"]: s["refs"] for s in led["symbols"] if isinstance(s.get("refs"), int)}
+        return {s["name"]: (s.get("file"), s["refs"]) for s in led["symbols"] if isinstance(s.get("refs"), int)}
     except (target.Refuse, KeyError, TypeError):
         return {}
 
@@ -484,8 +484,8 @@ def _handoff(c, run, nonce, packs=(), refs=None):
     if c["category"] == "lean":  # an unused-code claim needs the whole-repo count, not only what tree/ holds
         m = ledger._DEF.match(c["quote"])
         n, have = m.group(1) if m else "", (refs or {}).get(c.get("shard"), {})
-        out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n], c["path"])
-                if n in have else "references: unknown\n")
+        out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n][1], c["path"])
+                if n in have and have[n][0] == c["path"] else "references: unknown\n")  # one defining file per name
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
 
 
