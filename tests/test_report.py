@@ -1135,6 +1135,10 @@ class Relocate(Lanes):  # gh-14: a quote cited at the wrong line is moved to whe
         (f,) = self.doc()["findings"]
         self.assertEqual((f["line"], f["end_line"]), (7, 7))
 
+    def test_an_absent_quote_with_a_wide_cite_is_dropped_without_relocating(self):  # PR 15 review: no window scan for it
+        out = self.cite(3, "q = a - 9", end=40)
+        self.assertEqual([r["check"] for r in out["rejected"]], ["line-out-of-range"])
+
     def test_a_quote_the_file_does_not_hold_is_still_dropped(self):
         out = self.cite(3, "q = a - 9")
         self.assertEqual([r["check"] for r in out["rejected"]], ["quote-not-at-line"])

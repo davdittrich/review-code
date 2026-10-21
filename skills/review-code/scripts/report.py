@@ -167,6 +167,8 @@ def _relocate(tree, path, line, end, quote):
     q = _ws(quote)
     if rows is None or not q or not (_int(line) and _int(end) and 1 <= line <= end):
         return None
+    if q not in _ws(" ".join(rows)):  # an absent quote cannot move: skip the window scan, which runs under the run lock
+        return None
     n = min(end - line + 1, len(rows))  # a cite past the end of the file is moved too
     hits = sorted((abs(s - (line - 1)), s) for s in range(len(rows) - n + 1) if q in _ws(" ".join(rows[s:s + n])))
     if not hits or hits[1:2] and hits[1][0] == hits[0][0]:
