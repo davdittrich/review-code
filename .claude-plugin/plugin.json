@@ -36,7 +36,7 @@
     "default_tier": {
       "type": "string",
       "title": "Default tier",
-      "description": "Tier used when no --tier flag is given: quick, standard or deep.",
+      "description": "Tier used when no --tier flag is given: quick, standard or deep. The lean tier is available only as the --lean flag.",
       "default": "standard",
       "options": [
         "quick",
