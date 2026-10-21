@@ -491,13 +491,15 @@ class MultiLane(Lanes):
 
     def test_lean_lines_tally_sums_the_spans_of_verified_lean_findings(self):  # review-code-d14.9
         self.assertNotIn("Lean:", self.rep("render")[1])
-        self.lane("standards", mc(2, "lean", end_line=4), mc(7, "lean", end_line=8), mc(5, "smell", end_line=5))  # 7 is 3 past 4: not merged
+        self.lane("standards", mc(2, "lean", end_line=4), mc(7, "lean", end_line=8), mc(5, "smell", end_line=5), "{garbage")  # 7 is 3 past 4: not merged
         self.verdicts(*[{"id": i["id"], "verdict": "confirmed", "evidence": [dict(CITE, line=i["line"], quote=MQ[i["line"]])],
                          "reason": "r"} for i in self.doc()["unverifiable"]])
         d = self.doc()
         self.assertEqual(sorted(f["category"] for f in d["findings"]), ["lean", "lean", "smell"])
         self.assertEqual(d["lean_lines"], 5)  # 3 + 2; the smell does not count
         self.assertIn("\nLean: -5 lines possible (estimate)\n", self.rep("render")[1])
+        t = self.rep("render")[1]
+        self.assertLess(t.index("Lean:"), t.index("\nWarning\n"))  # a rejected line opens the Warning block: the tally is not a warning
 
     def test_summary_record_is_kept_escaped_and_labelled_model_text(self):  # review-code-d14.7
         text = 'Adds add() and a "load" helper.\x1b[31m red \u202e'
@@ -516,6 +518,9 @@ class MultiLane(Lanes):
         self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # rejected, never truncated
         out = self.lane("defects", [["summary", "first"]], [["summary", "second"]])
         self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, [{"lane": "defects", "text": "first"}]))
+        self.rep("discard")
+        self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]], {"inspected": ["src/calc.py"]})
+        self.assertEqual((self.doc()["verdict"], "Warning" in self.rep("render")[1]), ("No blocking findings", False))  # a bad summary hides no finding
         self.rep("discard")
         out = self.lane("standards", [["summary", "s"]])  # only the Defects lane summarises
         self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))

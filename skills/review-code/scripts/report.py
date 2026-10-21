@@ -33,7 +33,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   findings[] (class reproduced|traced), unverifiable[] (class inferred|speculative), dropped{refuted,
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
   kind, length or codepoints, name}] (notes, not findings; capped at 40) with hidden_content_omitted.
-  Item keys: id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
+  Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
@@ -693,8 +693,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             if summary is None and isinstance(text, str) and _ws(text) and len(text) <= SUMMARY_MAX:
                 summary = _ws(text)
             else:
-                invalid += 1
-                rejected.append((why, ln))
+                invalid += 1  # counted, but not a rejected line: a summary holds no finding, so it never flips the verdict
             continue
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
@@ -1079,6 +1078,7 @@ def _text(doc):
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "not-ingested"]
+    out += ["Lean: -%d lines possible (estimate)" % doc["lean_lines"]] if doc["lean_lines"] else []
     if doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired") or doc.get("lost"):
         out += ["", "Warning"]
         out += ["rejected lines: %d (%s)" % (sum(doc["rejected"].values()), ", ".join(
@@ -1090,7 +1090,6 @@ def _text(doc):
         out += ["lost lines: %d (%s)" % (sum(doc["lost"].values()), ", ".join(
             "%s %d" % (e(n), k) for n, k in sorted(doc["lost"].items())))] if doc.get("lost") else []
         out += ["no verdict: %d (%s)" % (len(doc["no_verdict"]), ", ".join(doc["no_verdict"]))] if doc.get("no_verdict") else []
-    out += ["Lean: -%d lines possible (estimate)" % doc["lean_lines"]] if doc["lean_lines"] else []
     out.append("")
 
     def section(head, rows):
