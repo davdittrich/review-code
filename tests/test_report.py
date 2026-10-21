@@ -508,7 +508,7 @@ class MultiLane(Lanes):
         d = self.doc()
         self.assertEqual(d["summary"], [{"lane": "defects", "text": text}])
         t = self.rep("render")[1]
-        self.assertTrue(t.startswith("Summary\nchange summary (model text, unverified): Adds add() and a \"load\" helper."), t)
+        self.assertTrue(t.startswith("Summary\ndefects change summary (model text, unverified): Adds add() and a \"load\" helper."), t)
         self.assertNotIn("\x1b", t)
         self.assertNotIn("\u202e", t)
         self.assertEqual(d["lanes"], {"defects": "incomplete"})  # only an inspected line completes a lane
@@ -931,6 +931,9 @@ class Shards(Lanes):
         self.shard(2, [["summary", "two"]])
         self.shard(1, [["summary", "one"]])
         self.assertEqual(self.doc()["summary"], [{"lane": "defects@1", "text": "one"}, {"lane": "defects@2", "text": "two"}])
+        t = self.rep("render")[1]  # review-code-r4j: each rendered line names its shard
+        self.assertIn("defects@1 change summary (model text, unverified): one\n", t)
+        self.assertIn("defects@2 change summary (model text, unverified): two\n", t)
         self.shard(2, [["summary", "two again"]])  # a re-ingest replaces only that shard
         self.assertEqual([x["text"] for x in self.doc()["summary"]], ["one", "two again"])
 
