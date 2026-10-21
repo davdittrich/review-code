@@ -246,6 +246,18 @@ class Tiers(Fixture):
             _, p = self.lanes(*args)
             self.assertIn("standards", [c["lane"] for c in p["calls"]], args)
 
+    def test_lean_tier_runs_only_the_standards_lane_and_the_verifier(self):
+        out, p = self.lanes("--tier", "lean")
+        self.assertEqual((out["tier"], [c["lane"] for c in p["calls"]]), ("lean", ["standards"]))
+        self.assertEqual((p["calls"][0]["model"], p["calls"][0]["effort"]), ("haiku", "medium"))
+        self.assertEqual((p["verifier"]["agent"], p["verifier"]["model"]), ("review-code:verifier", "sonnet"))
+        self.assertEqual({s["what"]: s["why"] for s in p["skipped"]}, {"defects": "tier lean", "spec": "tier lean"})
+        self.assertEqual(p["lost_guarantees"], [])
+        for extra in ("--sota", "--serial"):  # neither adds a lane or drops the lean skips
+            _, p = self.lanes("--tier", "lean", extra)
+            self.assertEqual([c["lane"] for c in p["calls"]], ["standards"], extra)
+            self.assertEqual({"defects", "spec"} - {s["what"] for s in p["skipped"]}, set(), extra)
+
     def test_tier_table(self):
         for tier, fin, ver, cap in (("quick", ("sonnet", "low"), ("opus", "medium"), 10),
                                     ("standard", ("opus", "medium"), ("sonnet", "high"), 25),

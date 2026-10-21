@@ -48,7 +48,7 @@ REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered"
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
 
 
@@ -138,6 +138,11 @@ def _live(repo: str, path) -> Optional[str]:
         return joined if listed == norm.encode("utf-8") + b"\0" else None
     except UnicodeError:
         return None
+
+
+def _elsewhere(text: str, own: str, tracked: set) -> bool:
+    """True when the fix text names a tracked path other than the finding's own file."""
+    return any(t != own and t in tracked for t in (os.path.normpath(w.rstrip(".,;:")) for w in re.findall(r"[\w@+./-]+", text)))
 
 
 def _relocate(text: str, quote) -> Optional[int]:
@@ -353,7 +358,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     return None
 
 
-def plan(run: str, words: List[str]) -> dict:
+def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
@@ -371,8 +376,15 @@ def plan(run: str, words: List[str]) -> dict:
         raise target.Refuse("already-run")  # FIX-03: one run per review
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
+    tracked = {p.decode("utf-8", "surrogateescape") for p in target.git_bytes(["ls-files", "-z"], repo).split(b"\0") if p}
     entries, skipped = [], []
-    for f in report.build(run)["findings"]:
+    found = report.build(run)["findings"]
+    if only is not None:
+        unknown = [i for i in only if i not in {f["id"] for f in found}]
+        if unknown:
+            raise target.Refuse("unknown-id", ",".join(unknown))
+        found = [f for f in found if f["id"] in only]
+    for f in found:
         fix_text = f.get("fix")
         why, line = None, None
         if not isinstance(fix_text, str) or not fix_text.strip():
@@ -381,6 +393,8 @@ def plan(run: str, words: List[str]) -> dict:
             why = "protected-path"
         elif _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
+        elif f["category"] in report.LANE_CATEGORIES["standards"] and _elsewhere(fix_text, f["path"], tracked):
+            why = "cross-file"  # one file per fixer: a cleanup that reaches a second file is out of scope
         else:
             real = _live(repo, f["path"])
             line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
@@ -704,6 +718,12 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
              "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
     try:
         sub, opts = (argv[0], argv[1:]) if argv else ("", [])
+        only = None
+        if sub == "plan" and len(opts) == 4 and opts[2] == "--only":  # ids are fixed literals, so they may be arguments
+            only = opts[3].split(",")
+            if not all(re.fullmatch(ID_RE, i) for i in only):
+                raise target.Refuse("usage", USAGE)
+            opts = opts[:2]
         if sub not in flags or opts[0::2] != flags[sub] or len(opts) != 2 * len(flags[sub]):
             raise target.Refuse("usage", USAGE)
         v = dict(zip(flags[sub], opts[1::2]))
@@ -717,7 +737,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
-            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], only)
         elif sub == "baseline":
             out = baseline(run, v["--digest"])
         elif sub == "begin":
