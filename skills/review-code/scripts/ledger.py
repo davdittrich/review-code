@@ -38,6 +38,8 @@ INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
+_PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
+CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -450,9 +452,10 @@ def _bd_show(repo: str, ref: str) -> Optional[str]:
         return None
 
 
-def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=()) -> Dict[str, str]:
+def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
     """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a token of the
-    branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), plus the --spec file. Branch names stay in
+    branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
+    the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and (every or any(t in posixpath.basename(p).lower()
@@ -464,6 +467,14 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
         text = _text(data) if data is not None else None  # an oversized spec file is left out
         if text is not None:
             out[p] = text
+    for p in found:
+        rel = posixpath.normpath(str(p).replace(os.sep, "/"))
+        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out:
+            continue
+        data = _blobs(repo, [reg[rel]]).get(reg[rel])
+        text = _text(data) if data is not None else None
+        if text is not None:
+            out[rel] = text
     if spec:
         if not os.path.isabs(spec):  # 6xl.92: relative to the current directory first, like a path target
             here = os.path.normpath(os.path.join(os.path.realpath(os.getcwd()), spec))
@@ -492,7 +503,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     return out
 
 
-def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[str]) -> tuple:
+def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[str], found=()) -> tuple:
     """(sources, capped_issues, sections, found). sources hold kinds and ids only; every text is in sections."""
     kind, sources, pr_blocks = tj["kind"], [], []
     forge = None
@@ -532,7 +543,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     tickets = {r: t for r in refs for t in [_bd_show(tj["repo"], r)] if t is not None}
     sources += [{"kind": "ticket", "ref": r, "fetched": r in tickets} for r in refs]
 
-    files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else ())
+    files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
     sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
                 [("ticket " + r, tickets[r]) for r in sorted(tickets)],
@@ -554,7 +565,7 @@ def _section(head: str, items: List[tuple], nonce: str) -> str:
                              or "none")
 
 
-def build(run: str, spec: Optional[str] = None) -> dict:
+def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
@@ -576,8 +587,8 @@ def build(run: str, spec: Optional[str] = None) -> dict:
 
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
-    sources, capped["issues"], sections, found_spec = _gather_spec(
-        tj, spec, head_ls if head_ls is not None else target.tree_listing(head, repo), messages)
+    tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
+    sources, capped["issues"], sections, found_spec = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
 
     led = {
@@ -618,6 +629,14 @@ def build(run: str, spec: Optional[str] = None) -> dict:
                       _section("Commit messages", [("commit " + c, m) for c, m in zip(tj["commits"], messages)], nonce),
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce))))
+    # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
+    prose = sorted(p for p, (mode, _) in tree_ls.items()
+                   if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
+    write(os.path.join(run, "inputs", "spec-find.md"),
+          "# Spec finder input\n\n" + pin + "\n## Reviewed files\n\n%s\n\n## Symbols\n\n%s\n\n## Prose files at head\n\n%s\n" % (
+              "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
+              "\n".join("- " + json.dumps(s["name"]) for s in led["symbols"]) or "none",
+              "\n".join("- " + json.dumps(p) for p in prose[:CAP_FIND]) or "none"))
     write(os.path.join(run, "inputs", "defects.md"),
            "# Defects input\n\n" + pin + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
@@ -727,13 +746,19 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = _trust_cli(argv[1:])
         elif argv[:2] == ["context", "--run"] and len(argv) == 3:
             out = context(argv[2])
-        elif argv[:2] != ["build", "--run"] or len(argv) not in (3, 5) or (len(argv) == 5 and argv[3] != "--spec"):
-            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH]")
+        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or len(argv) % 2 != 1 or (
+                [o for o in argv[3::2]] not in ([], ["--spec"], ["--found"], ["--spec", "--found"], ["--found", "--spec"])):
+            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
         else:
-            spec = argv[4] if len(argv) == 5 else None
+            opts = dict(zip(argv[3::2], argv[4::2]))
+            spec, found = opts.get("--spec"), ()
+            if opts.get("--found") not in (None, "-"):
+                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
             if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
                 spec = sys.stdin.readline().rstrip("\n")
-            out = build(argv[2], spec)
+            if "--found" in opts:  # the spec finder's paths, one per stdin line; a bad one is dropped, not refused
+                found = [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
+            out = build(argv[2], spec, found)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback

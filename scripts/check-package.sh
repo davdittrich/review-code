@@ -171,7 +171,7 @@ fi
 # CTX-05: lane agents are read-only and the fixer alone holds Edit (no Write, no Bash). tools: is an exclusive
 # allowlist; an omitted line inherits every tool.
 # Required agents must exist; every agents/*.md is checked, so an added agent cannot ship unchecked.
-for name in finder verifier standards spec spec-verifier sota fixer; do
+for name in finder verifier standards spec spec-verifier spec-finder sota fixer; do
   [ -f "$tree/agents/$name.md" ] || bad "agent-$name-tools" "missing agents/$name.md"
 done
 for f in "$tree"/agents/*.md; do

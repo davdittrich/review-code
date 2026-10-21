@@ -115,7 +115,13 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    named in their words re-runs the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --spec -` with the path as
    the single line of a here-document on stdin (stdin rule); the script reads only files inside
    the repository (any other path is refused as `bad-spec`: ask the user to copy the file into the
-   repository); when `spec_status` is `none` the Spec axis is stated as skipped (no spec found).
+   repository). Spec finder: when `spec_status` is `none` and the Agent tool is available, make one Agent call,
+   `subagent_type` `review-code:spec-finder`, `model` `haiku`, `effort` `low`, `prompt` exactly
+   `Spec finder. Input: <run>/inputs/spec-find.md`, and a short `description`. It names spec files by content.
+   Re-run the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --found -` with the `path`
+   value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule); the script
+   keeps tracked files only and drops the rest. State the new `spec_status`. When it is still `none`, the Spec axis is
+   stated as skipped (no spec found).
 4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
    (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
    path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a

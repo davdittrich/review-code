@@ -230,6 +230,17 @@ class Spec(unittest.TestCase):
             self.assertIn(line, self.fm)
 
 
+class SpecFinder(unittest.TestCase):  # review-code-zu2
+    def test_haiku_reads_only_and_names_paths_only(self):
+        fm, body = parts("spec-finder")
+        for line in (NAV_TOOLS, "model: haiku", "maxTurns: 20"):
+            self.assertIn(line, fm)
+        text = "\n".join(body)
+        self.assertIn("inputs/spec-find.md", text)
+        self.assertIn('[["path", "docs/design/parser.md"]]', text)
+        self.assertIn("Write no reason, quote or summary", text)
+
+
 class SpecVerifier(unittest.TestCase):
     def setUp(self):
         self.fm, self.body = parts("spec-verifier")
@@ -350,10 +361,12 @@ class TurnCeilings(unittest.TestCase):
     """LANE-09: maxTurns is frontmatter-only, so each agent file carries plan.py's ceiling."""
 
     def test_every_agent_declares_the_plan_ceiling(self):
-        # the fixer is not a review lane: fix mode (not plan.py) spawns it, so it carries its own ceiling
+        # the fixer is not a review lane: fix mode (not plan.py) spawns it, so it carries its own ceiling;
+        # the spec finder runs once from SKILL.md step 3, before any plan exists
         self.assertEqual(sorted(plan.MAX_TURNS),
-                         sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents")) if f != "fixer.md"))
-        for name, n in dict(plan.MAX_TURNS, fixer=15).items():
+                         sorted(f[:-3] for f in os.listdir(os.path.join(ROOT, "agents"))
+                                if f not in ("fixer.md", "spec-finder.md")))
+        for name, n in dict(plan.MAX_TURNS, fixer=15, **{"spec-finder": 20}).items():
             self.assertIn("maxTurns: %d" % n, parts(name)[0], name)
 
     def test_tool_sets(self):

@@ -71,13 +71,13 @@ class Base(unittest.TestCase):
         return [n for n in out.split("\0") if n]
 
     def build(self, kind="branch", included=None, untracked=(), head=None, mb=None, commits=None, number=None,
-              spec=None, url=None):
+              spec=None, url=None, found=()):
         head = head or self.g("rev-parse", "HEAD")
         mb = mb or self.g("merge-base", "main", head)
         if included is None:
             included = self.names(mb, head)
         write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url)
-        out = ledger.build(self.run_dir, spec)
+        out = ledger.build(self.run_dir, spec, found)
         return out, self.load()
 
     def load(self):
@@ -203,6 +203,7 @@ class Categories(Base):
     def test_ledger_cli_rejects_extra_or_malformed_args(self):
         # WR-02: anything but `build --run DIR [--spec PATH]` is a usage refusal
         for argv in (["build", "--run", "R", "--spec", "x", "extra"], ["build", "--run", "R", "--spec"],
+                     ["build", "--run", "R", "--found", "x"], ["build", "--run", "R", "--found"],
                      ["build", "--run", "R", "extra"], ["build", "--run", "R", "--bogus", "x"]):
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -826,6 +827,44 @@ class Spec(Base):
         with mock.patch.object(ledger, "_bd_show", return_value=None):
             out, led = self.build(commits=[sha])
         self.assertEqual((out["spec_status"], led["spec"]["sources"]), ("none", [{"kind": "ticket", "ref": "repo-ab1", "fetched": False}]))
+
+    def test_found_paths_are_read_when_tracked_and_the_rest_dropped(self):  # review-code-zu2
+        self.base({"README.md": "r\n", "notes/prd.md": "PRD-TEXT\n", "src/a.py": "a = 1\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/b.py": "b = 1\n"}, "work")
+        out, led = self.build(found=["notes/prd.md", "nope.md", "../outside.md", "/etc/passwd", "notes"])
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["notes/prd.md"])
+        self.assertEqual(out["spec_status"], "found")
+        self.assertIn("PRD-TEXT", self.read("inputs/spec.md"))
+
+    def test_found_paths_are_capped(self):
+        files = {"notes/p%d.md" % i: "T%d\n" % i for i in range(9)}
+        self.base(dict(files, **{"README.md": "r\n"}))
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/b.py": "b = 1\n"}, "work")
+        _, led = self.build(found=sorted(files))
+        self.assertEqual(len(led["spec"]["sources"]), ledger.CAP_SPEC_FILES)
+
+    def test_found_flag_reads_paths_from_stdin(self):
+        self.base({"README.md": "r\n", "notes/prd.md": "PRD-TEXT\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        head = gitfix.commit(self.repo, {"src/b.py": "b = 1\n"}, "work")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/b.py"])
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch.object(sys, "stdin", io.StringIO("notes/prd.md\nmissing.md\n")):
+            rc = ledger.main(["build", "--run", self.run_dir, "--found", "-"])
+        self.assertEqual((rc, json.loads(buf.getvalue())["spec_status"]), (0, "found"))
+
+    def test_spec_find_input_lists_reviewed_files_and_prose_files(self):
+        self.base({"README.md": "r\n", "notes/prd.md": "PRD\n", "src/a.py": "def alpha_fn():\n    return 1\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/a.py": "def alpha_fn():\n    return 2\n"}, "work")
+        self.build()
+        text = self.read("inputs/spec-find.md")
+        for want in ("## Reviewed files", '"src/a.py"', "## Prose files at head", '"notes/prd.md"', "alpha_fn"):
+            self.assertIn(want, text)
+        self.assertNotIn("src/a.py\n- \"README", text)
 
     def test_spec_flag_refuses_missing_and_escaping_paths(self):
         self.base({"README.md": "r\n"})

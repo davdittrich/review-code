@@ -123,6 +123,11 @@ class Phase4Procedure(unittest.TestCase):
         self.assertNotIn(-1, at, dict(zip(steps, at)))
         self.assertEqual(at, sorted(at), dict(zip(steps, at)))
 
+    def test_spec_is_found_not_asked_for(self):  # review-code-zu2
+        self.assertNotIn("There is no spec", self.text)
+        for s in ("review-code:spec-finder", "`model` `haiku`", "ledger.py build --run <run> --found -"):
+            self.assertIn(s, self.text)
+
     def test_delimiters_flags_and_plan_keys(self):
         for s in ("REVIEW_WORDS", "REVIEW_PLAN", "REVIEW_FINDINGS", "REVIEW_VERDICTS", "REPRO_TEST", "--json", "--sarif",
                   "--quick", "--standard", "--deep", "--sota", "--no-sota", "--serial", "--ai"):
