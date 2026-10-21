@@ -19,10 +19,12 @@ Match each smell against the changed lines. Each bullet reads what it is -> how 
 - **Divergent Change**: one module is edited for several unrelated reasons. -> Split it so each module changes for one reason. (`smell`)
 - **Speculative Generality**: abstractions, parameters or hooks added for needs nobody has stated. -> Remove them, and inline back until a real need appears. (`smell`)
 - **Message Chains**: a long `a.b().c().d()` walk that the caller should not depend on. -> Hide the walk behind one method on the first object. (`smell`)
+- **Mixed Jobs**: one function does several unrelated jobs, such as parsing, deciding and writing. -> Split by job, not by length, and do not carve out helpers that only shorten it. (`smell`)
 - **Middle Man**: a class or function that mostly forwards calls to another. -> Remove it and call the real target. (`smell`)
 - **Refused Bequest**: a subclass that ignores or overrides most of what it inherits. -> Drop the inheritance and use composition. (`smell`)
 
 ## Sources
 
-- Martin Fowler, Refactoring, 2nd ed., chapter 3 "Bad Smells in Code" (names of the twelve smells), Addison-Wesley, 2018. Explanations are in this project's words.
+- Martin Fowler, Refactoring, 2nd ed., chapter 3 "Bad Smells in Code" (names of twelve of the smells), Addison-Wesley, 2018. Explanations are in this project's words.
 - Smell selection and the override rule follow docs/matt-contract.md rows L38-L56 (matt.md, MIT; see NOTICE).
+- Mixed Jobs is a project addition, not Fowler's; its split-by-job rule follows the ponytail review skill's guidance (read for this project, not copied).
