@@ -270,7 +270,7 @@ def _changed_lines(a: bytes, b: bytes) -> int:
 
 
 def _tests(run: str, st: dict) -> dict:
-    """Run the stored command once in the repository top. pass: exit 0 and no timeout or launch error."""
+    """Run the stored command once in the checkout recorded as root (else the repository top). pass: exit 0 and no timeout or launch error."""
     raw = _read(os.path.join(_fixdir(run), "plan.json"))
     if hashlib.sha256(raw).hexdigest() != st["digest"]:
         raise target.Refuse("digest-mismatch")
@@ -408,6 +408,8 @@ def plan(run: str, words: List[str]) -> dict:
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
     text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
                                                                           _e(shlex.join(words)))]
+    if repo != tj["repo"]:
+        text.append("edits and tests run in the checkout holding the reviewed commit: " + _e(repo))
     for k, e in enumerate(entries, 1):
         text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
                                                       e["severity"], e["category"], e["origin"], e["model"],
@@ -591,9 +593,10 @@ def _snapshots_hold(run: str, st: dict) -> bool:
 
 def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: Optional[int] = None) -> dict:
     if status not in ("applied", "declined") or not HEX.match(seal) or \
-            ((code is not None or line is not None) and status != "declined") or \
-            (code is not None and code not in DECLINE_CODES):
+            ((code is not None or line is not None) and status != "declined"):
         raise target.Refuse("usage", USAGE)
+    if code not in DECLINE_CODES:
+        code = None  # the code is LLM output: an unknown one is dropped, never a reason to leave the entry in flight
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
@@ -643,12 +646,15 @@ def report_(run: str) -> dict:
     tampered = st["halted"] == "tampered"
     pend = sorted(n[:-4] for n in os.listdir(fd) if n.endswith(".pre") and n[:-4] not in st["done"])
     unsafe = tampered or cur is not None or bool(pend)  # then no git command runs: a rewritten config may carry filters
-    repo = None if unsafe else _root(target.load_target(run))
+    tj = None if unsafe else target.load_target(run)
+    repo = None if unsafe else _root(tj)
     try:
         entries = _json(os.path.join(fd, "plan.json"))["entries"]
     except (OSError, ValueError, KeyError):
         entries = []
     text = []
+    if tj and repo != tj["repo"]:
+        text.append("checkout: " + _e(repo) + " (run git diff there)")
     for e in entries:
         d = st["done"].get(e["id"], {})
         outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else "pending")
@@ -722,8 +728,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
         if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined") \
-                or not re.fullmatch(r"[1-9][0-9]{0,8}", v.get("--line", "1")):
+                or v.get("--status", "applied") not in ("applied", "declined"):
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
@@ -738,7 +743,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         elif sub == "begin":
             out = begin(run)
         elif sub == "finish":
-            out = finish(run, v["--seal"], v["--status"], v.get("--code"), int(v["--line"]) if "--line" in v else None)
+            out = finish(run, v["--seal"], v["--status"], v.get("--code"),
+                         int(v["--line"]) if re.fullmatch(r"[1-9][0-9]{0,8}", v.get("--line", "")) else None)
         else:
             out = report_(run)
     except target.Refuse as r:
