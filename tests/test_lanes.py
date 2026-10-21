@@ -610,6 +610,13 @@ class PromptRules(unittest.TestCase):
         self.assertIn("Report every candidate whose trigger you can name", t)
         self.assertIn("the verifier decides, so never drop one you half believe", t)
 
+    def test_finder_risky_logic_needs_a_test(self):
+        t = self.text("finder")
+        for item in ("new branch, parser, money or security logic, data write or bug fix",
+                     "cite the logic as `path:line` and the test file you searched",
+                     "one good test, never a coverage figure"):
+            self.assertIn(item, t)
+
 
 if __name__ == "__main__":
     unittest.main()

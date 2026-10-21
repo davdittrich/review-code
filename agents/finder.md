@@ -35,7 +35,9 @@ unplanned paths, never a finding by itself.
 - Security: injection and type coercion, reported only with a traced path from an untrusted source
   to the sink.
 - Tests: a removed or renamed name that a test still imports or patches; changed behaviour that no
-  test would catch.
+  test would catch. Risky logic is a new branch, parser, money or security logic, data write or bug fix
+  that no test fails on when broken: a `suggestion`, cite the logic as `path:line` and the test file
+  you searched. Ask for one good test, never a coverage figure; skip trivial changes.
 - Cross-file and documentation integrity: construction sites of related types that set different
   defaults (search them all); docs, docstrings and comments that contradict the function body, its
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.
