@@ -49,7 +49,9 @@ STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
-         "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
+         "begin --run DIR | finish --run DIR --seal HEX --status applied|declined [--code CODE] [--line N] | "
+         "report --run DIR")
+DECLINE_CODES = ("line-mismatch", "quote-not-unique", "scope-multi-file", "needs-context")
 
 
 _e = sanitize.escape_line
@@ -601,9 +603,12 @@ def _snapshots_hold(run: str, st: dict) -> bool:
         return False
 
 
-def finish(run: str, seal: str, status: str) -> dict:
-    if status not in ("applied", "declined") or not HEX.match(seal):
+def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: Optional[int] = None) -> dict:
+    if status not in ("applied", "declined") or not HEX.match(seal) or \
+            ((code is not None or line is not None) and status != "declined"):
         raise target.Refuse("usage", USAGE)
+    if code not in DECLINE_CODES:
+        code = None  # the code is LLM output: an unknown one is dropped, never a reason to leave the entry in flight
     st = _state(run)
     cur = st["in_flight"]
     if not cur:
@@ -631,6 +636,8 @@ def finish(run: str, seal: str, status: str) -> dict:
     st["done"][fid] = {"outcome": outcome, "exit": res["exit"] if res else None}
     if detail:
         st["done"][fid]["detail"] = detail
+    if outcome == "declined":  # the fixer's own reason, kept off the other outcomes: a violation is not a decline
+        st["done"][fid].update({k: v for k, v in (("code", code), ("line", line)) if v is not None})
     if res and outcome in REVERTED:
         st["done"][fid]["tail"] = res["tail"]
     st["in_flight"] = None
@@ -661,8 +668,9 @@ def report_(run: str) -> dict:
     for e in entries:
         d = st["done"].get(e["id"], {})
         outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else "pending")
+        why = [d["detail"]] if d.get("detail") else ([d["code"]] if "code" in d else []) + (["line %d" % d["line"]] if "line" in d else [])
         text.append("%s %s:%d %s%s" % (e["id"], _e(e["path"]), e["line"], outcome,
-                                       " (%s)" % _e(d["detail"]) if d.get("detail") else ""))
+                                       " (%s)" % _e(", ".join(why)) if why else ""))
     if st["halted"] and not tampered:
         text.append("halted: " + _e(st["halted"]))
     if tampered:
@@ -733,11 +741,16 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
             if not all(re.fullmatch(ID_RE, i) for i in only):
                 raise target.Refuse("usage", USAGE)
             opts = opts[:2]
-        if sub not in flags or opts[0::2] != flags[sub] or len(opts) != 2 * len(flags[sub]):
+        names = opts[0::2]
+        need = flags.get(sub, [])
+        extra = names[len(need):]  # finish only: --code and --line, once each, in either order
+        if sub not in flags or names[:len(need)] != need or len(opts) != 2 * len(names) \
+                or len(set(extra)) != len(extra) or not set(extra) <= ({"--code", "--line"} if sub == "finish" else set()):
             raise target.Refuse("usage", USAGE)
-        v = dict(zip(flags[sub], opts[1::2]))
+        v = dict(zip(names, opts[1::2]))
         if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined"):
+                or v.get("--status", "applied") not in ("applied", "declined") \
+                or (extra and v["--status"] != "declined"):  # presence, not value: --line 0 is not "absent"
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
@@ -752,7 +765,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         elif sub == "begin":
             out = begin(run)
         elif sub == "finish":
-            out = finish(run, v["--seal"], v["--status"])
+            out = finish(run, v["--seal"], v["--status"], v.get("--code"),
+                         int(v["--line"]) if re.fullmatch(r"[1-9][0-9]{0,8}", v.get("--line", "")) else None)
         else:
             out = report_(run)
     except target.Refuse as r:
