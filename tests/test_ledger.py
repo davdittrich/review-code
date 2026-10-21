@@ -94,6 +94,12 @@ def files_of(led, cat):
     return [e["file"] for e in led[cat]]
 
 
+class TestCategoryLists(unittest.TestCase):
+    def test_context_categories_are_the_ledger_categories_between_symbols_and_conventions(self):  # review-code-wyb
+        cats = ledger.CATEGORIES
+        self.assertEqual(list(ledger._CTX), cats[cats.index("symbols") + 1:cats.index("conventions")])
+
+
 class TestNames(unittest.TestCase):
     def test_every_test_file_shape_counts_as_a_test(self):
         for name in ("a.test.mjs", "a.test.cts", "a.cy.js", "a_spec.rb", "FooTests.cs", "FooTest.cs", "a.spec.ts"):
