@@ -1312,7 +1312,7 @@ class Gate(Base):
         with open(path, encoding="utf-8") as fh:
             rows = fh.read().splitlines()
         self.assertEqual(len(rows), 2)
-        self.assertTrue(rows[0].startswith("failed-validation ") and "nope.py" in rows[0], rows)
+        self.assertTrue(rows[0].startswith("failed-validation:missing-field ") and "nope.py" in rows[0], rows)
         self.assertTrue(rows[1].startswith("invalid-json ") and "truncated" in rows[1], rows)
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
         st = self.status()
@@ -1321,6 +1321,28 @@ class Gate(Base):
         self.assertFalse(os.path.exists(path))
         st = self.status()
         self.assertEqual((st["rejected_total"], st["rejected"]), (0, {}))
+
+    def test_a_rejected_lane_line_names_the_failing_check(self):
+        """gh#3: the row and the ingest JSON say which check failed, so a re-send can change the right field."""
+        bad = [dict(self.GOOD, path="nope.py"), dict(self.GOOD, quote="not in the file"), dict(self.GOOD, line=99),
+               {k: v for k, v in self.GOOD.items() if k != "title"}, dict(self.GOOD, severity="huge")]
+        checks = ["path-not-in-tree", "quote-not-at-line", "line-out-of-range", "missing-field", "bad-field"]
+        out = self.ingest(*bad)
+        self.assertEqual(out["rejected"], [{"lane": "defects", "index": i + 1, "check": c} for i, c in enumerate(checks)])
+        conv = dict(self.GOOD, category="convention", rule_source="conventions/none.md")
+        rc, o = self.rep("ingest", lines(dict(conv, rule="a rule of three words"), dict(conv, rule="two words")),
+                         extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, o)
+        self.assertEqual([r["check"] for r in json.loads(o)["rejected"]], ["rule-source-unknown", "rule-malformed"])
+        with open(os.path.join(self.run_dir, "rejected", "defects.txt"), encoding="utf-8") as fh:
+            rows = fh.read().splitlines()
+        self.assertEqual([r.split(" ", 1)[0] for r in rows], ["failed-validation:" + c for c in checks])
+
+    def test_a_line_cited_in_an_empty_file_is_out_of_range(self):
+        os.makedirs(os.path.join(self.run_dir, "tree", "src"), exist_ok=True)
+        with open(os.path.join(self.run_dir, "tree", "src", "calc.py"), "w", encoding="utf-8"):
+            pass
+        self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "line-out-of-range")
 
     def test_verdicts_keep_rejected_lines_per_batch_and_status_lists_no_verdict_ids(self):
         (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]

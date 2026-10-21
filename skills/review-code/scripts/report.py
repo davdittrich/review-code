@@ -6,7 +6,8 @@ element or a non-string key, and a raw JSON object at any depth (the retired obj
 A line that is not JSON because a string holds raw double quotes is read again by _repair (a quote ends a string only
 where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
 but is no pair array is never repaired.
-Gate (review-code-19l): every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K,
+Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, or `failed-validation:<check>` with check one of missing-field,
+bad-field, path-not-in-tree, line-out-of-range, quote-not-at-line, rule-malformed, rule-source-unknown, rule-not-in-conventions) in <run>/rejected/<lane or batch>.txt (batch-K,
 serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
 `render` shows a Warning section and does not go above Needs discussion while either is nonzero.
 
@@ -40,7 +41,8 @@ A Standards `convention` item also carries rule and rule_source. skipped[] lists
 Document also: lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
-cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged; cut ids render as
+cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
+[{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
 unverifiable with reason verifier-cap.
 
 Spec lane (CTX-03): a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
@@ -324,19 +326,24 @@ def _objects(text, total=None):
 
 
 def _rule(o, run):
-    """(rule, rule_source) of a convention line when the rule text occurs in the named conventions/ file, else None."""
+    """((rule, rule_source), None) of a convention line when the rule text occurs in the named conventions/ file, else
+    (None, the failing check)."""
     rule, src = o.get("rule"), o.get("rule_source")
     # a stated rule: at least 3 words, matched on word boundaries, so a letter or a word fragment proves nothing
-    if not (isinstance(rule, str) and len(rule.split()) >= 3 and len(rule) <= 500 and isinstance(src, str)):
-        return None
+    if not (isinstance(rule, str) and len(rule.split()) >= 3 and len(rule) <= 500):
+        return None, "rule-malformed"
+    if not isinstance(src, str):
+        return None, "rule-source-unknown"
     rel = os.path.normpath(src) if src and "\0" not in src else ""
     if not rel.startswith("conventions" + os.sep):
-        return None
+        return None, "rule-source-unknown"
     real = _real(os.path.realpath(os.path.join(run, "conventions")), rel[len("conventions" + os.sep):])
     if real is None:
-        return None
+        return None, "rule-source-unknown"
     with open(real, encoding="utf-8", errors="replace") as fh:
-        return (rule, rel) if re.search(r"(?<!\w)%s(?!\w)" % re.escape(_ws(rule)), _ws(fh.read())) else None
+        if re.search(r"(?<!\w)%s(?!\w)" % re.escape(_ws(rule)), _ws(fh.read())):
+            return (rule, rel), None
+    return None, "rule-not-in-conventions"
 
 
 def _spec_lines(run):
@@ -407,31 +414,48 @@ def _sources(x):
     return x
 
 
+def _uncited(tree, path, line, end):
+    """Why _cited failed for a quote of type str: path-not-in-tree, line-out-of-range or quote-not-at-line."""
+    real = _real(tree, path)
+    if real is None:
+        return "path-not-in-tree"
+    if not (_int(line) and _int(end) and 1 <= line <= end):
+        return "line-out-of-range"
+    try:
+        with open(real, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return "quote-not-at-line"  # _cited rejected the same read error
+    n = len(text.removesuffix("\n").split("\n")) if text else 0  # as _cited counts rows
+    return "line-out-of-range" if end > n else "quote-not-at-line"
+
+
 def _candidate(o, tree, lane, base, ctx=None):
+    """(candidate, None), or (None, the failing check)."""
     for k in CANDIDATE_REQUIRED:
         if k not in o:
-            return None
+            return None, "missing-field"
     c = {k: o[k] for k in CANDIDATE_REQUIRED}
     c.update({k: o.get(k, d) for k, d in zip(CANDIDATE_OPTIONAL, (o["line"], ""))})
     end, fix = c["end_line"], c["fix"]
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
-        return None
+        return None, "bad-field"
     if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
-        return None
+        return None, "bad-field"
     c["path"] = os.path.normpath(c["path"])
     if lane == "sota":
         src = _sources(o.get("sources"))
         if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
-            return None
+            return None, "bad-field"
         c["sources"] = src
     c["rows"] = _cited(tree, c["path"], c["line"], end, c["quote"])
     if c["rows"] is None:
-        return None
+        return None, _uncited(tree, c["path"], c["line"], end)
     if c["category"] == "convention":
-        r = _rule(o, base)
+        r, why = _rule(o, base)
         if r is None:
-            return None
+            return None, why
         c["rule"], c["rule_source"] = r
     if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
         c["spec_line"] = o["spec_line"]
@@ -439,7 +463,7 @@ def _candidate(o, tree, lane, base, ctx=None):
     key = (c["path"], c["category"], _ws(c["quote"]))  # Defects keeps the Phase 3 input; other axes salt it
     c["id"] = "F-" + hashlib.sha256("\0".join(key if c["axis"] == "defects" else (c["axis"],) + key).encode(
         "utf-8", "surrogatepass")).hexdigest()[:10]
-    return c
+    return c, None
 
 
 def _handoff(c, run, nonce, packs=()):
@@ -685,7 +709,7 @@ def _read_lane(text, lane, tree, run, shard=None):
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     for ln, o, fixed in _objects(text):
         repaired += fixed
-        why = "invalid-json" if o is None else "failed-validation"
+        why = "invalid-json" if o is None else None  # else the check that failed
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
                 complete = True
@@ -701,13 +725,13 @@ def _read_lane(text, lane, tree, run, shard=None):
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c = _candidate(o, tree, lane, base, ctx) if o is not None else None
+        c, check = _candidate(o, tree, lane, base, ctx) if o is not None else (None, "bad-field")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
-            c = None
+            c, check = None, "bad-field"
         if c is None or c["id"] in kept:
             invalid += 1
             if c is None:  # a duplicate loses nothing
-                rejected.append((why, ln))
+                rejected.append((why or "failed-validation:" + check, ln))
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
         else:
@@ -778,7 +802,8 @@ def _ingest(run, text, lane, shard):
          "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
-            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired}
+            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired,
+            "rejected": [{"lane": key, "index": i, "check": why.partition(":")[2] or why} for i, (why, _) in enumerate(rejected, 1)]}
 
 
 def verdicts(run, text, batch=None):
