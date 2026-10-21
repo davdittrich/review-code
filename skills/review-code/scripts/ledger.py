@@ -42,6 +42,10 @@ INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
+CAP_HELPER_BYTES = 200000  # tree/ bytes for helper files copied as reuse context; surplus is skipped as helper-cap
+_HELPER_NAME = re.compile(r"(?<![a-z])(?:utils?|helpers?|common|shared|lib)(?![a-z])", re.I)
+_LOAD_FILE = re.compile(r"(?:Dockerfile.*|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
+                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.[A-Za-z]+)\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
@@ -191,7 +195,9 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
     callers, capped["callers"] = [], False
     for s in symbols:
-        hits = sorted(h for h in _grep(repo, rev, [s["name"]]) if h[0] not in inc)
+        every = _grep(repo, rev, [s["name"]])
+        s["refs"] = sum(1 for f, _ in every if f != s["file"])  # whole pinned tree, tests and config too, beyond the cap
+        hits = sorted(h for h in every if h[0] not in inc)
         capped["callers"] = capped["callers"] or len(hits) > CAP_CALLERS
         callers += [{"symbol": s["name"], "file": f, "line": ln, "how": "git grep -w -F"}
                     for f, ln in hits[:CAP_CALLERS]]
@@ -246,6 +252,56 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
         found[cat] = found[cat][:CAP_FILES]
     found["symbols"], found["callers"] = symbols, callers
     return found, capped
+
+
+def _helpers(repo: str, listing: Optional[dict], names: List[str], included: List[str],
+             claimed: set) -> Tuple[List[dict], List[str]]:
+    """(kept, over the byte cap): files of the same directory as a changed file, and tracked paths named like a
+    shared helper, in that order of priority, each path-sorted. Context for reuse checks, never reviewed files."""
+    inc, cdirs = set(included), {p.rpartition("/")[0] for p in included}
+    cand = []
+    for p in names:
+        if p in claimed or p in inc or _is_test(p) or _is_fixture(p) or target.shown(p) != p:
+            continue
+        if listing is not None and listing.get(p, ("",))[0] not in _REGULAR:
+            continue
+        if _HELPER_NAME.search(p):
+            cand.append((0, p, "helper-named file"))
+        elif p.rpartition("/")[0] in cdirs:
+            cand.append((1, p, "sibling of a changed file"))
+    cand.sort()
+    if listing is not None:  # sizes by object id from the pinned listing, never the working copy
+        oids = sorted({listing[p][1] for _, p, _ in cand})
+        raw = target.git_bytes(["cat-file", "--batch-check=%(objectname) %(objectsize)"], repo,
+                               stdin="".join(o + "\n" for o in oids).encode())
+        size = {p: dict(l.split() for l in raw.decode().splitlines() if not l.endswith("missing")).get(listing[p][1])
+                for _, p, _ in cand}
+    else:
+        size = {}
+        for _, p, _ in cand:
+            try:
+                st = os.lstat(os.path.join(repo, p))
+                size[p] = st.st_size if stat.S_ISREG(st.st_mode) else None
+            except OSError:
+                size[p] = None
+    kept, over, used = [], [], 0
+    for _, p, how in cand:
+        if size[p] is None:
+            continue
+        if used + int(size[p]) > CAP_HELPER_BYTES:
+            over.append(p)
+        else:
+            used += int(size[p])
+            kept.append({"file": p, "how": how})
+    return kept, over
+
+
+def _load(names: List[str]) -> dict:
+    """Expected load from tracked deploy config and server or worker entry points only, never from PR or issue
+    text (untrusted): "service" with the files that say so, "script" when none does, "unknown" with no files."""
+    sig = sorted(p for p in names if _LOAD_FILE.match(p.rpartition("/")[2]) and not _is_test(p) and not _is_fixture(p)
+                 and target.shown(p) == p)
+    return {"load": "service" if sig else "script" if names else "unknown", "files": sig[:5]}
 
 
 def _conv_paths(names, included: List[str]) -> set:
@@ -345,7 +401,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
     it as hidden-name."""
     skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
     tree = os.path.join(run, "tree")
-    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs")
+    for p in sorted(set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs", "helpers")
                                      for e in led[c]}):
         if p in named or target.shown(p) != p:
             skipped.append({"path": target.shown(p), "reason": "hidden-name"})
@@ -669,11 +725,17 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    claimed = set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs") for e in led[c]}
+    led["helpers"], over = _helpers(repo, idx if idx is not None else head_ls, files, included, claimed)
+    capped["helpers"] = bool(over)
+    led["load"] = _load(files)
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
         {h["file"] for h in tj["hidden_chars"] if h.get("name")})
-    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs"):
+    led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
+                                    key=lambda k: k["path"])
+    for c in ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "helpers"):
         for e in led[c]:  # 6xl.51/.64: file and symbol names (also inside "how") reach ledger.json escaped
             for k, v in e.items():
                 if isinstance(v, str):
@@ -705,6 +767,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
               "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
               "\n".join("- " + json.dumps(s["name"]) for s in led["symbols"]) or "none",
               "\n".join("- " + json.dumps(p) for p in prose[:CAP_FIND]) or "none"))
+    load_sec = "\n## Expected load\n\n%s\n\nSignals:\n%s\n" % (
+        led["load"]["load"], "\n".join("- " + json.dumps(p) for p in led["load"]["files"]) or "none")
     write(os.path.join(run, "inputs", "defects.md"),
            "# Defects input\n\n" + pin + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
@@ -715,17 +779,17 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
-               "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES))
+               "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES) + load_sec)
     copies = {c["file"]: json.dumps(os.path.join(run, c["copy"])) for c in conventions}
     contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
-           "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n" % (
+           "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
                led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
-               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none"))
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
             "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {})}

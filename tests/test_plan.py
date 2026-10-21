@@ -686,7 +686,8 @@ class Shards(ShardBase):
             self.assertEqual(self.read_text("shards", str(s["id"]), "change.diff"), "")
             tree = os.path.join(d, "tree")
             on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
-            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md", "util/helpers.py"}, set(s["files"]))
+            # util/helpers.py is helper-named, so every shard tree holds it as reuse context (review-code-3ea.2)
+            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md"}, set(s["files"]) - {"util/helpers.py"})
             self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
         self.assertEqual(self.read_text("ledger.json"), before)
         self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)
