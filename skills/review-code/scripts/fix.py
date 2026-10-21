@@ -742,12 +742,15 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                 raise target.Refuse("usage", USAGE)
             opts = opts[:2]
         names = opts[0::2]
-        extra = [n for n in ("--code", "--line") if n in names] if sub == "finish" else []
-        if sub not in flags or names != flags[sub] + extra or len(opts) != 2 * len(names):
+        need = flags.get(sub, [])
+        extra = names[len(need):]  # finish only: --code and --line, once each, in either order
+        if sub not in flags or names[:len(need)] != need or len(opts) != 2 * len(names) \
+                or len(set(extra)) != len(extra) or not set(extra) <= ({"--code", "--line"} if sub == "finish" else set()):
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
         if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined"):
+                or v.get("--status", "applied") not in ("applied", "declined") \
+                or (extra and v["--status"] != "declined"):  # presence, not value: --line 0 is not "absent"
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):

@@ -896,6 +896,27 @@ class FinishScope(Scope):
             self.assertEqual((rc, j["reason"]), (1, "usage"), out)
         self.assertIsNotNone(self.state(run)["in_flight"])
 
+    def test_decline_flags_in_any_order_and_line_alone(self):
+        run, fid, bg = self.started()
+        rc, _, f = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
+                                "--line", "12", "--code", "needs-context"])
+        self.assertEqual((rc, f["outcome"]), (0, "declined"))
+        self.assertEqual(self.state(run)["done"][fid],
+                         {"outcome": "declined", "exit": None, "code": "needs-context", "line": 12})
+        second = two("src/second.py", 2, "return a / b", "return a * b")
+        run, fid, bg = self.started(CAND, second)
+        self.assertEqual(self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
+                                      "--line", "7"])[0], 0)
+        self.assertEqual(self.state(run)["done"][fid], {"outcome": "declined", "exit": None, "line": 7})
+
+    def test_applied_with_any_decline_flag_is_usage(self):
+        run, fid, bg = self.started()
+        for bad in ("0", "abc"):
+            rc, out, j = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "applied",
+                                      "--line", bad])
+            self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+        self.assertIsNotNone(self.state(run)["in_flight"])
+
     def test_off_list_code_and_bad_line_are_dropped_not_refused(self):
         run, fid, bg = self.started()
         rc, _, f = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
