@@ -40,6 +40,12 @@ unplanned paths, never a finding by itself.
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.
   Search every doc surface (README, reference docs, vignettes) for the same claim.
 - Accessibility: images without alt text, inputs without labels, text with too little contrast.
+- Scale, category `performance`, judged against the `## Expected load` section of the input (`script`,
+  `service` or `unknown`, with the tracked files that justify it; never PR, MR or issue text). Check:
+  check-then-write races; the same work done by every process or request; memory, caches or lists that only
+  grow; a query or call per item; O(n^2) work on input that can be large; per-process state that must be
+  shared. State the assumed load in `trigger` (for example "service load: every request rebuilds the
+  index"). At `script` or `unknown` load a scale finding is at most `suggestion`; never `blocking`.
 - Temporary hacks with no removal condition: a `suggestion`, citing the marker.
 
 ## Severity and category

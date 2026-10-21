@@ -44,6 +44,8 @@ CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 CAP_HELPER_BYTES = 200000  # tree/ bytes for helper files copied as reuse context; surplus is skipped as helper-cap
 _HELPER_NAME = re.compile(r"(?<![a-z])(?:utils?|helpers?|common|shared|lib)(?![a-z])", re.I)
+_LOAD_FILE = re.compile(r"(?:Dockerfile.*|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
+                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.[A-Za-z]+)\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
@@ -290,6 +292,14 @@ def _helpers(repo: str, listing: Optional[dict], names: List[str], included: Lis
             used += int(size[p])
             kept.append({"file": p, "how": how})
     return kept, over
+
+
+def _load(names: List[str]) -> dict:
+    """Expected load from tracked deploy config and server or worker entry points only, never from PR or issue
+    text (untrusted): "service" with the files that say so, "script" when none does, "unknown" with no files."""
+    sig = sorted(p for p in names if _LOAD_FILE.match(p.rpartition("/")[2]) and not _is_test(p) and not _is_fixture(p)
+                 and target.shown(p) == p)
+    return {"load": "service" if sig else "script" if names else "unknown", "files": sig[:5]}
 
 
 def _conv_paths(names, included: List[str]) -> set:
@@ -716,6 +726,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     claimed = set(included) | {e["file"] for c in ("callers", "tests", "fixtures", "config", "ci", "docs") for e in led[c]}
     led["helpers"], over = _helpers(repo, idx if idx is not None else head_ls, files, included, claimed)
     capped["helpers"] = bool(over)
+    led["load"] = _load(files)
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
@@ -754,6 +765,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
               "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
               "\n".join("- " + json.dumps(s["name"]) for s in led["symbols"]) or "none",
               "\n".join("- " + json.dumps(p) for p in prose[:CAP_FIND]) or "none"))
+    load_sec = "\n## Expected load\n\n%s\n\nSignals:\n%s\n" % (
+        led["load"]["load"], "\n".join("- " + json.dumps(p) for p in led["load"]["files"]) or "none")
     write(os.path.join(run, "inputs", "defects.md"),
            "# Defects input\n\n" + pin + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
@@ -764,17 +777,17 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
-               "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES))
+               "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES) + load_sec)
     copies = {c["file"]: json.dumps(os.path.join(run, c["copy"])) for c in conventions}
     contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
-           "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n" % (
+           "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
                led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
-               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none"))
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
             "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {})}

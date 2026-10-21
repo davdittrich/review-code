@@ -447,6 +447,29 @@ class Tree(Base):
         self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
         self.assertTrue(led["capped"]["helpers"])
 
+    def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
+        self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "service", "files": ["Dockerfile", "src/server.py"]})
+        for lane in ("defects", "standards"):
+            self.assertIn('## Expected load\n\nservice\n\nSignals:\n- "Dockerfile"\n- "src/server.py"\n',
+                          self.read("inputs/%s.md" % lane))
+
+    def test_expected_load_of_a_plain_script_repo_is_script(self):  # review-code-d14.1
+        self.base({"tools/run.py": "a = 1\n", "tests/test_server.py": "x = 1\n", "tests/Dockerfile": "FROM x\n"})
+        self.branch({"tools/run.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "script", "files": []})
+        self.assertIn("## Expected load\n\nscript\n\nSignals:\nnone\n", self.read("inputs/defects.md"))
+
+    def test_finder_scale_checklist_cites_the_expected_load(self):  # review-code-d14.1
+        with open(os.path.join(os.path.dirname(paths.HERE), "agents", "finder.md"), encoding="utf-8") as fh:
+            text = " ".join(fh.read().split())
+        for item in ("## Expected load", "check-then-write races", "the same work done by every process", "only grow",
+                     "a query or call per item", "O(n^2)", "per-process state", "at most `suggestion`"):
+            self.assertIn(item, text)
+
     def test_tree_symlink_never_created(self):
         secret = os.path.join(self.tmp, "secret.txt")
         with open(secret, "w", encoding="utf-8") as fh:
