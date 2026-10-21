@@ -65,7 +65,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 | `no-command` | The command is empty | Derive a test command, or stop |
 | `trust-unset` | The user was never asked whether the code is theirs | Answer the trust question |
 | `trust-external` | The code was recorded as external or untrusted | Fix mode runs on your own code only |
-| `head-not-checked-out` | The checked-out `HEAD` is not the reviewed `head_sha` | Check out the reviewed commit |
+| `head-not-checked-out` | The checkout recorded in `target.json` as `root` (the worktree that held the reviewed commit when `target.py` ran; else the repository top) no longer has `head_sha` checked out | Check out the reviewed commit there |
 | `dirty-tree` | The working tree has changes or untracked files | Commit, or remove them |
 | `already-run` | This run already has a baseline (`fix/state.json`); a second `plan` before `baseline` replaces `plan.json` | Review again for a new run |
 | `nothing-to-fix` | No verified finding is fixable; `detail` counts the skip reasons. A serial-mode run lands here unless another refusal comes first, because serial mode verifies nothing | Nothing to do; review again in parallel mode for a fix |
@@ -86,7 +86,7 @@ Every refusal prints `status` `refuse`, a `reason` and sometimes a `detail`; the
 
 ## Limits
 
-- The skill makes one fixer call at a time: the main thread waits for its reply before `finish`. The plugin cannot force a foreground subagent: Claude Code starts a spawned subagent in the background, and a user who sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` makes Claude wait for every subagent (https://code.claude.com/docs/en/sub-agents, read 2026-10-20). `fix.py` guards by state, so a second `begin` while one call is outstanding refuses `in-flight`.
+- The skill makes one fixer call at a time, so calls on one file are sequential: each `begin` re-locates the quote in the file as the earlier fixes left it, and the brief's line is the quote's current one. A fixer decline carries a `code` (`line-mismatch`, `quote-not-unique`, `scope-multi-file`, `needs-context`); `finish --status declined` is the same for every code. The main thread waits for its reply before `finish`. The plugin cannot force a foreground subagent: Claude Code starts a spawned subagent in the background, and a user who sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` makes Claude wait for every subagent (https://code.claude.com/docs/en/sub-agents, read 2026-10-20). `fix.py` guards by state, so a second `begin` while one call is outstanding refuses `in-flight`.
 - The dependency guard is file-level: no manifest, lockfile, CI or config file may change. A new import of a package no manifest declares, written into a source file, is detected by no code; the fixer brief forbids it and the tests are the backstop.
 - Passing tests do not prove a fix whose code the tests do not cover.
 - Containment is an after-the-fact check, a seal and a restore, not a sandbox: the fixer can write outside the repository, and `fix.py` does not look there.

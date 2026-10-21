@@ -408,6 +408,15 @@ class ReadOnlyTools(unittest.TestCase):
         self.assertEqual(self.tools("fixer"), ["Read", "Edit", "Grep", "Glob"])
 
 
+class FixerDecline(unittest.TestCase):
+    """GitHub #6: a decline names a machine-readable code, and the quote finds the edit site when the line is off."""
+    def test_decline_carries_a_code_and_the_current_line(self):
+        body = " ".join("\n".join(parts("fixer")[1]).split())
+        for s in ("line-mismatch", "quote-not-unique", "scope-multi-file", "needs-context", '["code", "quote-not-unique"], ["line", 2718]',
+                  "exactly once", "calls on one file are sequential"):
+            self.assertIn(s, body)
+
+
 class SharedPhrases(unittest.TestCase):
     """review-code-4nc: a lane subagent sees only its own file, so shared rules are copied on purpose; each copy is pinned here."""
     ESCAPE = ("write each `{` as `\\u007b` and each `\"` as `\\u0022`: the shell guard denies a brace followed by a quote "

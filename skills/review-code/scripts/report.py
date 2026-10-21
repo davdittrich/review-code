@@ -578,7 +578,11 @@ def status(run):
     cnt = _counts(run)
     repaired = {n: k for n, k in cnt["repaired"].items() if k}
     gone = {n: k for n, k in cnt["lost"].items() if k}
-    return {"status": "ok", "lost": gone, "lost_total": sum(gone.values()), "rejected": rej, "rejected_batches": rejb, "rejected_total": sum(rej.values()) + sum(rejb.values()),
+    # a lane with rejected lines and a try left gets its retry before any verifier starts: a verdict stored now would
+    # make the retry's ingest refuse late-reply (GitHub #4); the cap is 2 tries per lane (SKILL.md step 7)
+    blocked = "lane-retry-open" if any(cnt["attempts"].get(n, 0) < 2 for n in rej) else None
+    calls = [] if blocked else calls
+    return {"status": "ok", "blocked": blocked, "lost": gone, "lost_total": sum(gone.values()), "rejected": rej, "rejected_batches": rejb, "rejected_total": sum(rej.values()) + sum(rejb.values()),
             "attempts": {n: {"attempts": k, "lost": cnt["lost"].get(n, 0)} for n, k in sorted(cnt["attempts"].items())},
             "repaired": repaired, "repaired_total": sum(repaired.values()),
             "no_verdict": _no_verdict(run, cand, ver), "ids": [c["id"] for c in queue if c["axis"] != "spec"],
