@@ -2,7 +2,7 @@
 
 A Claude Code plugin with one skill, `review-code`, a code reviewer for diffs, branches and PRs. It is based on Matt Pocock's two-axis `code-review` skill (Standards and Spec) and adds an evidence gate adapted from `critical-code-reviewer`. Findings are meant to carry `file:line` evidence and an evidence class.
 
-Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; `--fix` applies confirmed fixes one at a time after you confirm the plan and the exact test command, and reverts and stops at the first failing fix. The tier defaults are unvalidated. Do not rely on it for review results.
+Status: early version. It runs the Defects, Standards, Spec and SOTA lanes, a verifier per axis, own-code reproduction, quick, standard and deep tiers, domain packs, shards for directory and repo targets, a serial fallback, automatic spec discovery, and text, JSON and SARIF output. `--comment` posts one COMMENT review to a GitHub PR or GitLab MR after you confirm the exact payload; `--fix` applies confirmed fixes one at a time after you confirm the plan and the exact test command, and reverts and stops at the first failing fix. The tier defaults are unvalidated. Do not rely on it for review results.
 
 ## Install
 
@@ -17,7 +17,7 @@ To install from a local checkout instead, use `claude plugin marketplace add /pa
 
 The repository is its own marketplace (`.claude-plugin/marketplace.json`, source `./`).
 
-Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`. Path targets are relative to the current directory, and the spec file is given when the skill asks for it (step 3 question); `.` at the repository top level means the whole repository, and in a subdirectory that directory.
+Invoke by asking for a code review (the skill auto-triggers) or with `/review-code`. Path targets are relative to the current directory; `.` at the repository top level means the whole repository, and in a subdirectory that directory. The skill never asks for a spec: it finds one (see Spec discovery).
 
 ## Requirements
 
@@ -25,6 +25,8 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 - `git`.
 - `python3` 3.9 or later, for target pinning, the context ledger and the untrusted-text sanitizer. Without it, PR and MR targets are refused because their text cannot be sanitized; local diff targets are still reviewed, without commit messages or the Spec axis, and labelled triage.
 - `gh`, for PR targets. PR text is read, sanitized and kept out of the main thread; with `--comment` the review is posted to the PR through `gh api`.
+- `gh` and `glab` also fetch issues named in commit or PR text.
+- Optional: `bd` (beads), to read tickets named in commit messages.
 - `glab`, for MR targets. MR reading and MR posting (`--comment`) are untested against a live GitLab.
 - Headless `claude -p`: a prompt that makes the model call the Skill tool ("use the review-code skill ...") is denied in the default permission mode, with the bare result `Execute skill: review-code:review-code` and no detail. Pass `--allowedTools Skill`, or use the slash form `/review-code`.
 - The Agent tool (subagents). The lanes and verifiers run as subagents; without it the skill runs in serial mode in the main thread (see Serial mode).
@@ -45,6 +47,19 @@ These values are unvalidated defaults: there is no eval corpus behind them. The 
 ## Cost and caps
 
 Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. A headless run cannot be asked: it prints the preview and runs inside the caps, so bound an unattended run with `--quick` or the cap settings.
+
+## Spec discovery
+
+The Spec axis needs a statement of what the code should do. The skill collects one itself:
+
+- PR or MR text, closing issues, and `#N` issues named in commit messages, read with `gh` or `glab`.
+- Issues in other repositories, written as `owner/repo#N` or as a GitHub or GitLab issue URL. They are fetched read-only with `gh` or `glab`, five per run at most. Jira, Linear and other trackers cannot be fetched; the ledger lists them as unfetched.
+- `bd` tickets named `<repo-dir>-xyz` in commit messages, when `bd` is installed and the repository has `.beads/`. A `repo` or `path` target reads the last 30 commits for them.
+- Files under `docs/`, `specs/` or `.scratch/` whose names match the branch or the reviewed paths, five at most. A `repo` target takes every file there. A file under review is never its own spec.
+- Decision records: every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions` directory, at any depth. Each record is its own entry, up to 30 files and 400 KB, counted apart from tickets and spec files.
+- When nothing is found, or only decision records, a read-only haiku subagent (`spec-finder`) searches the tracked prose files by content and names spec files or directories. The script keeps tracked files only, and none of the subagent's text reaches the lanes.
+
+All of this text is untrusted and reaches the Spec lane inside marked blocks. To name a spec yourself, run `ledger.py build --run DIR --spec PATH` (a path inside the repository). With no spec found, the report says the Spec axis was skipped.
 
 ## Plugin settings
 
@@ -78,9 +93,11 @@ The default is a terminal report. `--json` prints the schema v1 review document 
 `--comment` on a PR or MR target posts the verified findings as one `COMMENT` review, never an approval or a request for changes. The skill first prints the exact payload and a digest and asks; only "Post as COMMENT" posts, and headless runs never post. Headless `claude -p --comment` on a PR is unsupported: besides never posting, the two runs tried did not reach `post.py build`, because the approval prompt on the lane-ingest command is intermittent (review-code-02a.18); use an interactive session. Re-posting skips the findings you already posted. Secrets matching eleven regular expressions are redacted (no entropy check). MR posting is untested against a live GitLab; PR posting was run live against GitHub on two PRs (one review each, hidden markers survived, re-posting refused). Flow, markers, refusals and limits: `skills/review-code/references/posting.md`.
 
 ## Fix mode
-`--fix` applies the verified findings' fixes to committed code of your own, after the report and any post. It stops early for staged, unstaged and working-tree targets. The skill shows every fix text, its model and effort and the exact test command, and asks once: only "Apply and run tests" applies anything, and headless runs never apply. The test command runs on the untouched tree first, and a red baseline stops the run before any edit. Then one fixer subagent edits one file per finding, the tests run, and the edit stays only if they pass; the first failing fix is restored and the run stops. Fix mode never commits, pushes, installs or changes a lockfile, manifest, CI or config file. Edits to files git ignores, such as `.env` or `node_modules/`, are not checked. Review the result with `git diff` before you commit.
+
+`--fix` applies the verified findings' fixes to committed code of your own, after the report and any post. It stops early for staged, unstaged and working-tree targets. The skill derives the test command from the ledger's test, config and CI entries (a `repo` or `path` target lists its own tests, so a repository with tests always has one) and applies nothing when it finds none. Findings in test files, fixtures and test-runner config are skipped, because a fix there could weaken the tests. The skill shows every fix text, its model and effort and the exact test command, and asks once: only "Apply and run tests" applies anything, and headless runs never apply. The test command runs on the untouched tree first, and a red baseline stops the run before any edit. Then one fixer subagent edits one file per finding, the tests run, and the edit stays only if they pass; the first failing fix is restored and the run stops. Fix mode never commits, pushes, installs or changes a lockfile, manifest, CI or config file. Edits to files git ignores, such as `.env` or `node_modules/`, are not checked. Review the result with `git diff` before you commit.
 
 Limit: one fixer call at a time, and the main thread waits for it. The plugin cannot force a foreground subagent: Claude Code starts spawned subagents in the background, and setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` makes Claude wait for every subagent. Flow, refusals, outcomes and limits: `skills/review-code/references/fix.md`.
+
 ## Reproduction
 
 Reproduction covers your own code only. For a confirmed finding, the skill writes the smallest failing test and shows the exact command and the full test source before it asks to run it; the harness permission prompt follows on top. The test runs in a detached worktree under the run directory, which is removed afterwards. `PATH`, `LANG`, `LC_ALL` and `TERM` are kept, and `HOME` and `TMPDIR` move into the run directory. In-place targets get HEAD plus the tracked diff; untracked files are not carried. A run stops after 120 seconds.
