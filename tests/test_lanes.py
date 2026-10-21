@@ -604,6 +604,12 @@ class PromptRules(unittest.TestCase):
             self.assertIn(item, t)
         self.assertIn("Name the repeated call sites or the hot path", t)
 
+    def test_finder_passes_nameable_candidates_to_verifier(self):
+        t = self.text("finder")
+        self.assertNotIn("report only what the evidence supports", t)
+        self.assertIn("Report every candidate whose trigger you can name", t)
+        self.assertIn("the verifier decides, so never drop one you half believe", t)
+
 
 if __name__ == "__main__":
     unittest.main()
