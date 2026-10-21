@@ -140,6 +140,11 @@ def _live(repo: str, path) -> Optional[str]:
         return None
 
 
+def _elsewhere(text: str, own: str, tracked: set) -> bool:
+    """True when the fix text names a tracked path other than the finding's own file."""
+    return any(t != own and t in tracked for t in (os.path.normpath(w.rstrip(".,;:")) for w in re.findall(r"[\w@+./-]+", text)))
+
+
 def _relocate(text: str, quote) -> Optional[int]:
     """1-based line where the whitespace-folded quote starts, when it occurs exactly once in the folded text."""
     q = report._ws(quote) if isinstance(quote, str) else ""
@@ -371,6 +376,7 @@ def plan(run: str, words: List[str]) -> dict:
         raise target.Refuse("already-run")  # FIX-03: one run per review
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
+    tracked = {p.decode("utf-8", "surrogateescape") for p in target.git_bytes(["ls-files", "-z"], repo).split(b"\0") if p}
     entries, skipped = [], []
     for f in report.build(run)["findings"]:
         fix_text = f.get("fix")
@@ -381,6 +387,8 @@ def plan(run: str, words: List[str]) -> dict:
             why = "protected-path"
         elif _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
+        elif f["category"] in report.LANE_CATEGORIES["standards"] and _elsewhere(fix_text, f["path"], tracked):
+            why = "cross-file"  # one file per fixer: a cleanup that reaches a second file is out of scope
         else:
             real = _live(repo, f["path"])
             line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])

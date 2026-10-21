@@ -305,6 +305,43 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
 
 
+class CrossFileSkips(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n", "src/utils.py": "def helper():\n    pass\n"}
+
+    def skipped(self, lane, cand):
+        run = self.pin()
+        rc, out = self.tool("report.py", ["ingest", "--run", run, "--lane", lane],
+                            lines(cand, {"inspected": sorted({cand["path"], "src/calc.py"})}))
+        self.assertEqual(rc, 0, out)
+        (fid,) = json.loads(out)["ids"]
+        self.confirm(run, (fid, dict(path=cand["path"], line=cand["line"], quote=cand["quote"])))
+        rc, _, j = self.plan(run)
+        return rc, j
+
+    def test_standards_fix_naming_a_second_tracked_file_is_skipped(self):
+        for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
+                          ("comment", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
+            with self.subTest(cat=cat, text=text):
+                cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
+                rc, j = self.skipped("standards", cand)
+                self.assertEqual((rc, j["reason"], j["detail"]), (1, "nothing-to-fix", "skipped: cross-file 1"), j)
+                self.tearDown()
+                self.setUp()
+
+    def test_same_text_on_a_defects_finding_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "call helper in src/utils.py")
+        rc, j = self.skipped("defects", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+
+    def test_standards_fix_naming_only_its_own_or_an_untracked_path_is_kept(self):
+        for text in ("inline into src/dup.py", "call helper in src/missing.py"):
+            with self.subTest(text=text):
+                rc, j = self.skipped("standards", two("src/dup.py", 2, "return x * 2", text, category="lean"))
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+                self.tearDown()
+                self.setUp()
+
+
 RUN = "# runner\nrun 3 - 1\n"
 SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
            "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs")
