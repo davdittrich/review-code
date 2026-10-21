@@ -123,3 +123,5 @@ The licence of the v1.3 additions credited to Ziad Hassan has not been verified.
 3. **L19, iron law wording:** "Suspect to decide where to look; prove to decide what to report."
 4. **L133, verdict labels:** Needs changes / Needs discussion / No blocking findings, advisory only.
 5. **L32 and L47:** merged into one Ponytail check.
+
+**Amendment 2026-10-21 (review-code-3ea.7):** item 3 still records the approved wording. `agents/finder.md` now reads "Suspect to decide where to look; name a trigger to decide what to pass on." The finder passes every candidate whose trigger it can name, and the verifier decides what is reported; the reporting gate (reproduced or traced) is unchanged.

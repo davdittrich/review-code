@@ -48,7 +48,7 @@ REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered"
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined | report --run DIR")
 
 
@@ -353,7 +353,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     return None
 
 
-def plan(run: str, words: List[str]) -> dict:
+def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
@@ -372,7 +372,14 @@ def plan(run: str, words: List[str]) -> dict:
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
-    for f in report.build(run)["findings"]:
+    found = report.build(run)["findings"]
+    if only is not None:
+        have = {f["id"] for f in found}
+        unknown = [i for i in only if i not in have]
+        if unknown:
+            raise target.Refuse("unknown-id", ",".join(unknown))
+        found = [f for f in found if f["id"] in only]
+    for f in found:
         fix_text = f.get("fix")
         why, line = None, None
         if not isinstance(fix_text, str) or not fix_text.strip():
@@ -704,6 +711,12 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
              "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
     try:
         sub, opts = (argv[0], argv[1:]) if argv else ("", [])
+        only = None
+        if sub == "plan" and len(opts) == 4 and opts[2] == "--only":  # ids are fixed literals, so they may be arguments
+            only = opts[3].split(",")
+            if not all(re.fullmatch(ID_RE, i) for i in only):
+                raise target.Refuse("usage", USAGE)
+            opts = opts[:2]
         if sub not in flags or opts[0::2] != flags[sub] or len(opts) != 2 * len(flags[sub]):
             raise target.Refuse("usage", USAGE)
         v = dict(zip(flags[sub], opts[1::2]))
@@ -717,7 +730,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
-            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], only)
         elif sub == "baseline":
             out = baseline(run, v["--digest"])
         elif sub == "begin":

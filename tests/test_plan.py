@@ -211,6 +211,13 @@ class Overrides(Fixture):
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="no equals sign\n")
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))
 
+    def test_default_tier_lean_is_refused_because_lean_is_a_flag_only(self):  # review-code-0ah
+        rc, out = self.run_plan([("default_tier", "lean")])
+        self.assertEqual((rc, out["reason"]), (1, "bad-config"), out)
+        self.assertIn("--lean flag", out["detail"])
+        rc, out = self.run_plan([("default_tier", "quick")], "--tier", "lean")
+        self.assertEqual(rc, 0, out)  # the flag still selects lean
+
     def test_oversized_stdin_refuses(self):
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="finder_model=x\n" * 5000)
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))
@@ -245,6 +252,22 @@ class Tiers(Fixture):
         for args in (["--tier", "quick"], ["--tier", "standard"], ["--tier", "deep"], ["--serial"]):
             _, p = self.lanes(*args)
             self.assertIn("standards", [c["lane"] for c in p["calls"]], args)
+
+    def test_lean_tier_with_sota_says_sota_skipped(self):  # review-code-00e
+        _, p = self.lanes("--tier", "lean", "--sota")
+        self.assertIn({"what": "sota", "why": "tier lean"}, p["skipped"])
+
+    def test_lean_tier_runs_only_the_standards_lane_and_the_verifier(self):
+        out, p = self.lanes("--tier", "lean")
+        self.assertEqual((out["tier"], [c["lane"] for c in p["calls"]]), ("lean", ["standards"]))
+        self.assertEqual((p["calls"][0]["model"], p["calls"][0]["effort"]), ("haiku", "medium"))
+        self.assertEqual((p["verifier"]["agent"], p["verifier"]["model"]), ("review-code:verifier", "sonnet"))
+        self.assertEqual({s["what"]: s["why"] for s in p["skipped"]}, {"defects": "tier lean", "spec": "tier lean"})
+        self.assertEqual(p["lost_guarantees"], [])
+        for extra in ("--sota", "--serial"):  # neither adds a lane or drops the lean skips
+            _, p = self.lanes("--tier", "lean", extra)
+            self.assertEqual([c["lane"] for c in p["calls"]], ["standards"], extra)
+            self.assertEqual({"defects", "spec"} - {s["what"] for s in p["skipped"]}, set(), extra)
 
     def test_tier_table(self):
         for tier, fin, ver, cap in (("quick", ("sonnet", "low"), ("opus", "medium"), 10),
@@ -674,7 +697,8 @@ class Shards(ShardBase):
             self.assertEqual(self.read_text("shards", str(s["id"]), "change.diff"), "")
             tree = os.path.join(d, "tree")
             on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
-            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md", "util/helpers.py"}, set(s["files"]))
+            # util/helpers.py is helper-named, so every shard tree holds it as reuse context (review-code-3ea.2)
+            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md"}, set(s["files"]) - {"util/helpers.py"})
             self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
         self.assertEqual(self.read_text("ledger.json"), before)
         self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)

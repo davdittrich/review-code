@@ -305,6 +305,90 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
 
 
+class SecondFileNamed(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n", "src/utils.py": "def helper():\n    pass\n"}
+
+    def skipped(self, lane, cand):
+        run = self.pin()
+        rc, out = self.tool("report.py", ["ingest", "--run", run, "--lane", lane],
+                            lines(cand, {"inspected": sorted({cand["path"], "src/calc.py"})}))
+        self.assertEqual(rc, 0, out)
+        (fid,) = json.loads(out)["ids"]
+        self.confirm(run, (fid, dict(path=cand["path"], line=cand["line"], quote=cand["quote"])))
+        rc, _, j = self.plan(run)
+        return rc, j
+
+    def test_fix_naming_a_second_tracked_file_is_kept_for_the_fixer_to_decline_or_apply(self):
+        # review-code-3ea.6: a reuse fix names the helper it calls; only finish enforces one edited file
+        for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
+                          ("altitude", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
+            with self.subTest(cat=cat, text=text):
+                cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
+                rc, j = self.skipped("standards", cand)
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+                self.tearDown()
+                self.setUp()
+
+    def test_comment_finding_naming_a_second_file_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "see src/utils.py", category="comment")
+        rc, j = self.skipped("standards", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+
+    def test_same_text_on_a_defects_finding_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "call helper in src/utils.py")
+        rc, j = self.skipped("defects", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+
+    def test_standards_fix_naming_only_its_own_or_an_untracked_path_is_kept(self):
+        for text in ("inline into src/dup.py", "call helper in src/missing.py"):
+            with self.subTest(text=text):
+                rc, j = self.skipped("standards", two("src/dup.py", 2, "return x * 2", text, category="lean"))
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+                self.tearDown()
+                self.setUp()
+
+
+class Only(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n",
+                  "src/neg.py": "def h(x):\n    return x - 1\n"}
+    CANDS = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3"), two("src/neg.py", 2, "return x - 1", "return x + 1")]
+
+    def chosen(self):
+        run = self.pin()
+        ids = self.ingest(run, *self.CANDS)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in self.CANDS])
+        return run, [report_id(c) for c in self.CANDS]
+
+    def only(self, run, ids):
+        words = "".join(w + "\n" for w in self.cmd())
+        return self.fixrun(["plan", "--run", run, "--only", ids], words)
+
+    def test_only_limits_plan_and_digest_to_the_chosen_ids(self):
+        run, ids = self.chosen()
+        full = self.plan(run)[2]
+        self.assertEqual(full["apply"], 3)
+        rc, out, j = self.only(run, ",".join((ids[0], ids[2])))
+        self.assertEqual((rc, j["status"], j["apply"], j["skipped"]), (0, "ok", 2, 0), out)
+        self.assertNotEqual(j["digest"], full["digest"])
+        with open(os.path.join(run, "fix", "plan.json"), "rb") as fh:
+            raw = fh.read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), j["digest"])
+        self.assertEqual([e["id"] for e in json.loads(raw)["entries"]], [ids[0], ids[2]])
+        self.assertNotIn(ids[1], out)
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"]), (0, "ok"), b)
+
+    def test_unknown_or_malformed_id_is_refused_and_writes_nothing(self):
+        run, ids = self.chosen()
+        rc, out, j = self.only(run, ids[0] + ",F-0123456789")
+        self.assertEqual((rc, j["reason"], j["detail"]), (1, "unknown-id", "F-0123456789"), out)
+        self.assertFalse(os.path.exists(os.path.join(run, "fix")))
+        for bad in ("F-xyz", "", ids[0] + ";id", "$(id)"):
+            with self.subTest(bad=bad):
+                rc, out, j = self.only(run, bad)
+                self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+
+
 RUN = "# runner\nrun 3 - 1\n"
 SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
            "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs")
