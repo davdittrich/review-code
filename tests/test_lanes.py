@@ -590,5 +590,42 @@ class WireContract(tp.Fixture):
         self.assertEqual((i["path"], i["line"]), ("requirements.txt", 3))
 
 
+class PromptRules(unittest.TestCase):
+    """Content assertions on agent prompt wording."""
+
+    def text(self, name):
+        _, body = parts(name)
+        return " ".join(" ".join(body).split())
+
+    def test_finder_efficiency_checklist(self):
+        t = self.text("finder")
+        for item in ("repeated I/O or recomputation", "independent operations run in sequence",
+                     "blocking work on a startup or hot path", "closure that keeps a large enclosing scope alive"):
+            self.assertIn(item, t)
+        self.assertIn("Name the repeated call sites or the hot path", t)
+
+    def test_finder_passes_nameable_candidates_to_verifier(self):
+        t = self.text("finder")
+        self.assertNotIn("report only what the evidence supports", t)
+        self.assertIn("Report every candidate whose trigger you can name", t)
+        self.assertIn("the verifier decides, so never drop one you half believe", t)
+
+    def test_finder_risky_logic_needs_a_test(self):
+        t = self.text("finder")
+        for item in ("new branch, parser, money or security logic, data write or bug fix",
+                     "cite in `trigger` the logic as `path:line` and the test file you searched",
+                     "one good test, never a coverage figure"):
+            self.assertIn(item, t)
+
+    def test_shortcut_comment_naming_a_limit_is_a_decision(self):
+        rule = ("A `shortcut:` comment that names its limit is a decision, not a finding, "
+                "unless the `## Expected load` in the input, when present, already crosses that limit.")
+        for name in ("finder", "standards"):
+            self.assertIn(rule, self.text(name), name)
+        v = self.text("verifier")
+        self.assertIn("a `shortcut:` comment that names its limit", v)
+        self.assertIn("Expected load", v)
+
+
 if __name__ == "__main__":
     unittest.main()

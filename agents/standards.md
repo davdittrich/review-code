@@ -64,6 +64,7 @@ Category is one of `convention`, `comment`, `smell`, `lean`. Nothing else is acc
 
 - Anything a linter, formatter or type checker the repo configures would catch.
 - Lines carrying a deliberate lint-ignore marker (noqa, eslint-disable, @ts-ignore and the like).
+- A `shortcut:` comment that names its limit is a decision, not a finding, unless the `## Expected load` in the input, when present, already crosses that limit.
 - Suggestions and noted points on unchanged lines.
 - A smell the repo's own standards allow.
 - Taste with no rule behind it: a different valid style is not a finding.
