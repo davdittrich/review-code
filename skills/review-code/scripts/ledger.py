@@ -33,6 +33,10 @@ STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "cou
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
+_HOST = r"[A-Za-z0-9][\w.-]*"
+_XREF = re.compile(r"(?<![\w/.-])([A-Za-z0-9][\w.-]{0,38}/[\w.-]{1,100})#([0-9]{1,9})\b")  # owner/repo#N: GitHub
+_GH_URL = re.compile(r"https?://(%s)/([\w.-]+/[\w.-]+)/issues/([0-9]{1,9})\b" % _HOST)
+_GL_URL = re.compile(r"https?://(%s)/([\w.-]+(?:/[\w.-]+)+?)/-/issues/([0-9]{1,9})\b" % _HOST)
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
@@ -436,6 +440,36 @@ def _issue_text(tj: dict, n: int) -> Optional[str]:
         return None
 
 
+def _xrefs(prose: List[str]) -> List[tuple]:
+    """Issues named outside the target's repository, in text order: (tool, `-R` value, number, label) for
+    owner/repo#N and GitHub issue URLs (gh) and GitLab issue URLs (glab). Other trackers cannot be fetched."""
+    seen, out = set(), []
+    for t in prose:
+        hits = [(m.start(), "gh", m.group(1), m.group(2), m.group(1) + "#" + m.group(2)) for m in _XREF.finditer(t)]
+        for m in _GH_URL.finditer(t):
+            repo = m.group(2) if m.group(1) == "github.com" else m.group(1) + "/" + m.group(2)
+            hits.append((m.start(), "gh", repo, m.group(3), repo + "#" + m.group(3)))
+        for m in _GL_URL.finditer(t):
+            repo = m.group(1) + "/" + m.group(2)
+            hits.append((m.start(), "glab", repo, m.group(3), repo + "#" + m.group(3)))
+        for _, tool, repo, n, label in sorted(hits):
+            if label not in seen:
+                seen.add(label)
+                out.append((tool, repo, n, label))
+    return out
+
+
+def _xref_text(tj: dict, tool: str, repo: str, n: str) -> Optional[str]:
+    try:
+        if tool == "glab":
+            j = target.glab_json(["issue", "view", n, "-F", "json", "-R", repo], tj["repo"])
+            return _clean(j.get("title")) + "\n\n" + _clean(j.get("description"))
+        j = target.gh_json(["issue", "view", n, "--json", "title,body", "-R", repo], tj["repo"])
+        return _clean(j.get("title")) + "\n\n" + _clean(j.get("body"))
+    except (target.Refuse, AttributeError):
+        return None
+
+
 def _tokens(text: str) -> set:
     return {t for t in re.split(r"[/_.-]", text.lower()) if len(t) >= 3 and t not in _BRANCH_SKIP}
 
@@ -535,6 +569,13 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
         if t is not None:
             texts[n] = t
     sources += [{"kind": "issue", "ref": "#%d" % n, "fetched": n in texts} for n in ids]
+    xrefs = _xrefs(prose)
+    xtexts = {}
+    for tool, repo, n, label in xrefs[:CAP_ISSUES]:
+        t = _xref_text(tj, tool, repo, n)
+        if t is not None:
+            xtexts[label] = t
+    sources += [{"kind": "issue", "ref": x[3], "fetched": x[3] in xtexts} for x in xrefs]
 
     # bd tickets named `<repo-dir>-xyz` in the commit messages (a whole-file target reads the recent history instead)
     recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in ("path", "repo") else ""
@@ -546,11 +587,11 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
     sections = {"pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
-                [("ticket " + r, tickets[r]) for r in sorted(tickets)],
+                [("issue " + r, xtexts[r]) for r in sorted(xtexts)] + [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
                           for p in sorted(files)]}
     found = bool(body.strip() or any(x.get("fetched", True) for x in sources if x["kind"] in ("issue", "gitlab-ref", "ticket", "file")))
-    return sources, len(ids) > CAP_ISSUES, sections, found
+    return sources, len(ids) > CAP_ISSUES or len(xrefs) > CAP_ISSUES, sections, found
 
 
 def block(text: str, nonce: str) -> str:

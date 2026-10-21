@@ -828,6 +828,60 @@ class Spec(Base):
             out, led = self.build(commits=[sha])
         self.assertEqual((out["spec_status"], led["spec"]["sources"]), ("none", [{"kind": "ticket", "ref": "repo-ab1", "fetched": False}]))
 
+    def xref_build(self, message, gh=None, glab=None):
+        self.base({"README.md": "r\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, message)
+        calls = []
+
+        def view(tool, answers):
+            def run(args, cwd):
+                calls.append((tool, list(args)))
+                r = answers.get((args[2], args[args.index("-R") + 1])) if answers else None
+                if r is None:
+                    raise target.Refuse(tool + "-failed", "no")
+                return r
+            return run
+        with mock.patch.object(target, "gh_json", side_effect=view("gh", gh)), \
+                mock.patch.object(target, "glab_json", side_effect=view("glab", glab)):
+            out, led = self.build(commits=[sha])
+        return out, led, calls
+
+    def test_cross_repo_github_ref_is_fetched_as_spec(self):  # review-code-rmj
+        out, led, calls = self.xref_build("feat: a\n\nsee acme/widgets#7",
+                                          gh={("7", "acme/widgets"): {"title": "T7", "body": "XREF-TEXT"}})
+        self.assertEqual(calls, [("gh", ["issue", "view", "7", "--json", "title,body", "-R", "acme/widgets"])])
+        self.assertEqual(led["spec"]["sources"], [{"kind": "issue", "ref": "acme/widgets#7", "fetched": True}])
+        self.assertEqual(out["spec_status"], "found")
+        self.assertIn("XREF-TEXT", self.read("inputs/spec.md"))
+
+    def test_github_enterprise_issue_url_keeps_its_host(self):
+        _, led, calls = self.xref_build("feat: a\n\nhttps://ghe.example.com/o/r/issues/9",
+                                        gh={("9", "ghe.example.com/o/r"): {"title": "t", "body": "GHE-TEXT"}})
+        self.assertEqual(calls[0][1][-2:], ["-R", "ghe.example.com/o/r"])
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["ghe.example.com/o/r#9"])
+
+    def test_github_dot_com_issue_url_drops_the_host(self):
+        _, led, calls = self.xref_build("feat: a\n\nhttps://github.com/o/r/issues/4",
+                                        gh={("4", "o/r"): {"title": "t", "body": "B"}})
+        self.assertEqual((calls[0][1][-1], led["spec"]["sources"][0]["ref"]), ("o/r", "o/r#4"))
+
+    def test_gitlab_issue_url_goes_through_glab(self):
+        _, led, calls = self.xref_build("feat: a\n\nhttps://gitlab.example.com/g/sub/p/-/issues/3",
+                                        glab={("3", "gitlab.example.com/g/sub/p"): {"title": "t3", "description": "GL-TEXT"}})
+        self.assertEqual(calls, [("glab", ["issue", "view", "3", "-F", "json", "-R", "gitlab.example.com/g/sub/p"])])
+        self.assertIn("GL-TEXT", self.read("inputs/spec.md"))
+
+    def test_cross_repo_fetch_failure_is_recorded_not_a_spec(self):
+        out, led, _ = self.xref_build("feat: a\n\nsee acme/widgets#7")
+        self.assertEqual((out["spec_status"], led["spec"]["sources"]),
+                         ("none", [{"kind": "issue", "ref": "acme/widgets#7", "fetched": False}]))
+
+    def test_cross_repo_refs_are_capped(self):
+        refs = " ".join("o/r#%d" % i for i in range(1, 9))
+        _, led, calls = self.xref_build("feat: a\n\n" + refs)
+        self.assertEqual((len(calls), len(led["spec"]["sources"])), (ledger.CAP_ISSUES, 8))
+
     def test_found_paths_are_read_when_tracked_and_the_rest_dropped(self):  # review-code-zu2
         self.base({"README.md": "r\n", "notes/prd.md": "PRD-TEXT\n", "src/a.py": "a = 1\n"})
         self.g("checkout", "-q", "-b", "wip")

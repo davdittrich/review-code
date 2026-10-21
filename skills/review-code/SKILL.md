@@ -107,7 +107,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 3. Questions, once per run, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
-   spec is never asked for: the build already took it from PR or MR text, closing issues, bd tickets named in the
+   spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
    commit messages, and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
    paths (every file there for a `repo` target). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
