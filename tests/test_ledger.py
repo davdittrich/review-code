@@ -479,6 +479,24 @@ class Tree(Base):
             self.assertIn('## Expected load\n\nservice\n\nSignals:\n- "Dockerfile"\n- "src/server.py"\n',
                           self.read("inputs/%s.md" % lane))
 
+    def test_expected_load_ignores_docs_and_styles_named_like_entry_points(self):  # review-code-oaj
+        self.base({"docs/app.md": "x\n", "static/app.css": "x\n", "web/server.html": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "script", "files": []})
+
+    def test_expected_load_ignores_dockerfile_backups(self):  # review-code-oaj
+        self.base({"Dockerfile.prod.orig": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "script", "files": []})
+
+    def test_expected_load_accepts_code_entry_points_and_dockerfile_variants(self):  # review-code-oaj
+        self.base({"app.py": "x\n", "Dockerfile.prod": "x\n", "src/a.py": "a = 1\n"})
+        self.branch({"src/a.py": "a = 2\n"})
+        _, led = self.build()
+        self.assertEqual(led["load"], {"load": "service", "files": ["Dockerfile.prod", "app.py"]})
+
     def test_expected_load_of_a_plain_script_repo_is_script(self):  # review-code-d14.1
         self.base({"tools/run.py": "a = 1\n", "tests/test_server.py": "x = 1\n", "tests/Dockerfile": "FROM x\n"})
         self.branch({"tools/run.py": "a = 2\n"})

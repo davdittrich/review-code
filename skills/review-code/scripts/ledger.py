@@ -44,8 +44,8 @@ CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
 CAP_HELPER_BYTES = 200000  # tree/ bytes for helper files copied as reuse context; surplus is skipped as helper-cap
 _HELPER_NAME = re.compile(r"(?<![a-z])(?:utils?|helpers?|common|shared|lib)(?![a-z])", re.I)
-_LOAD_FILE = re.compile(r"(?:Dockerfile.*|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
-                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.[A-Za-z]+)\Z")
+_LOAD_FILE = re.compile(r"(?:Dockerfile(?:\.[\w-]+)?|docker-compose.*\.ya?ml|Procfile|fly\.toml|app\.yaml|serverless\.ya?ml|vercel\.json|"
+                        r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.(?:py|js|ts|rb|go|java|php|rs|cs|ex))\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
