@@ -788,7 +788,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
         elif argv[:2] == ["context", "--run"] and len(argv) == 3:
             out = context(argv[2])
         elif argv[:2] != ["build", "--run"] or len(argv) < 3 or len(argv) % 2 != 1 or (
-                [o for o in argv[3::2]] not in ([], ["--spec"], ["--found"], ["--spec", "--found"], ["--found", "--spec"])):
+                argv[3::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"], ["--found", "--spec"])):
             raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
         else:
             opts = dict(zip(argv[3::2], argv[4::2]))
