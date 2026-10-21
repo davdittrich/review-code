@@ -40,6 +40,11 @@ unplanned paths, never a finding by itself.
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.
   Search every doc surface (README, reference docs, vignettes) for the same claim.
 - Accessibility: images without alt text, inputs without labels, text with too little contrast.
+- Efficiency, a `suggestion` in category `performance`: repeated I/O or recomputation of one value,
+  independent operations run in sequence, blocking work on a startup or hot path, a closure that
+  keeps a large enclosing scope alive in a long-lived object. Name the repeated call sites or the hot
+  path in `trigger` and the cheaper form in `fix`. Skip a micro-optimisation with no such cite and
+  anything a domain pack already checks.
 - Temporary hacks with no removal condition: a `suggestion`, citing the marker.
 
 ## Severity and category

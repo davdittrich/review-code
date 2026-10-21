@@ -590,5 +590,20 @@ class WireContract(tp.Fixture):
         self.assertEqual((i["path"], i["line"]), ("requirements.txt", 3))
 
 
+class PromptRules(unittest.TestCase):
+    """Content assertions on agent prompt wording."""
+
+    def text(self, name):
+        _, body = parts(name)
+        return " ".join(" ".join(body).split())
+
+    def test_finder_efficiency_checklist(self):
+        t = self.text("finder")
+        for item in ("repeated I/O or recomputation", "independent operations run in sequence",
+                     "blocking work on a startup or hot path", "closure that keeps a large enclosing scope alive"):
+            self.assertIn(item, t)
+        self.assertIn("Name the repeated call sites or the hot path", t)
+
+
 if __name__ == "__main__":
     unittest.main()
