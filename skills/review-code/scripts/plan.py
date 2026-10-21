@@ -43,6 +43,7 @@ TIERS = {
     "deep": {"lanes": ("defects", "standards", "spec", "sota"), "finder": ("opus", "xhigh"),
              "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_shards": 12, "max_packs": 9},
 }
+SETTING_TIERS = tuple(t for t in TIERS if t != "lean")  # lean is flag-only: a setting may not hold it
 STANDARDS_DEFAULT = ("haiku", "medium")  # the Standards lane never reports Blocking and its findings are verified; every tier
 DEFAULT_PREFIX = "review-code"
 LANE_AGENT = {"defects": "finder", "standards": "standards", "spec": "spec", "sota": "sota"}  # agent name; the prefix is a plugin option
@@ -88,9 +89,10 @@ def parse_config(text):
         elif key.endswith("_model"):
             ok = MODEL_RE.fullmatch(val) is not None
         else:
-            ok = val in (EFFORTS if key.endswith("_effort") else TIERS) and not (key == "default_tier" and val == "lean")  # lean is flag-only
+            ok = val in (EFFORTS if key.endswith("_effort") else SETTING_TIERS)
         if not ok:
-            raise target.Refuse("bad-config", "invalid value for " + key)
+            why = ": lean is available only as the --lean flag" if (key, val) == ("default_tier", "lean") else ""
+            raise target.Refuse("bad-config", "invalid value for " + key + why)
         cfg[key] = int(val) if key in CAP_BOUNDS else val
     return cfg
 
@@ -470,13 +472,12 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
             skipped.append({"what": "spec", "why": "tier " + tier})
         # shortcut: only two distinct plain aliases prove different tiers; inherit or a full ID is unknown, upgrade
         # when a model registry ships.
-        if "defects" not in lanes:  # no finder runs in the lean tier
-            pass
-        elif fm.lower() == vm.lower():
-            lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
-        elif not {fm.lower(), vm.lower()} <= set(ALIASES):
-            lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct aliases are "
-                        "compared" % (fm, vm))
+        if "defects" in lanes:  # the lean tier runs no finder
+            if fm.lower() == vm.lower():
+                lost.append("verifier not on a different tier: finders and verifier both run on " + fm)
+            elif not {fm.lower(), vm.lower()} <= set(ALIASES):
+                lost.append("verifier tier not checked: finders run on %s, the verifier on %s; only distinct "
+                            "aliases are compared" % (fm, vm))
         if lane_me["standards"][0].lower() == vm.lower():
             lost.append("verifier not on a different tier: the Standards lane and the verifier both run on " + vm)
         lost += _env_lost()
