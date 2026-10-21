@@ -588,6 +588,11 @@ class MultiLane(Lanes):
         got = json.loads(out)
         self.assertEqual((len(got["ids"]), got["lanes"]), (1, {"defects": "complete"}))
 
+    def test_a_one_pair_inspected_line_with_a_space_after_its_bracket_completes_the_lane(self):  # F-9af458192f
+        rc, out = self.rep("ingest", lines(mc(2), '[ "inspected",["src/calc.py"]]'), extra=["--lane", "defects"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(out)["lanes"], {"defects": "complete"})
+
     def test_a_retry_without_an_inspected_line_is_refused_and_keeps_the_complete_lane(self):  # gh-14
         first = self.lane("defects", mc(2), mc(6), {"inspected": ["src/calc.py"]})
         out = self.lane("defects", mc(2), rc=1)
@@ -1123,6 +1128,13 @@ class Relocate(Lanes):  # gh-14: a quote cited at the wrong line is moved to whe
         out = self.cite(4)
         self.assertEqual([r["check"] for r in out["rejected"]], ["quote-not-at-line"])
 
+    def test_a_cite_past_the_end_of_the_file_is_moved_to_the_one_place_that_holds_the_quote(self):  # F-8a25fe06f0
+        out = self.cite(40, "return y")
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0))
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "evidence": [dict(CITE, line=7, quote="return y")], "reason": "r"})
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["line"], f["end_line"]), (7, 7))
+
     def test_a_quote_the_file_does_not_hold_is_still_dropped(self):
         out = self.cite(3, "q = a - 9")
         self.assertEqual([r["check"] for r in out["rejected"]], ["quote-not-at-line"])
@@ -1174,6 +1186,10 @@ class RuleMarkdown(Lanes):  # gh-14: convention files are Markdown, the lane quo
 
     def test_a_rule_of_markers_only_is_malformed(self):
         out = self.lane("standards", dict(CAND, category="convention", rule="** __ **", rule_source="conventions/REVIEW.md"))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-malformed"])
+
+    def test_a_rule_of_one_word_among_markers_is_malformed(self):  # F-dc516b0bad: 3 raw words, 1 word once the markers go
+        out = self.lane("standards", dict(CAND, category="convention", rule="** ** subtract", rule_source="conventions/REVIEW.md"))
         self.assertEqual([r["check"] for r in out["rejected"]], ["rule-malformed"])
 
     def test_a_rule_with_other_words_is_still_rejected(self):
@@ -1558,7 +1574,7 @@ class Gate(Base):
 
     def test_a_rejected_lane_line_names_the_failing_check(self):
         """gh#3: the row and the ingest JSON say which check failed, so a re-send can change the right field."""
-        bad = [dict(self.GOOD, path="nope.py"), dict(self.GOOD, quote="not in the file"), dict(self.GOOD, line=99),
+        bad = [dict(self.GOOD, path="nope.py"), dict(self.GOOD, quote="not in the file"), dict(self.GOOD, line=99, quote="not in the file"),
                {k: v for k, v in self.GOOD.items() if k != "title"}, dict(self.GOOD, severity="huge")]
         checks = ["path-not-in-tree", "quote-not-at-line", "line-out-of-range", "missing-field", "bad-type"]
         out = self.ingest(*bad)

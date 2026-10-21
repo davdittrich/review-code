@@ -27,7 +27,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
     --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
                                    (capture.py) instead of stdin: handback capture before stop capture, and the stored agent
                                    type must be the plan's agent for the lane (plan.json calls) or the batch (verify_calls),
-                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced. A successful call consumes the capture;
+                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced, and it still counts as a try. A successful call consumes the capture;
                                    verdicts needs --batch. The reply then goes through the stdin validation unchanged.
     report.py render   --run DIR [--format text|json|sarif]
     report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
@@ -45,7 +45,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
-folded into a same-axis neighbour), lost{lane: n} and, when non-empty, recovered{lane: n} (a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
+folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
 [{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
@@ -164,16 +164,17 @@ def _relocate(tree, path, line, end, quote):
     cited, else None: a tie, or no such place, keeps the refusal. The quote check itself stays as strict as _cite's."""
     real = _real(tree, path)
     rows = _rows(real) if real else None
-    if rows is None or not _ws(quote):
+    q = _ws(quote)
+    if rows is None or not q or not (_int(line) and _int(end) and 1 <= line <= end):
         return None
-    n = end - line + 1
-    at = sorted((abs(s - (line - 1)), s) for s in range(len(rows) - n + 1) if _ws(quote) in _ws(" ".join(rows[s:s + n])))
-    if not at or at[1:2] and at[1][0] == at[0][0]:
+    n = min(end - line + 1, len(rows))  # a cite past the end of the file is moved too
+    hits = sorted((abs(s - (line - 1)), s) for s in range(len(rows) - n + 1) if q in _ws(" ".join(rows[s:s + n])))
+    if not hits or hits[1:2] and hits[1][0] == hits[0][0]:
         return None
-    lo, hi = at[0][1], at[0][1] + n  # the window holds the quote; trim it to the rows that do
-    while hi - lo > 1 and _ws(quote) in _ws(" ".join(rows[lo + 1:hi])):
+    lo, hi = hits[0][1], hits[0][1] + n  # the window holds the quote; trim it to the rows that do
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo + 1:hi])):
         lo += 1
-    while hi - lo > 1 and _ws(quote) in _ws(" ".join(rows[lo:hi - 1])):
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo:hi - 1])):
         hi -= 1
     return lo + 1, hi
 
@@ -344,7 +345,7 @@ def _parse(ln, load):
         try:
             o = load(cand)
             o = _wire(o) if isinstance(o, list) else None
-            if not isinstance(o, dict) and cand is ln and ln.lstrip().startswith('["'):
+            if not isinstance(o, dict) and cand is ln and re.match(r'\s*\[\s*"', ln):
                 continue
             return True, o if isinstance(o, dict) else None
         except json.JSONDecodeError:
@@ -382,7 +383,7 @@ def _rule(o, run):
     (None, the failing check)."""
     rule, src = o.get("rule"), o.get("rule_source")
     # a stated rule: at least 3 words, matched on word boundaries, so a letter or a word fragment proves nothing
-    if not (isinstance(rule, str) and len(rule.split()) >= 3 and _plain(rule) and len(rule) <= 500):
+    if not (isinstance(rule, str) and len(_plain(rule).split()) >= 3 and len(rule) <= 500):
         return None, "rule-malformed"
     if not isinstance(src, str):
         return None, "rule-source-unknown"
@@ -486,7 +487,7 @@ def _candidate(o, tree, lane, base, ctx=None):
             return None, "sota-invalid"
         c["sources"] = src
     c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
-    if c["rows"] is None and why == "quote-not-at-line" and lane != "sota":  # sota cites its checklist item, not a line to move
+    if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and lane != "sota":  # sota cites its checklist item, not a line to move
         moved = _relocate(tree, c["path"], c["line"], end, c["quote"])
         if moved:
             c["line"], c["end_line"] = moved
@@ -1204,7 +1205,7 @@ def _build(run):
         doc.update(rejected=rej, rejected_batches=rejb, no_verdict=lost)
     if repaired:
         doc.update(repaired=repaired)
-    if gone:  # lines dropped by any ingest, kept until discard: a retry that omits them must not clear the warning (dc5)
+    if gone:  # lines dropped by any ingest, kept until discard unless a later ingest of the lane recovers them: a retry that omits them must not clear the warning (dc5)
         doc.update(lost=gone)
     won = {n: k for n, k in cnt["recovered"].items() if k}
     if won:  # lost lines whose finding a later ingest of the lane carried (_counts): reported, but they no longer force Needs discussion
