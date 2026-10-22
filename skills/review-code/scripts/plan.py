@@ -391,16 +391,19 @@ def _inventory(lines):
 
 
 def _estimate(call):
-    """Input tokens, as bytes over 4 (a rough average for English and code): the call's tree, input file and diff."""
+    """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
+
+    tree/ is browsed, not loaded, so only the files the change touches count (a floor: lanes also open context files)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    total = 0
-    for root, _, names in os.walk(os.path.join(base, "tree")):
-        total += sum(os.path.getsize(os.path.join(root, n)) for n in names if os.path.isfile(os.path.join(root, n)))
-    for f in (call["input"], os.path.join(base, "change.diff")):
-        total += os.path.getsize(f) if os.path.isfile(f) else 0
-    return (total + 3) // 4
+    files = [call["input"], os.path.join(base, "change.diff")]
+    try:
+        with open(os.path.join(base, "target.json"), encoding="utf-8") as fh:
+            files += [os.path.join(base, "tree", p) for p in json.load(fh).get("included", [])]
+    except (OSError, ValueError):
+        pass
+    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
 
 
 def _preview(doc):

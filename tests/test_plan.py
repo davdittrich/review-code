@@ -884,11 +884,17 @@ class Preview(Fixture):
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")
         self.assertNotRegex(pv, r"[$]|USD|EUR|price per")
 
-    def test_token_estimate_is_total_bytes_over_four(self):
+    def test_token_estimate_excludes_the_browsable_tree(self):
         self.plan("plan", "--run", self.run_dir)
         p = self.plan_json()
         call = next(c for c in p["calls"] if c["lane"] == "defects")
-        total = (_tree_bytes(os.path.join(self.run_dir, "tree")) + os.path.getsize(call["input"])
+        with open(os.path.join(self.run_dir, "target.json")) as fh:
+            inc = json.load(fh)["included"]
+        with open(os.path.join(self.run_dir, "tree", "UNLISTED.bin"), "wb") as fh:
+            fh.write(b"x" * 400000)  # browsable but not included: must not show in the estimate
+        self.plan("plan", "--run", self.run_dir)
+        p = self.plan_json()
+        total = (sum(os.path.getsize(os.path.join(self.run_dir, "tree", f)) for f in inc) + os.path.getsize(call["input"])
                  + os.path.getsize(os.path.join(self.run_dir, "change.diff")))
         line = next(x for x in p["preview"] if x.startswith("Call defects:"))
         self.assertIn("about %d input tokens (estimate)" % ((total + 3) // 4), line)
