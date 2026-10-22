@@ -50,6 +50,10 @@ class Weakened(unittest.TestCase):
             with self.subTest(path=path, now=now):
                 self.assertIn("skip", w(path, pre, now))
 
+    def test_pytest_skipif_is_a_skip_marker(self):
+        self.assertIn("skip", w("tests/test_a.py", "def t():\n    assert 1\n",
+                                "@pytest.mark.skipif(True, reason='x')\ndef t():\n    assert 1\n"))
+
     def test_unknown_suffix_rejects_an_added_skip_or_exit(self):
         self.assertIn("skip", w("tests/testthat/test-a.R", "expect_equal(a, 1)\n", "skip('x')\nexpect_equal(a, 1)\n"))
         self.assertIn("skip", w("tests/check.sh", "run a\n", "exit 0\nrun a\n"))
