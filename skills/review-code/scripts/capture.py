@@ -24,7 +24,6 @@ AGENTS = frozenset("review-code:" + n for n in ("finder", "standards", "spec", "
 
 
 def path(base, agent_id, kind):
-    """The file that holds the capture of `agent_id` for one event kind (handback or stop)."""
     return os.path.join(base, "captures", "%s.%s.json" % (agent_id, kind))
 
 
@@ -67,7 +66,6 @@ def keep(ev):
 
 
 def main():
-    """Hook entry: read the event JSON on stdin, keep it, and always return 0."""
     try:
         ev = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
         if isinstance(ev, dict):
