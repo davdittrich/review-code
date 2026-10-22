@@ -638,8 +638,7 @@ def _handoff(c, run, nonce, packs=(), refs=None):
     if c["axis"] == "spec":
         out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
     if c["category"] == "lean":  # an unused-code claim needs the whole-repo count, not only what tree/ holds
-        m = ledger._DEF.match(c["quote"])
-        n, have = m.group(1) if m else "", (refs or {}).get(c.get("shard"), {})
+        n, have = ledger.defined_name(c["quote"]), (refs or {}).get(c.get("shard"), {})
         out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n][1], c["path"])
                 if n in have and have[n][0] == c["path"] else "references: unknown\n")  # one defining file per name
     return out + ("rule:\n%s\n" % ledger.block(c["rule"], nonce) if c["category"] == "convention" else "")
@@ -1330,7 +1329,7 @@ def _build(run):
     doc = {"schema_version": SCHEMA_VERSION, "summary": summary,
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
-            "trust": "own" if ledger._stored(led) == "own" else "external",
+            "trust": "own" if ledger.stored_trust(led) == "own" else "external",
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]

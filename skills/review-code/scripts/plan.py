@@ -504,7 +504,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
                 if i > caps["max_shards"]:
                     skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
                 else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger._stored(led), packs),
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs),
                                    "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:

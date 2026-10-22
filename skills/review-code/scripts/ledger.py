@@ -123,6 +123,12 @@ def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool =
     return hits
 
 
+def defined_name(text: str) -> str:
+    """The name a definition line (def, class, function, fn, const, ...) declares, else ''."""
+    m = _DEF.match(text)
+    return m.group(1) if m else ""
+
+
 def _def_names(lines: Iterator[Tuple[str, str]], file: str = "") -> Iterator[Tuple[str, str, str]]:
     for how, text in lines:
         m = _DEF.match(text)
@@ -201,8 +207,7 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
         # whole pinned tree, tests and config too, beyond the cap; another file's same-name definition is not a use
         s["refs"] = 0
         for f, _, t in every:
-            m = _DEF.match(t)
-            s["refs"] += f != s["file"] and not (m and m.group(1) == s["name"])
+            s["refs"] += f != s["file"] and defined_name(t) != s["name"]
         hits = sorted(h for h in every if h[0] not in inc)
         capped["callers"] = capped["callers"] or len(hits) > CAP_CALLERS
         callers += [{"symbol": s["name"], "file": f, "line": ln, "how": "git grep -w -F"}
@@ -433,12 +438,13 @@ def _provenance(run: str, kind: str):
 
 
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
-                 source: str, named: set, prov=None) -> Tuple[dict, list, list]:
+                 source: str, named: set, kind: str) -> Tuple[dict, list, list]:
     """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
     blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A file whose
     name holds hidden characters, or equals such a name escaped (`named`), is not copied: tree.skipped lists
     it as hidden-name."""
     skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
+    prov = _provenance(run, kind)
     tree = os.path.join(run, "tree")
     for p in sorted(set(included) | {e["file"] for c in _CTX + ("helpers",)
                                      for e in led[c]}):
@@ -458,8 +464,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             return
         esc, c, t = _scan(p, text)
         if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
-            if prov:  # gh#25: provenance outweighs the wording signal sanitize set
-                t = [dict(h, signal=sg) if sg else h for h in t for sg in [prov(p, h["line"])]]
+            t = [dict(h, signal=sg) if sg else h for h in t for sg in [prov(p, h["line"])]]  # provenance outweighs the wording signal
             hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})
@@ -789,7 +794,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
-        {h["file"] for h in tj["hidden_chars"] if h.get("name")}, _provenance(run, tj["kind"]))
+        {h["file"] for h in tj["hidden_chars"] if h.get("name")}, tj["kind"])
     led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
                                     key=lambda k: k["path"])
     for c in ("symbols",) + _CTX + ("helpers",):
@@ -851,14 +856,14 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": _stored(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
+            "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
             **({"adr_omitted": capped["adr"]} if "adr" in capped else {})}
 
 
 TRUST_VALUES = ("own", "external")
 
 
-def _stored(led: dict) -> str:
+def stored_trust(led: dict) -> str:
     v = led.get("trust")
     return v if isinstance(v, str) and v in TRUST_VALUES else "unset"
 
@@ -884,7 +889,7 @@ def trust_set(run: str, value: str, flag: bool = False) -> dict:
     if value not in TRUST_VALUES:
         raise target.Refuse("bad-trust-value", "trust is own or external")
     led = target.load_json(run, "ledger.json")
-    cur = _stored(led)
+    cur = stored_trust(led)
     if cur not in ("unset", value):
         raise target.Refuse("trust-already-set", "the trust answer is recorded once per run")
     if cur == "unset":
@@ -900,7 +905,7 @@ def trust_get(run: str) -> dict:
         led = target.load_json(run, "ledger.json")
     except target.Refuse:
         led = {}
-    v = _stored(led)
+    v = stored_trust(led)
     return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external",
             **_source(led)}
 
@@ -910,7 +915,7 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
     if not cmd or not cmd[0].strip():
         raise target.Refuse("no-command", "no command after --")
     led = target.load_json(run, "ledger.json")
-    if _stored(led) != "own":
+    if stored_trust(led) != "own":
         raise target.Refuse("trust-unset" if led.get("trust") in (None, "unset") else "trust-external",
                             "own code was not confirmed")
     return {"status": "confirm", "command": shlex.join(cmd)}
@@ -919,7 +924,7 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
 def context(run: str) -> dict:
     """What SKILL step 4 states to the user, capped; refuses until trust is recorded (target.json holds change-derived names)."""
     led = target.load_json(run, "ledger.json")
-    if _stored(led) == "unset":
+    if stored_trust(led) == "unset":
         raise target.Refuse("trust-unset", "the trust answer is not recorded")
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
