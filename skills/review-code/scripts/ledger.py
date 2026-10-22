@@ -404,6 +404,24 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
     return text, [{"file": p, **h} for h in chars], [{"file": p, **h} for h in stripped]
 
 
+def _dedupe_hidden(records: List[dict]) -> List[dict]:
+    """One record per span (gh#25): the diff scan repeats a span the whole-file scan found. Same path, line, kind and length
+    (`fline` is the diff record's line in the new file) merge into the whole-file record, which keeps `added` over `touched`
+    and any signal. A span only the diff shows (a removed line) stays."""
+    key = lambda h, line: (h.get("path", h["file"]), line, h["kind"], h["length"])  # noqa: E731
+    whole = {key(h, h["line"]): h for h in records if "path" not in h}
+    out = []
+    for h in records:
+        twin = whole.get(key(h, h.get("fline"))) if "path" in h and h.get("fline") else None
+        if twin is None:
+            out.append({k: v for k, v in h.items() if k != "fline"})
+            continue
+        for f in ("signal", "provenance"):
+            if h.get(f) and (f == "signal" or h[f] == "added" or not twin.get(f)):
+                twin[f] = h[f]
+    return out
+
+
 def hidden_notes(records: List[dict]) -> Tuple[List[dict], List[dict]]:
     """(the removed-span records that carry a `signal`, in order; [{file, count, kinds, added?}] per file for the rest, in file
     order; `added` counts those the change adds, left out at 0). Nothing is dropped: the ledger keeps every record, and the
@@ -806,7 +824,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                 if isinstance(v, str):
                     e[k] = target.shown(v)
     led["hidden_chars"] += more
-    led["hidden_text"] += more_text
+    led["hidden_text"] = _dedupe_hidden(led["hidden_text"] + more_text)
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
     _keep_trust(run, led)
     _write_json(os.path.join(run, "ledger.json"), led)

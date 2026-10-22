@@ -2091,11 +2091,10 @@ class HiddenProvenance(Base):
         with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as fh:
             return json.load(fh)
 
-    def test_only_the_span_on_the_added_line_has_added_provenance(self):
+    def test_each_span_is_recorded_once_and_only_the_added_one_has_added_provenance(self):
         recs = [h for h in self.led()["hidden_text"] if h.get("path", h["file"]) == "tpl.md"]
-        self.assertEqual({h["file"] for h in recs}, {"tpl.md", "change.diff"})  # whole-file scan and diff scan
-        self.assertEqual(sorted((h["file"], h["line"] if h["file"] == "tpl.md" else 0, h.get("provenance")) for h in recs
-                                if h.get("provenance")), [("change.diff", 0, "added"), ("tpl.md", 5, "added")])
+        self.assertEqual([(h["line"], h.get("provenance")) for h in sorted(recs, key=lambda h: h["line"])],
+                         [(2, None), (3, None), (5, "added")])  # whole-file and diff scan are one record per span
         self.assertFalse(any(h.get("signal") for h in recs))  # every record is stored, none carries a wording signal
 
     def test_the_final_report_counts_the_added_span_and_the_old_hints_without_listing_them(self):
@@ -2103,8 +2102,8 @@ class HiddenProvenance(Base):
         d = self.doc()
         self.assertNotIn("hidden_content", d)
         (r,) = d["hidden_routine"]
-        self.assertEqual((r["file"], r["count"], r["added"]), ("tpl.md", len(self.led()["hidden_text"]), 2))
-        self.assertIn("2 of them added by the change", self.rep("render")[1])
+        self.assertEqual((r["file"], r["count"], r["added"]), ("tpl.md", len(self.led()["hidden_text"]), 1))
+        self.assertIn("1 of them added by the change", self.rep("render")[1])
 
     def test_the_removed_text_is_never_stored(self):
         for name in ("ledger.json", "target.json", "change.diff"):
@@ -2121,9 +2120,9 @@ class AddedTemplateComments(Base):
     def test_five_harmless_added_comments_are_counted_and_the_assistant_one_is_listed(self):
         self.ingest({"inspected": ["src/calc.py"]})
         d = self.doc()
-        self.assertEqual([(h["file"], h["signal"], h["provenance"]) for h in d["hidden_content"]], [("tpl.md", "assistant", "added")] * 2)
-        (r,) = d["hidden_routine"]  # each span is recorded by the whole-file scan and by the diff scan
-        self.assertEqual((r["file"], r["count"], r["added"]), ("tpl.md", 10, 10))
+        self.assertEqual([(h["file"], h["signal"], h["provenance"]) for h in d["hidden_content"]], [("tpl.md", "assistant", "added")])
+        (r,) = d["hidden_routine"]
+        self.assertEqual((r["file"], r["count"], r["added"]), ("tpl.md", 5, 5))
 
 
 class Dispositions(Lanes):

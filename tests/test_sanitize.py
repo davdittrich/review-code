@@ -464,8 +464,8 @@ class HiddenDiffTests(unittest.TestCase):
         self.assertNotIn("INJECT", out)
         self.assertEqual(out.count("\n"), d.count("\n"))
         self.assertIn("\n+a [hidden-comment removed: 15 chars] b\n", out)
-        self.assertEqual(hits, [{"file": "n.md", "line": 7, "kind": "comment", "length": 15, "provenance": "added"},
-                                {"file": "n.md", "line": 8, "kind": "alt-text", "length": 6, "provenance": "added"}])
+        self.assertEqual(hits, [{"file": "n.md", "line": 7, "kind": "comment", "length": 15, "fline": 2, "provenance": "added"},
+                                {"file": "n.md", "line": 8, "kind": "alt-text", "length": 6, "fline": 3, "provenance": "added"}])
 
     def test_diff_multiline_comment_keeps_prefixes(self):
         d = hunk(1, 1, " keep\n+<!--\n+INJECT\n+-->\n+after")

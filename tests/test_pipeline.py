@@ -365,7 +365,7 @@ class Tracer(Fixture):
         with open(os.path.join(t["run"], "ledger.json"), encoding="utf-8") as fh:
             led = json.load(fh)
         self.assertEqual(sorted((h["file"], h["kind"]) for h in led["hidden_text"]),
-                         [("change.diff", "alt-text"), ("change.diff", "comment"), ("notes.md", "alt-text"), ("notes.md", "comment")])
+                         [("notes.md", "alt-text"), ("notes.md", "comment")])  # gh#25: one record per span
         self.assertLessEqual(set(json.loads(out)), LEDGER_KEYS)
 
     def test_tracer_stdout_minimal(self):

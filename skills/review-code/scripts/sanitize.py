@@ -336,7 +336,8 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
         res[i] = tag + new
         for key, sp in zip(keys, spans):
             if key not in seen:
-                seen[key] = {"file": path, "line": i + 1, "kind": sp[2], "length": sp[3], **({"signal": sp[5]} if sp[5] else {})}
+                seen[key] = {"file": path, "line": i + 1, "kind": sp[2], "length": sp[3], **({"signal": sp[5]} if sp[5] else {}),
+                             **({"fline": sp[0]} if got and side == "+" else {})}  # span's first line in the new file: ledger dedupes by it
                 hits.append(seen[key])
             if tag == "+":
                 seen[key]["provenance"] = "added"  # the change author controls this span; kept apart from the wording signal
