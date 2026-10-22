@@ -18,7 +18,7 @@ reason is a key of REASONS (the one closed reason -> retry hint table, also the 
 null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: `dropped` sums every stored lane
 (`lane_dropped` is the ingested lane's own count; every line counted in `invalid` has a rejected row, while a repeated finding
 and a second summary are dispositions only and are not counted) and verdicts.json holds every stored batch. `verdicts` stdout: confirmed,
-refuted and unverifiable are cumulative over the stored batches (unverifiable = a stored verdict that neither confirms
+refuted and unverifiable are cumulative over the stored batches (`cumulative` names these keys; unverifiable = a stored verdict that neither confirms
 with a cite nor refutes); `batch_ids` names the ids this call covers (every queued id for a serial reply); `no_verdict`
 lists queued ids with no stored verdict (batch not ingested yet, or their line was rejected), apart from unverifiable.
 `rejected` [{batch (K or "serial"), index (row of that batch's rejected file), check}] lists this call's rejected lines, never the wire line;
@@ -1191,6 +1191,7 @@ def _verdicts(run, text, batch, agent=None):
     # confirmed, refuted and unverifiable describe every stored batch (verdicts.json is cumulative); batch_ids names the ids of
     # this call, no_verdict the queued ids with no stored verdict (not yet ingested, or their line was rejected)
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(set(got) - set(conf) - set(ref)),
+           "cumulative": ["confirmed", "refuted", "unverifiable"],
            "no_verdict": sorted(ids - set(got)), "batch_ids": sorted(ids if batch is None else calls[batch]),
            "repaired": repaired, "dispositions": disp, "rejected": rej}
     return out if batch is None else dict(out, foreign=foreign)

@@ -143,6 +143,10 @@ class Verdicts(BigRun):
         for k in ("confirmed", "refuted", "unverifiable", "repaired", "foreign", "status"):
             self.assertIn(k, two)
 
+    def test_the_cumulative_lists_are_named_in_stdout(self):  # gh#21
+        out = self.batch(1, *[self.line(i) for i in self.first])
+        self.assertEqual(out["cumulative"], ["confirmed", "refuted", "unverifiable"])
+
     def test_a_serial_reply_names_every_queued_id(self):  # gh#21
         out = self.verdicts(self.line(self.first[0]))
         self.assertEqual(out["batch_ids"], sorted(self.ids))
