@@ -214,6 +214,8 @@ class Derivation(Base):
         rc, st = self.rep("status")
         st = json.loads(st)
         self.assertEqual((rc, old in st["ids"], sorted(i for c in st["verify_calls"] for i in c["ids"])), (0, False, sorted([one, add])))
+        out = self.verdicts(dict(verdict(("return 1", 2)), id=one))
+        self.assertEqual((out["no_verdict"], out["batch_ids"]), ([add], sorted([one, add])))  # no verifier ever gets the doomed id
         self.verdicts(dict(verdict(("return 1", 2)), id=one), verdict((Q_ADD, 8)))
         st = json.loads(self.rep("status")[1])
         self.assertEqual(st["no_verdict"], [])  # the doomed id is not owed a verdict

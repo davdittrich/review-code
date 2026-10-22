@@ -939,11 +939,11 @@ def _read_lane(text, lane, tree, run, shard=None):
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
-            if c is None:  # a duplicate loses nothing: no rejected row, so it is not counted invalid either
+            if c is None:
                 invalid += 1
                 rejected.append((why or check, ln))
                 disp.append(_disp(n, _lost_id(ln, lane), "rejected", why or check))
-            else:
+            else:  # a duplicate loses nothing: no rejected row, so it is not counted invalid
                 disp.append(_disp(n, c["id"], "rejected", "duplicate"))
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
@@ -1158,6 +1158,7 @@ def _verdicts(run, text, batch, agent=None):
     _counts(run)
     trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
+    queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
     copied = _spec_copy(run) if spec else None
@@ -1206,7 +1207,7 @@ def _verdicts(run, text, batch, agent=None):
     # this call, no_verdict the queued ids with no stored verdict (not yet ingested, or their line was rejected)
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(set(got) - set(conf) - set(ref)),
            "cumulative": ["confirmed", "refuted", "unverifiable"],
-           "no_verdict": sorted(ids - set(got)), "batch_ids": sorted(ids if batch is None else calls[batch]),
+           "no_verdict": sorted(queued - set(got)), "batch_ids": sorted(queued if batch is None else calls[batch]),
            "repaired": repaired, "dispositions": disp, "rejected": rej}
     return out if batch is None else dict(out, foreign=foreign)
 
