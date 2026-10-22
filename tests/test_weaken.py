@@ -42,6 +42,18 @@ class Weakened(unittest.TestCase):
             with self.subTest(path=path, now=now):
                 self.assertIn("skip", w(path, pre, now))
 
+    def test_unittest_and_mocha_skip_calls_are_skip_markers(self):
+        for path, pre, now in (
+                ("tests/test_a.py", "def t(self):\n    assert 1\n", "def t(self):\n    self.skipTest('x')\n    assert 1\n"),
+                ("tests/test_a.py", "def t(self):\n    assert 1\n", "def t(self):\n    raise unittest.SkipTest\n    assert 1\n"),
+                ("a.test.js", "it('x', function () { expect(1) })\n", "it('x', function () { this.skip(); expect(1) })\n")):
+            with self.subTest(path=path, now=now):
+                self.assertIn("skip", w(path, pre, now))
+
+    def test_unknown_suffix_rejects_an_added_skip_or_exit(self):
+        self.assertIn("skip", w("tests/testthat/test-a.R", "expect_equal(a, 1)\n", "skip('x')\nexpect_equal(a, 1)\n"))
+        self.assertIn("skip", w("tests/check.sh", "run a\n", "exit 0\nrun a\n"))
+
     def test_a_removed_skip_marker_passes(self):
         self.assertIsNone(w("tests/test_a.py", "@pytest.mark.skip\ndef t():\n    assert 1\n", "def t():\n    assert 1\n"))
 

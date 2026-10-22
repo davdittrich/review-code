@@ -1726,6 +1726,19 @@ class WeakenGate(Base):
         self.assertEqual(self.planned([run_sh, self.TC], ["./tests/run.sh"])[2], {"tests/run.sh": "test-path"})
         self.assertEqual(self.planned([self.TC])[3], ["tests/test_calc.py"])  # a test file the command names stays editable
 
+    def test_a_helper_script_in_a_test_dir_the_command_reaches_indirectly_stays_protected(self):
+        run_sh = two("tests/run.sh", 2, "run 3 - 1", "run 3 + 1")
+        self.assertEqual(self.planned([run_sh, self.TC])[2], {"tests/run.sh": "test-path"})  # the words do not name it
+
+    def test_plan_skips_an_uncovered_test_file(self):
+        # shortcut: a finding can only name a target file, which counts as covered, so the branch is reached by mocking
+        run = self.pin()
+        self.ingest(run, self.TC)
+        self.confirm(run, (report_id(self.TC), dict(path=self.TC["path"], line=self.TC["line"], quote=self.TC["quote"])))
+        with mock.patch.object(fix, "_covered", return_value=False), self.assertRaises(target.Refuse) as r:
+            fix.plan(run, self.WORDS, True)
+        self.assertEqual((r.exception.reason, r.exception.detail), ("nothing-to-fix", "skipped: not-covered 1"))
+
     def test_a_test_file_in_the_target_is_covered(self):
         _, j, skipped, applied = self.planned([self.TC])
         self.assertEqual((skipped, applied, j["test_files"]), ({}, ["tests/test_calc.py"], 1))

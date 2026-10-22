@@ -12,9 +12,7 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import bisect
-import difflib
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -131,9 +129,10 @@ def _judges(path: str, cmd_files: set) -> bool:
 
 
 def _editable_test(path: str) -> bool:
-    """The part of what judges the tests that --fix-tests may edit: test files. Fixtures, runner configs and the test
-    command's own script change what the judge runs, so they stay protected."""
-    return _judges(path, set()) and not ledger._is_fixture(path) and not _RUNNER.match(path.rpartition("/")[2])
+    """The part of what judges the tests that --fix-tests may edit: files named like tests. Fixtures, runner configs, the
+    test command's script and any helper in a test directory change what the judge runs, so they stay protected."""
+    base = path.rpartition("/")[2]
+    return bool(ledger._TEST_NAME.match(base)) and not ledger._is_fixture(path) and not _RUNNER.match(base)
 
 
 def _covered(path: str, cmd_files: set, known: set) -> bool:
@@ -290,9 +289,8 @@ def _names(paths: List[str]) -> str:
 
 
 def _changed_lines(a: bytes, b: bytes) -> int:
-    """+ and - lines of a zero-context diff; latin-1 maps bytes 1:1 so only b"\n" splits lines."""
-    d = difflib.unified_diff(a.decode("latin-1").split("\n"), b.decode("latin-1").split("\n"), n=0, lineterm="")
-    return sum(1 for ln in itertools.islice(d, 2, None) if ln[0] in "+-")  # islice drops the two headers
+    """+ and - lines of a zero-context diff."""
+    return sum(len(x) for x in weaken.changed(a, b))
 
 
 def _tests(run: str, st: dict) -> dict:
@@ -417,8 +415,7 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
         derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
         judges = _judges(f["path"], cmd_files)
-        script = f["path"] in cmd_files and not ledger._TEST_NAME.match(f["path"].rpartition("/")[2])  # the command's own script
-        if judges and not (fix_tests and _editable_test(f["path"]) and not script):
+        if judges and not (fix_tests and _editable_test(f["path"])):
             why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in for test files only
         elif judges and not _covered(f["path"], cmd_files, known):
             why = "not-covered"  # the post-fix run would not judge this edit
