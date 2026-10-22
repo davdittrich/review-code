@@ -1897,5 +1897,52 @@ class AgentReply(Captured, Base):
         return json.loads(out)
 
 
+class Dispositions(Lanes):
+    """gh#29: ingest and verdicts return one disposition per wire line of the call, with a reason from one closed table."""
+    INS = {"inspected": ["src/calc.py"]}
+
+    def test_ingest_returns_a_row_per_wire_line_scoped_to_the_call(self):
+        out = self.lane("defects", "prose", mc(3), "[[\"truncated\", \"x", self.INS)
+        self.assertEqual(out["dispositions"], [
+            {"index": 1, "id": out["ids"][0], "disposition": "accepted", "reason": None},
+            {"index": 2, "id": None, "disposition": "rejected", "reason": "invalid-json"},
+            {"index": 3, "id": None, "disposition": "accepted", "reason": None}])
+        out = self.lane("standards", mc(4), self.INS)  # a Defects category in the Standards lane
+        self.assertEqual([(d["index"], d["disposition"], d["reason"]) for d in out["dispositions"]],
+                         [(1, "rejected", "bad-type"), (2, "accepted", None)])
+        self.assertEqual(out["dropped"]["invalid"], 2)  # cumulative over lanes, as before
+        self.assertEqual(out["lane_dropped"], {"invalid": 1, "do_not_flag": 0})  # this lane's own count
+        out = self.lane("defects", mc(5), self.INS)
+        self.assertEqual((out["dropped"]["invalid"], out["lane_dropped"]["invalid"]), (1, 0))
+
+    def test_a_repaired_line_is_accepted_with_reason_repaired(self):
+        raw = ('[["path", "src/calc.py"], ["line", 3], ["severity", "required"], ["category", "bug"], ["title", "t"], '
+               '["trigger", "calls f("a", "b") wrongly"], ["quote", "%s"], ["fix", "x"]]' % MQ[3])
+        out = self.lane("defects", raw, self.INS)
+        self.assertEqual((out["dispositions"][0]["disposition"], out["dispositions"][0]["reason"]), ("accepted", "repaired"))
+
+    def test_verdicts_returns_a_row_per_wire_line(self):
+        (i,) = self.lane("defects", mc(3), self.INS)["ids"]
+        v = {"id": i, "verdict": "confirmed", "reason": "r", "evidence": [{"path": "src/calc.py", "line": 3, "quote": MQ[3]}]}
+        rc, out = self.rep("verdicts", lines("prose", v, "[[\"id\", \"F-0000000000\"], [\"verdict\", \"confirmed\"]]",
+                                              "[[\"truncated\", \"x"), extra=["--batch", "1"])
+        out = json.loads(out)
+        self.assertEqual([(d["index"], d["id"], d["disposition"], d["reason"]) for d in out["dispositions"]],
+                         [(1, i, "accepted", None), (2, "F-0000000000", "rejected", "other-batch"),
+                          (3, None, "rejected", "invalid-json")])
+        for k in ("status", "confirmed", "refuted", "unverifiable", "repaired", "foreign"):
+            self.assertIn(k, out)
+
+    def test_every_emitted_reason_is_in_the_table(self):
+        with open(os.path.join(SCRIPTS, "report.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        lit = set(re.findall(r'return None, "([a-z:-]+)"', src))  # the check names _cite, _rule and _candidate return
+        self.assertTrue(lit and lit <= set(report.REASONS), lit - set(report.REASONS))
+        for r, hint in report.REASONS.items():
+            self.assertTrue(isinstance(hint, str) and hint, r)
+        with self.assertRaises(KeyError):
+            report._disp(1, None, "rejected", "not-a-reason")
+
+
 if __name__ == "__main__":
     unittest.main()

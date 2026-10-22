@@ -11,6 +11,12 @@ bad-type, spec-line-invalid, sota-invalid, copied-from-spec, path-not-in-tree, l
 serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
 `render` shows a Warning section and does not go above Needs discussion while either is nonzero.
 
+Dispositions (gh#29): `ingest` and `verdicts` stdout also carry `dispositions`, one row {index, id|null, disposition, reason}
+per wire line of that call (index counts wire lines, prose is skipped): disposition is accepted, rejected or downgraded;
+reason is a key of REASONS (the one closed reason -> retry hint table, also the source of the capture reader's refusals) or
+null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: `dropped` sums every stored lane
+(`lane_dropped` is the ingested lane's own count) and verdicts.json holds every stored batch.
+
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
 `render`, which prints the report):
@@ -110,9 +116,54 @@ LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source"), "sota": ("
 VERDICTS = ("confirmed", "refuted", "unverifiable")
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
+ID_FULL = re.compile(ID_RE)
 LINT_IGNORE = re.compile(r"noqa|type: ?ignore|pylint: ?disable|eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOSONAR|"
                          r"rubocop: ?disable|#\[allow\(|@SuppressWarnings|nosec", re.IGNORECASE)
 WHOLE = ("path", "repo")  # targets that are not a change: every finding is `existing`
+# The one closed table of reasons: reason -> retry hint. It feeds the rejected files, the disposition rows of `ingest` and
+# `verdicts`, and the capture reader's refusals (gh#29). _disp and _refuse look a reason up here, so an emitted reason
+# missing from the table is a KeyError (a test drives it).
+REASONS = {
+    "invalid-json": "resend the line as one JSON pair array, every string escaped",
+    "missing-field": "resend the line with every required field",
+    "bad-type": "resend the line with each field of its documented type and an allowed value",
+    "spec-line-invalid": "cite a spec_line that lies inside an UNTRUSTED block of the spec",
+    "sota-invalid": "cite a checklist item, its name as the quote and 1 to 5 https sources",
+    "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
+    "path-not-in-tree": "cite a file that exists in tree/",
+    "line-out-of-range": "cite a line range inside the file",
+    "unreadable": "cite a file that is readable text",
+    "quote-not-at-line": "quote text that the file holds at the cited line",
+    "rule-malformed": "state the rule in at least 3 words, at most 500 characters",
+    "rule-source-unknown": "name a conventions/ file as rule_source",
+    "rule-not-in-conventions": "quote the rule as the conventions file words it",
+    "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
+    "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
+    "duplicate": "the line repeats an earlier one; nothing is lost",
+    "bad-summary": "send one summary line, text up to the length cap",
+    "other-batch": "the id belongs to another verify batch",
+    "unknown-id": "the id is no candidate of this run",
+    "empty-capture": "the capture holds no wire line of the expected kind",
+    "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
+    "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
+}
+
+
+def _disp(index, id, disposition, reason=None):
+    """One disposition row: the `index`th wire line of a call, the finding id it names (or None), what became of it
+    (accepted, rejected or downgraded) and why (a REASONS key, or None for a plain accept)."""
+    if reason is not None:
+        REASONS[reason]  # noqa: B018 - KeyError on a reason the table lacks
+    return {"index": index, "id": id, "disposition": disposition, "reason": reason}
+
+
+def _did(x):
+    """x when it has the shape of a finding id, else None: a row never echoes model text."""
+    return x if isinstance(x, str) and ID_FULL.fullmatch(x) else None
+
+
+def _refuse(reason, detail=None):
+    return target.Refuse(reason, REASONS[reason] if detail is None else detail)
 
 
 def _ws(s):
@@ -795,18 +846,22 @@ def _declined(o, ctx, copied):
 def _read_lane(text, lane, tree, run, shard=None):
     kept, areas, invalid, ignored, complete, declined, rejected, repaired = {}, [], 0, 0, False, [], [], 0
     summary = None
+    disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
-    for ln, o, fixed in _objects(text):
+    for n, (ln, o, fixed) in enumerate(_objects(text), 1):
         repaired += fixed
+        ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
         why = "invalid-json" if o is None else None  # else the check that failed
         if o is not None and "path" not in o and "summary" in o and lane == "defects":  # the one summary per lane: the first valid wins
             sm = o["summary"]
             if summary is None and isinstance(sm, str) and _ws(sm) and len(sm) <= SUMMARY_MAX:
                 summary = _ws(sm)
+                disp.append(_disp(n, None, "accepted", ok))
             else:
                 invalid += 1  # counted, but not a rejected line: a summary holds no finding, so it never flips the verdict
+                disp.append(_disp(n, None, "rejected", "bad-summary"))
             continue
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
             if "inspected" in o:
@@ -818,6 +873,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + bad
+            disp.append(_disp(n, None, "accepted", ok))
             continue
         if lane == "sota" and o is not None:  # the inventory, never the lane, picks the path and line
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
@@ -830,13 +886,18 @@ def _read_lane(text, lane, tree, run, shard=None):
             invalid += 1
             if c is None:  # a duplicate loses nothing
                 rejected.append((why or check, ln))
+                disp.append(_disp(n, _lost_id(ln, lane), "rejected", why or check))
+            else:
+                disp.append(_disp(n, c["id"], "rejected", "duplicate"))
         elif LINT_IGNORE.search("\n".join(c.pop("rows"))):  # VERI-05: the author ignored it on purpose
             ignored += 1
+            disp.append(_disp(n, c["id"], "rejected", "do-not-flag"))
         else:
+            disp.append(_disp(n, c["id"], "accepted", ok))
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
             **({"summary": summary} if summary else {}), "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}, "rejected": rejected,
-            "repaired": repaired}
+            "repaired": repaired, "dispositions": disp}
 
 
 def _reject(run, name, rows):
@@ -893,11 +954,11 @@ def _take(run, agent, want, needs_inspected):
             continue
         if isinstance(got, dict) and isinstance(got.get("message"), str):
             if got.get("agent_type") != want:
-                raise target.Refuse("agent-mismatch", "the capture is of another agent type than the plan's")
+                raise _refuse("agent-mismatch")
             if not any(o is not None and "inspected" in o and "path" not in o if needs_inspected else True for _, o, _ in _objects(got["message"])):
-                raise target.Refuse("empty-capture", "the capture holds no " + ("inspected" if needs_inspected else "verdict") + " line")
+                raise _refuse("empty-capture")
             return got["message"].encode("utf-8", "replace").decode("utf-8")  # a lone surrogate cannot be stored
-    raise target.Refuse("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin")
+    raise _refuse("no-capture")
 
 
 def _consume(run, agent, key):
@@ -938,7 +999,7 @@ def _ingest(run, text, lane, shard):
         raise target.Refuse("no-inspected-line", "the reply has findings but no inspected line, so it would replace the complete "
                             "lane with an incomplete one: send the full corrected reply, the inspected line included")
     lanes[key] = new  # a re-ingest replaces only that lane
-    rejected, repaired = lanes[key].pop("rejected"), lanes[key].pop("repaired")
+    rejected, repaired, disp = lanes[key].pop("rejected"), lanes[key].pop("repaired"), lanes[key].pop("dispositions")
     cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
     doomed = _doomed(run, cands)
     queue = _queue(cands, doomed)
@@ -966,7 +1027,8 @@ def _ingest(run, text, lane, shard):
          "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
-            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired,
+            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired, "dispositions": disp,
+            "lane_dropped": lanes[key]["dropped"],
             "rejected": [{"lane": key, "index": i, "check": why} for i, (why, _) in enumerate(rejected, 1)]}
 
 
@@ -982,20 +1044,24 @@ def _replies(run):
 
 def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
     """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
-    repaired line count).
+    repaired line count, disposition rows).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
     path, one that no other refuted id of the reply uses (review-code-8dt)."""
-    foreign, mine, bad, fixed = 0, [], [], 0
-    for ln, o, fix in _objects(text, total):
+    foreign, mine, bad, fixed, disp = 0, [], [], 0, []
+    for n, (ln, o, fix) in enumerate(_objects(text, total), 1):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
-            bad.append(("invalid-json" if o is None else "bad-type", ln))
+            why = "invalid-json" if o is None else "bad-type"
+            bad.append((why, ln))
+            disp.append(_disp(n, _did(o and o.get("id")), "rejected", why))
             continue
         if allowed is not None and o["id"] not in allowed:
             foreign += 1
+            disp.append(_disp(n, _did(o["id"]), "rejected", "other-batch"))
             continue
         if o["id"] not in cand_ids or o["id"] in got:
+            disp.append(_disp(n, _did(o["id"]), "rejected", "unknown-id" if o["id"] not in cand_ids else "duplicate"))
             continue
         ev = o.get("evidence")
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
@@ -1004,6 +1070,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         if fix and any(_hostile(trees[o["id"]], p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
             cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
+            disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
             continue
         if allowed is not None and o["verdict"] == "refuted":
             cites = [e for e in cites if os.path.normpath(e["path"]) == paths[o["id"]]]
@@ -1012,12 +1079,13 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         got[o["id"]] = {"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                         "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
         mine.append(o["id"])
+        disp.append(_disp(n, o["id"], "accepted", "repaired" if fix else None))
     key = lambda e: (os.path.normpath(e["path"]), e["line"], _ws(e["quote"]))  # noqa: E731
     used = [key(e) for i in mine if allowed is not None and got[i]["verdict"] == "refuted" for e in got[i]["cites"]]
     for i in mine:
         if got[i]["verdict"] == "refuted" and any(used.count(key(e)) > 1 for e in got[i]["cites"]):
             got[i]["verdict"] = "unverifiable"
-    return foreign, bad, fixed
+    return foreign, bad, fixed, disp
 
 
 def _verdicts(run, text, batch, agent=None):
@@ -1040,7 +1108,7 @@ def _verdicts(run, text, batch, agent=None):
         _bind(run, agent, "batch-%d" % batch)
         text = _take(run, agent, next(c.get("agent") for c in cand["verify_calls"] if isinstance(c, dict) and c.get("batch") == batch), False)
         if not any(o is not None and isinstance(o.get("id"), str) and o["id"] in calls[batch] for _, o, _ in _objects(text)):  # another batch's reply
-            raise target.Refuse("agent-mismatch", "the capture names none of the batch's ids")
+            raise _refuse("agent-mismatch")
     store = _replies(run)
     if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
@@ -1049,14 +1117,15 @@ def _verdicts(run, text, batch, agent=None):
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
-    got, foreign, repaired, fixes, lost = {}, 0, 0, {}, 0
+    got, foreign, repaired, fixes, lost, disp = {}, 0, 0, {}, 0, []
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
             with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f, bad, fixed = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths,
-                                     [INGEST_STEPS])  # each stored batch has its own repair budget (one hostile batch starves no other)
+                f, bad, fixed, rows = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths,
+                                           [INGEST_STEPS])  # each stored batch has its own repair budget (one hostile batch starves no other)
+            disp = rows if k == batch else disp
             _reject(run, "serial" if k is None else "batch-%d" % k, bad)
             fixes["serial" if k is None else "batch-%d" % k] = fixed
             lost += len(bad) if k == batch else 0
@@ -1068,7 +1137,7 @@ def _verdicts(run, text, batch, agent=None):
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref)),
-           "repaired": repaired}
+           "repaired": repaired, "dispositions": disp}
     return out if batch is None else dict(out, foreign=foreign)
 
 
