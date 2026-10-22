@@ -3,7 +3,8 @@
 Wire form (g1x.10): every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace
 (Claude Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair
 element or a non-string key, and a raw JSON object at any depth (the retired object form), is invalid.
-A line that is not JSON because a string holds raw double quotes is read again by _repair (a quote ends a string only
+A line that is not JSON because a string holds raw double quotes, or a backslash that starts no JSON escape (a regular
+expression, a Windows path), is read again by _repair, which doubles such a backslash in a LITERAL string (a quote ends a string only
 where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
 but is no pair array is never repaired.
 Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, `retired-object-form`, or `failed-validation:<check>` with check one of declined-invalid:bad-entry|too-long|copied-from-spec (one row per invalid entry of a spec `declined` trailer), missing-field,
@@ -131,6 +132,7 @@ WHOLE = ("path", "repo")  # targets that are not a change: every finding is `exi
 # missing from the table is a KeyError (a test drives it).
 REASONS = {
     "invalid-json": "resend the line as one JSON pair array, every string escaped",
+    "invalid-json:bad-escape": "write each backslash in a string as a double backslash: a single one starts no JSON escape",
     "retired-object-form": "resend as pair arrays [[\"key\", value], ...], never as a { } object",
     "missing-field": "resend the line with every required field",
     "bad-type": "resend the line with each field of its documented type and an allowed value",
@@ -176,8 +178,11 @@ def _did(x):
 
 
 def _syntax(ln):
-    """The reason of a wire line that is no pair array at all: the retired object form, or plain invalid JSON."""
-    return "retired-object-form" if ln.lstrip().startswith("{") else "invalid-json"
+    """The reason of a wire line that is no pair array at all: the retired object form, a lone backslash that starts no
+    JSON escape (the repair doubles it where it can; this names it where it cannot), or plain invalid JSON."""
+    if ln.lstrip().startswith("{"):
+        return "retired-object-form"
+    return "invalid-json:bad-escape" if any(not m.group(1) for m in _ESC.finditer(ln) if m.group().startswith("\\")) else "invalid-json"
 
 
 def _refuse(reason, detail=None):
@@ -285,6 +290,7 @@ LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only 
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
     "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
+_ESC = re.compile(r'(\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))|\\|"')  # a valid escape (kept), else a lone backslash or quote
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _LIT = {"true": True, "false": False, "null": None}
 
@@ -332,8 +338,9 @@ def _alts(s, i, budget, key=None):
             budget[1][i] = [q for q, c in sorted((e for e in ends if e[1] in (",", "]", "")), key=lambda e: e[1] != "]")]
         for q in budget[1][i]:
             _charge(s, budget)  # each end tried costs a decode of the string
-            try:
-                yield json.loads('"%s"' % re.sub(r'(\\.)|"', lambda m: m.group(1) or '\\"', s[i + 1:q])), q + 1
+            try:  # a backslash that starts no JSON escape is a literal one (gh#19)
+                yield json.loads('"%s"' % _ESC.sub(lambda m: m.group(1) or ("\\\\" if m.group().startswith("\\") else '\\"'),
+                                                   s[i + 1:q])), q + 1
             except ValueError:
                 pass
     elif _NUM.match(s, i):
@@ -937,7 +944,7 @@ def _reject(run, name, rows):
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        _put(path, "".join("%s %s\n" % (why if why in ("invalid-json", "retired-object-form") else "failed-validation:" + why, ln)
+        _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why, ln)
                                   for why, ln in rows))
     elif os.path.exists(path):
         os.remove(path)

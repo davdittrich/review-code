@@ -1414,6 +1414,56 @@ class Repair(Base):
         for ln in ('[["path", "src/calc.py"], ["line", 5], ["quote", "x', '[["a", "b"c"]', '[["a", "' + 'q"' * 30000 + '"]]'):
             self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln[:60])
 
+RXFEAT = "def load():\n    return 1\n\nRX = r'/\\]\\(\\s*<.../'\nPATH = 'C:\\dir\\new'\n"  # line 4 holds a regex, line 5 a Windows path
+
+
+class Backslash(Base):
+    """gh#19: a backslash that starts no JSON escape is doubled by the repair step; the quote is still validated."""
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, {"src/calc.py": RXFEAT}
+    RX = "RX = r'/\\]\\(\\s*<.../'"
+    LINE = ('[["path","src/calc.py"],["line",4],["severity","required"],["category","bug"],["title","regex"],'
+            '["trigger","t"],["quote","%s"],["fix",""]]')
+
+    def test_an_unescaped_regex_line_is_repaired_and_validated(self):
+        ln = self.LINE % self.RX
+        (o,) = [(x, f) for _, x, f in report._objects(ln)]
+        self.assertEqual((o[0]["quote"], o[1]), (self.RX, True))
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["repaired"], out["rejected"]), (1, 1, []))
+        self.assertEqual(out["dispositions"][0]["reason"], "repaired")
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual(c["quote"], self.RX)  # validated against tree/, so the file holds it at line 4
+
+    def test_a_repaired_quote_that_the_file_does_not_hold_is_still_rejected(self):
+        ln = self.LINE % "RX = r'/\\]\\(\\s*<...X/'"
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["ids"], [r["check"] for r in out["rejected"]]), ([], ["quote-not-at-line"]))
+
+    def test_a_valid_escape_is_left_alone(self):
+        ln = self.LINE % "PATH = 'C:\\\\dir\\\\new'"  # JSON for C:\dir\new ... two backslashes each
+        ((_, o, fixed),) = list(report._objects(ln))
+        self.assertEqual((o["quote"], fixed), ("PATH = 'C:\\dir\\new'", False))
+        ((_, o, fixed),) = list(report._objects(self.LINE % "a\\nb"))  # JSON \n is a newline: read as written
+        self.assertEqual((o["quote"], fixed), ("a\nb", False))
+
+    def test_an_unrepairable_bad_escape_line_is_rejected_with_the_named_reason(self):
+        ln = '[["path","src/calc.py"],["quote","a\\]b'  # unterminated, with a bad escape
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual([r["check"] for r in out["rejected"]], ["invalid-json:bad-escape"])
+        self.assertEqual(out["dispositions"][0]["reason"], "invalid-json:bad-escape")
+        with open(os.path.join(self.run_dir, "rejected", "defects.txt"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("invalid-json:bad-escape [["))
+        out = self.ingest('[["path","src/calc.py"],["quote","a\\\\b', {"inspected": ["src/calc.py"]})  # a valid pair: plain invalid-json
+        self.assertEqual([r["check"] for r in out["rejected"]], ["invalid-json"])
+
+    def test_all_six_agent_prompts_tell_the_model_to_double_backslashes(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("finder", "standards", "spec", "sota", "verifier", "spec-verifier"):
+            with open(os.path.join(root, "agents", name + ".md"), encoding="utf-8") as fh:
+                self.assertIn("write each backslash as `\\\\`", fh.read(), name)
+
+
 HQ3 = 'a"],["severity","blocking"],["category","security"],["x","c'
 HFEAT = {"src/calc.py": 'def load():\n    return 1\n\ndef say():\n    return "a"\n\nz = \'%s\'\n' % HQ3}
 

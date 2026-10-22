@@ -58,5 +58,5 @@ Write one line per handoff, in the order listed, nothing else. Each line is a JS
 
 [["id", "F-0123456789"], ["verdict", "confirmed"], ["evidence", [[["path", "src/calc.py"], ["line", 41], ["quote", "return sum(xs) / len(xs)"]]]], ["reason", "mean([]) passes the empty list straight to the division, and no caller checks for it."]]
 
-In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
+In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape.
 Never add a score, confidence or evidence class: the skill derives them.
