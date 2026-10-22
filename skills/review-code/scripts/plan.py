@@ -390,17 +390,32 @@ def _inventory(lines):
     return [dict(i, item=n) for n, i in enumerate(out[:INVENTORY_MAX], 1)]
 
 
-def _estimate(call):
-    """Input tokens, as bytes over 4 (a rough average for English and code): the call's tree, input file and diff."""
+def _included(call):
+    """The included file list of the call's target.json, or None for a call without an input file or an unreadable one."""
+    if call["input"] is None:
+        return None
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(call["input"])), "target.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("included", [])
+    except (OSError, ValueError):
+        return None
+
+
+def _estimate(call, included):
+    """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
+
+    tree/ is browsed, not loaded, so only the files the change touches count (a floor: lanes also open context files)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    total = 0
-    for root, _, names in os.walk(os.path.join(base, "tree")):
-        total += sum(os.path.getsize(os.path.join(root, n)) for n in names if os.path.isfile(os.path.join(root, n)))
-    for f in (call["input"], os.path.join(base, "change.diff")):
-        total += os.path.getsize(f) if os.path.isfile(f) else 0
-    return (total + 3) // 4
+    files = [call["input"], os.path.join(base, "change.diff")] + [os.path.join(base, "tree", p) for p in included or []]
+    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
+
+
+def _files_ceiling(call, included):
+    """(included file count, turn ceiling) of a lane call, or None for a call without both (sota, main thread)."""
+    ceiling = MAX_TURNS.get(call["agent"].rsplit(":", 1)[-1])  # the main thread has no ceiling
+    return None if included is None or ceiling is None else (len(included), ceiling)
 
 
 def _preview(doc):
@@ -412,10 +427,18 @@ def _preview(doc):
     if doc["shards"] or any(x["what"].startswith("shard ") for x in doc["skipped"]):
         out.append("Shards: %d of %d kept" % (len(doc["shards"]), len(doc["shards"]) + sum(
             1 for x in doc["skipped"] if x["what"].startswith("shard "))))
+    warns = []
     for c in calls:
-        out.append("Call %s%s: %s, about %d input tokens (estimate)" % (
-            c["lane"], ", shard %d" % c["shard"] if c["shard"] else "",
-            "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c)))
+        name = "%s%s" % (c["lane"], ", shard %d" % c["shard"] if c["shard"] else "")
+        inc = _included(c)
+        fc = _files_ceiling(c, inc)
+        out.append("Call %s: %s, about %d input tokens (estimate)%s" % (
+            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc),
+            ", %d files, ceiling %d turns" % fc if fc else ""))
+        if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
+            warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
+                         "and the skill then resumes it once" % (name, fc[0], fc[1]))
+    out += warns
     b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one shard, so calls lie between cap/b and cap
     out.append("Verifier ids: up to %d (calls of up to %d ids in one shard, so %d to %d calls), %s" % (
         verifier_cap, b, -(-verifier_cap // b), verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
@@ -501,7 +524,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
                 if i > caps["max_shards"]:
                     skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
                 else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger._stored(led), packs),
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs),
                                    "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:

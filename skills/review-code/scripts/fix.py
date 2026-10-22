@@ -31,7 +31,6 @@ import repro
 import sanitize
 import target
 
-ID_RE = report.ID_RE
 TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
@@ -40,15 +39,19 @@ _MANIFEST = re.compile(
     r"build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|pom\.xml|NAMESPACE|.*\.csproj|"
     r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
-_RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
-                     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
+_RUNNER = re.compile(
+    r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
+    r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs|pytest\.ini|tox\.ini)\Z")
+# multi-purpose files: they judge the tests only when the test command names them (cmd_files), not by basename
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
-            "reverted-timeout", "reverted-interrupt", "tampered")
-REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
-STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
-               "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
+            "reverted-timeout", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-reached")
+RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # restored, and the tree is trusted: the run goes on
+HALTING = ("reverted-violation", "reverted-interrupt", "tampered")  # the tree can no longer be trusted: the run stops
+REVERTED = RECOVERABLE + HALTING  # every failed outcome; all are restored except tampered, which leaves the tree as found
+STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "protected", "test_files", "skipped", "id", "brief", "path", "line", "model",
+               "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted", "verified", "not_reached")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+USAGE = ("usage: fix.py plan --run DIR [--fix-tests] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined [--code CODE] [--line N] | "
          "report --run DIR")
 DECLINE_CODES = ("line-mismatch", "quote-not-unique", "scope-multi-file", "needs-context")
@@ -108,7 +111,7 @@ def _tier(f: dict) -> Tuple[str, str]:
 
 
 def _protected(path: str) -> bool:
-    """Paths no fix may touch: dot components, lockfiles, manifests, config and CI files (the fixer's brief excludes them)."""
+    """Paths flagged in the preview and the brief as the riskiest edits: dot components, lockfiles, manifests, config and CI files."""
     parts = path.split("/")
     base = parts[-1]
     return (any(p.startswith(".") for p in parts) or base in target._LOCKFILES or base.endswith(".lock")
@@ -140,6 +143,14 @@ def _live(repo: str, path) -> Optional[str]:
         return joined if listed == norm.encode("utf-8") + b"\0" else None
     except UnicodeError:
         return None
+
+
+def _locate(repo: str, path, quote) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """(real path, line, None) when the finding's file is live and its quote occurs once; else (real or None, None, the
+    skip reason): bad-path for a file that is not live (or has a .git component), stale for a quote that moved or went."""
+    real = None if ".git" in str(path).split("/") else _live(repo, path)
+    line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), quote)
+    return real, line, "bad-path" if real is None else "stale" if line is None else None
 
 
 def _relocate(text: str, quote) -> Optional[int]:
@@ -365,7 +376,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     return None
 
 
-def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
+def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
@@ -385,29 +396,22 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
     found = report.build(run)["findings"]
-    if only is not None:
-        have = {f["id"] for f in found}
-        unknown = [i for i in only if i not in have]
-        if unknown:
-            raise target.Refuse("unknown-id", ",".join(unknown))
-        found = [f for f in found if f["id"] in only]
     for f in found:
         fix_text = f.get("fix")
+        derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
-        if not isinstance(fix_text, str) or not fix_text.strip():
-            why = "no-fix"
-        elif _protected(f["path"]):
-            why = "protected-path"
-        elif _judges(f["path"], cmd_files):
-            why = "test-path"  # a fix there could weaken the tests that judge it
+        judges = _judges(f["path"], cmd_files)
+        if judges and not fix_tests:
+            why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in
         else:
-            real = _live(repo, f["path"])
-            line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
-            why = "bad-path" if real is None else "stale" if line is None else None
+            _, line, why = _locate(repo, f["path"], f["quote"])
         if why:
             skipped.append({"id": f["id"], "path": f["path"], "why": why})
             continue
-        e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote", "fix")}
+        e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote")}
+        e["fix"], e["derived"] = ("" if derived else fix_text), derived
+        e["protected"] = _protected(f["path"])  # the riskiest edits: flagged in the preview, not refused
+        e["test_file"] = judges  # only reachable with --fix-tests: flagged and counted like a protected path
         e["line"], e["end_line"] = line, line + (f["end_line"] - f["line"])
         e["model"], e["effort"] = _tier(e)
         entries.append(e)
@@ -418,16 +422,20 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
         raise target.Refuse("nothing-to-fix", "skipped: " + (", ".join("%s %d" % kv for kv in sorted(counts.items()))
                                                              or "none"))
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
-    text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
-                                                                          _e(shlex.join(words)))]
+    prot, tf = sum(e["protected"] for e in entries), sum(e["test_file"] for e in entries)
+    text = ["review-code fix plan: %d to apply, %d skipped%s%s; tests: %s" % (
+        len(entries), len(skipped), "; %d protected path" % prot if prot else "", "; %d test file" % tf if tf else "",
+        _e(shlex.join(words)))]
     if _elsewhere(tj):
-        text.append("checkout: " + _e(repo))
+        text.append("checkout: " + _e(repo) + " (edits and tests run here)")
     for k, e in enumerate(entries, 1):
-        text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
-                                                      e["severity"], e["category"], e["origin"], e["model"],
-                                                      e["effort"]))
+        text.append("%d/%d %s %s:%d %s %s %s %s/%s%s%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
+                                                        e["severity"], e["category"], e["origin"], e["model"],
+                                                        e["effort"], " protected path" if e["protected"] else "",
+                                                        " test file" if e["test_file"] else ""))
         for label in ("title", "fix"):
-            rows = [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
+            rows = ["derived by fixer: no fix text"] if label == "fix" and e["derived"] else \
+                [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
             text += ["  %s: %s" % (label, rows[0])] + ["      " + r for r in rows[1:]]
     if skipped:
         text.append("== skipped ==")
@@ -441,7 +449,7 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     data = json.dumps(doc, sort_keys=True, indent=2).encode("utf-8")
     target.write_atomic(os.path.join(fd, "plan.json"), data)
     return {"status": "ok", "text": body, "digest": hashlib.sha256(data).hexdigest(), "apply": len(entries),
-            "skipped": len(skipped)}
+            "protected": prot, "test_files": tf, "skipped": len(skipped)}
 
 
 def baseline(run: str, digest: str) -> dict:
@@ -510,17 +518,20 @@ def begin(run: str) -> dict:
     for e in json.loads(raw.decode("utf-8"))["entries"]:
         if e["id"] in st["done"]:
             continue
-        real = _live(repo, e["path"])
-        line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), e["quote"])
-        if line is None:
-            st["done"][e["id"]] = {"outcome": "stale", "exit": None}
+        real, line, why = _locate(repo, e["path"], e["quote"])
+        if why:
+            st["done"][e["id"]] = {"outcome": why, "exit": None}
             continue
         data = _read(real)
         target.write_atomic(os.path.join(fd, e["id"] + ".pre"), data)
         nonce = secrets.token_hex(8)
         brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
                  "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
-        brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote", "fix")]
+        brief += ["protected path: this file is a lockfile, manifest, config or CI file; keep the edit minimal"] * e["protected"]
+        brief += ["test file: this file judges the tests; fix the defect without removing, skipping or weakening any assertion"] * e["test_file"]
+        brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote")]
+        brief.append("fix: none. No fix text exists for this finding; derive the smallest edit that resolves it from the "
+                     "title, trigger and quote above." if e["derived"] else "fix:\n" + ledger.block(e["fix"], nonce))
         target.write_private(os.path.join(fd, e["id"] + ".md"), "\n".join(brief) + "\n")
         st["in_flight"] = {"id": e["id"], "path": e["path"], "mode": stat.S_IMODE(os.stat(real).st_mode)}
         _save(run, st)
@@ -641,10 +652,11 @@ def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: O
     if res and outcome in REVERTED:
         st["done"][fid]["tail"] = res["tail"]
     st["in_flight"] = None
-    if outcome in REVERTED:
+    halts = outcome in HALTING
+    if halts:
         st["halted"] = outcome
     _save(run, st)
-    out = {"status": "halted" if outcome in REVERTED else "ok", "outcome": outcome}
+    out = {"status": "halted" if halts else "ok", "outcome": outcome}
     if detail:
         out["detail"] = detail
     if res and outcome in REVERTED:
@@ -661,16 +673,29 @@ def report_(run: str) -> dict:
     tj = None if unsafe else target.load_target(run)
     repo = None if unsafe else _root(tj)
     try:
-        entries = _json(os.path.join(fd, "plan.json"))["entries"]
+        doc = _json(os.path.join(fd, "plan.json"))
+        entries, skipped = doc["entries"], doc.get("skipped", [])
     except (OSError, ValueError, KeyError):
-        entries = []
-    text = []
+        entries, skipped = [], []
+    text, counts = [], {}
+    if not unsafe and _elsewhere(tj):
+        text.append("checkout: " + _e(repo) + " (run git diff there)")
     for e in entries:
         d = st["done"].get(e["id"], {})
-        outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else "pending")
+        outcome = d.get("outcome", "in-flight" if cur and cur["id"] == e["id"] else
+                        "not-reached" if st["halted"] else "pending")
         why = [d["detail"]] if d.get("detail") else ([d["code"]] if "code" in d else []) + (["line %d" % d["line"]] if "line" in d else [])
+        if outcome == "reverted-tests" and d.get("exit") is not None:
+            why.append("exit %s" % d["exit"])
+        counts[outcome] = counts.get(outcome, 0) + 1
         text.append("%s %s:%d %s%s" % (e["id"], _e(e["path"]), e["line"], outcome,
                                        " (%s)" % _e(", ".join(why)) if why else ""))
+    for x in skipped:  # verified findings the plan left out: each one still appears once, with its reason
+        counts[x["why"]] = counts.get(x["why"], 0) + 1
+        text.append("%s %s %s" % (x["id"], _e(x["path"]), x["why"]))
+    verified = len(entries) + len(skipped)
+    text.append("verified findings: %d = %s" % (verified, " + ".join("%d %s" % (n, k) for k, n in sorted(counts.items()))
+                                                or "0"))
     if st["halted"] and not tampered:
         text.append("halted: " + _e(st["halted"]))
     if tampered:
@@ -709,8 +734,6 @@ def report_(run: str) -> dict:
             text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger.block(d["tail"], nonce)]
     if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
-    if not unsafe and _elsewhere(tj):
-        text.insert(0, "checkout: " + _e(repo))
     text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff%s before committing" %
              (" in " + _e(repo) if not unsafe and _elsewhere(tj) else ""),
             "passing tests do not prove a fix is right where the tests do not cover it",
@@ -718,7 +741,8 @@ def report_(run: str) -> dict:
     outs = [v.get("outcome") for v in st["done"].values()]
     return {"status": "ok", "text": "\n".join(text), "fixed": outs.count("fixed"),
             "reverted": sum(1 for o in outs if o in REVERTED), "declined": outs.count("declined"),
-            "halted": 1 if st["halted"] else 0}
+            "halted": 1 if st["halted"] else 0, "verified": verified,
+            "not_reached": counts.get("not-reached", 0)}
 
 
 def _term(signum, frame):
@@ -735,22 +759,21 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
              "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
     try:
         sub, opts = (argv[0], argv[1:]) if argv else ("", [])
-        only = None
-        if sub == "plan" and len(opts) == 4 and opts[2] == "--only":  # ids are fixed literals, so they may be arguments
-            only = opts[3].split(",")
-            if not all(re.fullmatch(ID_RE, i) for i in only):
-                raise target.Refuse("usage", USAGE)
-            opts = opts[:2]
+        fix_tests = sub == "plan" and "--fix-tests" in opts  # a bare flag among the --name value pairs
+        if fix_tests:
+            opts = [o for o in opts if o != "--fix-tests"]
         names = opts[0::2]
         need = flags.get(sub, [])
         extra = names[len(need):]  # finish only: --code and --line, once each, in either order
+        allowed = {"--code", "--line"} if sub == "finish" else set()
         if sub not in flags or names[:len(need)] != need or len(opts) != 2 * len(names) \
-                or len(set(extra)) != len(extra) or not set(extra) <= ({"--code", "--line"} if sub == "finish" else set()):
+                or len(set(extra)) != len(extra) or not set(extra) <= allowed:
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
-        if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined") \
-                or (extra and v["--status"] != "declined"):  # presence, not value: --line 0 is not "absent"
+        hexes = [v[k] for k in ("--digest", "--seal") if k in v]
+        # presence, not value: --line 0 is not "absent"
+        if not all(HEX.match(h) for h in hexes) or v.get("--status", "applied") not in ("applied", "declined") \
+                or (extra and v["--status"] != "declined"):
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
@@ -759,7 +782,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
-            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], only)
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], fix_tests)
         elif sub == "baseline":
             out = baseline(run, v["--digest"])
         elif sub == "begin":
@@ -780,7 +803,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
     if out.get("text"):
         print(out["text"])
     target.emit(out, STDOUT_KEYS)
-    return 0 if out["status"] in ("ok", "done") else 1
+    return 0 if out["status"] in ("ok", "done") and not out.get("reverted") else 1  # a report exits 1 when an entry failed
 
 
 if __name__ == "__main__":

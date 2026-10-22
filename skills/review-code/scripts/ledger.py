@@ -31,7 +31,8 @@ _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
-               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only"}
+               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
+               "adr_omitted", "source"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -122,6 +123,12 @@ def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool =
     return hits
 
 
+def defined_name(text: str) -> str:
+    """The name a definition line (def, class, function, fn, const, ...) declares, else ''."""
+    m = _DEF.match(text)
+    return m.group(1) if m else ""
+
+
 def _def_names(lines: Iterator[Tuple[str, str]], file: str = "") -> Iterator[Tuple[str, str, str]]:
     for how, text in lines:
         m = _DEF.match(text)
@@ -200,8 +207,7 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
         # whole pinned tree, tests and config too, beyond the cap; another file's same-name definition is not a use
         s["refs"] = 0
         for f, _, t in every:
-            m = _DEF.match(t)
-            s["refs"] += f != s["file"] and not (m and m.group(1) == s["name"])
+            s["refs"] += f != s["file"] and defined_name(t) != s["name"]
         hits = sorted(h for h in every if h[0] not in inc)
         capped["callers"] = capped["callers"] or len(hits) > CAP_CALLERS
         callers += [{"symbol": s["name"], "file": f, "line": ln, "how": "git grep -w -F"}
@@ -398,13 +404,68 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
     return text, [{"file": p, **h} for h in chars], [{"file": p, **h} for h in stripped]
 
 
+def _dedupe_hidden(records: List[dict]) -> List[dict]:
+    """One record per span (gh#25): the diff scan repeats a span the whole-file scan found. Same path, line, kind and length
+    (`fline` is the diff record's line in the new file) merge into the whole-file record, which keeps `added` over `touched`
+    and any signal. A span only the diff shows (a removed line) stays."""
+    key = lambda h, line: (h.get("path", h["file"]), line, h["kind"], h["length"])  # noqa: E731
+    whole = {key(h, h["line"]): h for h in records if "path" not in h}
+    out = []
+    for h in records:
+        twin = whole.get(key(h, h.get("fline"))) if "path" in h and h.get("fline") else None
+        if twin is None:
+            out.append({k: v for k, v in h.items() if k != "fline"})
+            continue
+        for f in ("signal", "provenance"):
+            if h.get(f) and (f == "signal" or h[f] == "added" or not twin.get(f)):
+                twin[f] = h[f]
+    return out
+
+
+def hidden_notes(records: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """(the removed-span records that carry a `signal`, in order; [{file, count, kinds, added?}] per file for the rest, in file
+    order; `added` counts those the change adds, left out at 0). Nothing is dropped: the ledger keeps every record, and the
+    unsignalled rest is only counted (gh#25)."""
+    flagged, rest = [], {}
+    for h in records:
+        if h.get("signal"):
+            flagged.append(h)
+        else:
+            e = rest.setdefault(h.get("path", h["file"]), {"count": 0, "kinds": {}})
+            e["count"] += 1
+            e["kinds"][h["kind"]] = e["kinds"].get(h["kind"], 0) + 1
+            if h.get("provenance") == "added":
+                e["added"] = e.get("added", 0) + 1
+    return flagged, [dict(file=f, **rest[f]) for f in sorted(rest)]
+
+
+def _provenance(run: str, kind: str):
+    """f(path, line) -> provenance `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
+    the change adds, or the file has no diff at all (touched, no provenance known); None is routine. A target that is no
+    change (path, repo) has no provenance."""
+    if kind in ("path", "repo"):
+        return lambda p, n: None
+    added, seen = {}, set()
+    try:
+        with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
+            for _, p, tag, _, n, _, _ in sanitize.walk(fh.read()):
+                if p:
+                    seen.add(p)
+                    if tag == "+":
+                        added.setdefault(p, set()).add(n)
+    except OSError:
+        pass
+    return lambda p, n: "added" if n in added.get(p, ()) else "touched" if p not in seen else None
+
+
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
-                 source: str, named: set) -> Tuple[dict, list, list]:
+                 source: str, named: set, kind: str) -> Tuple[dict, list, list]:
     """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
     blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A file whose
     name holds hidden characters, or equals such a name escaped (`named`), is not copied: tree.skipped lists
     it as hidden-name."""
     skipped, hidden, hidden_text, inc, jobs = [], [], [], set(included), []
+    prov = _provenance(run, kind)
     tree = os.path.join(run, "tree")
     for p in sorted(set(included) | {e["file"] for c in _CTX + ("helpers",)
                                      for e in led[c]}):
@@ -424,6 +485,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             return
         esc, c, t = _scan(p, text)
         if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
+            t = [dict(h, provenance=pv) if pv else h for h in t for pv in [prov(p, h["line"])]]  # beside the wording signal, never over it
             hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})
@@ -551,23 +613,37 @@ def _bd_show(repo: str, ref: str) -> Optional[str]:
         return None
 
 
-def _adr_files(repo: str, head_ls: dict, named, taken, skip) -> Dict[str, str]:
+def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=()) -> tuple:
     """path -> text of the decision records: prose files under an adr, adrs, decisions or architecture-decisions
-    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry."""
+    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry.
+    Returns (path -> text, number of records left out). Records the change names come first: `hay` (change text) holds
+    the record's path or number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names; the rest follow in path order."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
 
     def record(p: str) -> bool:
         return p.lower().endswith(_PROSE_EXT) and (
             bool(_ADR_DIRS & set(p.lower().split("/")[:-1])) or any(p.startswith(d + "/") for d in dirs))
-    want = sorted(p for p in reg if record(p) and p not in taken and p not in skip)[:CAP_ADR]
-    blobs = _blobs(repo, [reg[p] for p in want])
+    cand = sorted(p for p in reg if record(p) and p not in taken and p not in skip)
+    blobs = _blobs(repo, [reg[p] for p in cand])
+    hay = hay.lower()
+    issues = set(_ISSUE.findall(hay))
+    spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
+
+    def score(p: str) -> int:
+        n = re.match(r"[0-9]+", posixpath.basename(p))
+        text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
+        low = text.lower() if text else ""
+        return (p.lower() in hay) + bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay)) + (
+            bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+    rank = {p: score(p) for p in cand}
+    want = sorted(cand, key=lambda p: (-rank[p], p))
     out, used = {}, 0
     for p in want:
         text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
-        if text is not None and used + len(text) <= CAP_ADR_BYTES:
+        if len(out) < CAP_ADR and text is not None and used + len(text) <= CAP_ADR_BYTES:
             out[p], used = text, used + len(text)
-    return out
+    return out, len(cand) - len(out)
 
 
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
@@ -670,9 +746,10 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
 
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    adrs = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else ())
+    adrs, adr_omitted = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
+                                   "\n".join(prose + tj["included"]), tj["included"])
     sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
-    sections = {"adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
+    sections = {"adr_omitted": adr_omitted, "adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
                 "pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
                 [("issue " + r, xtexts[r]) for r in sorted(xtexts)] + [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
@@ -718,6 +795,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
     sources, capped["issues"], sections, found_spec, adr_only = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
+    if sections["adr_omitted"]:
+        capped["adr"] = sections["adr_omitted"]
 
     led = {
         "version": 1,
@@ -737,7 +816,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
-        {h["file"] for h in tj["hidden_chars"] if h.get("name")})
+        {h["file"] for h in tj["hidden_chars"] if h.get("name")}, tj["kind"])
     led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
                                     key=lambda k: k["path"])
     for c in ("symbols",) + _CTX + ("helpers",):
@@ -746,7 +825,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                 if isinstance(v, str):
                     e[k] = target.shown(v)
     led["hidden_chars"] += more
-    led["hidden_text"] += more_text
+    led["hidden_text"] = _dedupe_hidden(led["hidden_text"] + more_text)
     led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
     _keep_trust(run, led)
     _write_json(os.path.join(run, "ledger.json"), led)
@@ -763,7 +842,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                       _section("Commit messages", [("commit " + c, m) for c, m in zip(tj["commits"], messages)], nonce),
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
-                      _section("Decision records", sections["adrs"], nonce))))
+                      _section("Decision records", sections["adrs"], nonce) +
+                      ("\n%d decision records omitted by the cap, not shown here: the absence of a record is not a finding.\n"
+                       % sections["adr_omitted"] if sections["adr_omitted"] else ""))))
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
                    if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
@@ -797,15 +878,21 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {})}
+            "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
+            **({"adr_omitted": capped["adr"]} if "adr" in capped else {})}
 
 
 TRUST_VALUES = ("own", "external")
 
 
-def _stored(led: dict) -> str:
+def stored_trust(led: dict) -> str:
     v = led.get("trust")
     return v if isinstance(v, str) and v in TRUST_VALUES else "unset"
+
+
+def _source(led: dict) -> dict:
+    """{"source": "flag"} when the answer came from --own/--external, else nothing (consumers of `asked` see no change)."""
+    return {"source": "flag"} if led.get("trust_source") == "flag" else {}
 
 
 def _keep_trust(run: str, led: dict) -> None:
@@ -816,17 +903,21 @@ def _keep_trust(run: str, led: dict) -> None:
     except target.Refuse:
         return
     led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
+    if "trust_source" in old:
+        led["trust_source"] = old["trust_source"]
 
 
-def trust_set(run: str, value: str) -> dict:
+def trust_set(run: str, value: str, flag: bool = False) -> dict:
     if value not in TRUST_VALUES:
         raise target.Refuse("bad-trust-value", "trust is own or external")
     led = target.load_json(run, "ledger.json")
-    cur = _stored(led)
+    cur = stored_trust(led)
     if cur not in ("unset", value):
         raise target.Refuse("trust-already-set", "the trust answer is recorded once per run")
     if cur == "unset":
         led["trust"], led["trust_asked"] = value, True
+        if flag:
+            led["trust_source"] = "flag"  # asked stays true: the question is settled, only its source differs
         _write_json(os.path.join(run, "ledger.json"), led)
     return {"status": "ok", "trust": value}
 
@@ -836,8 +927,9 @@ def trust_get(run: str) -> dict:
         led = target.load_json(run, "ledger.json")
     except target.Refuse:
         led = {}
-    v = _stored(led)
-    return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external"}
+    v = stored_trust(led)
+    return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external",
+            **_source(led)}
 
 
 def trust_gate(run: str, cmd: List[str]) -> dict:
@@ -845,7 +937,7 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
     if not cmd or not cmd[0].strip():
         raise target.Refuse("no-command", "no command after --")
     led = target.load_json(run, "ledger.json")
-    if _stored(led) != "own":
+    if stored_trust(led) != "own":
         raise target.Refuse("trust-unset" if led.get("trust") in (None, "unset") else "trust-external",
                             "own code was not confirmed")
     return {"status": "confirm", "command": shlex.join(cmd)}
@@ -854,26 +946,27 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
 def context(run: str) -> dict:
     """What SKILL step 4 states to the user, capped; refuses until trust is recorded (target.json holds change-derived names)."""
     led = target.load_json(run, "ledger.json")
-    if _stored(led) == "unset":
+    if stored_trust(led) == "unset":
         raise target.Refuse("trust-unset", "the trust answer is not recorded")
     tj = target.load_json(run, "target.json")
+    flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
-             "hidden_text": led["hidden_text"], "hidden_chars": led["hidden_chars"]}
+             "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}
     out = {k: v[:CAP_FILES] for k, v in lists.items()}
     return dict(out, status="ok", more={k: len(v) - CAP_FILES for k, v in lists.items() if len(v) > CAP_FILES})
 
 
 def _trust_cli(argv: List[str]) -> dict:
-    """trust set VALUE --run DIR | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
+    """trust set VALUE --run DIR [--flag] | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
     sub, rest = argv[0], argv[1:]
-    if sub == "set" and len(rest) == 3 and rest[1] == "--run":
-        return trust_set(rest[2], rest[0])
+    if sub == "set" and len(rest) in (3, 4) and rest[1] == "--run" and rest[3:] in ([], ["--flag"]):
+        return trust_set(rest[2], rest[0], len(rest) == 4)
     if sub == "get" and len(rest) == 2 and rest[0] == "--run":
         return trust_get(rest[1])
     if sub == "gate" and len(rest) >= 2 and rest[0] == "--run" and (len(rest) == 2 or rest[2] == "--"):
         return trust_gate(rest[1], rest[3:])
-    raise target.Refuse("usage", "usage: ledger.py trust set own|external --run DIR | get --run DIR | "
+    raise target.Refuse("usage", "usage: ledger.py trust set own|external --run DIR [--flag] | get --run DIR | "
                                  "gate --run DIR -- CMD [ARG ...]")
 
 

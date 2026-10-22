@@ -81,7 +81,7 @@ One line per finding, plus the summary and inspected lines below, nothing else. 
 - path is relative to tree/; line and end_line are 1-based; end_line and fix may be left out.
 - quote is copied verbatim from the cited lines in tree/.
 - trigger names the input or state that makes the line fail.
-- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
+- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash that comes from the code or text you quote as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape. Never double the backslash inside `\u007b` or `\u0022`.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Before the findings, one line with a one-to-three sentence summary of what the change does, written

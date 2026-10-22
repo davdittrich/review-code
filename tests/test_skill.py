@@ -137,6 +137,12 @@ class Phase4Procedure(unittest.TestCase):
                 "verifier_effort", "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
+    def test_trust_flags_answer_the_question(self):  # issue 23
+        flat = " ".join(self.text.split())
+        for t in ("`--own`", "`--external`", "ledger.py trust set own --run <run>` without asking",
+                  "`--own` with `--external`: stop and say so"):
+            self.assertIn(t, flat)
+
     def test_spec_file_is_never_opened(self):
         lines = [ln for ln in self.text.splitlines() if "inputs/spec.md" in ln]
         self.assertTrue(lines)
@@ -167,6 +173,23 @@ class Phase4Procedure(unittest.TestCase):
                   "`attempts` for that lane in `status`", "`rejected_batches`", "`attempts` of `batch-<batch>`",
                   "`lost` in `status`"):
             self.assertIn(t, self.flat)
+
+    def test_capped_lane_is_resumed_once_for_free_then_named_lost(self):  # gh#36
+        for t in ("capped lane", "stopped at its turn limit", "Stop exploring and send your full report now.",
+                  "does not count against the 2 tries", "at most one cap-resume per call",
+                  "tell the user which lane was lost"):
+            self.assertIn(t, self.flat)
+        lanes = " ".join(ref("lanes.md").split())
+        for t in ("capped lane", "resumes it once", "files exceed half the ceiling"):
+            self.assertIn(t, lanes)
+
+    def test_fix_tests_flag_is_parsed_confirmed_and_documented(self):  # review-code#26
+        fix = " ".join(ref("fix.md").split())
+        for t in ("`--fix-tests`", "without `--fix`: stop and say so"):
+            self.assertIn(t, self.flat)
+        for t in ("fix.py plan --run <run> --fix-tests", "`test_files`", "test file", "does not check that the test command runs the file"):
+            self.assertIn(t, fix)
+        self.assertIn("--fix-tests", " ".join(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8").read().split()))
 
     def test_steps_7_and_8_ingest_by_agent_id_with_stdin_as_the_fallback(self):  # gh#8
         for t in ("report.py ingest --run <run> --lane <lane> --agent <agentId>",
@@ -234,9 +257,14 @@ class Phase6Procedure(unittest.TestCase):
         self.text = procedure()  # SKILL.md plus the Flow sections steps 11 and 12 hand over to
         self.flat = " ".join(self.text.split())
 
-    def test_subset_question_split_is_even_so_no_question_has_one_option(self):  # review-code-jku
-        self.assertIn("sizes differ by at most one", self.flat)
-        self.assertNotIn("at least two options each", self.flat)
+    def test_one_question_before_baseline_and_no_selection(self):  # review-code#31
+        flat = " ".join(flow("fix.md").split())
+        for gone in ("--only", "multiSelect", "selection", "unknown-id"):
+            self.assertNotIn(gone, flat)
+        step3 = flat.split(" 3. ", 1)[1].split(" 4. ", 1)[0]
+        self.assertEqual(step3.count("AskUserQuestion"), 1)
+        self.assertIn("Apply and run tests", step3)
+        self.assertNotIn("unknown-id", ref("fix.md"))
 
     def test_steps_in_order(self):
         steps = ["report.py render", "post.py build --run", "fix.py plan --run", "fix.py baseline --run",
@@ -264,6 +292,26 @@ class Phase6Procedure(unittest.TestCase):
     def test_edits_only_through_the_fixer(self):
         self.assertIn("edit files only through the fixer in step 12", self.flat.lower())
         self.assertNotIn("Fix mode does not exist yet", self.text)
+
+    def test_outcome_table_says_which_outcomes_halt(self):  # review-code#32
+        rows = {ln.split("|")[1].strip(" `"): ln.split("|")[-2].strip() for ln in ref("fix.md").splitlines()
+                if ln.startswith("| `") and ln.rstrip().endswith(("| yes |", "| no |"))}
+        self.assertEqual({k for k, v in rows.items() if v == "yes"},
+                         {"reverted-violation", "reverted-interrupt", "tampered"})
+        for k in ("reverted-tests", "reverted-too-large", "reverted-timeout"):
+            self.assertEqual(rows[k], "no", k)
+
+    def test_no_fix_is_no_longer_a_skip_reason(self):  # review-code#33
+        flat = " ".join(ref("fix.md").split())
+        self.assertNotIn("no-fix", flat)
+        self.assertIn("derived by fixer", flat)
+
+    def test_protected_paths_are_flagged_not_skipped(self):  # review-code#34
+        flat = " ".join(ref("fix.md").split())
+        self.assertNotIn("`protected-path`", flat)
+        for s in ("protected path", "names that count", "`bad-path`", "`.git` component"):
+            self.assertIn(s, flat)
+        self.assertIn("says how many entries are protected paths", " ".join(flow("fix.md").split()))
 
     def test_baseline_and_finish_are_not_pre_approved(self):
         fm = self.text.split("\n---", 1)[0]
@@ -377,7 +425,7 @@ class FixDocs(unittest.TestCase):
         doc = self.read(self.REFS, "fix.md")
         found, outcomes = self.names()
         self.assertGreater(len(found), 25, found)  # the walk found the Refuse calls
-        self.assertEqual(len(outcomes), 10, outcomes)
+        self.assertEqual(len(outcomes), 13, outcomes)
         missing = sorted(r for r in found if "`%s`" % r not in doc)
         self.assertEqual(missing, [], "fix.md has no backticked entry for these refusal reasons or outcomes")
 

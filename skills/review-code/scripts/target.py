@@ -362,6 +362,9 @@ def _classify(arg: str, cwd: str) -> List[dict]:
         except Refuse as e:
             err = e
     try:
+        # shortcut: an all-digit arg under 7 chars is a PR number, not a hex abbreviation (git's default is 7); a commit needs 7+ digits or HEAD~N; a same-named path stays a second reading on purpose: the user is asked once
+        if cands and len(arg) < 7:
+            raise Refuse("bad-ref", "the target is not a commit in this repository")
         cid = _commit_id(arg, cwd)
     except Refuse as e:
         err = err or e

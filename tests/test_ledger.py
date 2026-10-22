@@ -742,7 +742,7 @@ class Tree(Base):
         write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.md"])
         ledger.build(self.run_dir)
         led = self.load()
-        self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18}])
+        self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18, "provenance": "added"}])
         self.assertNotIn("HIDDENCMT", json.dumps(led))
         self.assertNotIn("HIDDENCMT", self.read("tree/a.md"))
 
@@ -1061,6 +1061,32 @@ class Spec(Base):
         self.assertNotIn("adr_only", out)
         self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
 
+    def test_adr_cut_keeps_relevant_records_and_reports_the_rest(self):  # issue 24
+        files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
+        files["docs/adr/0035-d.md"] = "ADR-35 governs src/a.py\n"
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a, per ADR-37")
+        out, led = self.build(commits=[sha])
+        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
+        self.assertEqual(len(refs), ledger.CAP_ADR)
+        self.assertIn("docs/adr/0037-d.md", refs)  # named in the commit message
+        self.assertIn("docs/adr/0035-d.md", refs)  # names a changed file
+        self.assertEqual((led["capped"]["adr"], out["adr_omitted"]), (10, 10))
+        self.assertIn("10 decision records omitted", self.read("inputs/spec.md"))
+
+    def test_adr_cut_ranks_a_record_that_names_an_issue_the_change_names(self):  # issue 24
+        files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
+        files["docs/adr/0039-d.md"] = "Decided in #77 and #7770.\n"
+        files["docs/adr/0038-d.md"] = "Mentions #770 only.\n"
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (fixes #77)")
+        out, led = self.build(commits=[sha])
+        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
+        self.assertIn("docs/adr/0039-d.md", refs)
+        self.assertNotIn("docs/adr/0038-d.md", refs)  # #770 is not #77
+
     def test_adr_set_has_a_byte_budget(self):
         big = "x" * 150000
         _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
@@ -1334,7 +1360,8 @@ class Trust(Base):
         with open(tj, "w", encoding="utf-8") as fh:
             json.dump(rec, fh)
         led = self.load()
-        led.update(notes=["n1"], hidden_text=[{"file": "change.diff", "path": "a.md", "line": 2, "kind": "html-comment", "length": 9}],
+        led.update(notes=["n1"], hidden_text=[{"file": "change.diff", "path": "a.md", "line": 2, "kind": "html-comment", "length": 9, "signal": "assistant", "provenance": "added"},
+                                {"file": "change.diff", "path": "a.md", "line": 5, "kind": "html-comment", "length": 9, "provenance": "added"}],
                    ignored=[{"file": "CLAUDE.md", "reason": "head-only"}], conventions=[{"file": "CONTRIBUTING.md", "copy": "x"}])
         self.set_ledger(json.dumps(led))
         self.assertEqual(self.trust("get", "--run", self.run_dir)[1]["asked"], False)
@@ -1347,6 +1374,8 @@ class Trust(Base):
         self.assertEqual((out["more"], out["notes"], out["conventions"], out["ignored"], out["hidden_text"][0]["kind"]),
                          ({"excluded": 3}, ["n1"], ["CONTRIBUTING.md"], [{"file": "CLAUDE.md", "reason": "head-only"}],
                           "html-comment"))
+        self.assertEqual(len(out["hidden_text"]), 1)  # gh#25: the unsignalled span is a count, not an entry
+        self.assertEqual(out["hidden_routine"], [{"file": "a.md", "count": 1, "kinds": {"html-comment": 1}, "added": 1}])
 
     def test_trust_gate_fail_closed(self):
         self.built()
@@ -1398,6 +1427,19 @@ class Trust(Base):
         self.assertEqual(self.trust("set", "external", "--run", self.run_dir), (0, {"status": "ok", "trust": "external"}))
         self.assertEqual(self.trust("set", "own", "--run", os.path.join(self.tmp, "nowhere")),
                          (1, {"status": "refuse", "reason": "no-ledger"}))
+
+    def test_trust_set_flag_is_recorded_as_flag_supplied(self):
+        self.built()
+        self.assertEqual(self.trust("set", "own", "--run", self.run_dir, "--flag"), (0, {"status": "ok", "trust": "own"}))
+        self.assertEqual(self.trust("get", "--run", self.run_dir),
+                         (0, {"trust": "own", "asked": True, "effective": "own", "source": "flag"}))
+        self.assertEqual(self.load()["trust_source"], "flag")
+        self.assertEqual(self.cli("build", "--run", self.run_dir)[1]["source"], "flag")  # a rebuild keeps it
+
+    def test_trust_set_answer_has_no_source_key(self):
+        self.built()
+        self.trust("set", "own", "--run", self.run_dir)
+        self.assertNotIn("source", self.trust("get", "--run", self.run_dir)[1])
 
     def test_trust_set_own_twice(self):
         self.built()

@@ -4,7 +4,11 @@ Prose from the change author is stripped (sanitize_prose); code, file names and 
 never deleted (escape_for_code), so hidden characters become findings. Prose and markup files (is_prose_file)
 go through strip_hidden / strip_hidden_diff: HTML comments, markdown comment lines (`[//]: # (x)`), image alt
 text and hidden elements each become a `[hidden-KIND removed: N chars]` marker, every newline kept so line
-numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload.
+numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload, plus a short `signal`
+when the span is worth a reviewer's look, and a `provenance` of `added` (strip_hidden_diff: the span lies on a line the
+change adds) which is not a signal. The `signal` is one of `assistant` (it names the assistant or its instructions), `encoded` (a base64-like run or an invisible character),
+`url` (a link), `markup` (nested markup) or `long` (over 200 characters). The wording signals are a best-effort list that a paraphrase
+evades; the unsignalled rest is routine.
 Not covered: attributes, link titles and definitions, entity-encoded markup, homoglyphs, base64 and
 plain-language injection. The defence there is structural: PR text reaches only the Spec input and lanes run
 without execution tools.
@@ -95,6 +99,28 @@ _HIDDEN = re.compile(
     r"(?P<comment><!--.*?(?:-->|\Z)"
     r"|(?<![^\r\n])[ \t]*\[[^\]\r\n]*\]:[ \t]*(?:#|<>)[ \t]*(?:\([^\r\n]*\)|\"[^\"\r\n]*\"|'[^'\r\n]*')[ \t]*(?![^\r\n]))"
     r"|!\[(?P<alt>(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])+)\]", re.DOTALL)
+_ADDRESSING = re.compile(r"\b(?:assistants?|ai|llms?|claude|reviewers?|ignor\w*|disregard\w*|system prompt|instructions?)\b",
+                         re.IGNORECASE)
+_BASE64 = re.compile(r"[A-Za-z0-9+/]{40,}")
+_URL = re.compile(r"\b(?:https?|ftp)://", re.IGNORECASE)
+_NESTED = re.compile(r"-->|<[A-Za-z/!]")
+LONG_SPAN = 200  # characters; a longer hidden span is never a one-line authoring hint
+
+
+def _signal(kind: str, payload: str) -> Optional[str]:
+    """The reason a removed span is worth a look, or None (routine). Never the payload itself."""
+    inner = re.sub(r"\A<!--|-->\Z", "", payload) if kind == "comment" else payload
+    if _ADDRESSING.search(inner):
+        return "assistant"
+    if _BASE64.search(inner) or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") and c not in "\t\n\r" for c in inner):
+        return "encoded"
+    if _URL.search(inner):
+        return "url"
+    if kind != "element" and _NESTED.search(inner):
+        return "markup"
+    return "long" if len(payload) > LONG_SPAN else None
+
+
 _MARKER = re.compile(r"\[hidden-[a-z-]+ removed: \d+ chars\]\Z")
 _ALTATTR = re.compile(r"""(?<![\w:-])alt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
 _HIDING_STYLE = re.compile(r"display:none|visibility:hidden|font-size:0|opacity:0")
@@ -149,8 +175,8 @@ class _Spans(HTMLParser):
         return self.spans + [(s, len(self.text), "element") for _, s in self.stack if s >= 0][:1]
 
 
-def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int, int]]]:
-    """(text, [(first line, last line, kind, length, offset)]): each hidden span becomes a marker plus the
+def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int, int, Optional[str]]]]:
+    """(text, [(first line, last line, kind, length, offset, signal)]): each hidden span becomes a marker plus the
     span's line breaks."""
     spans, blank, pos = [], [], 0
     for m in _HIDDEN.finditer(text):
@@ -172,16 +198,17 @@ def _strip(text: str) -> Tuple[str, List[Tuple[int, int, str, int, int]]]:
         line += text.count("\n", pos, a)
         nl = text.count("\n", a, b)
         out.append(text[pos:a] + "[hidden-%s removed: %d chars]" % (kind, b - a) + "".join(_BREAK.findall(text[a:b])))
-        info.append((line, line + nl, kind, b - a, a))
+        info.append((line, line + nl, kind, b - a, a, _signal(kind, text[a:b])))
         pos, last, line = b, b, line + nl
     return "".join(out) + text[pos:], info
 
 
 def strip_hidden(text: str) -> Tuple[str, List[dict]]:
     """Remove hidden text from a prose or markup file. Returns the text and `[{"line", "kind", "length"}]`
-    (kind: comment, alt-text, element), never the payload; a line ends at LF, CR or CRLF."""
+    (kind: comment, alt-text, element), never the payload, plus `signal` when set; a line ends at LF, CR or CRLF."""
     out, info = _strip(text)
-    return out, [{"line": 1 + len(_BREAK.findall(text, 0, at)), "kind": k, "length": n} for _, _, k, n, at in info]
+    return out, [dict({"line": 1 + len(_BREAK.findall(text, 0, at)), "kind": k, "length": n}, **({"signal": sg} if sg else {}))
+                 for _, _, k, n, at, sg in info]
 
 
 def sanitize_prose(text: Optional[str]) -> str:
@@ -283,11 +310,11 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
         text = "\n".join(lines.get(i, "") for i in range(1, max(lines) + 1))
         out, info = _strip(text)
         by_line = {}
-        for k, (a, b, kind, length, _) in enumerate(info):
+        for k, (a, b, kind, length, _, _) in enumerate(info):
             for ln in range(a, b + 1):
                 by_line.setdefault(ln, []).append(k)  # 6xl.84: every removal on a line gets its entry
         done[key] = (out.split("\n"), info, by_line, lines)
-    res, hits, seen = diff.split("\n"), [], set()
+    res, hits, seen = diff.split("\n"), [], {}
     for i, path, tag, o, n, body, old in walk(diff):
         if not (path and tag != "\\" and prose(path, tag, old)):
             continue
@@ -309,6 +336,9 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
         res[i] = tag + new
         for key, sp in zip(keys, spans):
             if key not in seen:
-                seen.add(key)
-                hits.append({"file": path, "line": i + 1, "kind": sp[2], "length": sp[3]})
+                seen[key] = {"file": path, "line": i + 1, "kind": sp[2], "length": sp[3], **({"signal": sp[5]} if sp[5] else {}),
+                             **({"fline": sp[0]} if got and side == "+" else {})}  # span's first line in the new file: ledger dedupes by it
+                hits.append(seen[key])
+            if tag == "+":
+                seen[key]["provenance"] = "added"  # the change author controls this span; kept apart from the wording signal
     return "\n".join(res), sorted(hits, key=lambda h: h["line"])
