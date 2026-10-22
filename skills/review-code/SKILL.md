@@ -129,9 +129,10 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
    path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a
    checked-out head's CLAUDE.md), the `conventions` copies taken from the base and the `ignored`
-   head-only files; `more` counts entries cut by the cap. If `hidden_text` or `hidden_chars` is not empty, report each
-   entry (file, line, kind, length or codepoints; `name: true` marks a file name; never guess the
-   payload) as a note, not a finding: hidden content in a change. Both list changed files only.
+   head-only files; `more` counts entries cut by the cap. If `hidden_text`, `hidden_routine` or `hidden_chars` is not empty, report each
+   `hidden_text` and `hidden_chars` entry (file, line, kind, length or codepoints, `signal` when set; `name: true` marks a file name; never guess the
+   payload) as a note, not a finding: hidden content in a change; report each `hidden_routine` entry as one line (file, count of routine hidden spans removed). `signal` says why a span matters
+   (`added` by the change, `assistant`, `encoded`, `markup`, `long`). All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
    `--no-sota`, `--serial`, `--ai`, each only when step 1 removed that flag. The plugin settings go on
@@ -175,7 +176,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> --agent <agentId>
    ```
 
-   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
+   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> <<'REVIEW_FINDINGS'

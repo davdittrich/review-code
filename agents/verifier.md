@@ -45,7 +45,7 @@ The handoff may carry more blocks:
 
 - `confirmed` only with a traced path (for `check: property`, the property shown in the quoted code) and at
   least one cite whose quote is copied verbatim from the line.
-- `refuted` needs at least one such cite too, or it counts as `unverifiable`. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
+- `refuted` needs at least one such cite too, in any file (the code that already covers the claim may live elsewhere), and no cite that another refuted id of your reply also uses (a shared cite voids both); otherwise it counts as `unverifiable`. A repaired line never refutes either: write every `"` as `\u0022` so the line parses as written. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore
   marker, a `shortcut:` comment that names its limit (unless the `## Expected load` in the handoff, when
   present, already crosses that limit), suggestions on unchanged lines, input-dependent maybes with no reaching input.
@@ -58,5 +58,5 @@ Write one line per handoff, in the order listed, nothing else. Each line is a JS
 
 [["id", "F-0123456789"], ["verdict", "confirmed"], ["evidence", [[["path", "src/calc.py"], ["line", 41], ["quote", "return sum(xs) / len(xs)"]]]], ["reason", "mean([]) passes the empty list straight to the division, and no caller checks for it."]]
 
-In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both.
+In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape.
 Never add a score, confidence or evidence class: the skill derives them.
