@@ -84,7 +84,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
-   `--own` with `--external`: stop and say so). Target forms in words: for one
+   `--own` with `--external`: stop and say so), and `--since-last` (a fixed literal passed to target.py before `<<`: a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
 
@@ -94,7 +94,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    REVIEW_WORDS
    ```
 
-   Flags that are fixed literals (`--staged`, `--unstaged`, `--repo`, `--choice <index>`) stay arguments
+   Flags that are fixed literals (`--staged`, `--unstaged`, `--repo`, `--since-last`, `--choice <index>`) stay arguments
    before `<<`. Read the one-line JSON `status`; the step is done when it is `ok` and stated, or you stopped.
    - `ambiguous`: ask once (AskUserQuestion), one option per `candidates[].reading`, then re-run with
      the same here-document plus `--choice <index>`. If the question cannot be asked or gets no answer, stop and
@@ -217,9 +217,9 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (no stdin; the command must name the test). It runs the head's copy of that test on the merge base; `reproduced` means it passed there.
    The finding then reports as `reproduced` and any other outcome leaves it unverifiable, so step 10 relays it like any finding.
 10. Report. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py render --run <run>`, adding
-   `--format json` or `--format sarif` when step 1 removed that flag. Relay stdout. In serial mode also state `mode: serial` and the lost guarantees from step 5.
+   `--format json` or `--format sarif` when step 1 removed that flag. Relay stdout, including its `Not run:` line. In serial mode also state `mode: serial` and the lost guarantees from step 5.
 11. Post, when step 1 removed `--comment`: Read the first 30 lines of `references/posting.md` (limit 30) and
-   follow its Flow (build, relay, one confirmation, submit; also what `nothing-to-post` means). Open further
+   follow its Flow (build, relay, one confirmation, submit; also what `nothing-to-post` means and, on a re-review, what the `**Prior:**` line means). Open further
    sections only to explain a refusal.
 12. Fix, when step 1 removed `--fix`, after steps 10 and 11 (pass `--fix-tests` to `fix.py plan` only when step 1 removed it): Read the first 30 lines of `references/fix.md`
    (limit 30) and follow its Flow (test command, plan, one confirmation, baseline, the fixer loop, report; also

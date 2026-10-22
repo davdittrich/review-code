@@ -21,6 +21,7 @@ import urllib.parse
 from typing import List, Optional
 
 import nit
+import prior
 import report
 import sanitize
 import target
@@ -31,7 +32,8 @@ ID_RE = report.ID_RE
 MARK = "<!-- review-code:finding %s v1 -->"
 REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
-REVIEW_RE = re.compile(r"<!-- review-code:review v1 head=[0-9a-f]{40}(?:[0-9a-f]{24})? -->")
+REVIEW_RE = prior.REVIEW  # also the carried fixed= and outdated= lists, nothing else
+NOT_RUN_LINE = re.compile(r"\*\*Not run:\*\* (?:%s)(?:, (?:%s))*" % ((report.NOT_RUN_ITEM,) * 2))
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab path holding one could forge a diff header
 # Every reference GitHub or GitLab (docs.gitlab.com/user/markdown, "GitLab-specific references") links or pings. The
 # forges match rendered text, so escaping cannot defuse one; a code span can. Commit SHAs and bare URLs are not covered.
@@ -126,6 +128,7 @@ class GitHub:
     refs = None  # GitLab only: the diff refs read by the last state()
     login = None  # the user existing() checked; a failed create deletes only a pending review of theirs
     ids = frozenset()  # the finding ids of the payload the last create sent
+    prior = prior.read([], [], None)  # existing() replaces it with this PR's own earlier reviews
     unknown = False  # the event's outcome could not be read: cleanup must leave the review alone
 
     def __init__(self, info: dict):
@@ -179,11 +182,8 @@ class GitHub:
         for r in reviews:
             if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == me:
                 raise Refuse("pending-review-exists")
-        ids = set()
-        for item in reviews + _pages("gh", self.i["host"], self.pr + "/comments", self.i["run"]):
-            if isinstance(item, dict) and (item.get("user") or {}).get("login") == me and isinstance(item.get("body"), str):
-                ids.update(MARK_RE.findall(item["body"].replace("\r\n", "\n")))  # the web editor stores CRLF
-        return ids
+        self.prior = prior.read(reviews, _pages("gh", self.i["host"], self.pr + "/comments", self.i["run"]), me)
+        return set(self.prior["findings"])
 
     def create(self, payload: dict) -> int:
         self.ids = {c["id"] for c in payload["comments"]}  # cleanup deletes a review only when it holds nothing else
@@ -209,7 +209,7 @@ class GitHub:
             found = [r["id"] for r in _pages("gh", self.i["host"], self.pr + "/reviews", self.i["run"])
                      if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == self.login
                      and isinstance(r.get("id"), int) and isinstance(r.get("body"), str)
-                     and REVIEW_MARK % head in r["body"].replace("\r\n", "\n").split("\n")]
+                     and _marked(r["body"], head)]
         except Refuse:
             raise Refuse("cleanup-failed", "pending review unknown")
         for rid in found:
@@ -298,6 +298,7 @@ class GitLab:
 
     _REFS = ("base_sha", "start_sha", "head_sha")
     refs = None  # {base_sha, start_sha, head_sha} read by the last state()
+    prior = prior.read([], [], None)  # GitLab keeps no prior state: `--since-last` refuses there, re-reviews post as before
 
     def __init__(self, info: dict):
         self.i = info
@@ -396,7 +397,7 @@ class GitLab:
 
     def create(self, payload: dict) -> int:
         """Create the summary draft, then one draft per inline finding; a failure part way deletes the drafts made so far."""
-        self.marks = ({c["id"] for c in payload["comments"]}, REVIEW_MARK % payload["head_sha"])
+        self.marks = ({c["id"] for c in payload["comments"]}, payload["head_sha"])  # finding ids, review head
         try:
             first = self._draft({"note": payload["body"]})
             for c in payload["comments"]:
@@ -420,7 +421,7 @@ class GitLab:
             note, pos = d.get("note"), d.get("position")
             if not isinstance(note, str):
                 raise Refuse("verify-failed")
-            if review in note.replace("\r\n", "\n").split("\n"):
+            if _marked(note, review):
                 ok = not pos and "summary" not in seen
                 seen.add("summary")
             else:
@@ -460,7 +461,7 @@ class GitLab:
         if not (isinstance(d, dict) and isinstance(d.get("id"), int) and isinstance(d.get("note"), str)):
             return False
         note = d["note"].replace("\r\n", "\n")
-        return review in note.split("\n") or any(i in ids for i in MARK_RE.findall(note))
+        return _marked(note, review) or any(i in ids for i in MARK_RE.findall(note))
 
     def cleanup(self, handle) -> None:
         """Delete the drafts that hold a whole-line marker of this payload; the user's other drafts are never touched."""
@@ -476,6 +477,11 @@ class GitLab:
                 left.append(i)
         if left:
             raise Refuse("cleanup-failed", "drafts " + ",".join(str(i) for i in left))
+
+
+def _marked(text: str, head: str) -> bool:
+    """True when `text` holds a whole-line review marker for `head` (any carried lists)."""
+    return any(prior.mark_head(ln) == head for ln in text.replace("\r\n", "\n").split("\n"))
 
 
 def _forge(info: dict):
@@ -570,8 +576,8 @@ def _guard(text: str) -> None:
                 raise Refuse("unsafe-text")
         elif re.fullmatch(r"`{3,}text", ln):
             fence = ln[:-4]
-        elif marker or ln in ("", "---"):
-            continue
+        elif marker or ln in ("", "---") or prior.PRIOR_LINE.fullmatch(ln) or prior.STATE_LINE.fullmatch(ln) or NOT_RUN_LINE.fullmatch(ln):
+            continue  # the last three are exact shapes of ids, counts and closed words: no repository text can ride in them
         elif not _SHAPE.match(ln):
             raise Refuse("unsafe-text")
         else:
@@ -605,7 +611,7 @@ def _first_line(quote: List[str], rows) -> Optional[int]:
     return fits[0] if len(fits) == 1 else None
 
 
-def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False):
+def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False, state: Optional[str] = None):
     """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
     escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
     raw, rules = {}, []
@@ -624,6 +630,7 @@ def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)
     out = ["%s**%s** (%s, %s) - %s" % ("nit: " if f["severity"] == "nit" else "", LABEL[f["severity"]], _prose(f["axis"]),
                                       _prose(f["category"]), _prose(raw["title"]))]
+    out += ["**State:** " + state] if state else []
     out += ["**Basis:** " + _prose(report._ws(raw["basis"]))] if basis else []
     out += ["**Location:** %s (outside the diff)" % where] if where else []
     span = "%d" % f["line"] if f["end_line"] == f["line"] else "%d-%d" % (f["line"], f["end_line"])
@@ -635,19 +642,22 @@ def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False
     return "\n".join(out + [MARK % f["id"]]), rules
 
 
-def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str, areas: List[str]) -> str:
+def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable: int, head: str, areas: List[str],
+          mark: Optional[str] = None, extra: tuple = ()) -> str:
+    """`mark` is the review marker line (default: the head alone); `extra` the exact `**Prior:**` and `**Not run:**` lines."""
     out = ["**Verdict:** %s (advisory)" % _prose(verdict)]
     for ax in report.AXES:
         n = sum(1 for f in findings if f["axis"] == ax)
         out += ["%s: %d finding%s" % (ax.capitalize(), n, "" if n == 1 else "s")] if n else []
     more = len(areas) - report.MAX_AREAS  # CTX-02
+    out += list(extra)
     out += ["Areas inspected: " + ", ".join(_prose(a) for a in areas[:report.MAX_AREAS]) + (" (+%d more)" % more if more > 0 else "")] if areas else []
     text = "\n".join(out)
     if entries:
         text += "\n\n" + "\n\n---\n\n".join(entries)
     if n_unverifiable:
         text += "\n\nNot posted: %d unverifiable items (see the terminal report)" % n_unverifiable
-    return text + "\n\n" + REVIEW_MARK % head
+    return text + "\n\n" + (mark or REVIEW_MARK % head)
 
 
 def _preview(payload: dict) -> str:
@@ -664,8 +674,6 @@ def _preview(payload: dict) -> str:
 def build(run: str) -> dict:
     info = _target(run)
     doc = report.build(run)
-    if not doc["findings"]:
-        raise Refuse("nothing-to-post")
     gh = _forge(info)
     head = info["head_sha"]
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head; the refs are read here, then held
@@ -674,9 +682,17 @@ def build(run: str) -> dict:
     anchors = _anchors(gh.diff())
     posted = gh.existing(gh.me())
     _live(gh, head, refs)  # check (b): nothing moved while the reads ran
-    fresh = [f for f in doc["findings"] if f["id"] not in posted]
-    if not fresh:
-        raise Refuse("already-posted")
+    old = gh.prior
+    skip = posted - old["fixed"]  # an id found fixed earlier that is back in this run is new again
+    complete = (doc["mode"] == "parallel" and not any(doc.get(k) for k in ("rejected", "rejected_batches", "no_verdict", "lost"))
+                and all(v == "complete" for n, v in doc["lanes"].items() if n.split("@")[0] in ("defects", "standards", "spec"))
+                and not any(s.get("what") in ("defects", "standards") or (s.get("what") == "spec" and s.get("why") != "no spec")
+                            for s in doc["skipped"]))  # else absence proves nothing; "no spec" is the usual case and blocks nothing
+    d = prior.derive(old, {f["id"]: f["path"] for f in doc["findings"]}, set(doc["inspected"]["files"]), complete,
+                     {i["id"] for i in doc["unverifiable"]})
+    fresh = [f for f in doc["findings"] if f["id"] not in skip]
+    if not fresh and not (d["fixed"] or d["outdated"]):  # a body-only status review is allowed when a prior state changed
+        raise Refuse("already-posted" if doc["findings"] or old["fixed"] or old["outdated"] else "nothing-to-post")
     comments, entries, in_body, scan = [], [], [], []
     try:  # a file with a key marker in any finding: every finding in it is blanked, since a key body has no shape
         keyed = {f["path"] for f in fresh if any("private-key" in _redact(f[k])[1] for k in ("title", "trigger", "quote", "fix"))}
@@ -688,7 +704,7 @@ def build(run: str) -> dict:
         rows = report._cited(report._tree(run, f.get("shard")), f["path"], f["line"], f["end_line"], f["quote"])
         try:  # each finding on its own, so every match is reported at the finding's path:line
             where = None if inline else "%s:%d" % (_prose(f["path"]), f["line"])
-            text, rules = _render(f, rows, where, f["path"] in keyed)
+            text, rules = _render(f, rows, where, f["path"] in keyed, "new" if old["last_head"] or old["findings"] else None)
         except Exception:
             raise Refuse("scan-failed")
         scan += [{"rule": r, "where": "%s:%d" % (f["path"], f["line"])} for r in rules]
@@ -701,9 +717,12 @@ def build(run: str) -> dict:
     n_unverifiable = sum(1 for i in doc["unverifiable"] if i["category"] != "sota")
     payload = {"version": 1, "forge": info["forge"], "host": info["host"], "repo": info["repo"],
                "number": info["number"], "url": info["url"], "head_sha": head,
-               "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head, doc["inspected"]["areas"]), "comments": comments,
+               "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head, doc["inspected"]["areas"],
+                             prior.review_mark(head, d["fixed_out"], d["outdated_out"]),
+                             tuple(x for x in (prior.render(d), "**Not run:** " + ", ".join(doc["not_run"]) if doc["not_run"] else None) if x)),
+               "comments": comments,
                "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
-               "skipped": [f["id"] for f in doc["findings"] if f["id"] in posted]}
+               "skipped": [f["id"] for f in doc["findings"] if f["id"] in skip]}
     if refs:
         payload["diff_refs"] = refs
     texts = [payload["body"]] + [c["body"] for c in comments]
@@ -742,7 +761,7 @@ def submit(run: str, digest: str) -> dict:
     _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
     _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (c): before the first write
-    posted = gh.existing(gh.me())  # fresh: a pending review made since build would be stacked on or confused with ours
+    posted = gh.existing(gh.me()) - gh.prior["fixed"]  # fresh: a pending review made since build would be stacked on or confused with ours
     if posted & ({c["id"] for c in payload["comments"]} | set(payload["in_body"])):
         raise Refuse("already-posted")  # a retry after a timeout, or a first submit that died after its event call
     handle = gh.create(payload)

@@ -59,6 +59,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
+Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
 A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over tree/. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
@@ -1278,6 +1279,21 @@ def _repro(run, fid):
         return None
 
 
+NOT_RUN_ITEM = r"(?:defects|standards|spec|sota)(?:@[0-9]+)?|shard [0-9]+|repro|serial"
+
+
+def _not_run(run, led, skipped, lanes, serial, findings):
+    """What this run did not do, from data it already has, in a closed vocabulary (a pack name or free text never passes):
+    plan skipped[] `what`s, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro
+    outcome while the ledger lists tests or config (the case step 9 could have run)."""
+    out = {s.get("what") for s in skipped if isinstance(s.get("what"), str)} | {n for n, v in lanes.items() if v != "complete"}
+    out = {n for n in out if re.fullmatch(NOT_RUN_ITEM, n)} | ({"serial"} if serial else set())
+    if ledger.stored_trust(led) != "own" or (not serial and (led.get("tests") or led.get("config"))
+                                               and any(_repro(run, i["id"]) is None for i in findings)):
+        out.add("repro")
+    return sorted(out)
+
+
 def build(run):
     with _locked(run):
         return _build(run)
@@ -1361,7 +1377,7 @@ def _build(run):
                       key=lambda d: (d["spec_line"], d["why"]))
     summary = [{"lane": n, "text": v["summary"]} for n, v in sorted(
         cand.get("lanes", {}).items(), key=lambda kv: (kv[0].partition("@")[0], int(kv[0].partition("@")[2] or 0))) if v.get("summary")]
-    doc = {"schema_version": SCHEMA_VERSION, "summary": summary,
+    doc = {"schema_version": SCHEMA_VERSION, "summary": summary, "not_run": _not_run(run, led, skipped, lanes, serial, findings),
             "target": {"kind": tj["kind"], "head_sha": tj["head_sha"], "merge_base": tj["merge_base"],
                        "label": led["label"], "not_a_change": whole},
             "trust": "own" if ledger.stored_trust(led) == "own" else "external",
@@ -1458,6 +1474,7 @@ def _text(doc):
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "not-ingested"]
+    out += ["Not run: " + ", ".join(doc["not_run"])] if doc["not_run"] else []
     out += ["Lean: -%d lines possible (estimate)" % doc["lean_lines"]] if doc["lean_lines"] else []
     if (doc.get("rejected") or doc.get("rejected_batches") or doc.get("no_verdict") or doc.get("repaired") or doc.get("lost")
             or doc.get("recovered")):
