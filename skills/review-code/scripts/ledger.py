@@ -405,8 +405,9 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
 
 
 def hidden_notes(records: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """(the removed-span records that carry a `signal`, in order; [{file, count, kinds}] per file for the rest, in file order).
-    Nothing is dropped: the ledger keeps every record, and the unsignalled rest is only counted (gh#25)."""
+    """(the removed-span records that carry a `signal`, in order; [{file, count, kinds, added?}] per file for the rest, in file
+    order; `added` counts those the change adds, left out at 0). Nothing is dropped: the ledger keeps every record, and the
+    unsignalled rest is only counted (gh#25)."""
     flagged, rest = [], {}
     for h in records:
         if h.get("signal"):
@@ -415,11 +416,13 @@ def hidden_notes(records: List[dict]) -> Tuple[List[dict], List[dict]]:
             e = rest.setdefault(h.get("path", h["file"]), {"count": 0, "kinds": {}})
             e["count"] += 1
             e["kinds"][h["kind"]] = e["kinds"].get(h["kind"], 0) + 1
+            if h.get("provenance") == "added":
+                e["added"] = e.get("added", 0) + 1
     return flagged, [dict(file=f, **rest[f]) for f in sorted(rest)]
 
 
 def _provenance(run: str, kind: str):
-    """f(path, line) -> `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
+    """f(path, line) -> provenance `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
     the change adds, or the file has no diff at all (touched, no provenance known); None is routine. A target that is no
     change (path, repo) has no provenance."""
     if kind in ("path", "repo"):
@@ -464,7 +467,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             return
         esc, c, t = _scan(p, text)
         if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
-            t = [dict(h, signal=sg) if sg else h for h in t for sg in [prov(p, h["line"])]]  # provenance outweighs the wording signal
+            t = [dict(h, provenance=pv) if pv else h for h in t for pv in [prov(p, h["line"])]]  # beside the wording signal, never over it
             hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})

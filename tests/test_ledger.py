@@ -742,7 +742,7 @@ class Tree(Base):
         write_target(self.run_dir, self.repo, "worktree", head, head, head, ["a.md"])
         ledger.build(self.run_dir)
         led = self.load()
-        self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18, "signal": "added"}])
+        self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18, "provenance": "added"}])
         self.assertNotIn("HIDDENCMT", json.dumps(led))
         self.assertNotIn("HIDDENCMT", self.read("tree/a.md"))
 
@@ -1360,8 +1360,8 @@ class Trust(Base):
         with open(tj, "w", encoding="utf-8") as fh:
             json.dump(rec, fh)
         led = self.load()
-        led.update(notes=["n1"], hidden_text=[{"file": "change.diff", "path": "a.md", "line": 2, "kind": "html-comment", "length": 9, "signal": "added"},
-                                {"file": "change.diff", "path": "a.md", "line": 5, "kind": "html-comment", "length": 9}],
+        led.update(notes=["n1"], hidden_text=[{"file": "change.diff", "path": "a.md", "line": 2, "kind": "html-comment", "length": 9, "signal": "assistant", "provenance": "added"},
+                                {"file": "change.diff", "path": "a.md", "line": 5, "kind": "html-comment", "length": 9, "provenance": "added"}],
                    ignored=[{"file": "CLAUDE.md", "reason": "head-only"}], conventions=[{"file": "CONTRIBUTING.md", "copy": "x"}])
         self.set_ledger(json.dumps(led))
         self.assertEqual(self.trust("get", "--run", self.run_dir)[1]["asked"], False)
@@ -1375,7 +1375,7 @@ class Trust(Base):
                          ({"excluded": 3}, ["n1"], ["CONTRIBUTING.md"], [{"file": "CLAUDE.md", "reason": "head-only"}],
                           "html-comment"))
         self.assertEqual(len(out["hidden_text"]), 1)  # gh#25: the unsignalled span is a count, not an entry
-        self.assertEqual(out["hidden_routine"], [{"file": "a.md", "count": 1, "kinds": {"html-comment": 1}}])
+        self.assertEqual(out["hidden_routine"], [{"file": "a.md", "count": 1, "kinds": {"html-comment": 1}, "added": 1}])
 
     def test_trust_gate_fail_closed(self):
         self.built()

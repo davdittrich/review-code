@@ -131,8 +131,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    checked-out head's CLAUDE.md), the `conventions` copies taken from the base and the `ignored`
    head-only files; `more` counts entries cut by the cap. If `hidden_text`, `hidden_routine` or `hidden_chars` is not empty, report each
    `hidden_text` and `hidden_chars` entry (file, line, kind, length or codepoints, `signal` when set; `name: true` marks a file name; never guess the
-   payload) as a note, not a finding: hidden content in a change; report each `hidden_routine` entry as one line (file, count of routine hidden spans removed). `signal` says why a span matters
-   (`added` by the change, `touched` for a changed file with no diff, `assistant`, `encoded`, `url`, `markup`, `long`). All three list changed files only.
+   payload) as a note, not a finding: hidden content in a change; report each `hidden_routine` entry as one line (file, count of routine hidden spans removed, `added` of them added by the change). `signal` says why a span matters
+   (`assistant`, `encoded`, `url`, `markup`, `long`); `provenance` (`added` by the change, `touched` for a changed file with no diff) is kept apart and does not list a span singly. All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
    `--no-sota`, `--serial`, `--ai`, each only when step 1 removed that flag. The plugin settings go on

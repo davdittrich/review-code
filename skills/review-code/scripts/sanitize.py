@@ -5,8 +5,8 @@ never deleted (escape_for_code), so hidden characters become findings. Prose and
 go through strip_hidden / strip_hidden_diff: HTML comments, markdown comment lines (`[//]: # (x)`), image alt
 text and hidden elements each become a `[hidden-KIND removed: N chars]` marker, every newline kept so line
 numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload, plus a short `signal`
-when the span is worth a reviewer's look: `added` (strip_hidden_diff: the span lies on a line the change adds),
-`assistant` (it names the assistant or its instructions), `encoded` (a base64-like run or an invisible character),
+when the span is worth a reviewer's look, and a `provenance` of `added` (strip_hidden_diff: the span lies on a line the
+change adds) which is not a signal. The `signal` is one of `assistant` (it names the assistant or its instructions), `encoded` (a base64-like run or an invisible character),
 `url` (a link), `markup` (nested markup) or `long` (over 200 characters). The wording signals are a best-effort list that a paraphrase
 evades; the unsignalled rest is routine.
 Not covered: attributes, link titles and definitions, entity-encoded markup, homoglyphs, base64 and
@@ -339,5 +339,5 @@ def strip_hidden_diff(diff: str, full: Optional[str] = None) -> Tuple[str, List[
                 seen[key] = {"file": path, "line": i + 1, "kind": sp[2], "length": sp[3], **({"signal": sp[5]} if sp[5] else {})}
                 hits.append(seen[key])
             if tag == "+":
-                seen[key]["signal"] = "added"  # provenance outweighs wording: the change author controls this span
+                seen[key]["provenance"] = "added"  # the change author controls this span; kept apart from the wording signal
     return "\n".join(res), sorted(hits, key=lambda h: h["line"])

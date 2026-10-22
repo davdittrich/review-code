@@ -53,9 +53,9 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
   kind, length or codepoints, name, signal (removed text spans only)}] (notes, not findings; capped at 40) with
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
-  so hidden_content plus the counts always sum to the ledger's records. A span's `signal` is `added` (it lies on a line the
-  change adds), `touched` (it lies in a file the change touches that has no diff), `assistant`, `encoded`, `url`, `markup` or
-  `long`. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
+  so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
+  the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
+  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -1342,7 +1342,7 @@ def _build(run):
         doc["adr_omitted"] = led["capped"]["adr"]
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
-           "signal": h["signal"]} for h in flagged]
+           "signal": h["signal"], **({"provenance": h["provenance"]} if h.get("provenance") else {})} for h in flagged]
     hc += [{"file": h["file"], "line": h.get("line"), "kind": "hidden-chars", "codepoints": h["codepoints"],
             "name": h.get("name") is True} for h in led["hidden_chars"]]
     if rej or rejb or lost:
@@ -1461,16 +1461,19 @@ def _text(doc):
         if ax == "spec" and doc["declined"]:
             out += section("Declined", ["- inputs/spec.md:%d: %s" % (d["spec_line"], e(d["why"])) for d in doc["declined"]])
     if doc.get("hidden_content") or doc.get("hidden_routine"):
-        out += section("Hidden content (notes)", ["- %s%s  %s%s%s%s%s" % (
+        out += section("Hidden content (notes)", ["- %s%s  %s%s%s%s%s%s" % (
             e(h["file"]), ":%d" % h["line"] if h["line"] is not None else "", h["kind"],
             ", length %d" % h["length"] if "length" in h else "",
             ", codepoints " + " ".join(str(c) for c in h["codepoints"]) if "codepoints" in h else "",
-            ", file name" if h["name"] else "", ", " + h["signal"] if h.get("signal") else "")
+            ", file name" if h["name"] else "", ", " + h["signal"] if h.get("signal") else "",
+            ", added by the change" if h.get("provenance") == "added" else "")
             for h in doc.get("hidden_content", [])]
             + (["(+%d more)" % doc["hidden_content_omitted"]] if doc.get("hidden_content_omitted") else [])
             + ["- %s  %d routine hidden span%s removed (%s)" % (
                 e(r["file"]), r["count"], "" if r["count"] == 1 else "s",
-                ", ".join("%s %d" % (k, n) for k, n in sorted(r["kinds"].items()))) for r in doc.get("hidden_routine", [])])
+                ", ".join("%s %d" % (k, n) for k, n in sorted(r["kinds"].items()))) + (
+                ", %d of them added by the change" % r["added"] if r.get("added") else "")
+                for r in doc.get("hidden_routine", [])])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
                    + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
                       if doc.get("adr_omitted") else []))
