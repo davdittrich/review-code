@@ -270,6 +270,14 @@ class Phase6Procedure(unittest.TestCase):
         self.assertIn("edit files only through the fixer in step 12", self.flat.lower())
         self.assertNotIn("Fix mode does not exist yet", self.text)
 
+    def test_outcome_table_says_which_outcomes_halt(self):  # review-code#32
+        rows = {ln.split("|")[1].strip(" `"): ln.split("|")[-2].strip() for ln in ref("fix.md").splitlines()
+                if ln.startswith("| `") and ln.rstrip().endswith(("| yes |", "| no |"))}
+        self.assertEqual({k for k, v in rows.items() if v == "yes"},
+                         {"reverted-violation", "reverted-interrupt", "tampered"})
+        for k in ("reverted-tests", "reverted-too-large", "reverted-timeout"):
+            self.assertEqual(rows[k], "no", k)
+
     def test_baseline_and_finish_are_not_pre_approved(self):
         fm = self.text.split("\n---", 1)[0]
         self.assertNotIn("fix.py baseline", fm)

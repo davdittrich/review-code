@@ -158,12 +158,12 @@ class Tracer(Base):
         seal = self.begin(run)[2]["seal"]
         self.edit("src/calc.py", QUOTE, "return a +")
         rc, _, f = self.finish(run, seal)
-        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "reverted-tests"), f)
+        self.assertEqual((rc, f["status"], f["outcome"]), (0, "ok", "reverted-tests"), f)
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), old)
         self.assertEqual(os.stat(path).st_mode, mode)
         rc, _, b = self.begin(run)
-        self.assertEqual((rc, b), (1, {"status": "refuse", "reason": "halted"}))
+        self.assertEqual((rc, b), (0, {"status": "done"}))
         self.assertEqual(self.refs(), before)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
@@ -913,7 +913,7 @@ class FinishScope(Scope):
                 rc, _, f = self.finish(run, bg["seal"])
                 self.assertEqual(f["outcome"], outcome, f)
                 if outcome != "fixed":
-                    self.assertEqual((rc, f["status"]), (1, "halted"))
+                    self.assertEqual((rc, f["status"]), (0, "ok"))
                     self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
                     self.assertTrue(os.path.exists(self.quarantined(run, fid, "src/calc.py")))
                 else:
@@ -1035,7 +1035,7 @@ class Tamper(Scope):
         self.assertEqual(slurp(self.p("src/calc.py")), edited)
         self.assertEqual(slurp(self.p("poetry.lock")), b"pinned\n")
         rc, text, _ = self.report(run)
-        self.assertEqual(rc, 0, text)
+        self.assertEqual(rc, 1, text)
         self.assertIn("TAMPERED", text)
 
     def test_unreadable_target_is_tampered(self):
@@ -1159,9 +1159,9 @@ class TestRuns(Scope):
         with mock.patch.object(fix, "TIMEOUT", 1), gitfix.isolated(self.tmp):
             f = fix.finish(run, bg["seal"], "applied")
         self.assertLess(time.monotonic() - t0, 15)
-        self.assertEqual((f["status"], f["outcome"]), ("halted", "reverted-timeout"), f)
+        self.assertEqual((f["status"], f["outcome"]), ("ok", "reverted-timeout"), f)
         self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
-        self.assertEqual(self.state(run)["halted"], "reverted-timeout")
+        self.assertIsNone(self.state(run)["halted"])
 
     def test_failing_tail(self):
         body = 'sys.stdout.write("MARK-" + chr(27) + "[31m\\n"); sys.exit(1)'
@@ -1169,7 +1169,7 @@ class TestRuns(Scope):
         self.edit("src/calc.py", QUOTE, "return a + b")
         self.arm()
         rc, _, f = self.finish(run, bg["seal"])
-        self.assertEqual((rc, f["outcome"], f["exit"]), (1, "reverted-tests", 1), f)
+        self.assertEqual((rc, f["outcome"], f["exit"]), (0, "reverted-tests", 1), f)
         self.assertIn("MARK-", f["tail"])
         self.assertNotIn("\x1b", f["tail"])
         self.assertLessEqual(len(f["tail"]), 2000 * 8)
@@ -1356,6 +1356,53 @@ class TestRuns(Scope):
         self.assertEqual(rc, 0, out)
 
 
+THIRD = "def div(a, b):\n    return a // b\n"
+THIRD_CAND = two("src/third.py", 2, "return a // b", "return a / b")
+
+
+class ContinueAfterRevert(Scope):
+    """review-code#32: a restored tests/size/timeout failure does not strand the entries after it."""
+    feat_files = dict(Scope.feat_files, **{"src/third.py": THIRD})
+    WORDS = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second, third"]
+
+    def test_failed_middle_entry_is_reported_and_the_rest_are_fixed(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, THIRD_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        bg2 = self.begin(run)[2]
+        self.edit("src/second.py", "return a / b", "return a *")
+        rc, _, f = self.finish(run, bg2["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (0, "ok", "reverted-tests"), f)
+        self.assertEqual(slurp(self.p("src/second.py")), SECOND.encode())  # restored: nothing stacks on the failed edit
+        self.assertIsNone(self.state(run)["halted"])
+        bg3 = self.begin(run)[2]
+        self.assertEqual((bg3["status"], bg3["id"]), ("ok", report_id(THIRD_CAND)), bg3)
+        self.edit("src/third.py", "return a // b", "return a / b")
+        self.assertEqual(self.finish(run, bg3["seal"])[2]["outcome"], "fixed")
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+        rc, text, r = self.report(run)
+        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (1, 2, 1, 0), text)
+        for fid_, rel, outcome in ((fid, "src/calc.py", "fixed"), (bg2["id"], "src/second.py", "reverted-tests"),
+                                   (bg3["id"], "src/third.py", "fixed")):
+            self.assertIn("%s %s:2" % (fid_, rel) if rel != "src/calc.py" else "%s %s:5" % (fid_, rel), text)
+            self.assertRegex(text, r"%s \S+ %s" % (fid_, outcome))
+
+    def test_size_failure_also_continues(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "\n".join("# c%d" % i for i in range(70)) + "\n    return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-too-large")
+        self.assertEqual(self.begin(run)[2]["status"], "ok")
+
+    def test_violation_interrupt_and_tamper_still_halt(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.edit("src/other.py", "return 'o'", "return 'p'")
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "reverted-violation"), f)
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+
 class Report(Scope):
     def test_two_entries_and_the_untrusted_tail(self):
         words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second"]
@@ -1366,10 +1413,10 @@ class Report(Scope):
         self.edit("src/second.py", "return a / b", "return a *")
         self.assertEqual(self.finish(run, bg2["seal"])[2]["outcome"], "reverted-tests")
         rc, text, r = self.report(run)
-        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (0, 1, 1, 1), text)
+        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (1, 1, 1, 0), text)
         self.assertIn("%s src/calc.py:5 fixed" % fid, text)
         self.assertIn("%s src/second.py:2 reverted-tests" % bg2["id"], text)
-        self.assertIn("halted: reverted-tests", text)
+        self.assertNotIn("halted:", text)
         self.assertRegex(text, r"== changed files ==\n[^\n]*src/calc\.py")
         self.assertRegex(text, r"== test output \(untrusted\) ==\n[^\n]*\n<<<UNTRUSTED-([0-9a-f]+)\n(?s:.*SyntaxError.*)\1>>>")
         self.assertIn("HEAD and refs: unchanged", text)

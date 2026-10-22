@@ -43,7 +43,8 @@ _RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|
                      r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered")
-REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one halts the run
+REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one is restored (or left, if tampered)
+RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # the restored tree is trusted: the run goes on
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -634,10 +635,11 @@ def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: O
     if res and outcome in REVERTED:
         st["done"][fid]["tail"] = res["tail"]
     st["in_flight"] = None
-    if outcome in REVERTED:
+    halts = outcome in REVERTED and outcome not in RECOVERABLE
+    if halts:
         st["halted"] = outcome
     _save(run, st)
-    out = {"status": "halted" if outcome in REVERTED else "ok", "outcome": outcome}
+    out = {"status": "halted" if halts else "ok", "outcome": outcome}
     if detail:
         out["detail"] = detail
     if res and outcome in REVERTED:
@@ -767,7 +769,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
     if out.get("text"):
         print(out["text"])
     target.emit(out, STDOUT_KEYS)
-    return 0 if out["status"] in ("ok", "done") else 1
+    return 0 if out["status"] in ("ok", "done") and not out.get("reverted") else 1  # a report exits 1 when an entry failed
 
 
 if __name__ == "__main__":
