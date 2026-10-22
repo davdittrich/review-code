@@ -38,6 +38,9 @@ unplanned paths, never a finding by itself.
   test would catch. Risky logic is a new branch, parser, money or security logic, data write or bug fix
   that no test fails on when broken: a `suggestion` in category `test`; cite in `trigger` the logic as
   `path:line` and the test file you searched. Ask for one good test, never a coverage figure; skip trivial changes.
+  When the diff shows a fix (a condition or guard change plus an added or changed test), you may propose a `test`
+  finding for that test: quote its assertion line, trigger "passes on the merge base without the fix". A base run
+  decides whether it stands.
 - Cross-file and documentation integrity: construction sites of related types that set different
   defaults (search them all); docs, docstrings and comments that contradict the function body, its
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.

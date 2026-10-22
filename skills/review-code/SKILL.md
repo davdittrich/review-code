@@ -212,10 +212,10 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `python3 ${CLAUDE_SKILL_DIR}/scripts/repro.py run --run <run> --id <id> --test <relpath> -- <command>`
    with the test source in a `REPRO_TEST` here-document (stdin rule); the harness asks permission because repro.py is not pre-approved.
    Every other outcome, including headless runs, skips it and the finding stays `traced`.
-   Base check, same gates and same confirmation (show the command): when the change is described as a bug fix and it adds or changes a test file, run
-   `python3 ${CLAUDE_SKILL_DIR}/scripts/repro.py base --run <run> --test <relpath> -- <command>` (no stdin). It runs the test on head
-   and on the merge base. Outcomes: `verified` (passes on head, fails on base), `passes-on-base` (the test proves nothing about the fix),
-   `fails-on-head`, `timeout`, `error`. Relay the outcome under the report; it is not a finding and changes no evidence class.
+   The candidates also include each `unverifiable` `test` id with cites (a finding that the change's own test passes on the merge base).
+   For those, same gates and same confirmation (show the command): `repro.py run --run <run> --id <id> --test <relpath> --base -- <command>`
+   (no stdin; the command must name the test). It runs the head's copy of that test on the merge base; `reproduced` means it passed there.
+   The finding then reports as `reproduced` and any other outcome leaves it unverifiable, so step 10 relays it like any finding.
 10. Report. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py render --run <run>`, adding
    `--format json` or `--format sarif` when step 1 removed that flag. Relay stdout. In serial mode also state `mode: serial` and the lost guarantees from step 5.
 11. Post, when step 1 removed `--comment`: Read the first 30 lines of `references/posting.md` (limit 30) and

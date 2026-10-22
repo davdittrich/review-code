@@ -1351,6 +1351,8 @@ def _build(run):
             cls, reason = "inferred", "self-scored"
         elif kind == "confirmed" and cites:
             cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
+        elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"]) == "reproduced":
+            cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"
             reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else (
