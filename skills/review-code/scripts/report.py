@@ -86,7 +86,6 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import contextlib
-import fnmatch
 import hashlib
 import json
 import os
@@ -101,6 +100,7 @@ from urllib.parse import quote, urlsplit
 
 import capture
 import ledger
+import nit
 import sanitize
 import target
 
@@ -115,8 +115,6 @@ LANE_AXIS = {"defects": "defects", "standards": "standards", "sota": "standards"
 VERDICT_KEYS = ("id", "verdict", "evidence", "reason")
 CITE_KEYS = ("path", "line", "quote")
 SEVERITIES = ("blocking", "required", "suggestion", "nit", "noted")  # rank order; nit only under --nit (plan.json nit)
-NIT_RULE_CAP = 15  # rules the text report lists under Nits; the JSON keeps every nit
-NORM_MIN = 20  # lines naming either idiom that a norm needs before a deviation from it is a finding
 CATEGORIES = ("security", "data-loss", "race", "accessibility", "doc-mismatch", "constructor-divergence",
               "bug", "test", "performance", "other")
 BLOCKING = CATEGORIES[:6]
@@ -155,13 +153,13 @@ REASONS = {
     "rule-malformed": "state the rule in at least 3 words, at most 500 characters",
     "rule-source-unknown": "name a conventions/ file as rule_source",
     "rule-not-in-conventions": "quote the rule as the conventions file words it",
-    "nit-not-enabled": "the run was not planned with --nit: send no nit severity or norm category",
-    "nit-only": "this run reports nits only (--nit --lean): send severity nit and no other",
-    "nit-basis": "a nit is category convention (with a rule) or norm, and a norm is always severity nit; only the Standards lane sends them",
-    "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters; the two idioms are at least 3 characters and neither holds the other",
-    "norm-quote-mismatch": "the quote must hold the deviating idiom norm_against",
-    "norm-sample-small": "the idioms occur on fewer than 20 lines of tree/: no norm, no finding",
-    "norm-not-majority": "norm_for must occur on more lines than norm_against",
+    "nit-not-enabled": "the run was not planned with --nit: drop every line with severity nit or category norm",
+    "nit-only": "this run reports nits only (--nit --lean): send only lines with severity nit, for example category convention with a rule",
+    "nit-basis": "a nit has severity nit and category convention (with rule and rule_source) or norm; a norm is never above nit, and only the Standards lane sends either",
+    "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters, for example \"= []\", \"= list()\", \"*.py\"; the idioms are at least 3 characters, neither holds the other, and the quote holds norm_against but not norm_for",
+    "norm-quote-mismatch": "quote the deviating line itself: it must contain the exact text of norm_against",
+    "norm-sample-small": "the two idioms occur on fewer than 20 lines of the tree/ files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
+    "norm-not-majority": "norm_for must occur on more lines than norm_against: if the repo writes norm_against more often there is no norm, so drop the finding",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
@@ -499,41 +497,6 @@ def _rule(o, run):
     return None, "rule-not-in-conventions"
 
 
-def _norm(o, tree, quote):
-    """(fields, None) of a norm line, else (None, the failing check). The skill counts the lines of tree/ files matching
-    norm_glob that hold each literal idiom; the lane's own counts are never read. shortcut: literal strings, not
-    patterns (a model-written regex over repo text can backtrack without end); upgrade when lanes need patterns."""
-    got = {k: o.get(k) for k in ("norm_for", "norm_against", "norm_glob")}
-    if not all(isinstance(v, str) and v.strip() and len(v) <= 200 for v in got.values()):
-        return None, "norm-malformed"
-    a, b = got["norm_for"], got["norm_against"]
-    if min(len(a), len(b)) < 3 or a in b or b in a:  # a line holding both would count for both: no majority to speak of
-        return None, "norm-malformed"
-    if got["norm_against"] not in quote:
-        return None, "norm-quote-mismatch"
-    if got["norm_for"] in quote:  # the deviating line must not use the norm it deviates from
-        return None, "norm-malformed"
-    n = {"for": 0, "against": 0}
-    for root, _, files in os.walk(tree):
-        for f in files:
-            if os.path.islink(os.path.join(root, f)):  # tree/ holds no link by construction; never read one that appears
-                continue
-            rel = os.path.relpath(os.path.join(root, f), tree)
-            if not (fnmatch.fnmatch(rel, got["norm_glob"]) or fnmatch.fnmatch(f, got["norm_glob"])):
-                continue
-            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
-                for row in fh:
-                    a, b = got["norm_for"] in row, got["norm_against"] in row
-                    if a != b:  # a line holding both idioms says nothing about which one the repo prefers
-                        n["for" if a else "against"] += 1
-    total = n["for"] + n["against"]
-    if total < NORM_MIN:
-        return None, "norm-sample-small"
-    if n["for"] <= n["against"]:
-        return None, "norm-not-majority"
-    return dict(got, norm=dict(n, total=total)), None
-
-
 def _spec_lines(run):
     """Line numbers (1-based) that lie strictly inside an UNTRUSTED block of inputs/spec.md; empty when there is no file.
     Only the numbers are returned: spec text never leaves this function (CTX-03)."""
@@ -602,7 +565,7 @@ def _sources(x):
     return x
 
 
-def _candidate(o, tree, lane, base, ctx=None, nit=False):
+def _candidate(o, tree, lane, base, ctx=None, nit_mode=False):
     """(candidate, None), or (None, the failing check)."""
     for k in CANDIDATE_REQUIRED:
         if k not in o:
@@ -613,15 +576,9 @@ def _candidate(o, tree, lane, base, ctx=None, nit=False):
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
         return None, "bad-type"
-    if c["severity"] == "nit" or c["category"] == "norm":
-        if lane != "standards":
-            return None, "bad-type"
-        if not nit:
-            return None, "nit-not-enabled"
-        if not (c["severity"] == "nit" and c["category"] in ("convention", "norm")):
-            return None, "nit-basis"
-    if nit == "only" and c["severity"] != "nit":
-        return None, "nit-only"
+    why = nit.check(c, lane, nit_mode)
+    if why:
+        return None, why
     if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
         return None, "spec-line-invalid"
     c["path"] = os.path.normpath(c["path"])
@@ -659,12 +616,12 @@ def _candidate(o, tree, lane, base, ctx=None, nit=False):
             return None, why
         c["rule"], c["rule_source"] = r
     if c["category"] == "norm":
-        n, why = _norm(o, tree, c["quote"])
+        n, why = nit.norm(o, tree, c["quote"])
         if n is None:
             return None, why
         c.update(n)
-    if c["severity"] == "nit":
-        c["basis"] = "norm" if c["category"] == "norm" else "rule"
+    if nit.basis(c):
+        c["basis"] = nit.basis(c)
     if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
         c["spec_line"] = o["spec_line"]
     c["axis"], c["source_lane"] = LANE_AXIS[lane], lane
@@ -977,7 +934,7 @@ def _read_lane(text, lane, tree, run, shard=None):
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
-    nit = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
+    nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
     for n, (ln, o, fixed) in enumerate(_objects(text), 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
@@ -1010,7 +967,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c, check = _candidate(o, tree, lane, base, ctx, nit) if o is not None else (None, "sota-invalid")
+        c, check = _candidate(o, tree, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
@@ -1465,23 +1422,6 @@ def _sarif(doc):
         "properties": {"inspectedAreas": areas[:MAX_AREAS], "inspectedAreasOmitted": max(0, len(areas) - MAX_AREAS)}}]}
 
 
-def _nit_rows(nits, e):
-    """Nits grouped by what they enforce (the quoted rule, or the counted norm), the first NIT_RULE_CAP groups listed with
-    their count and up to three places; the JSON report keeps every nit."""
-    groups = {}
-    for i in nits:
-        key = ("rule: " + i["rule"]) if i["basis"] == "rule" else "rule: norm %s over %s (%d of %d lines)" % (
-            json.dumps(i["norm_for"]), json.dumps(i["norm_against"]), i["norm"]["for"], i["norm"]["total"])
-        groups.setdefault(key, []).append(i)
-    out = []
-    for key, items in list(groups.items())[:NIT_RULE_CAP]:
-        out.append("- %s (%d finding%s)" % (e(key), len(items), "" if len(items) == 1 else "s"))
-        out += ["    %s:%d  %s [%s]" % (e(i["path"]), i["line"], e(i["title"]), i["id"]) for i in items[:3]]
-    if len(groups) > NIT_RULE_CAP:
-        out.append("(+%d more rules not shown)" % (len(groups) - NIT_RULE_CAP))
-    return out
-
-
 def _text(doc):
     e = sanitize.escape_line  # repo and LLM text reaches the terminal only through here; one line each, so no CR overwrite
 
@@ -1550,7 +1490,7 @@ def _text(doc):
                            ("Suggestions", ("suggestion", "noted"))):
             out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
         nits = [i for i in fs if i["axis"] == ax and i["severity"] == "nit"]
-        out += section("Nits", _nit_rows(nits, e)) if nits else []
+        out += section("Nits", nit.rows(nits, e)) if nits else []
         out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                                        i["evidence_class"], e(i["reason"]))
                                         + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])

@@ -6,6 +6,7 @@ import unittest
 import paths  # noqa: F401
 
 from gitfix import lines  # noqa: E402
+import nit  # noqa: E402
 import report  # noqa: E402
 from test_report import Base, write_plan  # noqa: E402
 
@@ -156,7 +157,7 @@ class NormGuards(NitBase):
             tree = os.path.join(d, "tree")
             os.mkdir(tree)
             os.symlink(outside, os.path.join(tree, "l.py"))
-            got, why = report._norm({"norm_for": "= []", "norm_against": "= list()", "norm_glob": "*.py"}, tree, "y = list()")
+            got, why = nit.norm({"norm_for": "= []", "norm_against": "= list()", "norm_glob": "*.py"}, tree, "y = list()")
         self.assertEqual((got, why), (None, "norm-sample-small"))
 
 
@@ -309,7 +310,7 @@ class ManyRules(NitBase):
         d = self.doc()
         self.assertEqual(sorted(f["rule"] for f in d["findings"]), sorted(self.RULES))
         text = report._text(d)
-        self.assertEqual(sum(1 for ln in text.splitlines() if ln.startswith("- rule: ")), report.NIT_RULE_CAP)
+        self.assertEqual(sum(1 for ln in text.splitlines() if ln.startswith("- rule: ")), nit.NIT_RULE_CAP)
         self.assertIn("(+2 more rules not shown)", text)
 
 
@@ -326,7 +327,7 @@ class Render(NitBase):
     def test_the_text_report_groups_nits_by_rule_and_caps_the_rules(self):
         text = report._text(self.doc_with(17, per_rule=2))
         self.assertIn("Nits", text)
-        self.assertEqual(sum(1 for ln in text.splitlines() if ln.startswith("- rule: ")), report.NIT_RULE_CAP)
+        self.assertEqual(sum(1 for ln in text.splitlines() if ln.startswith("- rule: ")), nit.NIT_RULE_CAP)
         self.assertIn("(+2 more rules not shown)", text)
         self.assertIn("2 findings", text)
 
@@ -358,3 +359,57 @@ class Render(NitBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Unit(unittest.TestCase):
+    """scripts/nit.py through its own interface, no run directory."""
+
+    def tree(self, dominant, deviant, name="a.py"):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        with open(os.path.join(d, name), "w") as fh:
+            fh.write("".join("a%d %s\n" % (i, DOMINANT) for i in range(dominant)) + "".join("b%d %s\n" % (i, DEVIANT) for i in range(deviant)))
+            fh.write("both %s %s\n" % (DOMINANT, DEVIANT))  # a line holding both idioms counts for neither
+        return d
+
+    def norm(self, tree, **kw):
+        return nit.norm(dict({"norm_for": DOMINANT, "norm_against": DEVIANT, "norm_glob": "*.py"}, **kw), tree, "y " + DEVIANT)
+
+    def test_norm_counts_lines_holding_exactly_one_idiom(self):
+        got, why = self.norm(self.tree(22, 3))
+        self.assertEqual((why, got["norm"]), (None, {"for": 22, "against": 3, "total": 25}))
+
+    def test_norm_refusals_and_the_glob(self):
+        self.assertEqual(self.norm(self.tree(12, 3))[1], "norm-sample-small")
+        self.assertEqual(self.norm(self.tree(10, 10))[1], "norm-not-majority")
+        self.assertEqual(self.norm(self.tree(22, 3), norm_glob="*.js")[1], "norm-sample-small")
+        self.assertEqual(self.norm(self.tree(22, 3), norm_glob="")[1], "norm-malformed")
+
+    def test_every_check_and_norm_reason_has_a_retry_hint(self):
+        for why in ("nit-not-enabled", "nit-only", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-sample-small", "norm-not-majority"):
+            self.assertIn(why, report.REASONS)
+
+    def test_check_order_and_basis(self):
+        nitc, normc, sug = [{"severity": s, "category": c} for s, c in (("nit", "convention"), ("nit", "norm"), ("suggestion", "convention"))]
+        self.assertEqual([nit.check(c, "standards", True) for c in (nitc, normc, sug)], [None, None, None])
+        self.assertEqual(nit.check(nitc, "defects", True), "bad-type")
+        self.assertEqual(nit.check(nitc, "standards", False), "nit-not-enabled")
+        self.assertEqual(nit.check({"severity": "suggestion", "category": "norm"}, "standards", True), "nit-basis")
+        self.assertEqual(nit.check(sug, "standards", "only"), "nit-only")
+        self.assertEqual(nit.check(sug, "defects", False), None)
+        self.assertEqual((nit.basis(nitc), nit.basis(normc), nit.basis(sug)), ("rule", "norm", None))
+
+    def test_basis_text_words_both_bases_once(self):
+        norm = {"basis": "norm", "norm_for": "= []", "norm_against": "= list()", "norm": {"for": 22, "against": 3, "total": 25}}
+        self.assertEqual(nit.basis_text(norm), 'norm "= []" over "= list()" (22 of 25 lines)')
+        self.assertEqual(nit.basis_text({"basis": "rule", "rule": RULE}), RULE)
+        self.assertEqual(nit.basis_text({"severity": "required"}), "")
+
+    def test_rows_group_by_basis_and_cap_the_groups(self):
+        mk = lambda k, j: {"basis": "rule", "rule": "Rule %d." % k, "path": "p.py", "line": j + 1, "title": "t", "id": "F-%d%d" % (k, j)}  # noqa: E731
+        out = nit.rows([mk(k, j) for k in range(17) for j in range(4)], str)
+        heads = [r for r in out if r.startswith("- ")]
+        self.assertEqual((len(heads), heads[0], len(out)), (nit.NIT_RULE_CAP, "- rule: Rule 0. (4 findings)", nit.NIT_RULE_CAP * 4 + 1))
+        self.assertEqual(out[-1], "(+2 more rules not shown)")
+        self.assertEqual(nit.rows([mk(0, 0)], str)[0], "- rule: Rule 0. (1 finding)")

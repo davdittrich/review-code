@@ -20,6 +20,7 @@ import re
 import urllib.parse
 from typing import List, Optional
 
+import nit
 import report
 import sanitize
 import target
@@ -604,21 +605,11 @@ def _first_line(quote: List[str], rows) -> Optional[int]:
     return fits[0] if len(fits) == 1 else None
 
 
-def _basis(f: dict) -> str:
-    """What a nit enforces: the quoted rule, or the counted norm worded as the terminal report words it. "" for any other finding."""
-    if f.get("basis") == "rule":
-        return f["rule"]
-    if f.get("basis") == "norm":
-        return "norm %s over %s (%d of %d lines)" % (json.dumps(f["norm_for"]), json.dumps(f["norm_against"]),
-                                                      f["norm"]["for"], f["norm"]["total"])
-    return ""
-
-
 def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False):
     """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
     escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
     raw, rules = {}, []
-    basis = _basis(f)
+    basis = nit.basis_text(f)
     for k in ("title", "trigger", "quote", "fix", "basis"):
         raw[k], got = _redact(basis if k == "basis" else f[k])
         rules += got

@@ -56,7 +56,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 
 - Two bases, both checked by the scripts, not the model. A rule nit is category `convention`, severity `nit`; its rule
   must occur in a `conventions/` copy, exactly as for any convention. A norm nit is category `norm`: the lane names
-  `norm_for` and `norm_against` (literal strings, not patterns) and `norm_glob`; `report.py` counts the lines of
+  `norm_for` and `norm_against` (literal strings, not patterns) and `norm_glob`; `scripts/nit.py` (the owner of every nit check) counts the lines of
   `tree/` files matching the glob that hold each idiom. The finding stands with at least 20 such lines, `norm_for` on
   more lines than `norm_against`, and `norm_against` inside the quote. The counts are the script's, shown in the report.
   Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-sample-small`, `norm-not-majority`.
