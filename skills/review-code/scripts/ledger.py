@@ -591,7 +591,7 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     """path -> text of the decision records: prose files under an adr, adrs, decisions or architecture-decisions
     directory at any depth, and under a directory the spec finder named. Each record is its own spec entry.
     Returns (path -> text, number of records left out). Records the change names come first: `hay` (change text) holds
-    the record's path or number, or the record's text names a changed file or its directory; the rest follow in path order."""
+    the record's path or number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names; the rest follow in path order."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
 
@@ -601,13 +601,14 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     cand = sorted(p for p in reg if record(p) and p not in taken and p not in skip)
     blobs = _blobs(repo, [reg[p] for p in cand])
     hay = hay.lower()
+    issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
 
     def score(p: str) -> int:
         n = re.match(r"[0-9]+", posixpath.basename(p))
         text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
         return (p.lower() in hay) + bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay)) + (
-            bool(text) and any(c in text.lower() for c in spots))
+            bool(text) and (any(c in text.lower() for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
     rank = {p: score(p) for p in cand}
     want = sorted(cand, key=lambda p: (-rank[p], p))
     out, used = {}, 0

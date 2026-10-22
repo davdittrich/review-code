@@ -1075,6 +1075,18 @@ class Spec(Base):
         self.assertEqual((led["capped"]["adr"], out["adr_omitted"]), (10, 10))
         self.assertIn("10 decision records omitted", self.read("inputs/spec.md"))
 
+    def test_adr_cut_ranks_a_record_that_names_an_issue_the_change_names(self):  # issue 24
+        files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
+        files["docs/adr/0039-d.md"] = "Decided in #77 and #7770.\n"
+        files["docs/adr/0038-d.md"] = "Mentions #770 only.\n"
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (fixes #77)")
+        out, led = self.build(commits=[sha])
+        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
+        self.assertIn("docs/adr/0039-d.md", refs)
+        self.assertNotIn("docs/adr/0038-d.md", refs)  # #770 is not #77
+
     def test_adr_set_has_a_byte_budget(self):
         big = "x" * 150000
         _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
