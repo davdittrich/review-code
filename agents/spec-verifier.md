@@ -32,7 +32,7 @@ Try to refute the claim. Answer each question by reading, not names or comments:
 
 - `confirmed` only when the spec text asks for the stated thing and quoted tree/ code shows the
   difference, with at least one cite whose quote is copied verbatim from the line.
-- `refuted` needs at least one such cite too, or it counts as `unverifiable`. Use it when the spec text does not ask for what the claim says, when other code in tree/ meets
+- `refuted` needs at least one such cite too, in any file (the code that already covers the claim may live elsewhere), and no cite that another refuted id of your reply also uses (a shared cite voids both); otherwise it counts as `unverifiable`. A repaired line never refutes either: write every `"` as `\u0022` so the line parses as written. Use it when the spec text does not ask for what the claim says, when other code in tree/ meets
   the requirement, or when the claim is on the do-not-flag list: linter-catchable issues, lines with a
   deliberate lint-ignore marker, suggestions on unchanged lines, input-dependent maybes with no
   reaching input. Apply any do-not-flag block in the handoff the same way.

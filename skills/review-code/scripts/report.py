@@ -141,6 +141,8 @@ REASONS = {
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
     "bad-summary": "send one summary line, text up to the length cap",
+    "no-cite": "a refuted verdict needs a cite that holds in tree/ (any file): none did",
+    "shared-cite": "one cite cannot refute two findings: give each refuted id its own cite",
     "other-batch": "the id belongs to another verify batch",
     "unknown-id": "the id is no candidate of this run",
     "empty-capture": "the capture holds no wire line of the expected kind",
@@ -734,7 +736,7 @@ def status(run):
 def _batches(queue, hand, prefix="review-code"):
     """verify_calls: queue ids grouped by (agent, shard), at most VERIFY_BATCH per call. Each call pays a fixed start
     (about 9k tokens in a lean setup, 29k measured here), so a shard's ids share calls; within one, ids of a path stay
-    together in queue order, and a refuted verdict still needs a cite in its own path (review-code-8dt). The prompt
+    together in queue order, and a refuted verdict still needs a cite no other refuted id uses (review-code-8dt). The prompt
     lists absolute handoff paths."""
     groups = {}
     for c in queue:
@@ -1047,9 +1049,10 @@ def _replies(run):
 def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
     """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
     repaired line count, disposition rows).
-    allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite in the candidate's own
-    path, one that no other refuted id of the reply uses (review-code-8dt)."""
-    foreign, mine, bad, fixed, disp = 0, [], [], 0, []
+    allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite that validates against
+    tree/ in any file (the code elsewhere may already cover the claim, gh#27) and that no other refuted id of the reply
+    uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
+    foreign, mine, bad, fixed, disp, at = 0, [], [], 0, [], {}  # at: id -> index of its row in disp
     for n, (ln, o, fix) in enumerate(_objects(text, total), 1):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
@@ -1074,19 +1077,23 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
             continue
-        if allowed is not None and o["verdict"] == "refuted":
-            cites = [e for e in cites if os.path.normpath(e["path"]) == paths[o["id"]]]
-        refuted = o["verdict"] == "refuted"  # a repaired line never refutes: text read from a quote must not drop a finding
-        kind = "unverifiable" if refuted and (fix or (allowed is not None and not cites)) else o["verdict"]
-        got[o["id"]] = {"verdict": kind, "reason": reason if isinstance(reason, str) else "",
-                        "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}
+        kind, down = o["verdict"], None  # a downgrade is a refuted verdict that cannot stand, and says why
+        if kind == "refuted":
+            if fix:  # a repaired line never refutes: text read from a quote must not drop a finding
+                kind, down = "unverifiable", "repaired"
+            elif allowed is not None and not cites:
+                kind, down = "unverifiable", "no-cite"
+        got[o["id"]] = dict({"verdict": kind, "reason": reason if isinstance(reason, str) else "",
+                             "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}, **({"downgraded": down} if down else {}))
         mine.append(o["id"])
-        disp.append(_disp(n, o["id"], "accepted", "repaired" if fix else None))
+        at[o["id"]] = len(disp)
+        disp.append(_disp(n, o["id"], "downgraded" if down else "accepted", down or ("repaired" if fix else None)))
     key = lambda e: (os.path.normpath(e["path"]), e["line"], _ws(e["quote"]))  # noqa: E731
     used = [key(e) for i in mine if allowed is not None and got[i]["verdict"] == "refuted" for e in got[i]["cites"]]
     for i in mine:
         if got[i]["verdict"] == "refuted" and any(used.count(key(e)) > 1 for e in got[i]["cites"]):
-            got[i]["verdict"] = "unverifiable"
+            got[i].update(verdict="unverifiable", downgraded="shared-cite")  # one cite cannot refute two findings
+            disp[at[i]] = _disp(disp[at[i]]["index"], i, "downgraded", "shared-cite")
     return foreign, bad, fixed, disp
 
 

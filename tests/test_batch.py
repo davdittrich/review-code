@@ -149,12 +149,47 @@ class Verdicts(BigRun):
         out = self.verdicts(self.line(self.first[0], "refuted", False))
         self.assertEqual(out["refuted"], [self.first[0]])
 
-    def test_batched_refuted_cite_must_lie_in_the_candidates_own_path(self):  # review-code-8dt
+    def reasons(self, out):
+        return [(d["id"], d["disposition"], d["reason"]) for d in out["dispositions"]]
+
+    def test_a_refutation_cited_in_another_file_stands(self):  # gh#27: the code elsewhere already covers it
         other = {"path": "src/other.py", "line": 2, "quote": "w1 = a + 1"}
-        bad = dict(self.line(self.first[0], "refuted"), evidence=[other])
-        out = self.batch(1, bad, self.line(self.first[1], "refuted"))
-        self.assertEqual(out["refuted"], [self.first[1]])
-        self.assertEqual(self.stored()[self.first[0]]["verdict"], "unverifiable")
+        elsewhere = dict(self.line(self.first[0], "refuted"), evidence=[other])
+        out = self.batch(1, elsewhere, self.line(self.first[1], "refuted"))
+        self.assertEqual(out["refuted"], sorted(self.first[:2]))
+        self.assertEqual(self.stored()[self.first[0]]["verdict"], "refuted")
+        self.assertEqual(self.reasons(out), [(self.first[0], "accepted", None), (self.first[1], "accepted", None)])
+
+    def test_a_batched_refutation_with_no_valid_cite_is_a_visible_downgrade(self):  # gh#27
+        out = self.batch(1, self.line(self.first[0], "refuted", False))
+        self.assertEqual((out["refuted"], self.stored()[self.first[0]]["verdict"]), ([], "unverifiable"))
+        self.assertEqual(self.stored()[self.first[0]]["downgraded"], "no-cite")
+        self.assertEqual(self.reasons(out), [(self.first[0], "downgraded", "no-cite")])
+
+    def test_a_repaired_refutation_is_downgraded_with_reason_repaired(self):  # gh#27
+        i = self.first[0]
+        raw = ('[["id","%s"],["verdict","refuted"],["reason","code reads "x" here"],["evidence",[[["path","src/big.py"],'
+               '["line",2],["quote","v1 = a - 1"]]]]]' % i)
+        out = self.batch(1, raw)
+        self.assertEqual((out["refuted"], out["repaired"]), ([], 1))
+        self.assertEqual(self.stored()[i]["verdict"], "unverifiable")
+        self.assertEqual(self.stored()[i]["downgraded"], "repaired")
+        self.assertEqual(self.reasons(out), [(i, "downgraded", "repaired")])
+
+    def test_a_shared_cite_downgrades_both_ids_with_reason_shared_cite(self):  # gh#27
+        shared = [{"path": "src/big.py", "line": 2, "quote": "v1 = a - 1"}]
+        a, b = (dict(self.line(i, "refuted"), evidence=shared) for i in self.first[:2])
+        out = self.batch(1, a, b)
+        self.assertEqual(self.reasons(out), [(self.first[0], "downgraded", "shared-cite"),
+                                             (self.first[1], "downgraded", "shared-cite")])
+        self.assertEqual([self.stored()[i]["downgraded"] for i in self.first[:2]], ["shared-cite"] * 2)
+
+    def test_the_verifier_prompts_state_the_refutation_and_quote_rules(self):  # gh#27
+        for name in ("verifier", "spec-verifier"):
+            with open(os.path.join(os.path.dirname(paths.HERE), "agents", name + ".md"), encoding="utf-8") as fh:
+                text = " ".join(fh.read().split())
+            for need in ("any file", "shared", "repaired"):
+                self.assertIn(need, text, name)
 
     def test_batched_refuted_cite_cannot_serve_two_ids(self):  # review-code-8dt
         shared = [{"path": "src/big.py", "line": 2, "quote": "v1 = a - 1"}]

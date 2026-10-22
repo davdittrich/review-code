@@ -45,7 +45,7 @@ The handoff may carry more blocks:
 
 - `confirmed` only with a traced path (for `check: property`, the property shown in the quoted code) and at
   least one cite whose quote is copied verbatim from the line.
-- `refuted` needs at least one such cite too, or it counts as `unverifiable`. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
+- `refuted` needs at least one such cite too, in any file (the code that already covers the claim may live elsewhere), and no cite that another refuted id of your reply also uses (a shared cite voids both); otherwise it counts as `unverifiable`. A repaired line never refutes either: write every `"` as `\u0022` so the line parses as written. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore
   marker, a `shortcut:` comment that names its limit (unless the `## Expected load` in the handoff, when
   present, already crosses that limit), suggestions on unchanged lines, input-dependent maybes with no reaching input.
