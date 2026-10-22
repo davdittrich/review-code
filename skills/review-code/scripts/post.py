@@ -108,6 +108,15 @@ def _pages(tool: str, host: str, endpoint: str, cwd: str) -> list:
     raise Refuse("too-many-comments")
 
 
+def _changed(run: str, last: Optional[str], head: str) -> Optional[set]:
+    """Paths that differ between the prior review head and `head`, else None (no prior head, not reachable, or git failed):
+    only a changed file lets an absent finding count as fixed."""
+    if not last:
+        return None
+    rc, out, _ = target._run(["diff", "--name-only", "--no-renames", "-z", last, head], target.load_target(run)["repo"])
+    return set(out.decode("utf-8", "replace").split("\0")) - {""} if rc == 0 else None
+
+
 def _target(run: str) -> dict:
     """Forge, host, repository, number and head from target.json alone: never gh's `{owner}/{repo}` placeholders or the cwd remote."""
     rec = target.load_target(run)
@@ -689,7 +698,7 @@ def build(run: str) -> dict:
                 and not any(s.get("what") in ("defects", "standards") or (s.get("what") == "spec" and s.get("why") != "no spec")
                             for s in doc["skipped"]))  # else absence proves nothing; "no spec" is the usual case and blocks nothing
     d = prior.derive(old, {f["id"]: f["path"] for f in doc["findings"]}, set(doc["inspected"]["files"]), complete,
-                     {i["id"] for i in doc["unverifiable"]})
+                     {i["id"] for i in doc["unverifiable"]}, _changed(run, old["last_head"], head))
     fresh = [f for f in doc["findings"] if f["id"] not in skip]
     if not fresh and not (d["fixed"] or d["outdated"]):  # a body-only status review is allowed when a prior state changed
         raise Refuse("already-posted" if doc["findings"] or old["fixed"] or old["outdated"] else "nothing-to-post")

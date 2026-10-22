@@ -74,7 +74,7 @@ class Derive(unittest.TestCase):
 
     def test_the_example(self):
         # review 1 posted F-1 (u.py), F-2 (c.py), F-3 (c.py); now F-3 is found again and a new F-9 sits on F-2's path
-        d = prior.derive(self.old({A: "u.py", B: "c.py", C: "c.py"}), {C: "c.py", D: "c.py"}, {"u.py", "c.py"}, True)
+        d = prior.derive(self.old({A: "u.py", B: "c.py", C: "c.py"}), {C: "c.py", D: "c.py"}, {"u.py", "c.py"}, True, changed={"u.py", "c.py"})
         self.assertEqual((d["new"], d["open"], d["fixed"], d["outdated"], d["unknown"]), ({D}, {C}, {A}, {B: D}, set()))
         self.assertEqual((d["fixed_out"], d["outdated_out"]), ({A}, {B}))
         self.assertEqual(prior.render(d), "**Prior:** 1 open, 1 fixed (%s), 1 outdated (%s -> may be %s)" % (A, B, D))
@@ -82,13 +82,23 @@ class Derive(unittest.TestCase):
 
     def test_unknown_when_out_of_scope_unrecoverable_incomplete_or_unverifiable(self):
         old = self.old({A: "out.py", B: None, C: "c.py", D: "c.py"})
-        d = prior.derive(old, {}, {"c.py"}, True, {D})
+        d = prior.derive(old, {}, {"c.py"}, True, {D}, {"c.py"})
         self.assertEqual((d["fixed"], d["unknown"]), ({C}, {A, B, D}))
-        d = prior.derive(old, {}, {"c.py"}, False)
+        d = prior.derive(old, {}, {"c.py"}, False, (), {"c.py"})
         self.assertEqual((d["fixed"], d["unknown"]), (set(), {A, B, C, D}))
 
+    def test_absent_is_fixed_only_when_its_file_changed_since_the_prior_head(self):
+        old = self.old({A: "u.py", B: "c.py"})
+        d = prior.derive(old, {}, {"u.py", "c.py"}, True, (), {"u.py"})
+        self.assertEqual((d["fixed"], d["unknown"], d["unchanged"]), ({A}, {B}, {B}))
+        self.assertEqual(prior.render(d), "**Prior:** 1 fixed (%s), 1 unknown (%s: file unchanged since the last review)" % (A, B))
+        self.assertTrue(prior.PRIOR_LINE.fullmatch(prior.render(d)))
+        d = prior.derive(old, {}, {"u.py", "c.py"}, True)  # prior head not reachable: nothing is claimed fixed
+        self.assertEqual((d["fixed"], d["unknown"], d["unchanged"]), (set(), {A, B}, set()))
+        self.assertEqual(prior.render(d), "**Prior:** 2 unknown")
+
     def test_fixed_back_is_new_and_carried_ids_are_not_reported_again(self):
-        d = prior.derive(self.old({A: "u.py", B: "u.py", C: "c.py"}, fixed={A, B}, outdated={C}), {A: "u.py"}, {"u.py", "c.py"}, True)
+        d = prior.derive(self.old({A: "u.py", B: "u.py", C: "c.py"}, fixed={A, B}, outdated={C}), {A: "u.py"}, {"u.py", "c.py"}, True, (), {"u.py"})
         self.assertEqual((d["new"], d["open"], d["fixed"], d["outdated"], d["unknown"]), ({A}, set(), set(), {}, set()))
         self.assertEqual((d["fixed_out"], d["outdated_out"]), ({B}, {C}))
         self.assertIsNone(prior.render(d))
@@ -98,10 +108,12 @@ class Grammar(tp.Base):
     def test_guard_accepts_the_new_lines_and_refuses_lookalikes(self):
         f = "F-" + "a" * 10
         for ok in ("**Prior:** 1 open, 2 fixed (%s, %s), 1 outdated (%s -> may be %s), 3 unknown" % (f, f, f, f),
+                   "**Prior:** 2 unknown (%s, %s: file unchanged since the last review), 1 unknown" % (f, f),
                    "**State:** new", "**Not run:** defects@2, shard 3, repro, serial", mark(SHA, [f], [f])):
             post._guard("**Verdict:** x (advisory)\n" + ok)
         for bad in ("**Prior:** <b>x</b>", "**Prior:** 1 open see [x](http://e.test)", "**Prior:** 1 open (@team)",
-                    "**Prior:** 1 fixed (F-1)", "**Prior:** 1 outdated (%s -> may be @x)" % f, "**Prior:** 1 open ", "**Prior:** `1 open`",
+                    "**Prior:** 1 fixed (F-1)", "**Prior:** 1 unknown (%s: file unchanged since the last review, @x)" % f,
+                    "**Prior:** 1 unknown (%s: see http://e.test)" % f, "**Prior:** 1 unknown (F-1: file unchanged since the last review)", "**Prior:** 1 outdated (%s -> may be @x)" % f, "**Prior:** 1 open ", "**Prior:** `1 open`",
                     "**State:** still open", "**State:** new !", "**Not run:** rm -rf", "**Not run:** repro, @x", "**Not run:** ",
                     "<!-- review-code:review v1 head=%s fixed=%s,x -->" % (SHA, f), "  **Prior:** 1 open"):
             with self.assertRaises(Refuse, msg=bad) as cx:
@@ -117,7 +129,7 @@ class Rereview(tp.Base):
         self.addCleanup(self._td.cleanup)
         self.tmp = os.path.realpath(self._td.name)
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
-        util = "".join("u%02d = %d\n" % (n, n) for n in range(1, 11))
+        util = self.util = "".join("u%02d = %d\n" % (n, n) for n in range(1, 11))
         gitfix.commit(self.repo, {"src/calc.py": tp.source(False, 0), "src/util.py": util}, "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
         gitfix.commit(self.repo, {"src/calc.py": tp.source(True, 5), "src/util.py": util.replace("u05 = 5", "u05 = 50")}, "feat")
@@ -137,7 +149,8 @@ class Rereview(tp.Base):
     def rebase(self):
         """A new head (the old fake's reviews carry over), a new run: both files are still in the diff."""
         old = self.fake
-        gitfix.commit(self.repo, {"src/calc.py": tp.source(True, 5) + "w036 = 36\n"}, "rebased")
+        gitfix.commit(self.repo, {"src/calc.py": tp.source(True, 5) + "w036 = 36\n",
+                                  "src/util.py": self.util.replace("u05 = 5", "u05 = 50").replace("u10 = 10", "u10 = 11")}, "rebased")
         self.make_run()
         self.keep = old
 
@@ -186,8 +199,10 @@ class Rereview(tp.Base):
         rc, out, st = self.build()
         self.assertEqual((rc, st["reason"]), (1, "already-posted"), out)
         # everything fixed: a body-only status review is allowed, and carries the fixed ids forward
-        self.ingest([], {})
-        self.fake.reviews, self.fake.next_id = self.keep.reviews, self.keep.next_id
+        self.keep = self.fake  # calc.py changes again, so its two findings gone from this run count as fixed
+        gitfix.commit(self.repo, {"src/calc.py": tp.source(True, 5) + "w036 = 36\nw038 = 38\n"}, "calc again")
+        self.make_run()
+        self.run2([], {})
         rc, out, st = self.build()
         self.assertEqual((rc, st["status"], st["inline"], st["in_body"]), (0, "ok", 0, 0), out)
         self.assertIn("2 fixed (%s, %s)" % tuple(sorted((c, d))), self.body())
@@ -219,6 +234,32 @@ class Rereview(tp.Base):
         self.assertNotIn(a, payload["body"].split("<!-- review-code:review")[1])  # no longer carried as fixed
         rc, out, sub = self.call("submit", "--run", self.run_dir, "--digest", st["digest"])
         self.assertEqual((rc, sub["status"]), (0, "ok"), out)
+
+    def test_absent_finding_in_an_unchanged_file_is_unknown_not_fixed(self):
+        self.run1()
+        self.post()
+        a, b, c = (self.ids[k] for k in (("src/util.py", 5, "bug"), ("src/calc.py", 20, "bug"), ("src/calc.py", 33, "bug")))
+        old = self.fake
+        gitfix.commit(self.repo, {"src/calc.py": tp.source(True, 5) + "w036 = 36\n"}, "calc only")  # util.py untouched
+        self.make_run()
+        self.keep = old
+        self.run2([self.cand("src/calc.py", 33, tp.row(33))], {33: (33, tp.row(33))})
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        body = self.body()
+        self.assertIn("1 fixed (%s)" % b, body)
+        self.assertIn("1 unknown (%s: file unchanged since the last review)" % a, body)
+        self.assertTrue(body.endswith(prior.review_mark(self.fake.head, [b])), body)  # a is not carried as fixed
+
+    def test_unreachable_prior_head_claims_nothing_fixed(self):
+        self.run1()
+        self.post()
+        self.rebase()
+        self.run2([self.cand("src/calc.py", 33, tp.row(33))], {33: (33, tp.row(33))})
+        with mock.patch.object(post, "_changed", return_value=None):
+            rc, out, st = self.build()
+        self.assertEqual((rc, st["reason"]), (1, "already-posted"), out)  # nothing fixed, nothing new
+        self.assertEqual(post._changed(self.run_dir, "c" * 40, self.fake.head), None)
 
     def test_another_logins_markers_change_nothing(self):
         self.run1()
@@ -274,12 +315,12 @@ class NotRunReport(tp.Base):
     def test_document_text_and_posted_body(self):
         self.review(20)
         doc = report.build(self.run_dir)
-        self.assertEqual(doc["not_run"], ["repro", "spec"])  # external trust; the fixture has no spec
-        self.assertIn("\nNot run: repro, spec\n", report.render(self.run_dir, "text"))
-        self.assertEqual(json.loads(report.render(self.run_dir, "json"))["not_run"], ["repro", "spec"])
+        self.assertEqual(doc["not_run"], ["repro"])  # external trust; no spec is the normal case, not a failure to run
+        self.assertIn("\nNot run: repro\n", report.render(self.run_dir, "text"))
+        self.assertEqual(json.loads(report.render(self.run_dir, "json"))["not_run"], ["repro"])
         rc, out, st = self.build()
         self.assertEqual(rc, 0, out)
-        self.assertIn("\n**Not run:** repro, spec\n", self.payload()[1]["body"])
+        self.assertIn("\n**Not run:** repro\n", self.payload()[1]["body"])
 
 
 class SinceLast(tt.PRWorld):
@@ -310,10 +351,11 @@ class SinceLast(tt.PRWorld):
 
     def test_ancestor_reviews_only_the_range(self):
         rc, out = tt.call(["7", "--since-last"], self.repo, self.tmp, gh=self.gh_with(self.pr))
-        self.assertEqual((rc, out["status"], out["merge_base"], out["head_sha"]), (0, "ok", self.pr, self.head2), out)
+        self.assertEqual((rc, out["status"], out["merge_base"], out["head_sha"]), (0, "ok", self.main, self.head2), out)  # the true merge base stays: rules are never read from the last push
         self.assertEqual(out["since_last"], "reviewing since your last review, %s..%s" % (self.pr[:12], self.head2[:12]))
         rec = tt.load(os.path.join(self.repo, ".git", "review-code", os.path.basename(out["run"])))
         self.assertEqual((rec["included"], rec["since_last"] in rec["notes"]), (["src/new.py"], True))
+        self.assertEqual(rec["diff_base"], self.pr)
 
     def test_non_ancestor_unknown_or_missing_review_falls_back_to_full(self):
         for last, gh in ((self.mainx, self.gh_with(self.mainx)), ("c" * 40, self.gh_with("c" * 40)), (None, self.gh_with(None)),
