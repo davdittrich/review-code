@@ -633,8 +633,9 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     def score(p: str) -> int:
         n = re.match(r"[0-9]+", posixpath.basename(p))
         text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
+        low = text.lower() if text else ""
         return (p.lower() in hay) + bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay)) + (
-            bool(text) and (any(c in text.lower() for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+            bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
     rank = {p: score(p) for p in cand}
     want = sorted(cand, key=lambda p: (-rank[p], p))
     out, used = {}, 0
