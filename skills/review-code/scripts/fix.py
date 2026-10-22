@@ -43,8 +43,9 @@ _RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|
                      r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-reached")
-REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one is restored (or left, if tampered)
-RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # the restored tree is trusted: the run goes on
+RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # restored, and the tree is trusted: the run goes on
+HALTING = ("reverted-violation", "reverted-interrupt", "tampered")  # the tree can no longer be trusted: the run stops
+REVERTED = RECOVERABLE + HALTING  # every failed outcome; all are restored except tampered, which leaves the tree as found
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "protected", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted", "verified", "not_reached")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -140,6 +141,14 @@ def _live(repo: str, path) -> Optional[str]:
         return joined if listed == norm.encode("utf-8") + b"\0" else None
     except UnicodeError:
         return None
+
+
+def _locate(repo: str, path, quote) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """(real path, line, None) when the finding's file is live and its quote occurs once; else (real or None, None, the
+    skip reason): bad-path for a file that is not live (or has a .git component), stale for a quote that moved or went."""
+    real = None if ".git" in str(path).split("/") else _live(repo, path)
+    line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), quote)
+    return real, line, "bad-path" if real is None else "stale" if line is None else None
 
 
 def _relocate(text: str, quote) -> Optional[int]:
@@ -392,9 +401,7 @@ def plan(run: str, words: List[str]) -> dict:
         if _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
         else:
-            real = None if ".git" in f["path"].split("/") else _live(repo, f["path"])
-            line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
-            why = "bad-path" if real is None else "stale" if line is None else None
+            _, line, why = _locate(repo, f["path"], f["quote"])
         if why:
             skipped.append({"id": f["id"], "path": f["path"], "why": why})
             continue
@@ -505,10 +512,9 @@ def begin(run: str) -> dict:
     for e in json.loads(raw.decode("utf-8"))["entries"]:
         if e["id"] in st["done"]:
             continue
-        real = _live(repo, e["path"])
-        line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), e["quote"])
-        if line is None:
-            st["done"][e["id"]] = {"outcome": "bad-path" if real is None else "stale", "exit": None}
+        real, line, why = _locate(repo, e["path"], e["quote"])
+        if why:
+            st["done"][e["id"]] = {"outcome": why, "exit": None}
             continue
         data = _read(real)
         target.write_atomic(os.path.join(fd, e["id"] + ".pre"), data)
@@ -639,7 +645,7 @@ def finish(run: str, seal: str, status: str, code: Optional[str] = None, line: O
     if res and outcome in REVERTED:
         st["done"][fid]["tail"] = res["tail"]
     st["in_flight"] = None
-    halts = outcome in REVERTED and outcome not in RECOVERABLE
+    halts = outcome in HALTING
     if halts:
         st["halted"] = outcome
     _save(run, st)
@@ -749,13 +755,15 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         names = opts[0::2]
         need = flags.get(sub, [])
         extra = names[len(need):]  # finish only: --code and --line, once each, in either order
+        allowed = {"--code", "--line"} if sub == "finish" else set()
         if sub not in flags or names[:len(need)] != need or len(opts) != 2 * len(names) \
-                or len(set(extra)) != len(extra) or not set(extra) <= ({"--code", "--line"} if sub == "finish" else set()):
+                or len(set(extra)) != len(extra) or not set(extra) <= allowed:
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
-        if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined") \
-                or (extra and v["--status"] != "declined"):  # presence, not value: --line 0 is not "absent"
+        hexes = [v[k] for k in ("--digest", "--seal") if k in v]
+        # presence, not value: --line 0 is not "absent"
+        if not all(HEX.match(h) for h in hexes) or v.get("--status", "applied") not in ("applied", "declined") \
+                or (extra and v["--status"] != "declined"):
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
