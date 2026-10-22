@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RUN = os.path.join(ROOT, "evals", "run.py")
@@ -143,6 +144,14 @@ class Cases(unittest.TestCase):
             self.assertEqual(ev.main(["lint"]), 0)
         self.assertIn("0 problem", out.getvalue())
 
+    def test_lint_rejects_decoy_within_tolerance_of_a_defect(self):
+        c = json.loads(json.dumps(CASE))
+        for line in (10 - ev.TOL, 12 + ev.TOL):
+            c["decoys"] = [{"path": "a.py", "line": line}]
+            self.assertTrue(any("decoy" in e for e in ev.lint_case("x", c)), line)
+        c["decoys"] = [{"path": "a.py", "line": 10 - ev.TOL - 1}]
+        self.assertEqual(ev.lint_case("x", c), [])
+
     def test_lint_rejects_leak_and_bad_schema(self):
         c = json.loads(json.dumps(CASE))
         c["change_files"]["a.py"] = "x\n" * 8 + "# seeded bug\n" + "x\n" * 31
@@ -179,6 +188,8 @@ class Driver(unittest.TestCase):
             for i, text in enumerate(["```json\n" + json.dumps(doc(hit)) + "\n```", "garbled"]):
                 with open(os.path.join(d, "run%d.json" % i), "w") as fh:
                     json.dump({"text": text}, fh)
+            old, ev.BASELINE = ev.BASELINE, os.path.join(tmp, "no-baseline.json")  # a real --accept must not turn this red
+            self.addCleanup(setattr, ev, "BASELINE", old)
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 rc = ev.main(["--rescore", tmp, "--case", "defects-py-seeded"])
             self.assertEqual(rc, 0, out.getvalue())
@@ -194,6 +205,83 @@ class Driver(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             rc = ev.main(["--case", "clean-diff-negative", "--runs", "1"]) if not os.isatty(0) else 2
         self.assertEqual(rc, 2)
+
+
+class Paid(unittest.TestCase):
+    """main() with the paid call faked: baseline writing, neutral repo names, per-case meta."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.base = os.path.join(self.tmp, "baseline.json")
+        self.repos = []
+        for name, val in (("BASELINE", self.base), ("OUT", os.path.join(self.tmp, "out"))):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+        for name, val in (("copy_plugin", lambda d: os.makedirs(d)), ("build_repo", lambda c, r: None)):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+        self.addCleanup(setattr, ev, "run_claude", ev.run_claude)
+        p = mock.patch.object(ev.shutil, "which", return_value="/bin/claude")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def fake(self, fail_on=()):
+        calls = []
+
+        def run_claude(repo, plugin, case, lean, budget):
+            self.repos.append(repo)
+            calls.append(repo)
+            if len(calls) in fail_on:
+                raise RuntimeError("boom")
+            return "```json\n" + json.dumps(doc()) + "\n```", 1.0
+        ev.run_claude = run_claude
+
+    def main(self, *args):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return ev.main(["--yes", "--runs", "2"] + list(args))
+
+    def test_accept_refused_when_every_call_failed(self):
+        self.fake(fail_on=(1, 2))
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 2)
+        self.assertFalse(os.path.exists(self.base))
+
+    def test_accept_refused_on_a_partial_error(self):
+        self.fake(fail_on=(2,))
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 2)
+        self.assertFalse(os.path.exists(self.base))
+
+    def test_accept_writes_per_run_cost_and_per_case_meta(self):
+        self.fake()
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            b = json.load(fh)
+        c = b["cases"]["clean-diff-negative"]
+        self.assertEqual((c["n_runs"], c["cost"]), (2, 1.0))
+        self.assertTrue(c["meta"]["tiers_hash"])
+        self.assertNotIn("git_sha", b["meta"])
+
+    def test_accept_one_case_keeps_other_cases_meta(self):
+        with open(self.base, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"other": {"meta": {"tiers_hash": "stale"}}}}, fh)
+        self.fake()
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            b = json.load(fh)
+        self.assertEqual(b["cases"]["other"]["meta"], {"tiers_hash": "stale"})
+        self.assertTrue(any("stale" in w and "other" in w for w in ev.meta_warnings(b)))
+
+    def test_meta_warnings_legacy_global_meta_still_read(self):
+        w = ev.meta_warnings({"meta": {"tiers_hash": "old"}, "cases": {"a": {}}})
+        self.assertTrue(w and "old" in w[0])
+        self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
+
+    def test_repo_dir_does_not_name_the_case(self):
+        self.fake()
+        self.main("--case", "defects-py-seeded")
+        self.assertEqual(len(self.repos), 2)
+        for r in self.repos:
+            self.assertNotRegex(r, r"defects|seeded|stale|enum|clean")
 
 
 class TiersHash(unittest.TestCase):

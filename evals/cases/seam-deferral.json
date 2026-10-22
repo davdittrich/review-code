@@ -5,7 +5,7 @@
     "batching.py": "def chunks(seq, n):\n    return [seq[i:i + n] for i in range(0, len(seq), n)]\n"
   },
   "change_files": {
-    "client.py": "import urllib.request\n\n\n# TODO(PROJ-412): add jittered backoff between attempts\ndef fetch(url, retries=3, timeout=10):\n    for _ in range(retries):\n        try:\n            return urllib.request.urlopen(url).read()\n        except OSError:\n            continue\n    raise OSError(url)\n",
+    "client.py": "# TODO(PROJ-412): add jittered backoff between attempts\nimport urllib.request\n\n\ndef fetch(url, retries=3, timeout=10):\n    for _ in range(retries):\n        try:\n            return urllib.request.urlopen(url).read()\n        except OSError:\n            continue\n    raise OSError(url)\n",
     "util.py": "def chunk(seq, n):\n    return [seq[i:i + n] for i in range(0, len(seq), n)]\n"
   },
   "defects": [
@@ -32,7 +32,7 @@
   "decoys": [
     {
       "path": "client.py",
-      "line": 4
+      "line": 1
     }
   ],
   "accept": []

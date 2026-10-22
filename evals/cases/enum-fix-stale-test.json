@@ -7,7 +7,7 @@
   },
   "change_files": {
     "status.py": "from enum import Enum\n\n\nclass Status(Enum):\n    NEW = 1\n    ACTIVE = 2\n    CLOSED = 3\n    ARCHIVED = 4\n",
-    "tests/test_status.py": "from status import Status\n\n\ndef test_member_count():\n    assert len(Status) == 3\n\n\ndef test_values_are_unique():\n    assert len({s.value for s in Status}) == len(list(Status))\n"
+    "tests/test_status.py": "from status import Status\n\n\ndef test_member_count():\n    assert len(Status) == 3\n\n\ndef test_values_are_unique():\n    assert len({s.value for s in Status.__members__.values()}) == len(Status.__members__)\n"
   },
   "defects": [
     {

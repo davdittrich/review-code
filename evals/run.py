@@ -114,6 +114,10 @@ def lint_case(name, case):
             for i in range(lo, min(hi, len(txt))):
                 if LEAK.search(txt[i]):
                     errs.append("%s:%d near defect %s: leaking word" % (loc["path"], i + 1, d["id"]))
+    for i, dc in enumerate(case.get("decoys", [])):
+        for d in case.get("defects", []):
+            if any(_overlaps(dict(dc, end_line=dc.get("end_line", dc["line"])), l) for l in [d] + d.get("also", [])):
+                errs.append("decoy[%d] lies within %d lines of defect %s: a finding there would score as a hit" % (i, TOL, d["id"]))
     return errs
 
 
@@ -253,10 +257,15 @@ def load_baseline():
     return b
 
 
-def meta_warnings(base_meta):
+def meta_warnings(base):
+    """Per case: its own meta, else the legacy global one (files written before meta went per case)."""
     now = {"tiers_hash": tiers_hash(), "claude_version": claude_version()}
-    return ["baseline %s %r differs from now %r" % (k, base_meta.get(k), v) for k, v in now.items()
-            if base_meta.get(k) is not None and base_meta.get(k) != v]
+    out = []
+    for n, c in sorted(base["cases"].items()):
+        m = c.get("meta") or base["meta"]
+        out += ["baseline %s %s %r differs from now %r" % (n, k, m.get(k), v) for k, v in now.items()
+                if m.get(k) is not None and m.get(k) != v]
+    return out
 
 
 # ---- ADAPTER: the only code that touches the live `claude` CLI (all of it UNVERIFIED, see README) --------
@@ -358,6 +367,53 @@ def rescore(path, names, cases, lane):
     return out
 
 
+def run_cases(names, cases, runs, lane, max_cost, stamp):
+    """The paid loop: (scores_by, costs) per case, or None when --max-cost-usd was exceeded. Raw documents go to OUT/stamp."""
+    scores_by, costs, spent, k = {}, {}, 0.0, 0
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin = os.path.join(tmp, "plugin")
+        copy_plugin(plugin)
+        for n in names:
+            scores_by[n], costs[n] = [], 0.0
+            for i in range(runs):
+                k += 1
+                repo = os.path.join(tmp, "r%d" % k)  # neutral: the skill writes this path into lane inputs
+                os.makedirs(repo)
+                build_repo(cases[n], repo)
+                raw = {"case": n, "run": i}
+                try:
+                    raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane),
+                                                          None if max_cost is None else max(max_cost - spent, 0.01))
+                except Exception as e:  # an errored run is excluded from n and flagged
+                    raw["text"], raw["cost"], raw["error"] = "", None, str(e)
+                d = os.path.join(OUT, stamp, n)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "run%d.json" % i), "w", encoding="utf-8") as fh:
+                    json.dump(raw, fh, indent=1)
+                scores_by[n].append(score(extract_doc(raw["text"]), cases[n], lane))
+                spent += raw["cost"] or 0.0
+                costs[n] += raw["cost"] or 0.0
+                if max_cost is not None and spent > max_cost:
+                    print("aborted: spent $%.2f over --max-cost-usd %.2f; raw documents in %s" % (spent, max_cost, os.path.join(OUT, stamp)), file=sys.stderr)
+                    return None
+    return scores_by, costs
+
+
+def write_baseline(base, names, scores_by, costs):
+    """Replace the baseline entries of names; each carries the meta of the run that produced it."""
+    meta = {"git_sha": git_sha(), "claude_version": claude_version(), "tiers_hash": tiers_hash()}
+    for n in names:
+        agg = aggregate(scores_by[n])
+        agg["cost"] = costs[n] / agg["n_runs"]
+        agg["meta"] = meta
+        agg.pop("recall"), agg.pop("precision")
+        base["cases"][n] = agg
+    with open(BASELINE, "w", encoding="utf-8") as fh:
+        json.dump(base, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    print("baseline written: %s" % BASELINE)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="review-code eval driver (paid: runs the skill through `claude -p`)")
     ap.add_argument("command", nargs="?", choices=["lint"])
@@ -384,7 +440,7 @@ def main(argv=None):
     lane = "standards" if a.cheap else None
     names = [n for n, c in cases.items() if not lane or not c["defects"] or any(d["lane"] == lane for d in c["defects"])]
     base = load_baseline()
-    for w in meta_warnings(base["meta"]):
+    for w in meta_warnings(base):
         print("warning: " + w, file=sys.stderr)
     runs = 1 if a.cheap else a.runs
     if a.rescore:
@@ -407,45 +463,18 @@ def main(argv=None):
             if input("Run? [y/N] ").strip().lower() != "y":
                 return 2
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        scores_by, costs, spent = {}, {}, 0.0
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = os.path.join(tmp, "plugin")
-            copy_plugin(plugin)
-            for n in names:
-                scores_by[n], costs[n] = [], 0.0
-                for i in range(runs):
-                    repo = os.path.join(tmp, "%s-%d" % (n, i))
-                    os.makedirs(repo)
-                    build_repo(cases[n], repo)
-                    raw = {"case": n, "run": i}
-                    try:
-                        raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane),
-                                                              None if a.max_cost_usd is None else max(a.max_cost_usd - spent, 0.01))
-                    except Exception as e:  # an errored run is excluded from n and flagged
-                        raw["text"], raw["cost"], raw["error"] = "", None, str(e)
-                    d = os.path.join(OUT, stamp, n)
-                    os.makedirs(d, exist_ok=True)
-                    with open(os.path.join(d, "run%d.json" % i), "w", encoding="utf-8") as fh:
-                        json.dump(raw, fh, indent=1)
-                    scores_by[n].append(score(extract_doc(raw["text"]), cases[n], lane))
-                    spent += raw["cost"] or 0.0
-                    costs[n] += raw["cost"] or 0.0
-                    if a.max_cost_usd is not None and spent > a.max_cost_usd:
-                        print("aborted: spent $%.2f over --max-cost-usd %.2f; raw documents in %s" % (spent, a.max_cost_usd, os.path.join(OUT, stamp)), file=sys.stderr)
-                        return 2
+        res = run_cases(names, cases, runs, lane, a.max_cost_usd, stamp)
+        if res is None:
+            return 2
+        scores_by, costs = res
         print("raw documents: %s" % os.path.join(OUT, stamp))
     code = report(names, cases, scores_by, base, lane)
     if a.accept and not a.rescore:
-        base["meta"] = {"git_sha": git_sha(), "claude_version": claude_version(), "tiers_hash": tiers_hash()}
-        for n in names:
-            agg = aggregate(scores_by[n])
-            agg["cost"] = costs[n] / runs
-            agg.pop("recall"), agg.pop("precision")
-            base["cases"][n] = agg
-        with open(BASELINE, "w", encoding="utf-8") as fh:
-            json.dump(base, fh, indent=1, sort_keys=True)
-            fh.write("\n")
-        print("baseline written: %s" % BASELINE)
+        broken = [n for n in names if aggregate(scores_by[n])["errors"] or not aggregate(scores_by[n])["n_runs"]]
+        if broken:
+            print("--accept refused: errored or missing runs in %s; nothing written" % ", ".join(broken), file=sys.stderr)
+            return 2
+        write_baseline(base, names, scores_by, costs)
     return code
 
 
