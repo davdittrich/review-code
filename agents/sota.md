@@ -46,7 +46,7 @@ One line per finding, nothing else. A line is a JSON array of [key, value] pairs
 
 - item and quote come from one inventory item: item its number, quote equal to its name.
 - sources lists one to five https URLs you actually read.
-- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape.
+- In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash that comes from the code or text you quote as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape. Never double the backslash inside `\u007b` or `\u0022`.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Last, one line listing the inventory item numbers you checked:

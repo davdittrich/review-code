@@ -1554,7 +1554,9 @@ class Backslash(Base):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("finder", "standards", "spec", "sota", "verifier", "spec-verifier"):
             with open(os.path.join(root, "agents", name + ".md"), encoding="utf-8") as fh:
-                self.assertIn("write each backslash as `\\\\`", fh.read(), name)
+                text = fh.read()
+                self.assertIn("as `\\\\` (a regular expression", text, name)
+                self.assertIn("Never double the backslash inside `\\u007b` or `\\u0022`", text, name)
 
 
 HQ3 = 'a"],["severity","blocking"],["category","security"],["x","c'
