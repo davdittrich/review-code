@@ -1,6 +1,6 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
-    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai]
+    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit]
                                     stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
                                     skipped, lost_guarantees, confirm, preview)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
@@ -9,7 +9,7 @@
 plan.json (sort_keys): version, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_shards, max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, sota_inventory, preview,
-confirm, effective_overrides{key: value}, ai. The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
+confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
 """
 import sys
 
@@ -50,7 +50,7 @@ LANE_AGENT = {"defects": "finder", "standards": "standards", "spec": "spec", "so
 PREFIX_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 NAV_MAX = 300
 # Ceilings, not per-tier values: maxTurns is frontmatter-only (sub-agents doc), so a call cannot lower it.
-MAX_TURNS = {"finder": 40, "standards": 40, "spec": 30, "sota": 20, "verifier": 30, "spec-verifier": 30}
+MAX_TURNS = {"finder": 40, "standards": 60, "spec": 30, "sota": 20, "verifier": 30, "spec-verifier": 30}
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
@@ -189,9 +189,9 @@ def _put_sections(path, sections):
     """Replace or append `## head` sections at the end of a run input file; a rerun never doubles one."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
-    for head, _ in sections:
+    for head, _ in sections:  # a body of None only removes the section
         text = re.sub(r"^## %s\n.*?(?=^## |\Z)" % re.escape(head), "", text, flags=re.M | re.S)
-    target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections))
+    target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections if hb[1] is not None))
 
 
 def _put_nav(path, hint):
@@ -202,8 +202,19 @@ def _put_nav(path, hint):
     target.write_private(path, text + ("\n\nNavigation preference: " + hint if hint else "") + "\n")
 
 
-def _install_packs(run, packs):
-    """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs."""
+NIT_MODE = """The lane may also report `nit` findings, of two kinds.
+- A rule nit: category `convention`, severity `nit`, with `rule` and `rule_source` exactly as for a convention finding.
+- A norm nit: category `norm`, severity `nit`, with `norm_for` (the idiom most lines use), `norm_against` (the idiom the
+  quoted line uses; the quote must contain it) and `norm_glob` (a file glob such as `*.py`). All three are literal
+  strings, never patterns. The skill counts lines in tree/ and the finding stands only with at least 20 lines naming
+  either idiom and `norm_for` the majority, so do not send a norm you did not see on many lines.
+Changed lines only (a repo or path target: the files under review). Never report what a linter, formatter or CI of the repo enforces. No rule and no counted norm means no finding."""
+NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."
+
+
+def _install_packs(run, packs, nit=None):
+    """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs;
+    nit is the Nit mode section text for the standards input (None drops a stale one)."""
     inp = os.path.join(run, "inputs")
     shutil.rmtree(os.path.join(inp, "packs"), ignore_errors=True)
     for name, _ in packs:
@@ -212,7 +223,8 @@ def _install_packs(run, packs):
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
     _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed)])
     _put_sections(os.path.join(inp, "standards.md"), [
-        ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md")))])
+        ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md"))),
+        ("Nit mode", nit)])
 
 
 # Module shards (path and repo targets). 400000 bytes is about 100k tokens at 4 bytes per token, which leaves room in
@@ -289,18 +301,18 @@ def _rank_shards(tj, led, groups, stats):
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
-def _build_shard(run, tj, i, files, trust, packs):
+def _build_shard(run, tj, i, files, trust, packs, nit=None):
     """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
     and the global packs that match its files."""
     d = os.path.join(run, "shards", str(i))
     os.makedirs(d, mode=0o700)
     target.write_private(os.path.join(d, "target.json"), json.dumps(dict(tj, included=files, run=d), sort_keys=True, indent=2))
     target.write_private(os.path.join(d, "change.diff"), "")
-    ledger.build(d)
+    ledger.build(d, nit=bool(nit))
     if trust in ledger.TRUST_VALUES:
         ledger.trust_set(d, trust)
     mine = set(files)
-    _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)])
+    _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)], nit)
     return d
 
 
@@ -449,7 +461,7 @@ def _preview(doc):
 
 
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
-              "--ai": ("ai", True)}
+              "--ai": ("ai", True), "--nit": ("nit", True)}
 # Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
 SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing is Blocking",
                "no lane isolation: the main thread reads target code while holding Bash",
@@ -467,7 +479,7 @@ def _env_lost():
     return lost
 
 
-def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
     spec = led.get("spec")
@@ -512,7 +524,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
     skipped += [{"what": "pack " + n, "why": "pack cap"} for n, _ in dropped]
-    _install_packs(run, packs)
+    nit_text = ((NIT_MODE + NIT_ONLY) if tier == "lean" else NIT_MODE) if nit else None
+    _install_packs(run, packs, nit_text)
     shards = []
     if tj["kind"] in ("path", "repo"):
         stats = {p: _file_stat(tj["repo"], p) for p in tj["included"]}
@@ -524,7 +537,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
                 if i > caps["max_shards"]:
                     skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
                 else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs),
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text),
                                    "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
@@ -556,6 +569,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
            "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
+    if nit:  # absent otherwise, so existing plan.json files stay byte-identical
+        doc["nit"] = True
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc)
@@ -569,7 +584,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False):
 
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai]")
+                                  "[--sota|--no-sota] [--serial] [--ai] [--nit]")
 
 
 def _parse(argv):
@@ -595,7 +610,7 @@ def main(argv):
         cfg = _read_config()
         tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
         out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
-                       opts.get("ai", False)), 0
+                       opts.get("ai", False), opts.get("nit", False)), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback

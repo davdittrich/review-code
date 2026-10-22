@@ -343,6 +343,33 @@ class Skips(Base):
         self.assertEqual([e["path"] for e in doc["entries"]], ["setup.py", "src/calc.py", "src/nofix.py"])
 
 
+class NitsAreNeverFixed(Base):
+    """--nit findings are report-only: --fix and --fix-tests plan around them and list them as skipped."""
+    def nitted(self, run, fid, real=True):
+        doc = fix.report.build(run)
+        base = doc["findings"][0]
+        nit = dict(base, id="F-nit0000001", severity="nit", category="convention", basis="rule", rule="Never subtract.")
+        doc["findings"] = ([base] if real else []) + [nit]
+        return mock.patch.object(fix.report, "build", return_value=doc)
+
+    def test_plan_skips_the_nit_and_keeps_the_other_severities(self):
+        run, fid = self.ready()
+        with self.nitted(run, fid), gitfix.isolated(self.tmp):
+            j = fix.plan(run, self.cmd())
+        self.assertEqual((j["apply"], j["skipped"]), (1, 1), j)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual([e["id"] for e in doc["entries"]], [fid])
+        self.assertEqual(doc["skipped"], [{"id": "F-nit0000001", "path": "src/calc.py", "why": "nit"}])
+
+    def test_a_run_of_only_nits_has_nothing_to_fix(self):
+        run, fid = self.ready()
+        with self.nitted(run, fid, real=False), gitfix.isolated(self.tmp):
+            with self.assertRaises(target.Refuse) as cm:
+                fix.plan(run, self.cmd(), fix_tests=True)
+        self.assertEqual((cm.exception.reason, cm.exception.detail), ("nothing-to-fix", "skipped: nit 1"))
+
+
 class DerivedFixes(Base):
     """review-code#33: a verified finding with no fix text is planned, marked, and handed to the fixer to derive."""
     feat_files = {"src/calc.py": FEAT}

@@ -52,8 +52,9 @@ class Finder(unittest.TestCase):
         self.assertIsInstance(o["inspected"], list)
 
     def test_enum_words_and_blocking_sentence(self):
-        for w in report.CATEGORIES + report.SEVERITIES:
+        for w in report.CATEGORIES + tuple(x for x in report.SEVERITIES if x != "nit"):  # nit is a Standards-lane severity
             self.assertIn("`%s`" % w, self.text)
+        self.assertNotIn("`nit`", self.text)  # the defects lane must not offer nit
         sentence = next(s for s in re.split(r"(?<=\.)\s", self.text) if "`blocking`" in s and "only" in s)
         for w in report.BLOCKING:
             self.assertIn(w, sentence)
@@ -97,8 +98,12 @@ class Standards(tp.Fixture):
     def test_candidate_line_has_exactly_the_lane_keys(self):
         o = first(self.body, '[["path"')
         self.assertEqual(set(o), set(report.CANDIDATE_REQUIRED + report.CANDIDATE_OPTIONAL
-                                     + report.LANE_OPTIONAL["standards"]))
+                                     + ("rule", "rule_source")))  # the norm_* keys ride on norm lines only
         self.assertEqual(o["category"], "convention")
+
+    def test_the_norm_keys_are_documented(self):
+        for k in report.LANE_OPTIONAL["standards"]:  # the wire accepts these keys; the prompt must name each
+            self.assertIn(k, self.text)
 
     def test_inspected_line(self):
         self.assertEqual(list(first(self.body, '[["inspected"')), ["inspected"])
@@ -127,7 +132,7 @@ class Standards(tp.Fixture):
             self.assertNotIn(w, low)
 
     def test_frontmatter(self):
-        for line in (NAV_TOOLS, "model: haiku", "maxTurns: 40"):
+        for line in (NAV_TOOLS, "model: haiku", "maxTurns: 60"):
             self.assertIn(line, self.fm)
 
     def test_example_line_ingests_on_a_real_run_dir(self):
@@ -138,6 +143,27 @@ class Standards(tp.Fixture):
         out = self.ingest_lane("standards", *ex)
         self.assertEqual((out["status"], len(out["ids"]), out["dropped"]["invalid"]), ("ok", 1, 0), out)
         self.assertEqual(out["lanes"], {"standards": "complete"})
+
+
+NORM_FEAT = STD_BASE + "".join("def snake_%d():\n    pass\n" % i for i in range(22)) + "\ndef addNumbers(a, b):\n    return a + b\n"
+
+
+class StandardsNorm(Standards):
+    feat_files = {"src/calc.py": NORM_FEAT}
+
+    def setUp(self):
+        super().setUp()
+        tr.write_plan(self.run_dir, nit=True)
+
+    def test_a_norm_line_built_from_the_documented_keys_ingests_with_nit(self):
+        ex = first(self.body, '[["path"')
+        row = next(n for n, t in enumerate(NORM_FEAT.split("\n"), 1) if t.startswith("def addNumbers"))
+        norm = {k: v for k, v in ex.items() if k not in ("rule", "rule_source")}
+        norm.update(path="src/calc.py", line=row, end_line=row, severity="nit", category="norm", quote="def addNumbers(a, b):",
+                    norm_for="def snake_", norm_against="def addNumbers", norm_glob="*.py")
+        self.assertEqual(set(norm) - set(ex), {"norm_for", "norm_against", "norm_glob"})
+        out = self.ingest_lane("standards", norm, {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["status"], len(out["ids"]), out["dropped"]["invalid"], out["rejected"]), ("ok", 1, 0, []), out)
 
 
 class Verifier(unittest.TestCase):

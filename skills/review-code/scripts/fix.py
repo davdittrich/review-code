@@ -414,6 +414,9 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
         fix_text = f.get("fix")
         derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
+        if f["severity"] == "nit":  # report-only: never located, never briefed
+            skipped.append({"id": f["id"], "path": f["path"], "why": "nit"})
+            continue
         judges = _judges(f["path"], cmd_files)
         if judges and not (fix_tests and _editable_test(f["path"]) and f["path"] not in cmd_files):  # a named file may be the script itself
             why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in for test files only

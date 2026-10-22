@@ -1274,6 +1274,54 @@ class InlineCap(Base):
         self.assertEqual(len(payload["comments"]), 32)
 
 
+class Nits(Base):
+    extra = 10  # lines 31 to 40 are added
+
+    def doc(self, ids, rule_text="Never subtract operands."):
+        """The built report doc with the finding on line 34 turned into a rule nit and line 37 into a suggestion."""
+        import report
+        doc = report.build(self.run_dir)
+        by = {f["id"]: f for f in doc["findings"]}
+        by[ids[34]].update(severity="nit", category="convention", basis="rule", rule=rule_text)
+        by[ids[37]].update(severity="suggestion")
+        return doc
+
+    def built(self, doc):
+        with mock.patch.object(post.report, "build", return_value=doc):
+            return self.build()
+
+    def test_a_nit_posts_with_the_prefix_label_and_its_rule_in_report_order(self):
+        ids = self.review(31, 34, 37)
+        rc, out, st = self.built(self.doc(ids))
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        self.assertEqual([c["id"] for c in payload["comments"]], [ids[31], ids[34], ids[37]])
+        nit = payload["comments"][1]["body"]
+        self.assertTrue(nit.startswith("nit: **Nit** (defects, convention) - title 34\n"), nit)
+        self.assertIn("\n**Basis:** Never subtract operands.\n", nit)
+        self.assertTrue(payload["comments"][0]["body"].startswith("**Required** ("))
+        self.assertTrue(payload["comments"][2]["body"].startswith("**Suggestion** ("))
+
+    def test_a_norm_nit_states_the_counted_ratio(self):
+        ids = self.review(31, 34, 37)
+        doc = self.doc(ids)
+        f = next(f for f in doc["findings"] if f["id"] == ids[34])
+        f.update(category="norm", basis="norm", norm_for="foo(", norm_against="bar(", norm={"for": 22, "against": 3, "total": 25})
+        rc, out, _ = self.built(doc)
+        self.assertEqual(rc, 0, out)
+        body = self.payload()[1]["comments"][1]["body"]
+        self.assertIn('**Basis:** norm "foo(" over "bar(" (22 of 25 lines)', body)
+
+    def test_the_basis_text_is_redacted_and_kept_on_one_line(self):
+        ids = self.review(31, 34, 37)
+        rc, out, _ = self.built(self.doc(ids, "Use a key.\nNot AKIAIOSFODNN7EXAMPLE <b>here</b> @team"))
+        self.assertEqual(rc, 0, out)
+        body = self.payload()[1]["comments"][1]["body"]
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", body)
+        self.assertIn("[REDACTED:", body)
+        self.assertNotIn("<b>", body)
+
+
 MR_URL = "https://gitlab.example.com/g/sub/r/-/merge_requests/5"
 MR = "projects/g%2Fsub%2Fr/merge_requests/5"
 

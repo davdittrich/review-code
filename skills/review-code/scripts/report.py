@@ -56,10 +56,10 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
   the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
   line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
-  Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
+  Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
-A Standards `convention` item also carries rule and rule_source. skipped[] lists what plan.json left out.
+A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over tree/. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
@@ -86,6 +86,7 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -113,16 +114,18 @@ AXES = ("defects", "standards", "spec")
 LANE_AXIS = {"defects": "defects", "standards": "standards", "sota": "standards", "spec": "spec"}
 VERDICT_KEYS = ("id", "verdict", "evidence", "reason")
 CITE_KEYS = ("path", "line", "quote")
-SEVERITIES = ("blocking", "required", "suggestion", "noted")  # rank order
+SEVERITIES = ("blocking", "required", "suggestion", "nit", "noted")  # rank order; nit only under --nit (plan.json nit)
+NIT_RULE_CAP = 15  # rules the text report lists under Nits; the JSON keeps every nit
+NORM_MIN = 20  # lines naming either idiom that a norm needs before a deviation from it is a finding
 CATEGORIES = ("security", "data-loss", "race", "accessibility", "doc-mismatch", "constructor-divergence",
               "bug", "test", "performance", "other")
 BLOCKING = CATEGORIES[:6]
-LANE_CATEGORIES = {"defects": CATEGORIES, "standards": ("convention", "comment", "smell", "lean", "altitude"),
+LANE_CATEGORIES = {"defects": CATEGORIES, "standards": ("convention", "comment", "smell", "lean", "altitude", "norm"),
                    "sota": ("sota",), "spec": ("spec-missing", "spec-partial", "spec-wrong", "scope-creep")}
 CEILING = {"convention": "required", "comment": "required", "smell": "suggestion", "lean": "suggestion", "altitude": "suggestion",
            "sota": "suggestion", "spec-missing": "required", "spec-partial": "required", "spec-wrong": "required",
-           "scope-creep": "required"}  # strongest severity a non-Defects category may reach
-LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source"), "sota": ("sources",), "spec": ("spec_line",)}
+           "scope-creep": "required", "norm": "nit"}  # strongest severity a non-Defects category may reach
+LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source", "norm_for", "norm_against", "norm_glob"), "sota": ("sources",), "spec": ("spec_line",)}
 VERDICTS = ("confirmed", "refuted", "unverifiable")
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
@@ -152,6 +155,13 @@ REASONS = {
     "rule-malformed": "state the rule in at least 3 words, at most 500 characters",
     "rule-source-unknown": "name a conventions/ file as rule_source",
     "rule-not-in-conventions": "quote the rule as the conventions file words it",
+    "nit-not-enabled": "the run was not planned with --nit: send no nit severity or norm category",
+    "nit-only": "this run reports nits only (--nit --lean): send severity nit and no other",
+    "nit-basis": "a nit is category convention (with a rule) or norm, and a norm is always severity nit; only the Standards lane sends them",
+    "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters; the two idioms are at least 3 characters and neither holds the other",
+    "norm-quote-mismatch": "the quote must hold the deviating idiom norm_against",
+    "norm-sample-small": "the idioms occur on fewer than 20 lines of tree/: no norm, no finding",
+    "norm-not-majority": "norm_for must occur on more lines than norm_against",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
@@ -486,6 +496,41 @@ def _rule(o, run):
     return None, "rule-not-in-conventions"
 
 
+def _norm(o, tree, quote):
+    """(fields, None) of a norm line, else (None, the failing check). The skill counts the lines of tree/ files matching
+    norm_glob that hold each literal idiom; the lane's own counts are never read. shortcut: literal strings, not
+    patterns (a model-written regex over repo text can backtrack without end); upgrade when lanes need patterns."""
+    got = {k: o.get(k) for k in ("norm_for", "norm_against", "norm_glob")}
+    if not all(isinstance(v, str) and v.strip() and len(v) <= 200 for v in got.values()):
+        return None, "norm-malformed"
+    a, b = got["norm_for"], got["norm_against"]
+    if min(len(a), len(b)) < 3 or a in b or b in a:  # a line holding both would count for both: no majority to speak of
+        return None, "norm-malformed"
+    if got["norm_against"] not in quote:
+        return None, "norm-quote-mismatch"
+    if got["norm_for"] in quote:  # the deviating line must not use the norm it deviates from
+        return None, "norm-malformed"
+    n = {"for": 0, "against": 0}
+    for root, _, files in os.walk(tree):
+        for f in files:
+            if os.path.islink(os.path.join(root, f)):  # tree/ holds no link by construction; never read one that appears
+                continue
+            rel = os.path.relpath(os.path.join(root, f), tree)
+            if not (fnmatch.fnmatch(rel, got["norm_glob"]) or fnmatch.fnmatch(f, got["norm_glob"])):
+                continue
+            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                for row in fh:
+                    a, b = got["norm_for"] in row, got["norm_against"] in row
+                    if a != b:  # a line holding both idioms says nothing about which one the repo prefers
+                        n["for" if a else "against"] += 1
+    total = n["for"] + n["against"]
+    if total < NORM_MIN:
+        return None, "norm-sample-small"
+    if n["for"] <= n["against"]:
+        return None, "norm-not-majority"
+    return dict(got, norm=dict(n, total=total)), None
+
+
 def _spec_lines(run):
     """Line numbers (1-based) that lie strictly inside an UNTRUSTED block of inputs/spec.md; empty when there is no file.
     Only the numbers are returned: spec text never leaves this function (CTX-03)."""
@@ -554,7 +599,7 @@ def _sources(x):
     return x
 
 
-def _candidate(o, tree, lane, base, ctx=None):
+def _candidate(o, tree, lane, base, ctx=None, nit=False):
     """(candidate, None), or (None, the failing check)."""
     for k in CANDIDATE_REQUIRED:
         if k not in o:
@@ -565,6 +610,15 @@ def _candidate(o, tree, lane, base, ctx=None):
     if (not isinstance(c["path"], str) or c["severity"] not in SEVERITIES or c["category"] not in LANE_CATEGORIES[lane]
             or not isinstance(fix, str) or not all(isinstance(c[k], str) and c[k] for k in ("title", "trigger", "quote"))):
         return None, "bad-type"
+    if c["severity"] == "nit" or c["category"] == "norm":
+        if lane != "standards":
+            return None, "bad-type"
+        if not nit:
+            return None, "nit-not-enabled"
+        if not (c["severity"] == "nit" and c["category"] in ("convention", "norm")):
+            return None, "nit-basis"
+    if nit == "only" and c["severity"] != "nit":
+        return None, "nit-only"
     if lane == "spec" and not (_int(o.get("spec_line")) and o["spec_line"] in ctx):
         return None, "spec-line-invalid"
     c["path"] = os.path.normpath(c["path"])
@@ -601,15 +655,23 @@ def _candidate(o, tree, lane, base, ctx=None):
         if r is None:
             return None, why
         c["rule"], c["rule_source"] = r
+    if c["category"] == "norm":
+        n, why = _norm(o, tree, c["quote"])
+        if n is None:
+            return None, why
+        c.update(n)
+    if c["severity"] == "nit":
+        c["basis"] = "norm" if c["category"] == "norm" else "rule"
     if _int(o.get("spec_line")) and "spec_line" in LANE_OPTIONAL[lane]:
         c["spec_line"] = o["spec_line"]
     c["axis"], c["source_lane"] = LANE_AXIS[lane], lane
-    c["id"] = _fid(c["axis"], c["path"], c["category"], c["quote"])
+    c["id"] = _fid(c["axis"], c["path"], c["category"], c["quote"], c["severity"])
     return c, None
 
 
-def _fid(axis, path, category, quote):
-    key = (os.path.normpath(path), category, _ws(quote))  # Defects keeps the Phase 3 input; other axes salt it
+def _fid(axis, path, category, quote, severity=None):
+    key = (os.path.normpath(path), category, _ws(quote)) + (("nit",) if severity == "nit" else ())  # a nit never shares a stronger finding's id
+    # Defects keeps the Phase 3 input; other axes salt it
     return "F-" + hashlib.sha256("\0".join(key if axis == "defects" else (axis,) + key).encode(
         "utf-8", "surrogatepass")).hexdigest()[:10]
 
@@ -620,7 +682,7 @@ def _lost_id(ln, lane):
     _, o = _parse(ln, _loads)
     if lane == "sota" or not o or not all(isinstance(o.get(k), str) for k in ("path", "category", "quote")):
         return None
-    return _fid(LANE_AXIS[lane], o["path"], o["category"], o["quote"])
+    return _fid(LANE_AXIS[lane], o["path"], o["category"], o["quote"], o.get("severity"))
 
 
 def _refs(run, shard=None):
@@ -911,6 +973,8 @@ def _read_lane(text, lane, tree, run, shard=None):
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     copied = _spec_copy(run) if lane == "spec" else None
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
+    pl = _plan(run)
+    nit = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
     for n, (ln, o, fixed) in enumerate(_objects(text), 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
@@ -943,7 +1007,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c, check = _candidate(o, tree, lane, base, ctx) if o is not None else (None, "sota-invalid")
+        c, check = _candidate(o, tree, lane, base, ctx, nit) if o is not None else (None, "sota-invalid")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
@@ -1347,6 +1411,8 @@ def _build(run):
             "lean_lines": sum(i["end_line"] - i["line"] + 1 for i in findings if i["category"] == "lean"),  # an estimate
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
+    if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
+        doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
     if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
         doc["adr_omitted"] = led["capped"]["adr"]
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
@@ -1370,7 +1436,7 @@ def _build(run):
     return doc
 
 
-_LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "noted": "note"}
+_LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "nit": "note", "noted": "note"}
 
 
 def _sarif(doc):
@@ -1384,13 +1450,31 @@ def _sarif(doc):
                      "locations": [{"physicalLocation": {"artifactLocation": {"uri": quote(f["path"])},
                                                          "region": {"startLine": f["line"], "endLine": f["end_line"]}}}],
                      "partialFingerprints": {"reviewCodeId/v1": f["id"]},
-                     "properties": {"evidenceClass": f["evidence_class"], "severity": f["severity"],
-                                    "origin": f["origin"], "score": f["score"], "axis": f["axis"]}} for f in fs]
+                     "properties": dict({"evidenceClass": f["evidence_class"], "severity": f["severity"],
+                                        "origin": f["origin"], "score": f["score"], "axis": f["axis"]},
+                                       **{k: f[k] for k in ("basis", "rule") if k in f})} for f in fs]
         + [{"ruleId": "hidden-content", "level": "note", "message": {"text": "hidden content in a change: " + h["kind"]},
             "locations": [{"physicalLocation": dict({"artifactLocation": {"uri": quote(h["file"])}},
                                                     **({"region": {"startLine": h["line"]}} if h["line"] is not None else {}))}],
             "properties": {k: h[k] for k in ("length", "codepoints", "name") if k in h and h[k] is not None}} for h in hc],
         "properties": {"inspectedAreas": areas[:MAX_AREAS], "inspectedAreasOmitted": max(0, len(areas) - MAX_AREAS)}}]}
+
+
+def _nit_rows(nits, e):
+    """Nits grouped by what they enforce (the quoted rule, or the counted norm), the first NIT_RULE_CAP groups listed with
+    their count and up to three places; the JSON report keeps every nit."""
+    groups = {}
+    for i in nits:
+        key = ("rule: " + i["rule"]) if i["basis"] == "rule" else "rule: norm %s over %s (%d of %d lines)" % (
+            json.dumps(i["norm_for"]), json.dumps(i["norm_against"]), i["norm"]["for"], i["norm"]["total"])
+        groups.setdefault(key, []).append(i)
+    out = []
+    for key, items in list(groups.items())[:NIT_RULE_CAP]:
+        out.append("- %s (%d finding%s)" % (e(key), len(items), "" if len(items) == 1 else "s"))
+        out += ["    %s:%d  %s [%s]" % (e(i["path"]), i["line"], e(i["title"]), i["id"]) for i in items[:3]]
+    if len(groups) > NIT_RULE_CAP:
+        out.append("(+%d more rules not shown)" % (len(groups) - NIT_RULE_CAP))
+    return out
 
 
 def _text(doc):
@@ -1416,6 +1500,7 @@ def _text(doc):
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
+    out += ["nits: %d" % doc["nit"]] if "nit" in doc else []
     for ax in AXES:
         mine = [i for i in fs if i["axis"] == ax]
         out.append("%s: %d finding%s, worst %s" % (ax, len(mine), "" if len(mine) == 1 else "s", min(
@@ -1459,6 +1544,8 @@ def _text(doc):
         for head, pick in (("Blocking", ("blocking",)), ("Required", ("required",)),
                            ("Suggestions", ("suggestion", "noted"))):
             out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
+        nits = [i for i in fs if i["axis"] == ax and i["severity"] == "nit"]
+        out += section("Nits", _nit_rows(nits, e)) if nits else []
         out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                                        i["evidence_class"], e(i["reason"]))
                                         + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])

@@ -53,7 +53,7 @@ A concern below `traced` is never stated as a finding: it goes to the report's U
 
 Severity and evidence class are separate axes.
 
-- Severity: Blocking, Required, Suggestions, Noted.
+- Severity: Blocking, Required, Suggestions, Nit, Noted. Nit appears only under `--nit`.
 - Evidence class: `reproduced` (ran and observed), `traced` (followed the code path by reading),
   `inferred` (follows from the code but not traced end to end), `speculative` (plausible, unchecked).
 
@@ -61,6 +61,15 @@ Blocking categories: security, data loss, race conditions, accessibility, docume
 contradicts the source, and constructor divergence between related types.
 
 Style findings are Required or Suggestions at most, and only when a linter would not catch them.
+
+## Nit mode
+
+`--nit` adds a Nit severity between Suggestions and Noted. It never changes the verdict. A nit is a
+`convention` finding that quotes a repo rule, or a `norm` finding whose counts the skill makes itself
+in `tree/` (at least 20 lines, the other idiom the majority). Diff targets report changed lines only;
+a `--repo` target also reports pre-existing nits. The text report lists at most 15 rules under Nits
+(JSON and SARIF keep every nit). `--fix` and `--fix-tests` ignore nits. `--nit --lean` is the
+nits-only pass. Detail: `references/lanes.md`.
 
 ## Terms
 
@@ -74,7 +83,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
-   `--serial`, `--ai` (step 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
+   `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
    `--own` with `--external`: stop and say so). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
@@ -103,7 +112,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
      commit the change, then run the review again" and stop before any lane runs.
    - The command fails because `python3` is missing, or prints `python-too-old`: say so and follow
      `references/lanes.md` Triage without python3.
-2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`. State the `label` and
+2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`, adding `--nit` to this and every later build call when step 1 removed it. State the `label` and
    counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
 3. Questions, once per run, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
@@ -135,7 +144,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (`assistant`, `encoded`, `url`, `markup`, `long`); `provenance` (`added` by the change, `touched` for a changed file with no diff) is kept apart and does not list a span singly. All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
-   `--no-sota`, `--serial`, `--ai`, each only when step 1 removed that flag. The plugin settings go on
+   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag. The plugin settings go on
    stdin, one `key=value` line each:
 
    ```

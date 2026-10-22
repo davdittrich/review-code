@@ -62,7 +62,7 @@ MAX_INLINE = 32
 MAX_BODY = 60000
 PER_PAGE = 100
 MAX_PAGES = 20
-LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggestion", "noted": "Noted"}
+LABEL = {"blocking": "Blocking", "required": "Required", "suggestion": "Suggestion", "nit": "Nit", "noted": "Noted"}
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "inline", "in_body", "skipped", "unverifiable", "redacted",
                "posted", "review_id")
 USAGE = "usage: post.py build --run DIR | submit --run DIR --digest HEX"
@@ -538,7 +538,7 @@ _LOOSE = re.compile(r"[<`]|&(?!amp;|lt;)|(?<!\\)(?:\\\\)*\[")  # what _prose nev
 
 
 # The only lines build writes outside the quote fence, besides an empty line, `---` and the marker lines.
-_SHAPE = re.compile(r"\*\*(?:Verdict|Location|Lines|Trigger|Evidence|Fix):\*\* |\*\*(?:%s)\*\* \(|(?:%s): \d+ findings?$"
+_SHAPE = re.compile(r"\*\*(?:Verdict|Location|Lines|Trigger|Evidence|Basis|Fix):\*\* |(?:nit: \*\*Nit|\*\*(?:%s))\*\* \(|(?:%s): \d+ findings?$"
                     r"|Not posted: \d+ unverifiable items |Areas inspected: " % ("|".join(LABEL.values()), "|".join(a.capitalize() for a in report.AXES)))
 
 
@@ -604,12 +604,23 @@ def _first_line(quote: List[str], rows) -> Optional[int]:
     return fits[0] if len(fits) == 1 else None
 
 
+def _basis(f: dict) -> str:
+    """What a nit enforces: the quoted rule, or the counted norm worded as the terminal report words it. "" for any other finding."""
+    if f.get("basis") == "rule":
+        return f["rule"]
+    if f.get("basis") == "norm":
+        return "norm %s over %s (%d of %d lines)" % (json.dumps(f["norm_for"]), json.dumps(f["norm_against"]),
+                                                      f["norm"]["for"], f["norm"]["total"])
+    return ""
+
+
 def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False):
     """(the finding's markdown, the secret rules redacted in text order). Each raw field is redacted before it is
     escaped: a match run over escaped text could swallow an escape character and revive the markup it stopped."""
     raw, rules = {}, []
-    for k in ("title", "trigger", "quote", "fix"):
-        raw[k], got = _redact(f[k])
+    basis = _basis(f)
+    for k in ("title", "trigger", "quote", "fix", "basis"):
+        raw[k], got = _redact(basis if k == "basis" else f[k])
         rules += got
     if keyed and "private-key" not in rules:  # another finding saw a key marker in this file: its body may be quoted here
         rules.append("private-key")
@@ -620,7 +631,9 @@ def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False
     at = _first_line(src, rows) if len(src) == len(quote) else None
     quote = ["%d: %s" % (f["line"] + at + n, ln) if at is not None else "| " + ln for n, ln in enumerate(quote)]
     fence = "`" * max(3, max(len(r) for r in re.findall(r"`+", "\n".join(quote)) or [""]) + 1)
-    out = ["**%s** (%s, %s) - %s" % (LABEL[f["severity"]], _prose(f["axis"]), _prose(f["category"]), _prose(raw["title"]))]
+    out = ["%s**%s** (%s, %s) - %s" % ("nit: " if f["severity"] == "nit" else "", LABEL[f["severity"]], _prose(f["axis"]),
+                                      _prose(f["category"]), _prose(raw["title"]))]
+    out += ["**Basis:** " + _prose(report._ws(raw["basis"]))] if basis else []
     out += ["**Location:** %s (outside the diff)" % where] if where else []
     span = "%d" % f["line"] if f["end_line"] == f["line"] else "%d-%d" % (f["line"], f["end_line"])
     out += ["**Lines:** %s (quoted without line numbers)" % span] if at is None else []

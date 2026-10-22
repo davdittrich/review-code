@@ -27,6 +27,9 @@ import target
 _ANCESTOR = ("CLAUDE.md", "AGENTS.md", "REVIEW.md")  # also read from every directory above a changed file
 _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md",
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
+_NIT_FIXED = frozenset((".github/pull_request_template.md", ".github/PULL_REQUEST_TEMPLATE.md",
+                        "docs/pull_request_template.md", ".gemini/styleguide.md"))
+_NIT_CAP = 40  # extra --nit rule files copied at most; the fixed review-rule set never counts
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
@@ -315,8 +318,16 @@ def _load(names: List[str]) -> dict:
     return {"load": "service" if sig else "script" if names else "unknown", "files": sig[:5]}
 
 
-def _conv_paths(names, included: List[str]) -> set:
-    """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory."""
+def _nit_extra(n: str, d: str, b: str, dirs: set) -> bool:
+    """--nit rule sources: PR templates, Cursor rules, Gemini styleguide, GLOSSARY.md (ancestor dirs), ADRs, .okf Markdown."""
+    return (n in _NIT_FIXED or (d == ".github/PULL_REQUEST_TEMPLATE" and b.endswith(".md"))
+            or (d == ".cursor/rules" and b.endswith((".md", ".mdc"))) or (b == "GLOSSARY.md" and d in dirs)
+            or (d == "docs/adr" and b.endswith(".md")) or (n.startswith(".okf/") and b.endswith(".md")))
+
+
+def _conv_paths(names, included: List[str], nit: bool = False) -> set:
+    """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory;
+    with `nit`, the extra --nit sources too."""
     dirs = {""}
     for p in included:
         while "/" in p:
@@ -326,7 +337,7 @@ def _conv_paths(names, included: List[str]) -> set:
     for n in names:
         d, _, b = n.rpartition("/")
         if (b in _ANCESTOR and d in dirs) or n in _CONV_FIXED or (d == "" and b.startswith("CONTRIBUTING")) \
-                or (d == ".github/instructions" and b.endswith(".instructions.md")):
+                or (d == ".github/instructions" and b.endswith(".instructions.md")) or (nit and _nit_extra(n, d, b, dirs)):
             out.add(n)
     return out
 
@@ -348,10 +359,16 @@ def _put(root: str, rel: str, data: bytes) -> bool:
 
 
 def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
-                 included: List[str]) -> Tuple[list, list, list]:
+                 included: List[str], nit: bool = False) -> Tuple[list, list, list]:
     """Copy review rules from the pinned merge base only, hidden text stripped; a head-only rule file is ignored."""
     base_ls = target.tree_listing(mb, repo)
-    want = sorted(_conv_paths(base_ls, included))
+    cand = _conv_paths(base_ls, included, nit)
+    want = sorted(cand)
+    over = []
+    if nit:  # the cap counts candidates, not copies; the first 40 extras by path stay
+        extra = sorted(cand - _conv_paths(base_ls, included))
+        over = extra[_NIT_CAP:]
+        want = sorted(cand - set(over))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
     blobs = _blobs(repo, regular.values())
     conv, ignored = [], []
@@ -380,7 +397,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
             diff = not ok or target.git(["hash-object", "--no-filters", "--", p], repo).strip() != base_ls[p][1]
         conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
                      "how": "base-ref"})
-    for p in sorted(_conv_paths(files, included) - set(want)):
+    for p in over:
+        ignored.append({"file": target.shown(p), "reason": "nit-cap", "how": "over the %d extra --nit rule files" % _NIT_CAP})
+    for p in sorted(_conv_paths(files, included, nit) - cand):
         ignored.append({"file": target.shown(p), "reason": "head-only", "how": "present on head, absent at the merge base"})
     notes = []
     if any(c["differs_on_head"] for c in conv) and target.git(["rev-parse", "HEAD"], repo, check=False).strip() == head:
@@ -770,7 +789,7 @@ def _section(head: str, items: List[tuple], nonce: str) -> str:
                              or "none")
 
 
-def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
+def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
@@ -788,7 +807,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     diff = _diff_lines(os.path.join(run, "change.diff")) if tj["diff_cmd"] else None
     found, capped = _discover(repo, files, included, rev, diff)
 
-    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included)
+    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit)
 
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
@@ -976,19 +995,23 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = _trust_cli(argv[1:])
         elif argv[:2] == ["context", "--run"] and len(argv) == 3:
             out = context(argv[2])
-        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or len(argv) % 2 != 1 or (
-                argv[3::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"], ["--found", "--spec"])):
-            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
+        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or argv.count("--nit") > 1 or (
+                len(argv) - ("--nit" in argv)) % 2 != 1 or (
+                [a for a in argv[3:] if a != "--nit"][::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"],
+                                                                    ["--found", "--spec"])):
+            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit]")
         else:
-            opts = dict(zip(argv[3::2], argv[4::2]))
+            nit = "--nit" in argv
+            rest = [a for a in argv[3:] if a != "--nit"]
+            opts = dict(zip(rest[::2], rest[1::2]))
             spec, found = opts.get("--spec"), ()
             if opts.get("--found") not in (None, "-"):
-                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
+                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit]")
             if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
                 spec = sys.stdin.readline().rstrip("\n")
             if "--found" in opts:  # the spec finder's paths, one per stdin line; a bad one is dropped, not refused
                 found = [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
-            out = build(argv[2], spec, found)
+            out = build(argv[2], spec, found, nit)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback

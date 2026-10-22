@@ -46,6 +46,27 @@ Packs are plain Markdown files under `references/packs/`, loaded into the Defect
 
 When more packs match than the cap allows, the surplus is listed as skipped.
 
+## Nit mode
+
+`--nit` is one boolean flag, orthogonal to the tier flags; `--nit --lean` is the nits-only pass. It reaches
+`ledger.py build --nit` (every build call) and `plan.py plan --nit`, which writes `"nit": true` to plan.json and a
+`## Nit mode` section to the Standards input. Only the Standards lane may send a `nit`. Decision record:
+`docs/adr/0001-nit-mode.md`.
+
+- Two bases, both checked by the scripts, not the model. A rule nit is category `convention`, severity `nit`; its rule
+  must occur in a `conventions/` copy, exactly as for any convention. A norm nit is category `norm`: the lane names
+  `norm_for` and `norm_against` (literal strings, not patterns) and `norm_glob`; `report.py` counts the lines of
+  `tree/` files matching the glob that hold each idiom. The finding stands with at least 20 such lines, `norm_for` on
+  more lines than `norm_against`, and `norm_against` inside the quote. The counts are the script's, shown in the report.
+  Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-sample-small`, `norm-not-majority`.
+- A diff target's `tree/` holds the changed files and capped helpers, so norm nits are rare there and common in path
+  and repo targets. This is a limit, not a bug.
+- Extra rule files with `--nit`, read from the merge base only: PR templates, `.cursor/rules/*.md|.mdc`,
+  `.gemini/styleguide.md`, `GLOSSARY.md`, `docs/adr/*.md`, `.okf/**/*.md`. At most 40; the rest are `ignored` as `nit-cap`.
+- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
+  rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule` or `norm`). Diff targets drop a
+  nit on an unchanged line; a repo target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
+
 ## Caps and turn ceilings
 
 | Cap | Meaning | Bounds |
@@ -56,7 +77,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 | `CAP_HELPER_BYTES` (`ledger.py`, 200000) | Bytes of helper files copied into `tree/` as reuse context: files in the directory of a changed file and tracked paths named util, helper, common, shared or lib, siblings of a changed file first, then helper-named paths, each in path order. They are listed under `helpers` in `ledger.json`, never counted as reviewed files; those past the cap appear in the ledger's `tree.skipped` with reason `helper-cap` | fixed |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
-Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
+Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 60, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
 
 ## Cost preview and headless runs
 
