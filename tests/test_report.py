@@ -1486,7 +1486,7 @@ class Repair(Base):
         for ln in ('[["path", "src/calc.py"], ["line", 5], ["quote", "x', '[["a", "b"c"]', '[["a", "' + 'q"' * 30000 + '"]]'):
             self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln[:60])
 
-RXFEAT = "def load():\n    return 1\n\nRX = r'/\\]\\(\\s*<.../'\nPATH = 'C:\\dir\\new'\n"  # line 4 holds a regex, line 5 a Windows path
+RXFEAT = "def load():\n    return 1\n\nRX = r'/\\]\\(\\s*<.../'\nPATH = 'C:\\dir\\new'\nWB = r'\\bfoo\\b'\n"  # line 4 holds a regex, line 5 a Windows path
 
 
 class Backslash(Base):
@@ -1528,6 +1528,19 @@ class Backslash(Base):
             self.assertTrue(fh.read().startswith("invalid-json:bad-escape [["))
         out = self.ingest('[["path","src/calc.py"],["quote","a\\\\b', {"inspected": ["src/calc.py"]})  # a valid pair: plain invalid-json
         self.assertEqual([r["check"] for r in out["rejected"]], ["invalid-json"])
+
+    def test_a_single_backslash_b_in_a_regex_quote_is_read_as_the_text_the_file_holds(self):
+        ln = (self.LINE % "WB = r'\\bfoo\\b'").replace('["line",4]', '["line",6]')  # JSON \b is a backspace; the file holds a backslash and a b
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["rejected"]), (1, []))
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual(c["quote"], "WB = r'\\bfoo\\b'")
+
+    def test_a_control_character_quote_that_still_fails_is_rejected(self):
+        ln = (self.LINE % "WB = r'\\bnope\\b'").replace('["line",4]', '["line",6]')
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["ids"], [r["check"] for r in out["rejected"]]), ([], ["quote-not-at-line"]))
 
     def test_all_six_agent_prompts_tell_the_model_to_double_backslashes(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

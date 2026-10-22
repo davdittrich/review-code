@@ -295,6 +295,7 @@ KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_K
     "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
 _ESC = re.compile(r'(\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))|\\|"')  # a valid escape (kept), else a lone backslash or quote
+_CONTROL = {8: "\\b", 9: "\\t", 10: "\\n", 12: "\\f", 13: "\\r"}  # the control characters a lone \b \t \n \f \r in a quote decodes to
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _LIT = {"true": True, "false": False, "null": None}
 
@@ -569,6 +570,13 @@ def _candidate(o, tree, lane, base, ctx=None):
             return None, "sota-invalid"
         c["sources"] = src
     c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
+    if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and c["quote"].translate(_CONTROL) != c["quote"]:
+        # a regex or path with a single backslash before b, t, n, f or r parsed as a JSON control character: read it as the
+        # written backslash and letter when that reading is what tree/ holds (the cite check below still decides)
+        fixed = c["quote"].translate(_CONTROL)
+        rows, again = _cite(tree, c["path"], c["line"], end, fixed)
+        if rows is not None or again != "quote-not-at-line":
+            c["quote"], c["rows"], why = fixed, rows, again
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and lane != "sota":  # sota cites its checklist item, not a line to move
         moved = _relocate(tree, c["path"], c["line"], end, c["quote"])
         if moved:
