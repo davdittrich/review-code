@@ -1,7 +1,7 @@
 {
   "name": "review-code",
   "displayName": "Review Code",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Code review skill whose findings carry file:line evidence and an evidence class.",
   "license": "MIT",
   "keywords": [
