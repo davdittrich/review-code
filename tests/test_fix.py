@@ -481,13 +481,13 @@ class TestPathSkips(Base):
         self.assertEqual(skipped, {"package.json": "test-path"})
         self.assertEqual(sorted(applied), ["sub/Makefile", "sub/package.json"])
 
-    def test_named_shared_config_is_planned_with_fix_tests(self):
+    def test_named_shared_config_stays_protected_with_fix_tests(self):
         run = self.pin()
         c = two("package.json", 2, "run 3 - 1", "run 3 + 1")
         self.ingest(run, c)
         self.confirm(run, (report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])))
         rc, out, j = self.fixrun(["plan", "--run", run, "--fix-tests"], "package.json\n")
-        self.assertEqual((rc, j["apply"], j["test_files"]), (0, 1, 1), out)
+        self.assertEqual((rc, j["reason"], j["detail"]), (1, "nothing-to-fix", "skipped: test-path 1"), out)  # review-code#30
 
     def test_source_files_with_test_like_names_stay_fixable(self):
         cands = [two(p, 2, "run 3 - 1", "run 3 + 1") for p in KEPT]
@@ -1684,6 +1684,103 @@ class Report(Scope):
         self.assertIn("out.log", text.split("== untracked files left by tests ==")[1].split("==")[0])
         self.assertIn("stray.txt", text.split("== unexpected changes ==")[1].split("==")[0])
         self.assertNotIn("out.log", text.split("== unexpected changes ==")[1].split("==")[0])
+
+
+class WeakenGate(Base):
+    """review-code#30: a --fix-tests edit that drops an assertion or adds a skip marker is restored and the run goes on;
+    only covered test files are plannable; fixtures, runner configs and the command's script stay protected."""
+    TEST = "def test_x():\n    assert 1 - 1\n    assert 2 - 1\n"
+    base_files = dict(BASE, **{"tests/test_old.py": "def test_o():\n    assert 1 - 1\n"})
+    feat_files = {"src/calc.py": FEAT, "tests/test_calc.py": TEST, "conftest.py": "def f():\n    return 2 - 1\n",
+                  "jest.config.js": "module.exports = 3 - 1;\n", "ci/run-tests.sh": RUN, "tests/run.sh": RUN, "src/second.py": "def g(a, b):\n    return a / b\n"}
+    WORDS = [sys.executable, "-B", "-c", "assert '-' in open('tests/test_calc.py').read()"]
+    TC = two("tests/test_calc.py", 2, "assert 1 - 1", "assert 1 + 1", severity="blocking")
+
+    def planned(self, cands, words=None, flag=True):
+        run = self.pin()
+        self.ingest(run, *cands)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.fixrun(["plan", "--run", run] + ["--fix-tests"] * flag, "".join(w + "\n" for w in (words or self.WORDS)))
+        self.assertEqual(rc, 0, out)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return run, j, {s["path"]: s["why"] for s in doc["skipped"]}, [e["path"] for e in doc["entries"]]
+
+    def started(self, *cands):
+        run, j, _, _ = self.planned(list(cands))
+        self.assertEqual(self.baseline(run, j["digest"])[2]["status"], "ok")
+        bg = self.begin(run)[2]
+        self.assertEqual(bg["status"], "ok", bg)
+        return run, bg
+
+    def test_harness_files_stay_protected_under_the_flag(self):
+        cands = [two("conftest.py", 2, "return 2 - 1", "return 2 + 1"),
+                 two("jest.config.js", 1, "module.exports = 3 - 1;", "module.exports = 3 + 1;"),
+                 two("ci/run-tests.sh", 2, "run 3 - 1", "run 3 + 1")]
+        _, _, skipped, applied = self.planned(cands + [self.TC], ["./ci/run-tests.sh"])
+        self.assertEqual(skipped, {c["path"]: "test-path" for c in cands})
+        self.assertEqual(applied, ["tests/test_calc.py"])  # in the target: covered without being named
+
+    def test_a_command_script_inside_a_test_dir_stays_protected(self):
+        run_sh = two("tests/run.sh", 2, "run 3 - 1", "run 3 + 1")
+        self.assertEqual(self.planned([run_sh, self.TC], ["./tests/run.sh"])[2], {"tests/run.sh": "test-path"})
+        self.assertEqual(self.planned([self.TC])[3], ["tests/test_calc.py"])  # a test file the command names stays editable
+
+    def test_a_helper_script_in_a_test_dir_the_command_reaches_indirectly_stays_protected(self):
+        run_sh = two("tests/run.sh", 2, "run 3 - 1", "run 3 + 1")
+        self.assertEqual(self.planned([run_sh, self.TC])[2], {"tests/run.sh": "test-path"})  # the words do not name it
+
+    def test_plan_skips_an_uncovered_test_file(self):
+        # shortcut: a finding can only name a target file, which counts as covered, so the branch is reached by mocking
+        run = self.pin()
+        self.ingest(run, self.TC)
+        self.confirm(run, (report_id(self.TC), dict(path=self.TC["path"], line=self.TC["line"], quote=self.TC["quote"])))
+        with mock.patch.object(fix, "_covered", return_value=False), self.assertRaises(target.Refuse) as r:
+            fix.plan(run, self.WORDS, True)
+        self.assertEqual((r.exception.reason, r.exception.detail), ("nothing-to-fix", "skipped: not-covered 1"))
+
+    def test_a_test_file_in_the_target_is_covered(self):
+        _, j, skipped, applied = self.planned([self.TC])
+        self.assertEqual((skipped, applied, j["test_files"]), ({}, ["tests/test_calc.py"], 1))
+
+    def test_coverage_is_the_target_the_ledger_or_a_command_word(self):
+        cov = fix._covered
+        self.assertTrue(cov("tests/a.py", set(), {"tests/a.py"}))
+        self.assertTrue(cov("tests/a.py", {"tests/a.py"}, set()))
+        self.assertTrue(cov("tests/a.py", {"tests"}, set()))
+        self.assertTrue(cov("tests/a.py", {"."}, set()))
+        self.assertFalse(cov("tests/a.py", {"pytest"}, {"tests/b.py"}))
+        self.assertFalse(cov("tests2/a.py", {"tests"}, set()))
+
+    def test_the_flag_is_needed_for_a_test_file(self):
+        run = self.pin()
+        self.ingest(run, self.TC)
+        self.confirm(run, (report_id(self.TC), dict(path=self.TC["path"], line=self.TC["line"], quote=self.TC["quote"])))
+        j = self.plan(run, self.WORDS)[2]
+        self.assertEqual((j["reason"], j["detail"]), ("nothing-to-fix", "skipped: test-path 1"))
+
+    def test_a_swapped_expected_value_is_kept(self):
+        run, bg = self.started(self.TC)
+        self.edit("tests/test_calc.py", "assert 1 - 1", "assert 1 + 1")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+
+    def test_a_dropped_assertion_is_restored_and_the_run_continues(self):
+        run, bg = self.started(self.TC, two("src/second.py", 2, "return a / b", "return a * b"))
+        if bg["path"] != "tests/test_calc.py":  # entry order is the report's: decline the source fix to reach the test file
+            self.assertEqual(self.finish(run, bg["seal"], "declined")[2]["outcome"], "declined")
+            bg = self.begin(run)[2]
+        self.assertEqual(bg["path"], "tests/test_calc.py")
+        self.edit("tests/test_calc.py", "    assert 1 - 1\n", "")
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (0, "ok", "reverted-weakened"), f)
+        self.assertIn("assertion", f["detail"])
+        self.assertEqual(slurp(os.path.join(self.repo, "tests/test_calc.py")), self.TEST.encode())
+        self.assertNotEqual(self.begin(run)[2].get("reason"), "halted")  # recoverable: the run is not halted
+
+    def test_an_added_skip_marker_is_restored(self):
+        run, bg = self.started(self.TC)
+        self.edit("tests/test_calc.py", "def test_x", "@pytest.mark.skip\ndef test_x")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-weakened")
 
 
 if __name__ == "__main__":

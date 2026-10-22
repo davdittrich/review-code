@@ -12,9 +12,7 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import bisect
-import difflib
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -30,6 +28,7 @@ import report
 import repro
 import sanitize
 import target
+import weaken
 
 TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
@@ -44,8 +43,9 @@ _RUNNER = re.compile(
     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs|pytest\.ini|tox\.ini)\Z")
 # multi-purpose files: they judge the tests only when the test command names them (cmd_files), not by basename
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
-            "reverted-timeout", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-reached")
-RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # restored, and the tree is trusted: the run goes on
+            "reverted-timeout", "reverted-weakened", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-covered",
+            "not-reached")
+RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout", "reverted-weakened")  # restored, and the tree is trusted: the run goes on
 HALTING = ("reverted-violation", "reverted-interrupt", "tampered")  # the tree can no longer be trusted: the run stops
 REVERTED = RECOVERABLE + HALTING  # every failed outcome; all are restored except tampered, which leaves the tree as found
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "protected", "test_files", "skipped", "id", "brief", "path", "line", "model",
@@ -126,6 +126,20 @@ def _judges(path: str, cmd_files: set) -> bool:
     dirs = d.split("/") if d else []
     return (path in cmd_files or ledger._is_fixture(path) or bool(_RUNNER.match(base)
             or ledger._TEST_NAME.match(base) or (ledger._TEST_DIRS - {"spec"}) & set(dirs)) or dirs[:1] == ["spec"])
+
+
+def _editable_test(path: str) -> bool:
+    """The part of what judges the tests that --fix-tests may edit: files named like tests. Fixtures, runner configs, the
+    test command's script and any helper in a test directory change what the judge runs, so they stay protected."""
+    base = path.rpartition("/")[2]
+    return bool(ledger._TEST_NAME.match(base)) and not ledger._is_fixture(path) and not _RUNNER.match(base)
+
+
+def _covered(path: str, cmd_files: set, known: set) -> bool:
+    """Is a test file one the post-fix run can reach: in the target or the ledger's tests, or a command word names it or a
+    directory above it. shortcut: names, not an execution trace; a command that ignores a named file still passes."""
+    return (target.shown(path) in known or path in cmd_files
+            or any(w == "." or path.startswith(w + "/") for w in cmd_files))
 
 
 def _live(repo: str, path) -> Optional[str]:
@@ -275,9 +289,8 @@ def _names(paths: List[str]) -> str:
 
 
 def _changed_lines(a: bytes, b: bytes) -> int:
-    """+ and - lines of a zero-context diff; latin-1 maps bytes 1:1 so only b"\n" splits lines."""
-    d = difflib.unified_diff(a.decode("latin-1").split("\n"), b.decode("latin-1").split("\n"), n=0, lineterm="")
-    return sum(1 for ln in itertools.islice(d, 2, None) if ln[0] in "+-")  # islice drops the two headers
+    """+ and - lines of a zero-context diff."""
+    return sum(len(x) for x in weaken.changed(a, b))
 
 
 def _tests(run: str, st: dict) -> dict:
@@ -395,14 +408,17 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
+    known = fix_tests and {e["file"] for e in target.load_json(run, "ledger.json").get("tests", []) if isinstance(e, dict)} | set(tj["included"])
     found = report.build(run)["findings"]
     for f in found:
         fix_text = f.get("fix")
         derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
         judges = _judges(f["path"], cmd_files)
-        if judges and not fix_tests:
-            why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in
+        if judges and not (fix_tests and _editable_test(f["path"])):
+            why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in for test files only
+        elif judges and not _covered(f["path"], cmd_files, known):
+            why = "not-covered"  # the post-fix run would not judge this edit
         else:
             _, line, why = _locate(repo, f["path"], f["quote"])
         if why:
@@ -592,6 +608,10 @@ def _settle(run: str, tj: dict, st: dict, cur: dict, status: str):
     if n > MAX_CHANGED:
         _undo(run, fid, repo, entry, [], [], [])
         return "reverted-too-large", "%d changed lines, the limit is %d" % (n, MAX_CHANGED), None
+    why = weaken.weakened(path, pre, now) if _editable_test(path) else None
+    if why:
+        _undo(run, fid, repo, entry, [], [], [])
+        return "reverted-weakened", why, None
     res = _tests(run, st)
     broke = _sweep(run, tj, st, fid, (path, now))
     if broke:
