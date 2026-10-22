@@ -1,32 +1,28 @@
 """Turn finder and verifier JSON lines into one schema v1 review document.
 
-Wire form (g1x.10): every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace
-(Claude Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair
-element or a non-string key, and a raw JSON object at any depth (the retired object form), is invalid.
-A line that is not JSON because a string holds raw double quotes, or a backslash that starts no JSON escape (a regular
-expression, a Windows path), is read again by _repair, which doubles such a backslash in a LITERAL string (a quote ends a string only
-where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
-but is no pair array is never repaired.
-Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, `retired-object-form`, or `failed-validation:<check>` with check one of declined-invalid:bad-entry|too-long|copied-from-spec (one row per invalid entry of a spec `declined` trailer), missing-field,
-bad-type, spec-line-invalid, sota-invalid, copied-from-spec, path-not-in-tree, line-out-of-range, unreadable, quote-not-at-line, rule-malformed, rule-source-unknown, rule-not-in-conventions) in <run>/rejected/<lane or batch>.txt (batch-K,
-serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
-`render` shows a Warning section and does not go above Needs discussion while either is nonzero.
+Wire form: every line is a JSON array of [key, value] pairs, nested objects likewise, so no line holds a brace (Claude
+Code's Bash guard denies a brace then a quote in a here-document). A line with a repeated key, a non-pair element, a
+non-string key or a raw JSON object at any depth (the retired object form) is invalid. A line that is not JSON because a
+string holds raw double quotes, or a backslash that starts no JSON escape (a regular expression, a Windows path), is read
+again by _repair; the ingest and verdicts stdout count such lines as `repaired`. A line that parses but is no pair array is
+never repaired.
 
-Dispositions (gh#29): `ingest` and `verdicts` stdout also carry `dispositions`, one row {index, id|null, disposition, reason}
-per wire line of that call (index counts wire lines, prose is skipped): disposition is accepted, rejected or downgraded;
-reason is a key of REASONS (the one closed reason -> retry hint table, also the source of the capture reader's refusals) or
-null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: `dropped` sums every stored lane
-(`lane_dropped` is the ingested lane's own count; every line counted in `invalid` has a rejected row, while a repeated finding
-and a second summary are dispositions only and are not counted) and verdicts.json holds every stored batch. `verdicts` stdout: confirmed,
-refuted and unverifiable are cumulative over the stored batches (`cumulative` names these keys; unverifiable = a stored verdict that neither confirms
-with a cite nor refutes); `batch_ids` names the ids this call covers (every queued id for a serial reply); `no_verdict`
-lists queued ids with no stored verdict (batch not ingested yet, or their line was rejected), apart from unverifiable.
-`rejected` [{batch (K or "serial"), index (row of that batch's rejected file), check}] lists this call's rejected lines, never the wire line;
-the retired object form is rejected by name (`retired-object-form`), and an `--agent` reply none of whose lines parses is not an agent-mismatch.
+Gate: every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
+re-ingest of the same lane or batch. A lane line's reason is `invalid-json[:bad-escape]`, `retired-object-form`, or
+`failed-validation:<check>` (see REASONS). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
+section and does not go above Needs discussion while either is nonzero.
 
-Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
-score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
-`render`, which prints the report):
+Ingest and verdicts stdout carry `dispositions`, one row {index, id|null, disposition, reason} per wire line of that call
+(prose is skipped): accepted, rejected or downgraded, with a key of REASONS (the closed reason -> retry hint table) or
+null. Cumulative figures stay cumulative: `dropped` sums every stored lane (`lane_dropped` is the ingested lane's own
+count) and verdicts.json holds every stored batch. In `verdicts` stdout, confirmed, refuted and unverifiable are
+cumulative over the stored batches (`cumulative` names them); `batch_ids` names the ids this call covers (every queued id for
+a serial reply); `no_verdict` lists queued ids with no stored verdict. `rejected` [{batch, index, check}] lists this call's
+rejected lines, never the wire line.
+
+Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class, score,
+origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except `render`, which
+prints the report):
 
     report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N] [--agent ID]
                                    candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers); Defects lane only: one ["summary", text] line (text up to SUMMARY_MAX characters, first wins, others invalid);
@@ -38,10 +34,13 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
                                    verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
     --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
-                                   (capture.py) instead of stdin: handback capture before stop capture, and the stored agent
-                                   type must be the plan's agent for the lane (plan.json calls) or the batch (verify_calls),
-                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; only a stop capture and it lacks that line: capture-incomplete (wait for the agent's completion notification, or use stdin); an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced, and it still counts as a try. A successful call consumes the capture;
-                                   verdicts needs --batch. The reply then goes through the stdin validation unchanged.
+                                   (capture.py) instead of stdin: handback capture before stop capture. Refusals: no-capture,
+                                   capture-incomplete (only a stop capture, and it lacks that line), agent-mismatch (the stored
+                                   agent type is not the plan's for the lane or batch, or a verdicts reply names none of the
+                                   batch's ids), agent-reused (the id served another call of this run), empty-capture (no
+                                   inspected line for ingest, no wire line for verdicts). An ingest with findings but no
+                                   `inspected` line for an already complete lane is refused no-inspected-line and still counts
+                                   as a try. A successful call consumes the capture; verdicts needs --batch.
     report.py render   --run DIR [--format text|json|sarif]
     report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
                                    rejected {lane or batch: count}, rejected_total, no_verdict (ids of a stored batch without a verdict)
@@ -53,10 +52,10 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   findings[] (class reproduced|traced), unverifiable[] (class inferred|speculative), dropped{refuted,
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
   kind, length or codepoints, name, signal (removed text spans only)}] (notes, not findings; capped at 40) with
-  hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal (gh#25),
-  adr_omitted (the ledger's capped.adr, only when above 0: ADR files the spec lane never saw, gh#24),
-  counted per file, so hidden_content plus the counts always sum to the ledger's records. A span's `signal` is `added`
-  (it lies on a line the change adds, or in a touched file with no diff), `assistant`, `encoded`, `markup` or `long`.
+  hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
+  so hidden_content plus the counts always sum to the ledger's records. A span's `signal` is `added` (it lies on a line the
+  change adds), `touched` (it lies in a file the change touches that has no diff), `assistant`, `encoded`, `url`, `markup` or
+  `long`. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -68,7 +67,7 @@ cut by the same budget; SOTA candidates are in neither), dropped, handoff, cappe
 [{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
 unverifiable with reason verifier-cap.
 
-Spec lane (CTX-03): a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
+Spec lane: a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
 UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
 consecutive words of spec text counts invalid (verdicts: the line is dropped), so no output carries such a run; a
 paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
@@ -132,7 +131,7 @@ LINT_IGNORE = re.compile(r"noqa|type: ?ignore|pylint: ?disable|eslint-disable|@t
                          r"rubocop: ?disable|#\[allow\(|@SuppressWarnings|nosec", re.IGNORECASE)
 WHOLE = ("path", "repo")  # targets that are not a change: every finding is `existing`
 # The one closed table of reasons: reason -> retry hint. It feeds the rejected files, the disposition rows of `ingest` and
-# `verdicts`, and the capture reader's refusals (gh#29). _disp and _refuse look a reason up here, so an emitted reason
+# `verdicts`, and the capture reader's refusals. _disp and _refuse look a reason up here, so an emitted reason
 # missing from the table is a KeyError (a test drives it).
 REASONS = {
     "invalid-json": "resend the line as one JSON pair array, every string escaped",
@@ -343,7 +342,7 @@ def _alts(s, i, budget, key=None):
             budget[1][i] = [q for q, c in sorted((e for e in ends if e[1] in (",", "]", "")), key=lambda e: e[1] != "]")]
         for q in budget[1][i]:
             _charge(s, budget)  # each end tried costs a decode of the string
-            try:  # a backslash that starts no JSON escape is a literal one (gh#19)
+            try:  # a backslash that starts no JSON escape is a literal one
                 yield json.loads('"%s"' % _ESC.sub(lambda m: m.group(1) or ("\\\\" if m.group().startswith("\\") else '\\"'),
                                                    s[i + 1:q])), q + 1
             except ValueError:
@@ -693,9 +692,9 @@ COUNTERS = ("attempts", "lost", "repaired", "recovered", "lost_ids")
 def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=None, found=(), complete=False):
     """<run>/counters.json: {"attempts": {name: n}, "lost": {name: n}, "repaired": {name: n}, "recovered": {name: n},
     "lost_ids": {name: [id or None]}} per lane key and per verify batch ("batch-K", "serial"). The script keeps them so
-    the 2-try cap never rests on the model's memory (bgq): attempts and lost add up over every ingest of `name` and only
+    the 2-try cap never rests on the model's memory: attempts and lost add up over every ingest of `name` and only
     discard resets them, except that a lane ingest moves a lost line to recovered once its finding id arrives (a lost line
-    that named no id: once a complete retry of the lane loses no such line again, gh#18); repaired is the latest reading of each name, replaced by `repaired` after `drop` removes the
+    that named no id: once a complete retry of the lane loses no such line again); repaired is the latest reading of each name, replaced by `repaired` after `drop` removes the
     names it covers. A lane ingest passes `ids`, the finding id of each line it lost (None when the line named none),
     and `found`, the ids it accepted: a lost line whose id is in `found` moves from lost to recovered. Returns the
     stored counters."""
@@ -922,7 +921,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + len(bad)
-                rejected += [(b, ln) for b in bad]  # one row per invalid entry (gh#18)
+                rejected += [(b, ln) for b in bad]  # one row per invalid entry
                 if bad:
                     disp.append(_disp(n, None, "downgraded" if good else "rejected", bad[0]))
                     continue
@@ -955,7 +954,7 @@ def _read_lane(text, lane, tree, run, shard=None):
 
 def _reject(run, name, rows):
     """<run>/rejected/<name>.txt holds one `reason line` row per rejected wire line, replaced whole by a re-ingest of
-    the same lane or batch and removed when none is left (review-code-19l)."""
+    the same lane or batch and removed when none is left."""
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
@@ -1102,7 +1101,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
     """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
     repaired line count, disposition rows).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite that validates against
-    tree/ in any file (the code elsewhere may already cover the claim, gh#27) and that no other refuted id of the reply
+    tree/ in any file (the code elsewhere may already cover the claim) and that no other refuted id of the reply
     uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
     foreign, mine, bad, fixed, disp, at = 0, [], [], 0, [], {}  # at: id -> index of its row in disp
     for n, (ln, o, fix) in enumerate(_objects(text, total), 1):
@@ -1304,7 +1303,7 @@ def _build(run):
     cnt = _counts(run)
     repaired, gone = ({n: k for n, k in cnt[w].items() if k} for w in ("repaired", "lost"))
     if label == "No blocking findings" and (rej or rejb or lost or gone):
-        label = "Needs discussion"  # a lane line or verdict that was dropped may have held a finding or a refutation (review-code-19l)
+        label = "Needs discussion"  # a lane line or verdict that was dropped may have held a finding or a refutation
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
@@ -1335,9 +1334,9 @@ def _build(run):
             "lean_lines": sum(i["end_line"] - i["line"] + 1 for i in findings if i["category"] == "lean"),  # an estimate
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
-    if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # gh#24: ADRs the spec lane never saw
+    if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
         doc["adr_omitted"] = led["capped"]["adr"]
-    flagged, routine = ledger.hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
+    flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
            "signal": h["signal"]} for h in flagged]
     hc += [{"file": h["file"], "line": h.get("line"), "kind": "hidden-chars", "codepoints": h["codepoints"],

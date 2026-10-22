@@ -5,7 +5,7 @@ never deleted (escape_for_code), so hidden characters become findings. Prose and
 go through strip_hidden / strip_hidden_diff: HTML comments, markdown comment lines (`[//]: # (x)`), image alt
 text and hidden elements each become a `[hidden-KIND removed: N chars]` marker, every newline kept so line
 numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload, plus a short `signal`
-when the span is worth a reviewer's look (gh#25): `added` (strip_hidden_diff: the span lies on a line the change adds),
+when the span is worth a reviewer's look: `added` (strip_hidden_diff: the span lies on a line the change adds),
 `assistant` (it names the assistant or its instructions), `encoded` (a base64-like run or an invisible character),
 `url` (a link), `markup` (nested markup) or `long` (over 200 characters). The wording signals are a best-effort list that a paraphrase
 evades; the unsignalled rest is routine.
