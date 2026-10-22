@@ -1545,6 +1545,11 @@ class Backslash(Base):
         out = self.ingest(ln, {"inspected": ["src/calc.py"]})
         self.assertEqual((out["ids"], [r["check"] for r in out["rejected"]]), ([], ["quote-not-at-line"]))
 
+    def test_a_real_newline_quote_past_the_end_of_the_file_is_still_moved(self):
+        ln = (self.LINE % "def load():\\n    return 1").replace('["line",4]', '["line",99],["end_line",100]')
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["rejected"]), (1, []))
+
     def test_all_six_agent_prompts_tell_the_model_to_double_backslashes(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("finder", "standards", "spec", "sota", "verifier", "spec-verifier"):

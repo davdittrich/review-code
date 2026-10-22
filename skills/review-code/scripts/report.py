@@ -574,15 +574,23 @@ def _candidate(o, tree, lane, base, ctx=None):
             return None, "sota-invalid"
         c["sources"] = src
     c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
+    alt = None
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and c["quote"].translate(_CONTROL) != c["quote"]:
         # a regex or path with a single backslash before b, t, n, f or r parsed as a JSON control character: read it as the
         # written backslash and letter when that reading is what tree/ holds (the cite check below still decides)
         fixed = c["quote"].translate(_CONTROL)
         rows, again = _cite(tree, c["path"], c["line"], end, fixed)
-        if rows is not None or again != "quote-not-at-line":
+        if rows is not None:
             c["quote"], c["rows"], why = fixed, rows, again
+        elif again != "quote-not-at-line":
+            alt = fixed  # the line is out of range, so the quote cannot tell the readings apart: _relocate tries both
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and lane != "sota":  # sota cites its checklist item, not a line to move
-        moved = _relocate(tree, c["path"], c["line"], end, c["quote"])
+        moved = None
+        for q in (c["quote"], alt):
+            moved = q and _relocate(tree, c["path"], c["line"], end, q)
+            if moved:
+                c["quote"] = q
+                break
         if moved:
             c["line"], c["end_line"] = moved
             c["rows"], why = _cite(tree, c["path"], c["line"], c["end_line"], c["quote"])
