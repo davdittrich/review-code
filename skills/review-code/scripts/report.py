@@ -717,7 +717,10 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
         else:
             prior = c["lost_ids"].get(name, [])
             prior += [None] * (c["lost"].get(name, 0) - len(prior))  # counted before the ids were kept
-            clear = complete and None not in ids  # a complete retry replaces the lane wholesale: an id-less loss is recovered
+            # shortcut: an id-less line (unparseable, so no path/category/quote) has no identity to match against `found`;
+            # a complete retry that again loses no id-less line is taken as having recovered it. A heuristic: the retry may
+            # have dropped that finding instead. Upgrade only if a stable per-line key (e.g. the line's index) is ever stored.
+            clear = complete and None not in ids
             keep = [i for i in prior if (i is None and not clear) or (i is not None and i not in found)]
             c["recovered"][name] = c["recovered"].get(name, 0) + len(prior) - len(keep)
             c["lost_ids"][name] = keep + ids
