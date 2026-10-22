@@ -1758,13 +1758,50 @@ class DroppedCloser(Base):
                    '[["id","F-0000000000"],["verdict","confirmed"],["evidence",[["a","b"]],["reason","r"]],["reason","r2"]]'):
             self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
 
-    def test_a_candidate_line_and_a_closer_missing_elsewhere_are_untouched(self):
-        cand = '[["path","src/calc.py"],["line",5],["reason","x"]'
-        self.assertEqual(report._close(cand), cand)
+    def test_a_candidate_line_short_one_closer_after_a_single_field_is_repaired_too(self):
+        # observed: the generic rule has no lane or key list, so a finding line is repaired like a verdict line
+        ln = ('[["path","src/calc.py"],["line",5,["severity","required"],["category","bug"],["title","t"],'
+              '["trigger","tr"],["quote","return 1"]]')
+        (_, o, rep), = report._objects(ln)
+        self.assertEqual((o["line"], o["quote"], rep), (5, "return 1", True))
+
+    def test_a_3_item_pair_and_an_injected_extra_pair_stay_invalid(self):
+        for ln in ('[["id","F-0123456789"],["verdict","confirmed","x"],["reason","r"]]',
+                   '[["id","F-0123456789"],["verdict","confirmed"],["reason","r"],["verdict","refuted"]]'):
+            self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
+
+    def test_a_valid_line_is_not_flagged_repaired(self):
+        ln = '[["id","F-0123456789"],["verdict","confirmed"],["reason","r"]]'
+        self.assertEqual([(o is not None, rep) for _, o, rep in report._objects(ln)], [(True, False)])
+
+    def test_multi_cite_evidence_short_one_closer_is_repaired(self):
+        c = '[["path","src/calc.py"],["line",%d],["quote","q"]]'
+        ln = '[["id","F-0123456789"],["verdict","confirmed"],["evidence",[%s,%s],["reason","r"]]' % (c % 5, c % 6)
+        (_, o, rep), = report._objects(ln)
+        self.assertEqual((len(o["evidence"]), rep), (2, True))
+
+    def test_800_pairs_are_rejected_fast(self):
+        t = time.time()
+        out = list(report._objects('[' + '["a","b"],' * 800 + '["x'))
+        self.assertEqual([o for _, o, _ in out], [None])
+        self.assertLess(time.time() - t, 2)
+
+    def test_a_missing_closer_before_quote_is_still_rejected(self):
         i = self._id()  # the insert makes a parseable line whose cite lacks line/quote: validation, not parsing, rejects it
         before_quote = ('[["id","%s"],["verdict","confirmed"],["evidence",[[["path","src/calc.py"],["line",5,'
                         '["quote","return f(\\"a\\", \\"b\\")"]]]],["reason","r"]]') % i
         self.assertEqual(self.verdicts(before_quote)["confirmed"], [])
+
+
+class DroppedCloserHostile(Base):
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, {"src/calc.py": "def load():\n    return 1\n\nz = [[\"line\", 1]]\n"}
+
+    def test_a_repaired_line_citing_a_file_that_holds_a_wire_token_keeps_no_evidence(self):
+        (i,) = self.ingest(dict(CAND, line=4, quote='z = [["line", 1]]'), {"inspected": ["src/calc.py"]})["ids"]
+        ln = ('[["id","%s"],["verdict","confirmed"],["evidence",[[["path","src/calc.py"],["line",4],'
+              '["quote","z = [[\\"line\\", 1]]"]]],["reason","r"]]') % i
+        out = self.verdicts(ln)
+        self.assertEqual((out["confirmed"], out["repaired"]), ([], 1))
 
 
 class Gate(Base):
