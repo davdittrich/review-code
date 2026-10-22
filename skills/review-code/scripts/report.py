@@ -170,9 +170,14 @@ REASONS = {
 def _disp(index, id, disposition, reason=None):
     """One disposition row: the `index`th wire line of a call, the finding id it names (or None), what became of it
     (accepted, rejected or downgraded) and why (a REASONS key, or None for a plain accept)."""
-    if reason is not None:
-        REASONS[reason]  # noqa: B018 - KeyError on a reason the table lacks
+    if reason is not None and reason not in REASONS:
+        raise KeyError("reason missing from REASONS: %r" % (reason,))
     return {"index": index, "id": id, "disposition": disposition, "reason": reason}
+
+
+def _defects_skipped(skipped):
+    """True when the plan left the Defects lane out: a tier that never ran it proves nothing about bugs."""
+    return any(x.get("what") == "defects" for x in skipped)
 
 
 def _did(x):
@@ -1307,7 +1312,7 @@ def _build(run):
     areas = sorted(set(cand["inspected"]))  # checked against the lane's own tree at ingest
     skipped = plan.get("skipped")
     skipped = [s for s in skipped if isinstance(s, dict)] if isinstance(skipped, list) else []
-    if label == "No blocking findings" and any(x.get("what") == "defects" for x in skipped):
+    if label == "No blocking findings" and _defects_skipped(skipped):
         label = "Needs discussion"  # a tier that never ran Defects proves nothing about bugs (review-code-2og)
     done = sorted({int(n.split("@")[1]) for n in cand.get("lane_state", {}) if "@" in n})
     sh = plan.get("shards") if isinstance(plan.get("shards"), list) else []
@@ -1439,7 +1444,7 @@ def _text(doc):
         out.append(ax.capitalize())
         sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
-        if (ax != "defects" or any(x.get("what") == "defects" for x in doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
+        if (ax != "defects" or _defects_skipped(doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
             continue
