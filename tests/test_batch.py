@@ -132,6 +132,22 @@ class Verdicts(BigRun):
         self.assertEqual(sorted(self.stored()), sorted(self.ids))
         self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "replies", "verify", "1.txt")))
 
+    def test_a_batch_call_names_its_ids_and_keeps_unstored_ids_out_of_unverifiable(self):  # gh#21
+        one = self.batch(1, *[self.line(i) for i in self.first[:4]], self.line(self.first[4], "unverifiable", False))
+        self.assertEqual((one["batch_ids"], one["unverifiable"], one["no_verdict"]),
+                         (sorted(self.first), [self.first[4]], sorted(self.second)))  # batch 2 is not stored yet
+        two = self.batch(2, self.line(self.second[0]))
+        self.assertEqual(two["batch_ids"], sorted(self.second))
+        self.assertNotEqual(one["batch_ids"], two["batch_ids"])
+        self.assertEqual((two["no_verdict"], two["unverifiable"]), ([self.second[1]], [self.first[4]]))  # its line never arrived
+        for k in ("confirmed", "refuted", "unverifiable", "repaired", "foreign", "status"):
+            self.assertIn(k, two)
+
+    def test_a_serial_reply_names_every_queued_id(self):  # gh#21
+        out = self.verdicts(self.line(self.first[0]))
+        self.assertEqual(out["batch_ids"], sorted(self.ids))
+        self.assertEqual(out["no_verdict"], sorted(set(self.ids) - {self.first[0]}))
+
     def test_foreign_id_is_counted_and_never_applied(self):
         out = self.batch(1, *[self.line(i) for i in self.first], self.line(self.second[0], "refuted"))
         self.assertEqual((out["foreign"], out["refuted"]), (1, []))

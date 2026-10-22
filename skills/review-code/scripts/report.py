@@ -15,7 +15,10 @@ Dispositions (gh#29): `ingest` and `verdicts` stdout also carry `dispositions`, 
 per wire line of that call (index counts wire lines, prose is skipped): disposition is accepted, rejected or downgraded;
 reason is a key of REASONS (the one closed reason -> retry hint table, also the source of the capture reader's refusals) or
 null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: `dropped` sums every stored lane
-(`lane_dropped` is the ingested lane's own count) and verdicts.json holds every stored batch.
+(`lane_dropped` is the ingested lane's own count) and verdicts.json holds every stored batch. `verdicts` stdout: confirmed,
+refuted and unverifiable are cumulative over the stored batches (unverifiable = a stored verdict that neither confirms
+with a cite nor refutes); `batch_ids` names the ids this call covers (every queued id for a serial reply); `no_verdict`
+lists queued ids with no stored verdict (batch not ingested yet, or their line was rejected), apart from unverifiable.
 
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
@@ -1145,7 +1148,10 @@ def _verdicts(run, text, batch, agent=None):
         _consume(run, agent, "batch-%d" % batch)
     conf = sorted(i for i, v in got.items() if v["verdict"] == "confirmed" and v["cites"])
     ref = sorted(i for i, v in got.items() if v["verdict"] == "refuted")
-    out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(ids - set(conf) - set(ref)),
+    # confirmed, refuted and unverifiable describe every stored batch (verdicts.json is cumulative); batch_ids names the ids of
+    # this call, no_verdict the queued ids with no stored verdict (not yet ingested, or their line was rejected)
+    out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(set(got) - set(conf) - set(ref)),
+           "no_verdict": sorted(ids - set(got)), "batch_ids": sorted(ids if batch is None else calls[batch]),
            "repaired": repaired, "dispositions": disp}
     return out if batch is None else dict(out, foreign=foreign)
 

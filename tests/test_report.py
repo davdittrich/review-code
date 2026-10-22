@@ -119,7 +119,8 @@ class Derivation(Base):
         a, m, n, o = (fid("src/calc.py", "bug", q) for q in (Q_ADD, Q_MUL, Q_NEG, Q_INC))
         v = self.verdicts(verdict((Q_ADD, 8), "refuted"), verdict((Q_MUL, 11), "unverifiable", reason="needs runtime"),
                           verdict((Q_NEG, 14), "confirmed", evidence=[{"path": "src/calc.py", "line": 14, "quote": "nope"}]))
-        self.assertEqual((v["confirmed"], v["refuted"], v["unverifiable"]), ([], [a], sorted([m, n, o])))
+        self.assertEqual((v["confirmed"], v["refuted"], v["unverifiable"]), ([], [a], sorted([m, n])))
+        self.assertEqual(v["no_verdict"], [o])  # gh#21: no stored verdict is not an unverifiable one
         d = self.doc()
         self.assertEqual(d["findings"], [])
         self.assertEqual(d["dropped"], {"refuted": 1, "do_not_flag": 0, "invalid": 0})
