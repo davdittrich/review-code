@@ -62,8 +62,9 @@ When more packs match than the cap allows, the surplus is listed as skipped.
   Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-sample-small`, `norm-not-majority`.
 - A diff target's `tree/` holds the changed files and capped helpers, so norm nits are rare there and common in path
   and repo targets. This is a limit, not a bug.
-- Extra rule files with `--nit`, read from the merge base only: PR templates, `.cursor/rules/*.md|.mdc`,
-  `.gemini/styleguide.md`, `GLOSSARY.md`, `docs/adr/*.md`, `.okf/**/*.md`. At most 40; the rest are `ignored` as `nit-cap`.
+- Extra rule files with `--nit`, read from the merge base only, kept in this order (path order within a group) up to 40:
+  PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/*.md|.mdc`, `.okf/**/*.md`.
+  The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
 - A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
   rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule` or `norm`). Diff targets drop a
   nit on an unchanged line; a repo target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
