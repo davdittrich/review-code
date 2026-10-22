@@ -390,32 +390,32 @@ def _inventory(lines):
     return [dict(i, item=n) for n, i in enumerate(out[:INVENTORY_MAX], 1)]
 
 
-def _estimate(call):
+def _included(call):
+    """The included file list of the call's target.json, or None for a call without an input file or an unreadable one."""
+    if call["input"] is None:
+        return None
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(call["input"])), "target.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("included", [])
+    except (OSError, ValueError):
+        return None
+
+
+def _estimate(call, included):
     """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
 
     tree/ is browsed, not loaded, so only the files the change touches count (a floor: lanes also open context files)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    files = [call["input"], os.path.join(base, "change.diff")]
-    try:
-        with open(os.path.join(base, "target.json"), encoding="utf-8") as fh:
-            files += [os.path.join(base, "tree", p) for p in json.load(fh).get("included", [])]
-    except (OSError, ValueError):
-        pass
+    files = [call["input"], os.path.join(base, "change.diff")] + [os.path.join(base, "tree", p) for p in included or []]
     return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
 
 
-def _files_ceiling(call):
+def _files_ceiling(call, included):
     """(included file count, turn ceiling) of a lane call, or None for a call without both (sota, main thread)."""
-    ceiling = MAX_TURNS.get(call["agent"].rsplit(":", 1)[-1])
-    if call["input"] is None or ceiling is None or call["agent"] == "main-thread":
-        return None
-    try:
-        with open(os.path.join(os.path.dirname(os.path.dirname(call["input"])), "target.json"), encoding="utf-8") as fh:
-            return len(json.load(fh).get("included", [])), ceiling
-    except (OSError, ValueError):
-        return None
+    ceiling = MAX_TURNS.get(call["agent"].rsplit(":", 1)[-1])  # the main thread has no ceiling
+    return None if included is None or ceiling is None else (len(included), ceiling)
 
 
 def _preview(doc):
@@ -430,9 +430,10 @@ def _preview(doc):
     warns = []
     for c in calls:
         name = "%s%s" % (c["lane"], ", shard %d" % c["shard"] if c["shard"] else "")
-        fc = _files_ceiling(c)
+        inc = _included(c)
+        fc = _files_ceiling(c, inc)
         out.append("Call %s: %s, about %d input tokens (estimate)%s" % (
-            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c),
+            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc),
             ", %d files, ceiling %d turns" % fc if fc else ""))
         if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
             warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
