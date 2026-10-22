@@ -43,7 +43,7 @@ Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--
 | standard | Defects, Standards, Spec | opus, medium | sonnet, high |
 | deep | Defects, Standards, Spec, SOTA | opus, xhigh | sonnet, high |
 
-These values are unvalidated defaults: there is no eval corpus behind them. The Finder column covers the Defects, Spec and SOTA lanes; the Standards lane runs on haiku, medium in every tier (see `standards_model`). The Standards lane carries the lean-code (Ponytail) checks. Domain packs load by file type or by what the changed lines contain: Python, R, JS/TS, SQL, data migrations, security/OWASP, concurrency, API compatibility and, with `--ai` or `--deep`, LLM-generated code. A pack's do-not-flag list is enforced through the lane prompt and the verifier handoff only, not by code. Lanes, caps, packs and serial mode in full: `skills/review-code/references/lanes.md`.
+These values are unvalidated defaults: `evals/` holds a harness but no baseline has been recorded behind them. The Finder column covers the Defects, Spec and SOTA lanes; the Standards lane runs on haiku, medium in every tier (see `standards_model`). The Standards lane carries the lean-code (Ponytail) checks. Domain packs load by file type or by what the changed lines contain: Python, R, JS/TS, SQL, data migrations, security/OWASP, concurrency, API compatibility and, with `--ai` or `--deep`, LLM-generated code. A pack's do-not-flag list is enforced through the lane prompt and the verifier handoff only, not by code. Lanes, caps, packs and serial mode in full: `skills/review-code/references/lanes.md`.
 
 ## Cost and caps
 

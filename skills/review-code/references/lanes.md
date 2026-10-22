@@ -6,7 +6,7 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 
 ## Tiers
 
-`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
+`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: `evals/` holds a harness but no baseline has been recorded to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
 | Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
 |------|-------|---------------------|-----------------------|----------------|--------|-------|

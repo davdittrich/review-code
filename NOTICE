@@ -95,3 +95,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Ideas from other projects (no code or text copied; the wording here is re-derived)
+
+- skills-from-the-artificer (MIT), https://github.com/The-Artificer-of-Ciphers-LLC/skills-from-the-artificer:
+  the Nit severity as a deviation from a counted norm that never blocks on its own, the claim walk, the base
+  check that a fix's own test must not pass before the fix, the test-quality checks, the sibling-registration
+  probe and the co-change hint.
+- open-gsd/gsd-core, https://github.com/open-gsd/gsd-core: the idea of one-line citable rule identifiers and the
+  review disposition states (new, open, fixed, outdated) behind the re-review status. Its licence was not
+  checked; nothing was copied.

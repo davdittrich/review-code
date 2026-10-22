@@ -31,7 +31,7 @@ import target
 STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview",
                "wave_size", "verifier", "spec_verifier"}
 DEFAULT_TIER = "standard"
-# (model, effort) per role. Unvalidated defaults: there is no eval corpus to tune them against. The quick verifier
+# (model, effort) per role. Unvalidated defaults: evals/ holds a harness but no baseline has been recorded to tune them against. The quick verifier
 # is opus so it differs from the sonnet finder: the verifier must not share the finder's model.
 TIERS = {
     "lean": {"lanes": ("standards",), "finder": ("opus", "medium"), "verifier": ("sonnet", "high"),
