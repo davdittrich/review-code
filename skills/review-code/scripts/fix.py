@@ -31,7 +31,6 @@ import repro
 import sanitize
 import target
 
-ID_RE = report.ID_RE
 TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
@@ -48,7 +47,7 @@ REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered"
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined [--code CODE] [--line N] | "
          "report --run DIR")
 DECLINE_CODES = ("line-mismatch", "quote-not-unique", "scope-multi-file", "needs-context")
@@ -365,7 +364,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     return None
 
 
-def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
+def plan(run: str, words: List[str]) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
@@ -385,12 +384,6 @@ def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
     found = report.build(run)["findings"]
-    if only is not None:
-        have = {f["id"] for f in found}
-        unknown = [i for i in only if i not in have]
-        if unknown:
-            raise target.Refuse("unknown-id", ",".join(unknown))
-        found = [f for f in found if f["id"] in only]
     for f in found:
         fix_text = f.get("fix")
         why, line = None, None
@@ -735,12 +728,6 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
              "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
     try:
         sub, opts = (argv[0], argv[1:]) if argv else ("", [])
-        only = None
-        if sub == "plan" and len(opts) == 4 and opts[2] == "--only":  # ids are fixed literals, so they may be arguments
-            only = opts[3].split(",")
-            if not all(re.fullmatch(ID_RE, i) for i in only):
-                raise target.Refuse("usage", USAGE)
-            opts = opts[:2]
         names = opts[0::2]
         need = flags.get(sub, [])
         extra = names[len(need):]  # finish only: --code and --line, once each, in either order
@@ -759,7 +746,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
-            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], only)
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])
         elif sub == "baseline":
             out = baseline(run, v["--digest"])
         elif sub == "begin":
