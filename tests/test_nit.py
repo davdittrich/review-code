@@ -165,6 +165,11 @@ class NormGuards(NitBase):
 class Tie(NitBase):
     DOM, DEV = 10, 10  # 20 observations, no majority
 
+    def test_a_refused_norm_nit_loses_nothing(self):
+        self.lane(self.nit())
+        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        self.assertEqual(c["lost"].get("standards", 0), 0)
+
     def test_a_tie_is_no_majority(self):
         out = self.lane(self.nit())
         self.assertEqual([r["check"] for r in out["rejected"]], ["norm-not-majority"])
@@ -190,6 +195,15 @@ class LeanNitOnly(NitBase):
 
     def test_a_nit_is_accepted_under_nit_lean(self):
         self.assertEqual(self.lane(self.rule_nit())["dropped"]["invalid"], 0)
+
+    def test_a_discarded_non_nit_is_a_lost_line_not_a_refused_nit(self):
+        self.assertNotIn("nit-only", nit.REFUSED)
+        out = self.lane(self.rule_nit(severity="required", category="convention"))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["nit-only"])
+        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        self.assertEqual(c["lost"].get("standards"), 1)
+        rej = report._rejected(self.run_dir)
+        self.assertEqual(rej[0].get("standards"), 1)
 
 
 class UnchangedFiles:

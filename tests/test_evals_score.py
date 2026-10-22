@@ -271,9 +271,9 @@ class Paid(unittest.TestCase):
         self.assertEqual(b["cases"]["other"]["meta"], {"tiers_hash": "stale"})
         self.assertTrue(any("stale" in w and "other" in w for w in ev.meta_warnings(b)))
 
-    def test_meta_warnings_legacy_global_meta_still_read(self):
-        w = ev.meta_warnings({"meta": {"tiers_hash": "old"}, "cases": {"a": {}}})
-        self.assertTrue(w and "old" in w[0])
+    def test_a_case_without_its_own_meta_asks_for_re_accept_not_a_drift_claim(self):
+        w = ev.meta_warnings({"meta": {"tiers_hash": "old"}, "cases": {"a": {}, "b": {"meta": {}}}})
+        self.assertEqual(w, ["baseline a predates per-case meta: re-accept it", "baseline b predates per-case meta: re-accept it"])
         self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
 
     def test_repo_dir_does_not_name_the_case(self):

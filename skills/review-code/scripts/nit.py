@@ -9,8 +9,9 @@ NIT_RULE_CAP = 15  # rules the text report lists under Nits; the JSON keeps ever
 NORM_SCAN_BYTES = 8 << 20  # bytes of tree/ files norm() may read per call: a norm_glob of "*" on a big repo is refused, not slow
 NORM_MIN = 20  # lines naming either idiom that a norm needs before a deviation from it is a finding
 
-# Reasons a nit-mode candidate is refused for: such a line is a nit that did not qualify, so dropping it loses no finding.
-REFUSED = frozenset(("nit-not-enabled", "nit-only", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-too-large",
+# Reasons a nit-mode candidate is refused for: the line itself claimed severity nit or category norm and did not qualify, so
+# dropping it loses no finding. nit-only is not here: it fires only for a candidate that claims neither, a real finding the mode discarded.
+REFUSED = frozenset(("nit-not-enabled", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-too-large",
                      "norm-sample-small", "norm-not-majority"))
 
 

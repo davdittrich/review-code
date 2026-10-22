@@ -258,11 +258,15 @@ def load_baseline():
 
 
 def meta_warnings(base):
-    """Per case: its own meta, else the legacy global one (files written before meta went per case)."""
+    """Per case: its own meta against now. A case without one (written before meta went per case, and --accept no longer
+    refreshes the global meta) is told to re-accept, never compared to the global values."""
     now = {"tiers_hash": tiers_hash(), "claude_version": claude_version()}
     out = []
     for n, c in sorted(base["cases"].items()):
-        m = c.get("meta") or base["meta"]
+        m = c.get("meta")
+        if not m:
+            out.append("baseline %s predates per-case meta: re-accept it" % n)
+            continue
         out += ["baseline %s %s %r differs from now %r" % (n, k, m.get(k), v) for k, v in now.items()
                 if m.get(k) is not None and m.get(k) != v]
     return out

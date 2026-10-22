@@ -774,8 +774,9 @@ def submit(run: str, digest: str) -> dict:
     if posted & ({c["id"] for c in payload["comments"]} | set(payload["in_body"])):
         raise Refuse("already-posted")  # a retry after a timeout, or a first submit that died after its event call
     last = gh.prior_state
+    marks = [m for m in map(prior.parse_mark, reversed(payload["body"].replace("\r\n", "\n").split("\n"))) if m]  # the last marker line, wherever it sits
     if not payload["comments"] and not payload["in_body"] and \
-            prior.parse_mark(payload["body"].split("\n")[-1]) == (last["last_head"], last["fixed"], last["outdated"]):
+            (marks[:1] or [None])[0] == (last["last_head"], last["fixed"], last["outdated"]):
         raise Refuse("already-posted")  # a body-only status review has no id to find: its marker is the record
     handle = gh.create(payload)
     try:

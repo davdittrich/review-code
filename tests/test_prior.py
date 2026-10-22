@@ -1,4 +1,5 @@
 """Re-review state (review-code-y6fi): prior.py, the post.py derivation and guard, target.py --since-last, report.py not_run."""
+import hashlib
 import json
 import os
 import unittest
@@ -226,6 +227,18 @@ class Rereview(tp.Base):
         self.assertEqual(self.fake.writes()[-1][0], "POST")
         rc, out, st = self.build()  # and a retry of the status review is already posted
         self.assertEqual((rc, st["reason"]), (1, "already-posted"), out)
+        # a body edited after build (trailing newline) and re-hashed is the same status review: still not posted twice
+        path = os.path.join(self.run_dir, "post", "payload.json")
+        with open(path, encoding="utf-8") as fh:
+            pl = json.load(fh)
+        pl["body"] += "\n"
+        raw = json.dumps(pl).encode("utf-8")
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        n = len(self.fake.writes())
+        rc, out, sub = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(raw).hexdigest())
+        self.assertEqual((rc, sub["reason"]), (1, "already-posted"), out)
+        self.assertEqual(len(self.fake.writes()), n)
 
     def test_a_fixed_finding_that_comes_back_is_posted_again(self):
         self.run1()
