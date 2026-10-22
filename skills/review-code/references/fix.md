@@ -34,7 +34,7 @@ A verified finding on a protected path is planned like any other, and the riskie
 
 ## Outcomes
 
-`finish` and `report` use these names. Only `reverted-violation`, `reverted-interrupt` and `tampered` halt the run, because the tree can no longer be trusted: later entries stay `pending`. `reverted-tests`, `reverted-too-large` and `reverted-timeout` restore the file, are recorded and the run goes on; the next entry runs its tests on the restored tree, so no fix stacks on a failed edit. `report` exits 1 when any entry was reverted or tampered.
+`finish` and `report` use these names. Only `reverted-violation`, `reverted-interrupt` and `tampered` halt the run, because the tree can no longer be trusted: later entries stay `pending`. `reverted-tests`, `reverted-too-large` and `reverted-timeout` restore the file, are recorded and the run goes on; the restore is byte-exact and `begin` refuses `tree-changed` unless the tree is `HEAD` plus the accepted fixes, so the next entry starts from the tree the last green run (the baseline or the last `fixed` entry) saw and no fix stacks on a failed edit. No separate test run happens between the restore and the next edit. `report` exits 1 when any entry was reverted or tampered.
 
 | Outcome | What happened | Run stops |
 |---------|---------------|-----------|

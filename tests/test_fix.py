@@ -1470,6 +1470,14 @@ class ContinueAfterRevert(Scope):
             self.assertIn("%s %s:2" % (fid_, rel) if rel != "src/calc.py" else "%s %s:5" % (fid_, rel), text)
             self.assertRegex(text, r"%s \S+ %s" % (fid_, outcome))
 
+    def test_next_entry_is_gated_on_the_restored_tree_matching_the_last_green_one(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "return a +")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())  # byte-exact: the tree is the one the baseline ran green on
+        self.edit("src/calc.py", QUOTE, "return a +")  # a red edit left in place after the restore
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "tree-changed"})  # no brief on a tree that differs
+
     def test_size_failure_also_continues(self):
         run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
         self.edit("src/calc.py", QUOTE, "\n".join("# c%d" % i for i in range(70)) + "\n    return a + b")
