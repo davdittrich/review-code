@@ -158,12 +158,12 @@ class Tracer(Base):
         seal = self.begin(run)[2]["seal"]
         self.edit("src/calc.py", QUOTE, "return a +")
         rc, _, f = self.finish(run, seal)
-        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "reverted-tests"), f)
+        self.assertEqual((rc, f["status"], f["outcome"]), (0, "ok", "reverted-tests"), f)
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), old)
         self.assertEqual(os.stat(path).st_mode, mode)
         rc, _, b = self.begin(run)
-        self.assertEqual((rc, b), (1, {"status": "refuse", "reason": "halted"}))
+        self.assertEqual((rc, b), (0, {"status": "done"}))
         self.assertEqual(self.refs(), before)
         self.assertEqual(self.git("status", "--porcelain"), "")
 
@@ -310,10 +310,6 @@ class PlanGates(Base):
         run = self.pin()
         self.ingest(run, CAND)  # never confirmed: unverifiable
         self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: none")
-        run = self.pin()
-        (fid,) = self.ingest(run, dict(CAND, fix=""))
-        self.confirm(run, (fid, CITE))
-        self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: no-fix 1")
 
     def test_same_plan_twice_same_digest(self):
         run, _ = self.ready()
@@ -336,15 +332,46 @@ class Skips(Base):
         self.assertEqual(len(self.ingest(run, *cands)), 4)
         self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
         rc, out, j = self.plan(run)
-        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 3), out)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 3, 1), out)
         block = out.split("== skipped ==\n")[1].split("\n")
-        want = {report_id(cands[1]): "stale", report_id(cands[2]): "no-fix", report_id(cands[3]): "protected-path"}
-        got = {ln.split()[0]: ln.split()[2] for ln in block[:3]}
+        want = {report_id(cands[1]): "stale"}
+        got = {ln.split()[0]: ln.split()[2] for ln in block[:1]}
         self.assertEqual(got, want)
         with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
             doc = json.load(fh)
         self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
-        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+        self.assertEqual([e["path"] for e in doc["entries"]], ["setup.py", "src/calc.py", "src/nofix.py"])
+
+
+class DerivedFixes(Base):
+    """review-code#33: a verified finding with no fix text is planned, marked, and handed to the fixer to derive."""
+    feat_files = {"src/calc.py": FEAT}
+
+    def test_finding_without_fix_text_is_planned_marked_and_briefed(self):
+        run, fid = self.ready(dict(CAND, fix=""))
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), out)
+        self.assertIn("derived by fixer", out)
+        self.assertNotIn("no-fix", out)
+        self.assertEqual(self.baseline(run, j["digest"])[2]["status"], "ok")
+        bg = self.begin(run)[2]
+        self.assertEqual((bg["status"], bg["id"]), ("ok", fid), bg)
+        with open(bg["brief"], encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("fix: none. No fix text exists", brief)
+        for label, text in (("title", "add subtracts"), ("trigger", "add(2, 3) returns -1"), ("quote", QUOTE)):
+            self.assertRegex(brief, r"(?m)^%s:\n<<<UNTRUSTED-[0-9a-f]+\n%s\n" % (label, re.escape(text)))
+        self.assertNotRegex(brief, r"(?m)^fix:\n")
+        self.edit("src/calc.py", QUOTE, "return a + b")  # the derived edit is judged like any other
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+
+    def test_derived_fix_that_breaks_the_tests_is_reverted(self):
+        run, fid = self.ready(dict(CAND, fix=""))
+        self.go(run)
+        bg = self.begin(run)[2]
+        self.edit("src/calc.py", QUOTE, "return a +")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+        self.assertEqual(self.git("status", "--porcelain"), "")
 
 
 class SecondFileNamed(Base):
@@ -390,45 +417,20 @@ class SecondFileNamed(Base):
                 self.setUp()
 
 
-class Only(Base):
-    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n",
-                  "src/neg.py": "def h(x):\n    return x - 1\n"}
-    CANDS = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3"), two("src/neg.py", 2, "return x - 1", "return x + 1")]
+class NoNarrowing(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n"}
 
-    def chosen(self):
+    def test_plan_keeps_every_verified_finding_and_refuses_a_narrowing_list(self):
         run = self.pin()
-        ids = self.ingest(run, *self.CANDS)
-        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in self.CANDS])
-        return run, [report_id(c) for c in self.CANDS]
-
-    def only(self, run, ids):
+        cands = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3")]
+        self.ingest(run, *cands)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
         words = "".join(w + "\n" for w in self.cmd())
-        return self.fixrun(["plan", "--run", run, "--only", ids], words)
-
-    def test_only_limits_plan_and_digest_to_the_chosen_ids(self):
-        run, ids = self.chosen()
-        full = self.plan(run)[2]
-        self.assertEqual(full["apply"], 3)
-        rc, out, j = self.only(run, ",".join((ids[0], ids[2])))
-        self.assertEqual((rc, j["status"], j["apply"], j["skipped"]), (0, "ok", 2, 0), out)
-        self.assertNotEqual(j["digest"], full["digest"])
-        with open(os.path.join(run, "fix", "plan.json"), "rb") as fh:
-            raw = fh.read()
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), j["digest"])
-        self.assertEqual([e["id"] for e in json.loads(raw)["entries"]], [ids[0], ids[2]])
-        self.assertNotIn(ids[1], out)
-        rc, _, b = self.baseline(run, j["digest"])
-        self.assertEqual((rc, b["status"]), (0, "ok"), b)
-
-    def test_unknown_or_malformed_id_is_refused_and_writes_nothing(self):
-        run, ids = self.chosen()
-        rc, out, j = self.only(run, ids[0] + ",F-0123456789")
-        self.assertEqual((rc, j["reason"], j["detail"]), (1, "unknown-id", "F-0123456789"), out)
+        rc, out, j = self.fixrun(["plan", "--run", run, "--only", report_id(cands[0])], words)
+        self.assertEqual((rc, j["reason"]), (1, "usage"), out)
         self.assertFalse(os.path.exists(os.path.join(run, "fix")))
-        for bad in ("F-xyz", "", ids[0] + ";id", "$(id)"):
-            with self.subTest(bad=bad):
-                rc, out, j = self.only(run, bad)
-                self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 2, 0), out)
 
 
 RUN = "# runner\nrun 3 - 1\n"
@@ -942,7 +944,7 @@ class FinishScope(Scope):
                 rc, _, f = self.finish(run, bg["seal"])
                 self.assertEqual(f["outcome"], outcome, f)
                 if outcome != "fixed":
-                    self.assertEqual((rc, f["status"]), (1, "halted"))
+                    self.assertEqual((rc, f["status"]), (0, "ok"))
                     self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
                     self.assertTrue(os.path.exists(self.quarantined(run, fid, "src/calc.py")))
                 else:
@@ -1064,7 +1066,7 @@ class Tamper(Scope):
         self.assertEqual(slurp(self.p("src/calc.py")), edited)
         self.assertEqual(slurp(self.p("poetry.lock")), b"pinned\n")
         rc, text, _ = self.report(run)
-        self.assertEqual(rc, 0, text)
+        self.assertEqual(rc, 1, text)
         self.assertIn("TAMPERED", text)
 
     def test_unreadable_target_is_tampered(self):
@@ -1188,9 +1190,9 @@ class TestRuns(Scope):
         with mock.patch.object(fix, "TIMEOUT", 1), gitfix.isolated(self.tmp):
             f = fix.finish(run, bg["seal"], "applied")
         self.assertLess(time.monotonic() - t0, 15)
-        self.assertEqual((f["status"], f["outcome"]), ("halted", "reverted-timeout"), f)
+        self.assertEqual((f["status"], f["outcome"]), ("ok", "reverted-timeout"), f)
         self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
-        self.assertEqual(self.state(run)["halted"], "reverted-timeout")
+        self.assertIsNone(self.state(run)["halted"])
 
     def test_failing_tail(self):
         body = 'sys.stdout.write("MARK-" + chr(27) + "[31m\\n"); sys.exit(1)'
@@ -1198,7 +1200,7 @@ class TestRuns(Scope):
         self.edit("src/calc.py", QUOTE, "return a + b")
         self.arm()
         rc, _, f = self.finish(run, bg["seal"])
-        self.assertEqual((rc, f["outcome"], f["exit"]), (1, "reverted-tests", 1), f)
+        self.assertEqual((rc, f["outcome"], f["exit"]), (0, "reverted-tests", 1), f)
         self.assertIn("MARK-", f["tail"])
         self.assertNotIn("\x1b", f["tail"])
         self.assertLessEqual(len(f["tail"]), 2000 * 8)
@@ -1385,6 +1387,150 @@ class TestRuns(Scope):
         self.assertEqual(rc, 0, out)
 
 
+class ProtectedPaths(Scope):
+    """review-code#34: protected paths join the plan flagged; untracked, symlinked and .git paths stay refused."""
+    feat_files = dict(Scope.feat_files, **{"requirements.txt": "pkg==1\n"})  # lockfiles are excluded from a review's diff
+    LOCK_CAND = two("requirements.txt", 1, "pkg==1", "pkg==2")
+    WORDS = [sys.executable, "-B", "-c", "assert '==' in open('requirements.txt').read()"]
+
+    def test_lockfile_finding_is_planned_flagged_confirmed_and_tests_gated(self):
+        run, fid, bg = self.started(self.LOCK_CAND, words=self.WORDS)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            (entry,) = json.load(fh)["entries"]
+        self.assertEqual((entry["id"], entry["path"], entry["protected"]), (fid, "requirements.txt", True))
+        self.edit("requirements.txt", "pkg==1", "pkg")  # the tests gate reverts it
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+        self.assertEqual(slurp(self.p("requirements.txt")), b"pkg==1\n")
+
+    def test_preview_marks_each_protected_row_and_counts_them_for_the_question(self):
+        run = self.pin()
+        cands = [CAND, self.LOCK_CAND]
+        self.ingest(run, *cands)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.plan(run, self.WORDS)
+        self.assertEqual((rc, j["apply"], j["protected"], j["skipped"]), (0, 2, 1, 0), out)
+        self.assertIn("; 1 protected path;", out.split("\n")[0])
+        rows = [ln for ln in out.split("\n") if ln[:1].isdigit()]
+        self.assertEqual({ln.split()[2].split(":")[0]: ln.endswith("protected path") for ln in rows},
+                         {"src/calc.py": False, "requirements.txt": True})
+        self.assertNotIn("protected-path", out)
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"]), (0, "ok"), b)
+        edits = {"src/calc.py": (QUOTE, "return a + b"), "requirements.txt": ("pkg==1", "pkg==2")}
+        for _ in range(2):
+            bg = self.begin(run)[2]
+            with open(bg["brief"], encoding="utf-8") as fh:
+                self.assertEqual("protected path:" in fh.read(), bg["path"] == "requirements.txt")
+            self.edit(bg["path"], *edits[bg["path"]])
+            self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+
+    def test_untracked_symlink_and_git_internal_paths_are_still_refused(self):
+        found = [dict(id="F-000000000%d" % i, path=p, line=1, end_line=1, severity="required", category="bug",
+                      origin="defects", title="t", trigger="g", quote="x", fix="y")
+                 for i, p in enumerate((".git/config", "src/untracked.py", "link.py"))]
+        os.symlink("src/calc.py", self.p("link.py"))
+        self.git("add", "link.py")
+        self.git("commit", "-q", "-m", "link")
+        run = self.pin()
+        with gitfix.isolated(self.tmp), mock.patch.object(fix.report, "build", return_value={"findings": found}):
+            with self.assertRaises(target.Refuse) as cm:
+                fix.plan(run, self.cmd())
+        self.assertEqual((cm.exception.reason, cm.exception.detail), ("nothing-to-fix", "skipped: bad-path 3"))
+
+
+THIRD = "def div(a, b):\n    return a // b\n"
+THIRD_CAND = two("src/third.py", 2, "return a // b", "return a / b")
+
+
+class ContinueAfterRevert(Scope):
+    """review-code#32: a restored tests/size/timeout failure does not strand the entries after it."""
+    feat_files = dict(Scope.feat_files, **{"src/third.py": THIRD})
+    WORDS = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second, third"]
+
+    def test_failed_middle_entry_is_reported_and_the_rest_are_fixed(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, THIRD_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        bg2 = self.begin(run)[2]
+        self.edit("src/second.py", "return a / b", "return a *")
+        rc, _, f = self.finish(run, bg2["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (0, "ok", "reverted-tests"), f)
+        self.assertEqual(slurp(self.p("src/second.py")), SECOND.encode())  # restored: nothing stacks on the failed edit
+        self.assertIsNone(self.state(run)["halted"])
+        bg3 = self.begin(run)[2]
+        self.assertEqual((bg3["status"], bg3["id"]), ("ok", report_id(THIRD_CAND)), bg3)
+        self.edit("src/third.py", "return a // b", "return a / b")
+        self.assertEqual(self.finish(run, bg3["seal"])[2]["outcome"], "fixed")
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+        rc, text, r = self.report(run)
+        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (1, 2, 1, 0), text)
+        for fid_, rel, outcome in ((fid, "src/calc.py", "fixed"), (bg2["id"], "src/second.py", "reverted-tests"),
+                                   (bg3["id"], "src/third.py", "fixed")):
+            self.assertIn("%s %s:2" % (fid_, rel) if rel != "src/calc.py" else "%s %s:5" % (fid_, rel), text)
+            self.assertRegex(text, r"%s \S+ %s" % (fid_, outcome))
+
+    def test_size_failure_also_continues(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "\n".join("# c%d" % i for i in range(70)) + "\n    return a + b")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-too-large")
+        self.assertEqual(self.begin(run)[2]["status"], "ok")
+
+    def test_violation_interrupt_and_tamper_still_halt(self):
+        run, fid, bg = self.started(CAND, SECOND_CAND, words=self.WORDS)
+        self.edit("src/calc.py", QUOTE, "return a + b")
+        self.edit("src/other.py", "return 'o'", "return 'p'")
+        rc, _, f = self.finish(run, bg["seal"])
+        self.assertEqual((rc, f["status"], f["outcome"]), (1, "halted", "reverted-violation"), f)
+        self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
+        self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
+
+
+class ReportCoverage(Scope):
+    """review-code#35: every verified finding appears once in the report, fixed or with a reason; the counts sum to it."""
+    feat_files = dict(Scope.feat_files, **{"src/third.py": THIRD, "src/dup.py": "def f(x):\n    return x * 2\n\ndef g(x):\n    return x * 2\n"})
+    DUP = two("src/dup.py", 2, "return x * 2", "return x * 3")
+    CANDS = [CAND, SECOND_CAND, THIRD_CAND, DUP]
+    EDITS = {"src/calc.py": (QUOTE, "return a + b"), "src/second.py": ("return a / b", "return a * b"),
+             "src/third.py": ("return a // b", "return a / b")}
+    WORDS = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second, third"]
+
+    def check(self, run, want):
+        rc, text, r = self.report(run)
+        ids = [report_id(c) for c in self.CANDS]
+        for i in ids:
+            self.assertEqual(len(re.findall(r"(?m)^%s " % i, text.split("\n== ")[0])), 1, (i, text))
+        self.assertEqual(r["verified"], 4)
+        line = re.search(r"(?m)^verified findings: (\d+) = (.*)$", text)
+        self.assertEqual(sum(int(x) for x in re.findall(r"(\d+) [a-z-]+", line.group(2))), int(line.group(1)), line.group(0))
+        self.assertEqual(dict((k, int(n)) for n, k in re.findall(r"(\d+) ([a-z-]+)", line.group(2))), want, line.group(0))
+        return rc, text, r
+
+    def test_halted_run_names_the_entries_it_never_reached(self):
+        run, fid, bg = self.started(*self.CANDS, words=self.WORDS)
+        self.edit(bg["path"], *self.EDITS[bg["path"]])
+        self.edit("src/other.py", "return 'o'", "return 'p'")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-violation")
+        rc, text, r = self.check(run, {"reverted-violation": 1, "not-reached": 2, "stale": 1})
+        self.assertEqual((rc, r["not_reached"]), (1, 2))
+        self.assertRegex(text, r"(?m)^%s src/dup.py stale$" % report_id(self.DUP))
+
+    def test_failed_declined_and_fixed_entries_each_show_once(self):
+        run, fid, bg = self.started(*self.CANDS, words=self.WORDS)
+        outcomes = []
+        for status in ("applied", "applied", "declined"):
+            if outcomes:
+                bg = self.begin(run)[2]
+            if status == "applied" and len(outcomes) == 1:
+                self.edit(bg["path"], self.EDITS[bg["path"]][0], "return a +")  # a failing edit
+            elif status == "applied":
+                self.edit(bg["path"], *self.EDITS[bg["path"]])
+            outcomes.append(self.finish(run, bg["seal"], status)[2]["outcome"])
+        self.assertEqual(outcomes, ["fixed", "reverted-tests", "declined"])
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+        self.check(run, {"fixed": 1, "reverted-tests": 1, "declined": 1, "stale": 1})
+
+
 class Report(Scope):
     def test_two_entries_and_the_untrusted_tail(self):
         words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second"]
@@ -1395,10 +1541,10 @@ class Report(Scope):
         self.edit("src/second.py", "return a / b", "return a *")
         self.assertEqual(self.finish(run, bg2["seal"])[2]["outcome"], "reverted-tests")
         rc, text, r = self.report(run)
-        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (0, 1, 1, 1), text)
+        self.assertEqual((rc, r["fixed"], r["reverted"], r["halted"]), (1, 1, 1, 0), text)
         self.assertIn("%s src/calc.py:5 fixed" % fid, text)
         self.assertIn("%s src/second.py:2 reverted-tests" % bg2["id"], text)
-        self.assertIn("halted: reverted-tests", text)
+        self.assertNotIn("halted:", text)
         self.assertRegex(text, r"== changed files ==\n[^\n]*src/calc\.py")
         self.assertRegex(text, r"== test output \(untrusted\) ==\n[^\n]*\n<<<UNTRUSTED-([0-9a-f]+)\n(?s:.*SyntaxError.*)\1>>>")
         self.assertIn("HEAD and refs: unchanged", text)
