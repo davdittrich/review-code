@@ -257,7 +257,7 @@ class PlanGates(Base):
         (fid,) = self.ingest(run, CAND)
         self.confirm(run, (fid, CITE))
         rc, out, pl = self.plan(run)
-        self.assertIn("run in the checkout holding the reviewed commit: " + wt, out)
+        self.assertIn("checkout: " + wt, out)
         self.assertEqual(self.baseline(run, pl["digest"])[0], 0)
         rc, _, bg = self.begin(run)
         self.assertEqual((rc, bg["status"]), (0, "ok"), bg)
@@ -267,6 +267,29 @@ class PlanGates(Base):
         self.assertIn("checkout: " + wt + " (run git diff there)", self.report(run)[1])
         self.git("-C", wt, "checkout", "-q", "--detach", "main")  # the recorded root lost the head
         self.refused(stale, "head-not-checked-out", fixdir=False)
+
+    def test_checkout_path_shown_only_when_it_differs_from_repo(self):
+        run, _ = self.ready()
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertNotIn("checkout: ", out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertNotIn("checkout: ", out)
+        self.assertIn("git diff before committing", out)
+        self.git("checkout", "-q", "main")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "feat")
+        run = self.pin("main...feat")
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        rc, out, j = self.plan(run)  # preview names the worktree
+        self.assertIn("checkout: " + wt, out)
+        self.assertEqual(self.baseline(run, j["digest"])[0], 0)
+        rc, out, j = self.report(run)
+        self.assertEqual((rc, j["status"]), (0, "ok"), out)
+        self.assertIn("checkout: " + wt, out)
+        self.assertIn("git diff in " + wt, out)
 
     def test_tree_must_be_clean(self):
         run = self.pin()
@@ -322,6 +345,90 @@ class Skips(Base):
             doc = json.load(fh)
         self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
         self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+
+
+class SecondFileNamed(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n", "src/utils.py": "def helper():\n    pass\n"}
+
+    def skipped(self, lane, cand):
+        run = self.pin()
+        rc, out = self.tool("report.py", ["ingest", "--run", run, "--lane", lane],
+                            lines(cand, {"inspected": sorted({cand["path"], "src/calc.py"})}))
+        self.assertEqual(rc, 0, out)
+        (fid,) = json.loads(out)["ids"]
+        self.confirm(run, (fid, dict(path=cand["path"], line=cand["line"], quote=cand["quote"])))
+        rc, _, j = self.plan(run)
+        return rc, j
+
+    def test_fix_naming_a_second_tracked_file_is_kept_for_the_fixer_to_decline_or_apply(self):
+        # review-code-3ea.6: a reuse fix names the helper it calls; only finish enforces one edited file
+        for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
+                          ("altitude", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
+            with self.subTest(cat=cat, text=text):
+                cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
+                rc, j = self.skipped("standards", cand)
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+                self.tearDown()
+                self.setUp()
+
+    def test_comment_finding_naming_a_second_file_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "see src/utils.py", category="comment")
+        rc, j = self.skipped("standards", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+
+    def test_same_text_on_a_defects_finding_is_kept(self):
+        cand = two("src/dup.py", 2, "return x * 2", "call helper in src/utils.py")
+        rc, j = self.skipped("defects", cand)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+
+    def test_standards_fix_naming_only_its_own_or_an_untracked_path_is_kept(self):
+        for text in ("inline into src/dup.py", "call helper in src/missing.py"):
+            with self.subTest(text=text):
+                rc, j = self.skipped("standards", two("src/dup.py", 2, "return x * 2", text, category="lean"))
+                self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
+                self.tearDown()
+                self.setUp()
+
+
+class Only(Base):
+    feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n",
+                  "src/neg.py": "def h(x):\n    return x - 1\n"}
+    CANDS = [CAND, two("src/dup.py", 2, "return x * 2", "return x * 3"), two("src/neg.py", 2, "return x - 1", "return x + 1")]
+
+    def chosen(self):
+        run = self.pin()
+        ids = self.ingest(run, *self.CANDS)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in self.CANDS])
+        return run, [report_id(c) for c in self.CANDS]
+
+    def only(self, run, ids):
+        words = "".join(w + "\n" for w in self.cmd())
+        return self.fixrun(["plan", "--run", run, "--only", ids], words)
+
+    def test_only_limits_plan_and_digest_to_the_chosen_ids(self):
+        run, ids = self.chosen()
+        full = self.plan(run)[2]
+        self.assertEqual(full["apply"], 3)
+        rc, out, j = self.only(run, ",".join((ids[0], ids[2])))
+        self.assertEqual((rc, j["status"], j["apply"], j["skipped"]), (0, "ok", 2, 0), out)
+        self.assertNotEqual(j["digest"], full["digest"])
+        with open(os.path.join(run, "fix", "plan.json"), "rb") as fh:
+            raw = fh.read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), j["digest"])
+        self.assertEqual([e["id"] for e in json.loads(raw)["entries"]], [ids[0], ids[2]])
+        self.assertNotIn(ids[1], out)
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"]), (0, "ok"), b)
+
+    def test_unknown_or_malformed_id_is_refused_and_writes_nothing(self):
+        run, ids = self.chosen()
+        rc, out, j = self.only(run, ids[0] + ",F-0123456789")
+        self.assertEqual((rc, j["reason"], j["detail"]), (1, "unknown-id", "F-0123456789"), out)
+        self.assertFalse(os.path.exists(os.path.join(run, "fix")))
+        for bad in ("F-xyz", "", ids[0] + ";id", "$(id)"):
+            with self.subTest(bad=bad):
+                rc, out, j = self.only(run, bad)
+                self.assertEqual((rc, j["reason"]), (1, "usage"), out)
 
 
 RUN = "# runner\nrun 3 - 1\n"
@@ -790,6 +897,27 @@ class FinishScope(Scope):
         base = ["finish", "--run", run, "--seal", bg["seal"], "--status"]
         for args in (["applied", "--code", "needs-context"], ["applied", "--line", "3"]):
             rc, out, j = self.fixrun(base + args)
+            self.assertEqual((rc, j["reason"]), (1, "usage"), out)
+        self.assertIsNotNone(self.state(run)["in_flight"])
+
+    def test_decline_flags_in_any_order_and_line_alone(self):
+        run, fid, bg = self.started()
+        rc, _, f = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
+                                "--line", "12", "--code", "needs-context"])
+        self.assertEqual((rc, f["outcome"]), (0, "declined"))
+        self.assertEqual(self.state(run)["done"][fid],
+                         {"outcome": "declined", "exit": None, "code": "needs-context", "line": 12})
+        second = two("src/second.py", 2, "return a / b", "return a * b")
+        run, fid, bg = self.started(CAND, second)
+        self.assertEqual(self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "declined",
+                                      "--line", "7"])[0], 0)
+        self.assertEqual(self.state(run)["done"][fid], {"outcome": "declined", "exit": None, "line": 7})
+
+    def test_applied_with_any_decline_flag_is_usage(self):
+        run, fid, bg = self.started()
+        for bad in ("0", "abc"):
+            rc, out, j = self.fixrun(["finish", "--run", run, "--seal", bg["seal"], "--status", "applied",
+                                      "--line", bad])
             self.assertEqual((rc, j["reason"]), (1, "usage"), out)
         self.assertIsNotNone(self.state(run)["in_flight"])
 

@@ -6,13 +6,16 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 
 ## Tiers
 
-`--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
+`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
 | Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
 |------|-------|---------------------|-----------------------|----------------|--------|-------|
+| lean | standards | none (no Defects or Spec lane) | sonnet/high | 10 | 3 | 2 |
 | quick | defects, standards | sonnet/low | opus/medium | 10 | 3 | 2 |
 | standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 6 | 4 |
 | deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 12 | 9 |
+
+`--lean` is the cleanup tier: it runs only the Standards lane and its verifier, so Defects and Spec never run, the plan lists both as skipped with the reason `tier lean`. Use it to tidy a change, alone or with `--fix`; fix mode keeps its own gates. `--sota` adds nothing to it.
 
 The Standards lane runs on `haiku`/`medium` in every tier, whatever the finder setting; `standards_model` and `standards_effort` change it. It never reports Blocking and its findings still go through a verifier, so a smaller model there costs recall on convention and lean-code findings, not precision. That recall has not been measured.
 
@@ -25,7 +28,7 @@ The verifier runs on a different model from the finders, so one model's blind sp
 | Lane | Agent | Axis | Reads | Notes |
 |------|-------|------|-------|-------|
 | defects | `review-code:finder` | Defects | `inputs/defects.md`, `tree/` | Bugs, with a concrete trigger |
-| standards | `review-code:standards` | Standards | `inputs/standards.md`, `conventions/`, `tree/` | Documented repo conventions and baseline smells. The Ponytail checks (needless code, reimplemented stdlib or helpers, over-engineering, stale or restating comments) are folded in here, category `lean`, so there is one Standards call per shard |
+| standards | `review-code:standards` | Standards | `inputs/standards.md`, `conventions/`, `tree/` | Documented repo conventions and baseline smells. The Ponytail checks (needless code, reimplemented stdlib or helpers, over-engineering, stale or restating comments) are folded in here, category `lean`, so there is one Standards call per shard. Root-cause depth (a special case layered on shared code) is category `altitude`, a Suggestion |
 | spec | `review-code:spec` | Spec | `inputs/spec.md` | The only reader of the spec text; lists what it declined to judge; skipped with a stated reason when there is no spec or the tier has no Spec lane (quick) |
 | sota | `review-code:sota` | advisory | a numbered inventory of names and pinned versions in its prompt; paths and lines stay in `plan.json` | Web research on library, algorithm and API choices; 1 to 5 https sources per item; never verified, never counts toward the verdict |
 
@@ -50,6 +53,7 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 | `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one shard per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
+| `CAP_HELPER_BYTES` (`ledger.py`, 200000) | Bytes of helper files copied into `tree/` as reuse context: files in the directory of a changed file and tracked paths named util, helper, common, shared or lib, siblings of a changed file first, then helper-named paths, each in path order. They are listed under `helpers` in `ledger.json`, never counted as reviewed files; those past the cap appear in the ledger's `tree.skipped` with reason `helper-cap` | fixed |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
 Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 30, spec-verifier 30. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.

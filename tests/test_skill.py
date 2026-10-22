@@ -137,6 +137,12 @@ class Phase4Procedure(unittest.TestCase):
                 "verifier_effort", "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
+    def test_trust_flags_answer_the_question(self):  # issue 23
+        flat = " ".join(self.text.split())
+        for t in ("`--own`", "`--external`", "ledger.py trust set own --run <run>` without asking",
+                  "`--own` with `--external`: stop and say so"):
+            self.assertIn(t, flat)
+
     def test_spec_file_is_never_opened(self):
         lines = [ln for ln in self.text.splitlines() if "inputs/spec.md" in ln]
         self.assertTrue(lines)
@@ -233,6 +239,10 @@ class Phase6Procedure(unittest.TestCase):
     def setUp(self):
         self.text = procedure()  # SKILL.md plus the Flow sections steps 11 and 12 hand over to
         self.flat = " ".join(self.text.split())
+
+    def test_subset_question_split_is_even_so_no_question_has_one_option(self):  # review-code-jku
+        self.assertIn("sizes differ by at most one", self.flat)
+        self.assertNotIn("at least two options each", self.flat)
 
     def test_steps_in_order(self):
         steps = ["report.py render", "post.py build --run", "fix.py plan --run", "fix.py baseline --run",

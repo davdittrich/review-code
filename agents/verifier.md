@@ -32,6 +32,13 @@ The handoff may carry more blocks:
 - `check: property`: the claim is a property of the cited code, such as a duplicate, an existing helper that
   already does the job, or a comment that restates the code. It need not fail when run. `confirmed` when the
   quoted code at the cites shows the property; `refuted` when the quoted code shows the property is absent.
+- `references:` (only for a `lean` claim that code is unused, dead or never called): the number of lines
+  that name the symbol in files other than its own, searched across the whole pinned repository, including
+  tests, config and docs that tree/ may not hold. Such a claim is `confirmed` only when the count is 0 and
+  tree/ shows no use in the symbol's own file; with a count above 0 it is `refuted` when tree/ shows one of
+  those uses, else `unverifiable`; `references: unknown` makes it `unverifiable`. For any other `lean`
+  property (a duplicate, an existing helper, a restating comment), judge the quoted code and tree/ evidence
+  directly, with no reference count needed.
 - `do-not-flag:` blocks: each item is a kind of claim to refute. Treat them like the list below.
 
 ## Verdict
@@ -40,7 +47,8 @@ The handoff may carry more blocks:
   least one cite whose quote is copied verbatim from the line.
 - `refuted` needs at least one such cite too, or it counts as `unverifiable`. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore
-  marker, suggestions on unchanged lines, input-dependent maybes with no reaching input.
+  marker, a `shortcut:` comment that names its limit (unless the `## Expected load` in the handoff, when
+  present, already crosses that limit), suggestions on unchanged lines, input-dependent maybes with no reaching input.
 - `unverifiable` when the code needed is absent from tree/ or the trace is incomplete.
 - When unsure, the verdict is `unverifiable`.
 

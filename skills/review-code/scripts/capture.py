@@ -4,6 +4,8 @@ Runs on SubagentStop (the agent's last message) and on PostToolUse of SubagentHa
 back, where the harness runs it in auto mode). The hook input is JSON on stdin. A reply is kept only for this
 plugin's lane and verifier agents, only under a strict agent_id, and only when the repository's review-code state
 directory (`git rev-parse --git-path review-code`, as target.py names it) already exists: this script never makes it.
+It stays standalone and does not import target: target.write_atomic touches the run directory and target's run-dir
+creation makes directories, but the hook must never create the state directory, and must stay import-light and fail-silent.
 It writes <state>/captures/<agent_id>.<handback|stop>.json = {agent_type, message}, mode 0600, through a temp file and
 os.replace, and always exits 0 and prints nothing, so it can never block the agent. Stdlib only; keep the syntax
 Python 3.9 safe. A custom agent_prefix plugin setting is not captured (the hook cannot read it: an unset option
@@ -22,6 +24,7 @@ AGENTS = frozenset("review-code:" + n for n in ("finder", "standards", "spec", "
 
 
 def path(base, agent_id, kind):
+    """The file that holds the capture of `agent_id` for one event kind (handback or stop)."""
     return os.path.join(base, "captures", "%s.%s.json" % (agent_id, kind))
 
 
@@ -36,6 +39,7 @@ def _message(ev):
 
 
 def keep(ev):
+    """Store the reply of one hook event for this plugin's agents; a no-op for anything else."""
     kind, text = _message(ev)
     aid, typ = ev.get("agent_id"), ev.get("agent_type")
     if kind is None or not isinstance(text, str) or typ not in AGENTS or not (isinstance(aid, str) and ID.fullmatch(aid)):
@@ -63,6 +67,7 @@ def keep(ev):
 
 
 def main():
+    """Hook entry: read the event JSON on stdin, keep it, and always return 0."""
     try:
         ev = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
         if isinstance(ev, dict):

@@ -404,6 +404,19 @@ class TestKinds(Local):
         self.assertEqual(load(o1["run"])["head_sha"], self.c2)
 
 
+class TestBareNumber(Local):
+    def test_short_digits_are_a_pr_not_a_commit_prefix(self):
+        sha = None
+        for i in range(400):  # find a commit whose id starts with four decimal digits
+            c = gitfix.commit(self.repo, {"n.txt": "%d\n" % i}, "n%d" % i)
+            if c[:4].isdigit():
+                sha = c
+                break
+        self.assertTrue(sha, "no digit-prefixed commit found")
+        got = target._classify(sha[:4], self.repo)
+        self.assertEqual([c["kind"] for c in got], ["pr"])
+
+
 class TestAmbiguity(Local):
     def ask(self, *args):
         rc, out = self.pin(*args)
@@ -528,6 +541,17 @@ class TestRunDirPruning(Local):
             os.utime(caps, (time.time() - age * 86400,) * 2)
             self.assertEqual(self.pin("feat~1..feat")[0], 0)
             self.assertEqual(os.path.exists(caps), kept)
+
+    def test_an_old_capture_file_is_pruned_from_a_fresh_captures_directory(self):  # a kept capture must not live for ever
+        caps = os.path.join(self.repo, ".git", "review-code", "captures")
+        os.makedirs(caps)
+        for name, age in (("old.stop.json", target.RETENTION_DAYS + 1), ("new.stop.json", target.RETENTION_DAYS - 1)):
+            path = os.path.join(caps, name)
+            with open(path, "w") as fh:
+                fh.write("{}")
+            os.utime(path, (time.time() - age * 86400,) * 2)
+        self.assertEqual(self.pin("feat~1..feat")[0], 0)
+        self.assertEqual(sorted(os.listdir(caps)), ["new.stop.json"])
 
     def test_a_write_deep_in_a_run_keeps_it_past_the_cutoff(self):  # review-code-j2w
         for write in (target.write_private, lambda p, t: target.write_atomic(p, t.encode())):

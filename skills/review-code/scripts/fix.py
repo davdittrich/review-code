@@ -48,7 +48,7 @@ REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered"
 STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
-USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
+USAGE = ("usage: fix.py plan --run DIR [--only ID,ID] (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
          "begin --run DIR | finish --run DIR --seal HEX --status applied|declined [--code CODE] [--line N] | "
          "report --run DIR")
 DECLINE_CODES = ("line-mismatch", "quote-not-unique", "scope-multi-file", "needs-context")
@@ -270,7 +270,7 @@ def _changed_lines(a: bytes, b: bytes) -> int:
 
 
 def _tests(run: str, st: dict) -> dict:
-    """Run the stored command once in the checkout recorded as root (else the repository top). pass: exit 0 and no timeout or launch error."""
+    """Run the stored command once in the checkout `_root` returns (the worktree holding the reviewed head; else the repository top). pass: exit 0 and no timeout or launch error."""
     raw = _read(os.path.join(_fixdir(run), "plan.json"))
     if hashlib.sha256(raw).hexdigest() != st["digest"]:
         raise target.Refuse("digest-mismatch")
@@ -296,6 +296,11 @@ def _tests(run: str, st: dict) -> dict:
 def _root(tj: dict) -> str:
     """The checkout holding the reviewed head: where fix mode tests and edits. Runs from before the key fall back to repo."""
     return tj.get("root") or tj["repo"]
+
+
+def _elsewhere(tj: dict) -> bool:
+    """The reviewed head sits in a worktree other than the repository top (realpath: root is stored resolved)."""
+    return os.path.realpath(_root(tj)) != os.path.realpath(tj["repo"])
 
 
 def _moved(tj: dict, st: dict) -> Optional[str]:
@@ -360,7 +365,7 @@ def _sweep(run: str, tj: dict, st: dict, key: str, entry: Optional[Tuple[str, by
     return None
 
 
-def plan(run: str, words: List[str]) -> dict:
+def plan(run: str, words: List[str], only: Optional[List[str]] = None) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
@@ -379,7 +384,14 @@ def plan(run: str, words: List[str]) -> dict:
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
-    for f in report.build(run)["findings"]:
+    found = report.build(run)["findings"]
+    if only is not None:
+        have = {f["id"] for f in found}
+        unknown = [i for i in only if i not in have]
+        if unknown:
+            raise target.Refuse("unknown-id", ",".join(unknown))
+        found = [f for f in found if f["id"] in only]
+    for f in found:
         fix_text = f.get("fix")
         why, line = None, None
         if not isinstance(fix_text, str) or not fix_text.strip():
@@ -408,8 +420,8 @@ def plan(run: str, words: List[str]) -> dict:
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
     text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
                                                                           _e(shlex.join(words)))]
-    if repo != tj["repo"]:
-        text.append("edits and tests run in the checkout holding the reviewed commit: " + _e(repo))
+    if _elsewhere(tj):
+        text.append("checkout: " + _e(repo) + " (edits and tests run here)")
     for k, e in enumerate(entries, 1):
         text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
                                                       e["severity"], e["category"], e["origin"], e["model"],
@@ -653,7 +665,7 @@ def report_(run: str) -> dict:
     except (OSError, ValueError, KeyError):
         entries = []
     text = []
-    if tj and repo != tj["repo"]:
+    if not unsafe and _elsewhere(tj):
         text.append("checkout: " + _e(repo) + " (run git diff there)")
     for e in entries:
         d = st["done"].get(e["id"], {})
@@ -699,7 +711,8 @@ def report_(run: str) -> dict:
             text += ["%s %s exit %s" % (i, d["outcome"], d["exit"]), ledger.block(d["tail"], nonce)]
     if not unsafe:
         text.append("HEAD and refs: " + ("unchanged" if _refs(repo) == st["refs"] else "MOVED"))
-    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff before committing",
+    text += ["nothing was committed, staged or pushed by fix.py; review the changes with git diff%s before committing" %
+             (" in " + _e(repo) if not unsafe and _elsewhere(tj) else ""),
             "passing tests do not prove a fix is right where the tests do not cover it",
             "a new import of a package no manifest declares is not checked"]
     outs = [v.get("outcome") for v in st["done"].values()]
@@ -722,13 +735,22 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
              "finish": ["--run", "--seal", "--status"], "report": ["--run"]}
     try:
         sub, opts = (argv[0], argv[1:]) if argv else ("", [])
+        only = None
+        if sub == "plan" and len(opts) == 4 and opts[2] == "--only":  # ids are fixed literals, so they may be arguments
+            only = opts[3].split(",")
+            if not all(re.fullmatch(ID_RE, i) for i in only):
+                raise target.Refuse("usage", USAGE)
+            opts = opts[:2]
         names = opts[0::2]
-        extra = [n for n in ("--code", "--line") if n in names] if sub == "finish" else []
-        if sub not in flags or names != flags[sub] + extra or len(opts) != 2 * len(names):
+        need = flags.get(sub, [])
+        extra = names[len(need):]  # finish only: --code and --line, once each, in either order
+        if sub not in flags or names[:len(need)] != need or len(opts) != 2 * len(names) \
+                or len(set(extra)) != len(extra) or not set(extra) <= ({"--code", "--line"} if sub == "finish" else set()):
             raise target.Refuse("usage", USAGE)
         v = dict(zip(names, opts[1::2]))
         if ("--digest" in v and not HEX.match(v["--digest"])) or ("--seal" in v and not HEX.match(v["--seal"])) \
-                or v.get("--status", "applied") not in ("applied", "declined"):
+                or v.get("--status", "applied") not in ("applied", "declined") \
+                or (extra and v["--status"] != "declined"):  # presence, not value: --line 0 is not "absent"
             raise target.Refuse("usage", USAGE)
         run = v["--run"]
         if sub in ("baseline", "finish"):
@@ -737,7 +759,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
                     signal.signal(getattr(signal, name), _term)
         if sub == "plan":
             text = (stdin or sys.stdin.buffer).read().decode("utf-8", "replace")
-            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")])
+            out = plan(run, [w.rstrip("\r") for w in text.split("\n") if w.rstrip("\r")], only)
         elif sub == "baseline":
             out = baseline(run, v["--digest"])
         elif sub == "begin":

@@ -184,9 +184,9 @@ RETENTION_DAYS = 14
 
 
 def _prune(base: str) -> None:
-    """IN-01: remove run directories, and the hook's captures directory, not touched for RETENTION_DAYS. Runs before
-    the new one is made, so the current run is never a candidate; links and other names are left alone; a removal that
-    fails is skipped."""
+    """IN-01: remove run directories, and the hook's captures directory, not touched for RETENTION_DAYS, and from a
+    fresher captures directory the files older than that (a capture kept after a refusal). Runs before the new one is
+    made, so the current run is never a candidate; links and other names are left alone; a removal that fails is skipped."""
     cutoff = time.time() - RETENTION_DAYS * 86400
     for name in os.listdir(base):
         path = os.path.join(base, name)
@@ -194,6 +194,11 @@ def _prune(base: str) -> None:
             st = os.lstat(path)
             if (name.startswith("review-code.") or name == "captures") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
+            elif name == "captures" and stat.S_ISDIR(st.st_mode):
+                for f in os.listdir(path):
+                    fst = os.lstat(os.path.join(path, f))
+                    if stat.S_ISREG(fst.st_mode) and fst.st_mtime < cutoff:
+                        os.remove(os.path.join(path, f))
         except OSError:
             pass
 
@@ -357,6 +362,9 @@ def _classify(arg: str, cwd: str) -> List[dict]:
         except Refuse as e:
             err = e
     try:
+        # shortcut: an all-digit arg under 7 chars is a PR number, not a hex abbreviation (git's default is 7); a commit needs 7+ digits or HEAD~N
+        if cands and len(arg) < 7:
+            raise Refuse("bad-ref", "the target is not a commit in this repository")
         cid = _commit_id(arg, cwd)
     except Refuse as e:
         err = err or e

@@ -1,7 +1,7 @@
 {
   "name": "review-code",
   "displayName": "Review Code",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Code review skill whose findings carry file:line evidence and an evidence class.",
   "license": "MIT",
   "keywords": [
@@ -36,7 +36,7 @@
     "default_tier": {
       "type": "string",
       "title": "Default tier",
-      "description": "Tier used when no --tier flag is given: quick, standard or deep.",
+      "description": "Tier used when no --tier flag is given: quick, standard or deep. The lean tier is available only as the --lean flag.",
       "default": "standard",
       "options": [
         "quick",
