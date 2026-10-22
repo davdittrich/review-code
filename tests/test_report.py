@@ -326,7 +326,8 @@ class Renders(Base):
         path = os.path.join(self.run_dir, "ledger.json")
         with open(path, encoding="utf-8") as fh:
             led = json.load(fh)
-        led["hidden_text"] = [{"file": "change.diff", "path": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31}]
+        led["hidden_text"] = [{"file": "change.diff", "path": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31,
+                               "signal": "added"}]
         led["hidden_chars"] = [{"file": "change.diff", "line": 9, "codepoints": [8238]},
                                {"file": "we\\u202ed.txt", "name": True, "codepoints": [8238]}]
         with open(path, "w", encoding="utf-8") as fh:
@@ -337,13 +338,13 @@ class Renders(Base):
         self.assertNotIn("hidden_content", self.doc())
         self.hide()
         d = self.doc()
-        want = [{"file": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31, "name": False},
+        want = [{"file": "src/calc.py", "line": 7, "kind": "html-comment", "length": 31, "name": False, "signal": "added"},
                 {"file": "change.diff", "line": 9, "kind": "hidden-chars", "codepoints": [8238], "name": False},
                 {"file": "we\\u202ed.txt", "line": None, "kind": "hidden-chars", "codepoints": [8238], "name": True}]
         self.assertEqual(d["hidden_content"], want)
         self.assertEqual(len(d["findings"]), 2)  # not findings
         rc, out = self.rep("render")
-        self.assertRegex(out, r"(?m)^Hidden content \(notes\)\n- src/calc.py:7  html-comment, length 31$")
+        self.assertRegex(out, r"(?m)^Hidden content \(notes\)\n- src/calc.py:7  html-comment, length 31, added$")
         self.assertIn("hidden-chars, codepoints 8238, file name", out)
         run = json.loads(self.rep("render", extra=["--format", "sarif"])[1])["runs"][0]
         notes = [r for r in run["results"] if r["ruleId"] == "hidden-content"]
@@ -351,12 +352,72 @@ class Renders(Base):
         self.assertEqual(notes[0]["locations"][0]["physicalLocation"]["region"], {"startLine": 7})
         self.assertIn({"id": "hidden-content"}, run["tool"]["driver"]["rules"])
 
+    def routine(self, per_file):
+        """Seed ledger.json with unsignalled hidden spans: per_file maps a file to its count."""
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led["hidden_text"] = [{"file": "change.diff", "path": f, "line": i + 1, "kind": "comment", "length": 20}
+                              for f, n in per_file.items() for i in range(n)]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+
+    def test_routine_hidden_spans_are_one_count_line_per_file(self):  # gh#25
+        self.seed()
+        self.routine({"tpl/feature.md": 12, "tpl/enhancement.md": 8, "tpl/registry.md": 3, "pull_request_template.md": 1})  # the 24 of the report
+        d = self.doc()
+        self.assertNotIn("hidden_content", d)  # no individual entry
+        self.assertEqual(d["hidden_routine"], [{"file": "pull_request_template.md", "count": 1, "kinds": {"comment": 1}},
+                                               {"file": "tpl/enhancement.md", "count": 8, "kinds": {"comment": 8}},
+                                               {"file": "tpl/feature.md", "count": 12, "kinds": {"comment": 12}},
+                                               {"file": "tpl/registry.md", "count": 3, "kinds": {"comment": 3}}])
+        rc, out = self.rep("render")
+        self.assertRegex(out, r"(?m)^Hidden content \(notes\)\n- pull_request_template.md  1 routine hidden span removed \(comment 1\)$")
+        self.assertIn("- tpl/feature.md  12 routine hidden spans removed (comment 12)", out)
+        self.assertEqual(out.count("routine hidden span"), 4)
+
+    def test_signalled_spans_are_listed_and_the_counts_sum_to_the_records(self):  # gh#25
+        self.seed()
+        self.routine({"a.md": 5, "b.md": 2})
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        for h, sig in zip(led["hidden_text"][:3], ("assistant", "encoded", "markup")):
+            h["signal"] = sig
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        d = self.doc()
+        self.assertEqual([(h["file"], h["signal"]) for h in d["hidden_content"]],
+                         [("a.md", "assistant"), ("a.md", "encoded"), ("a.md", "markup")])
+        self.assertEqual(len(d["hidden_content"]) + sum(r["count"] for r in d["hidden_routine"]), len(led["hidden_text"]))
+        rc, out = self.rep("render")
+        self.assertIn("- a.md:1  comment, length 20, assistant", out)
+        self.assertIn("- a.md  2 routine hidden spans removed (comment 2)", out)
+        self.assertEqual(len(led["hidden_text"]), 7)  # the ledger keeps every record
+
+    def test_hidden_chars_stay_individual_beside_the_routine_counts(self):  # gh#25
+        self.seed()
+        self.routine({"a.md": 2})
+        self.hide_chars_only()
+        d = self.doc()
+        self.assertEqual([h["kind"] for h in d["hidden_content"]], ["hidden-chars"])
+        self.assertEqual(d["hidden_routine"][0]["count"], 2)
+
+    def hide_chars_only(self):
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led["hidden_chars"] = [{"file": "change.diff", "line": 9, "codepoints": [8238]}]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+
     def test_hidden_content_is_capped(self):
         self.seed()
         path = os.path.join(self.run_dir, "ledger.json")
         with open(path, encoding="utf-8") as fh:
             led = json.load(fh)
-        led["hidden_text"] = [{"file": "change.diff", "path": "f%d" % i, "line": 1, "kind": "k", "length": 1} for i in range(45)]
+        led["hidden_text"] = [{"file": "change.diff", "path": "f%d" % i, "line": 1, "kind": "k", "length": 1, "signal": "long"}
+                              for i in range(45)]
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(led, fh)
         d = self.doc()
@@ -1994,6 +2055,35 @@ class AgentReply(Captured, Base):
         rc, out = self.rep("status")
         self.assertEqual(rc, 0, out)
         return json.loads(out)
+
+
+class HiddenProvenance(Base):
+    """gh#25: a hidden span the change adds is flagged `added`; the template's own old hints are routine."""
+    base_files = {"src/calc.py": BASE["src/calc.py"], "tpl.md": "# T\n<!-- Describe changes here -->\n<!-- Fill in the form -->\nbody\n"}
+    feat_files = {"src/calc.py": FEAT, "tpl.md": "# T\n<!-- Describe changes here -->\n<!-- Fill in the form -->\nbody\n<!-- tiny -->\n"}
+
+    def led(self):
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_only_the_span_on_the_added_line_is_signalled(self):
+        recs = [h for h in self.led()["hidden_text"] if h.get("path", h["file"]) == "tpl.md"]
+        self.assertEqual({h["file"] for h in recs}, {"tpl.md", "change.diff"})  # whole-file scan and diff scan
+        self.assertEqual(sorted((h["file"], h["line"] if h["file"] == "tpl.md" else 0, h.get("signal")) for h in recs
+                                if h.get("signal")), [("change.diff", 0, "added"), ("tpl.md", 5, "added")])
+        self.assertEqual(sum(1 for h in recs if not h.get("signal")), len(recs) - 2)  # the two old hints, in both scans
+
+    def test_the_final_report_lists_the_added_span_and_counts_the_old_hints(self):
+        self.ingest({"inspected": ["src/calc.py"]})
+        d = self.doc()
+        self.assertEqual([(h["file"], h["signal"]) for h in d["hidden_content"]], [("tpl.md", "added")] * 2)
+        (r,) = d["hidden_routine"]
+        self.assertEqual((r["file"], r["count"]), ("tpl.md", len(self.led()["hidden_text"]) - 2))
+
+    def test_the_removed_text_is_never_stored(self):
+        for name in ("ledger.json", "target.json", "change.diff"):
+            with open(os.path.join(self.run_dir, name), encoding="utf-8") as fh:
+                self.assertNotIn("Describe changes here", fh.read(), name)
 
 
 class Dispositions(Lanes):

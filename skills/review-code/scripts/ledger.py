@@ -31,7 +31,7 @@ _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
-               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only"}
+               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -398,8 +398,41 @@ def _scan(p: str, text: str) -> Tuple[str, list, list]:
     return text, [{"file": p, **h} for h in chars], [{"file": p, **h} for h in stripped]
 
 
+def hidden_notes(records: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """(the removed-span records that carry a `signal`, in order; [{file, count, kinds}] per file for the rest, in file order).
+    Nothing is dropped: the ledger keeps every record, and the unsignalled rest is only counted (gh#25)."""
+    flagged, rest = [], {}
+    for h in records:
+        if h.get("signal"):
+            flagged.append(h)
+        else:
+            e = rest.setdefault(h.get("path", h["file"]), {"count": 0, "kinds": {}})
+            e["count"] += 1
+            e["kinds"][h["kind"]] = e["kinds"].get(h["kind"], 0) + 1
+    return flagged, [dict(file=f, **rest[f]) for f in sorted(rest)]
+
+
+def _provenance(run: str, kind: str):
+    """f(path, line) -> `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
+    the change adds, or the file has no diff at all (touched, no provenance known); None is routine. A target that is no
+    change (path, repo) has no provenance."""
+    if kind in ("path", "repo"):
+        return lambda p, n: None
+    added, seen = {}, set()
+    try:
+        with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
+            for _, p, tag, _, n, _, _ in sanitize.walk(fh.read()):
+                if p:
+                    seen.add(p)
+                    if tag == "+":
+                        added.setdefault(p, set()).add(n)
+    except OSError:
+        pass
+    return lambda p, n: "added" if n in added.get(p, ()) else "touched" if p not in seen else None
+
+
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], led: dict,
-                 source: str, named: set) -> Tuple[dict, list, list]:
+                 source: str, named: set, prov=None) -> Tuple[dict, list, list]:
     """tree/ holds stripped copies of the included and ledger-referenced files, taken from the listing's
     blobs or, with no listing, from the working copy (never altered); lanes read only tree/. A file whose
     name holds hidden characters, or equals such a name escaped (`named`), is not copied: tree.skipped lists
@@ -424,6 +457,8 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             return
         esc, c, t = _scan(p, text)
         if p in inc:  # 6xl.46: a referenced-only copy is stripped too, but its hits are not change defects
+            if prov:  # gh#25: provenance outweighs the wording signal sanitize set
+                t = [dict(h, signal=sg) if sg else h for h in t for sg in [prov(p, h["line"])]]
             hidden, hidden_text = hidden + c, hidden_text + t
         if not _put(tree, p, esc.encode("utf-8")):
             skipped.append({"path": p, "reason": "unsafe-path"})
@@ -737,7 +772,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     led["tree"], more, more_text = _materialize(
         run, repo, idx if idx is not None else head_ls, included, led,
         "index" if idx is not None else "working copy" if inplace else "head commit",
-        {h["file"] for h in tj["hidden_chars"] if h.get("name")})
+        {h["file"] for h in tj["hidden_chars"] if h.get("name")}, _provenance(run, tj["kind"]))
     led["tree"]["skipped"] = sorted(led["tree"]["skipped"] + [{"path": p, "reason": "helper-cap"} for p in over],
                                     key=lambda k: k["path"])
     for c in ("symbols",) + _CTX + ("helpers",):
@@ -857,9 +892,10 @@ def context(run: str) -> dict:
     if _stored(led) == "unset":
         raise target.Refuse("trust-unset", "the trust answer is not recorded")
     tj = target.load_json(run, "target.json")
+    flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
-             "hidden_text": led["hidden_text"], "hidden_chars": led["hidden_chars"]}
+             "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}
     out = {k: v[:CAP_FILES] for k, v in lists.items()}
     return dict(out, status="ok", more={k: len(v) - CAP_FILES for k, v in lists.items() if len(v) > CAP_FILES})
 

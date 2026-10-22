@@ -52,7 +52,10 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   schema_version, target{kind, head_sha, merge_base, label, not_a_change}, trust (own|external), verdict,
   findings[] (class reproduced|traced), unverifiable[] (class inferred|speculative), dropped{refuted,
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
-  kind, length or codepoints, name}] (notes, not findings; capped at 40) with hidden_content_omitted.
+  kind, length or codepoints, name, signal (removed text spans only)}] (notes, not findings; capped at 40) with
+  hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal (gh#25),
+  counted per file, so hidden_content plus the counts always sum to the ledger's records. A span's `signal` is `added`
+  (it lies on a line the change adds, or in a touched file with no diff), `assistant`, `encoded`, `markup` or `long`.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -1319,8 +1322,9 @@ def _build(run):
             "lean_lines": sum(i["end_line"] - i["line"] + 1 for i in findings if i["category"] == "lean"),  # an estimate
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
-    hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False}
-          for h in led["hidden_text"]]
+    flagged, routine = ledger.hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
+    hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
+           "signal": h["signal"]} for h in flagged]
     hc += [{"file": h["file"], "line": h.get("line"), "kind": "hidden-chars", "codepoints": h["codepoints"],
             "name": h.get("name") is True} for h in led["hidden_chars"]]
     if rej or rejb or lost:
@@ -1334,6 +1338,8 @@ def _build(run):
         doc.update(recovered=won)
     if hc:  # OUT-02: notes outside the evidence gate; positions and sizes, never the payload
         doc.update(hidden_content=hc[:MAX_HIDDEN], hidden_content_omitted=max(0, len(hc) - MAX_HIDDEN))
+    if routine:
+        doc.update(hidden_routine=routine)
     return doc
 
 
@@ -1436,13 +1442,17 @@ def _text(doc):
                 + ["    source: " + e(u) for u in i["sources"]])])
         if ax == "spec" and doc["declined"]:
             out += section("Declined", ["- inputs/spec.md:%d: %s" % (d["spec_line"], e(d["why"])) for d in doc["declined"]])
-    if doc.get("hidden_content"):
-        out += section("Hidden content (notes)", ["- %s%s  %s%s%s%s" % (
+    if doc.get("hidden_content") or doc.get("hidden_routine"):
+        out += section("Hidden content (notes)", ["- %s%s  %s%s%s%s%s" % (
             e(h["file"]), ":%d" % h["line"] if h["line"] is not None else "", h["kind"],
             ", length %d" % h["length"] if "length" in h else "",
             ", codepoints " + " ".join(str(c) for c in h["codepoints"]) if "codepoints" in h else "",
-            ", file name" if h["name"] else "") for h in doc["hidden_content"]]
-            + (["(+%d more)" % doc["hidden_content_omitted"]] if doc["hidden_content_omitted"] else []))
+            ", file name" if h["name"] else "", ", " + h["signal"] if h.get("signal") else "")
+            for h in doc.get("hidden_content", [])]
+            + (["(+%d more)" % doc["hidden_content_omitted"]] if doc.get("hidden_content_omitted") else [])
+            + ["- %s  %d routine hidden span%s removed (%s)" % (
+                e(r["file"]), r["count"], "" if r["count"] == 1 else "s",
+                ", ".join("%s %d" % (k, n) for k, n in sorted(r["kinds"].items()))) for r in doc.get("hidden_routine", [])])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
