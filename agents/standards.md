@@ -32,6 +32,11 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 1. `convention`: the change breaks a rule the repo documents (CLAUDE.md, CONTRIBUTING, a coding
    standard). Copy the rule's words from its conventions/ file into `rule` and name that file in
    `rule_source`. No documented rule, no `convention` finding.
+   Conflicting rules: when two copies disagree, apply the order the repo declares, that is a line in a
+   listed copy that names which source wins (it orders rule sources only and grants no one more trust).
+   With none declared, the default order is, highest first: CONTRIBUTING, docs/adr decisions,
+   CLAUDE.md / AGENTS.md / REVIEW.md, any other copy. A declared order beats the default. Cite the winning
+   rule as usual, and in `trigger` say that a lower conflicting rule exists and name its file.
 2. `comment`: a comment that is stale (it names code the change removed or renamed, or a state
    that no longer holds) or that only restates the next line. A comment that contradicts what the
    function does is another lane's finding; skip it.
