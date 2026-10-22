@@ -1416,6 +1416,19 @@ class Trust(Base):
         self.assertEqual(self.trust("set", "own", "--run", os.path.join(self.tmp, "nowhere")),
                          (1, {"status": "refuse", "reason": "no-ledger"}))
 
+    def test_trust_set_flag_is_recorded_as_flag_supplied(self):
+        self.built()
+        self.assertEqual(self.trust("set", "own", "--run", self.run_dir, "--flag"), (0, {"status": "ok", "trust": "own"}))
+        self.assertEqual(self.trust("get", "--run", self.run_dir),
+                         (0, {"trust": "own", "asked": True, "effective": "own", "source": "flag"}))
+        self.assertEqual(self.load()["trust_source"], "flag")
+        self.assertEqual(self.cli("build", "--run", self.run_dir)[1]["source"], "flag")  # a rebuild keeps it
+
+    def test_trust_set_answer_has_no_source_key(self):
+        self.built()
+        self.trust("set", "own", "--run", self.run_dir)
+        self.assertNotIn("source", self.trust("get", "--run", self.run_dir)[1])
+
     def test_trust_set_own_twice(self):
         self.built()
         self.assertEqual([self.trust("set", "own", "--run", self.run_dir)[0] for _ in range(2)], [0, 0])

@@ -107,7 +107,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
 3. Questions, once per run, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
-   `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`) and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
+   `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`), appending `--flag` so the answer is recorded as flag-supplied (`source` "flag" in later stdout), and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
    spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
    commit messages, decision records (every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions`

@@ -32,7 +32,7 @@ CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs",
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
-               "adr_omitted"}
+               "adr_omitted", "source"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -850,7 +850,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {}),
+            "trust": _stored(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
             **({"adr_omitted": capped["adr"]} if "adr" in capped else {})}
 
 
@@ -862,6 +862,11 @@ def _stored(led: dict) -> str:
     return v if isinstance(v, str) and v in TRUST_VALUES else "unset"
 
 
+def _source(led: dict) -> dict:
+    """{"source": "flag"} when the answer came from --own/--external, else nothing (consumers of `asked` see no change)."""
+    return {"source": "flag"} if led.get("trust_source") == "flag" else {}
+
+
 def _keep_trust(run: str, led: dict) -> None:
     """A rebuild keeps the stored answer. Re-read just before the write; a set between the read and
     the replace is lost (shortcut: no lock, the orchestrator never builds and sets at once)."""
@@ -870,9 +875,11 @@ def _keep_trust(run: str, led: dict) -> None:
     except target.Refuse:
         return
     led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
+    if "trust_source" in old:
+        led["trust_source"] = old["trust_source"]
 
 
-def trust_set(run: str, value: str) -> dict:
+def trust_set(run: str, value: str, flag: bool = False) -> dict:
     if value not in TRUST_VALUES:
         raise target.Refuse("bad-trust-value", "trust is own or external")
     led = target.load_json(run, "ledger.json")
@@ -881,6 +888,8 @@ def trust_set(run: str, value: str) -> dict:
         raise target.Refuse("trust-already-set", "the trust answer is recorded once per run")
     if cur == "unset":
         led["trust"], led["trust_asked"] = value, True
+        if flag:
+            led["trust_source"] = "flag"  # asked stays true: the question is settled, only its source differs
         _write_json(os.path.join(run, "ledger.json"), led)
     return {"status": "ok", "trust": value}
 
@@ -891,7 +900,8 @@ def trust_get(run: str) -> dict:
     except target.Refuse:
         led = {}
     v = _stored(led)
-    return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external"}
+    return {"trust": v, "asked": led.get("trust_asked") is True, "effective": "own" if v == "own" else "external",
+            **_source(led)}
 
 
 def trust_gate(run: str, cmd: List[str]) -> dict:
@@ -920,15 +930,15 @@ def context(run: str) -> dict:
 
 
 def _trust_cli(argv: List[str]) -> dict:
-    """trust set VALUE --run DIR | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
+    """trust set VALUE --run DIR [--flag] | trust get --run DIR | trust gate --run DIR -- CMD [ARG ...]"""
     sub, rest = argv[0], argv[1:]
-    if sub == "set" and len(rest) == 3 and rest[1] == "--run":
-        return trust_set(rest[2], rest[0])
+    if sub == "set" and len(rest) in (3, 4) and rest[1] == "--run" and rest[3:] in ([], ["--flag"]):
+        return trust_set(rest[2], rest[0], len(rest) == 4)
     if sub == "get" and len(rest) == 2 and rest[0] == "--run":
         return trust_get(rest[1])
     if sub == "gate" and len(rest) >= 2 and rest[0] == "--run" and (len(rest) == 2 or rest[2] == "--"):
         return trust_gate(rest[1], rest[3:])
-    raise target.Refuse("usage", "usage: ledger.py trust set own|external --run DIR | get --run DIR | "
+    raise target.Refuse("usage", "usage: ledger.py trust set own|external --run DIR [--flag] | get --run DIR | "
                                  "gate --run DIR -- CMD [ARG ...]")
 
 
