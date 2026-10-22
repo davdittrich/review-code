@@ -35,7 +35,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## Tiers and flags
 
-Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--lean` runs only the Standards lane and its verifier, for a cleanup pass; it is a flag only, not a `default_tier` value, and its report says Defects and Spec were skipped. `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode. `--own` or `--external` answers the trust question up front, so it is not asked.
+Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--lean` runs only the Standards lane and its verifier, for a cleanup pass; it is a flag only, not a `default_tier` value, and its report says Defects and Spec were skipped. `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode. `--nit` adds a Nit severity for strict adherence to the repo's own standards: each nit quotes a rule from a repo file (read from the merge base) or a norm the scripts count in the code (at least 20 lines, the other idiom the majority). Nits never change the verdict, the text report lists at most 15 rules, `--fix` ignores them, and `--nit --lean` gives a nits-only pass. A diff review reports changed lines only; a `--repo` review also reports pre-existing nits. `--own` or `--external` answers the trust question up front, so it is not asked.
 
 | Tier | Lanes | Finder | Verifier |
 |------|-------|--------|----------|
@@ -43,7 +43,7 @@ Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--
 | standard | Defects, Standards, Spec | opus, medium | sonnet, high |
 | deep | Defects, Standards, Spec, SOTA | opus, xhigh | sonnet, high |
 
-These values are unvalidated defaults: there is no eval corpus behind them. The Finder column covers the Defects, Spec and SOTA lanes; the Standards lane runs on haiku, medium in every tier (see `standards_model`). The Standards lane carries the lean-code (Ponytail) checks. Domain packs load by file type or by what the changed lines contain: Python, R, JS/TS, SQL, data migrations, security/OWASP, concurrency, API compatibility and, with `--ai` or `--deep`, LLM-generated code. A pack's do-not-flag list is enforced through the lane prompt and the verifier handoff only, not by code. Lanes, caps, packs and serial mode in full: `skills/review-code/references/lanes.md`.
+These values are unvalidated defaults: `evals/` holds a harness but no baseline has been recorded behind them. The Finder column covers the Defects, Spec and SOTA lanes; the Standards lane runs on haiku, medium in every tier (see `standards_model`). The Standards lane carries the lean-code (Ponytail) checks. Domain packs load by file type or by what the changed lines contain: Python, R, JS/TS, SQL, data migrations, security/OWASP, concurrency, API compatibility and, with `--ai` or `--deep`, LLM-generated code. A pack's do-not-flag list is enforced through the lane prompt and the verifier handoff only, not by code. Lanes, caps, packs and serial mode in full: `skills/review-code/references/lanes.md`.
 
 ## Cost and caps
 
@@ -125,7 +125,7 @@ The plugin root is the repository root, so every tracked file ships to installer
 
 ## Development
 
-`python3 -m unittest discover -s tests` runs the unit suite. `sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
+`python3 -m unittest discover -s tests` runs the unit suite. `evals/` holds an optional, paid eval harness (`python3 evals/run.py`, see `evals/README.md`); the unit suite and the package gate never run it. `sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
 
 ## Licence
 

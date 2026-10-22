@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import stat
+import time
 from datetime import datetime, timezone
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -27,9 +28,20 @@ import target
 _ANCESTOR = ("CLAUDE.md", "AGENTS.md", "REVIEW.md")  # also read from every directory above a changed file
 _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md",
                          ".github/copilot-instructions.md", ".cursor/BUGBOT.md"))
+_NIT_FIXED = frozenset((".github/pull_request_template.md", ".github/PULL_REQUEST_TEMPLATE.md",
+                        "docs/pull_request_template.md", ".gemini/styleguide.md"))
+_NIT_CAP = 40  # extra --nit rule files copied at most; the fixed review-rule set never counts
+
+
+def _nit_rank(p: str) -> int:
+    """Authority order of an extra --nit source, highest first; the cap drops the highest ranks last."""
+    if p.startswith(".github/PULL_REQUEST_TEMPLATE") or p.lower().endswith("pull_request_template.md"):
+        return 0
+    return (p.endswith("GLOSSARY.md") and 1) or (p.startswith("docs/adr/") and 2) or (p.startswith(".gemini/") and 3) \
+        or (p.startswith(".cursor/") and 4) or 5
 _REGULAR = ("100644", "100755")
-CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
-_CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
+CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
+_CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
                "adr_omitted", "source"}
@@ -307,6 +319,126 @@ def _helpers(repo: str, listing: Optional[dict], names: List[str], included: Lis
     return kept, over
 
 
+SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
+SIB_LINES, SIB_DAYS, SIB_COCH, SIB_COCH_ALL = 19, 365, 5, 12  # hint lines in standards.md; history window; co-change caps
+SIB_OPENER = "Hints, not evidence. A finding needs a trigger citing the hit list. Severity suggestion at most."
+_SKIP_DIRS = frozenset(("vendor", "dist", "build", "node_modules"))
+_HISTORY = re.compile(r"(?:CHANGELOG|CHANGES|HISTORY|NEWS|RELEASES?|RELEASE[-_ ]?NOTES)(?:[-_.]|\Z)", re.I)
+
+
+def _noise(p: str) -> bool:
+    """A lockfile, a history file or a vendored or generated path: never a registry, never a sibling."""
+    d, _, b = p.rpartition("/")
+    return b in target._LOCKFILES or b.endswith(".lock") or bool(_HISTORY.match(b)) or bool(_SKIP_DIRS & set(d.split("/")))
+
+
+def _sibs_of(new: str, unchanged: set) -> Tuple[List[str], bool]:
+    """(up to 3 sorted unchanged siblings, True for the directory rule): the same basename one directory over, else
+    the same directory and extension."""
+    d, _, b = new.rpartition("/")
+    grand = d.rpartition("/")[0]
+    over = sorted(p for p in unchanged if p.rpartition("/")[2] == b and p.rpartition("/")[0] not in ("", d)
+                  and p.rpartition("/")[0].rpartition("/")[0] == grand) if d else []
+    if over:
+        return over[:3], True
+    ext = os.path.splitext(b)[1]
+    return (sorted(p for p in unchanged if p.rpartition("/")[0] == d and p != new and os.path.splitext(p)[1] == ext)[:3]
+            if ext else []), False
+
+
+def _hit(texts: List[str], tok: str) -> bool:
+    return any(re.search(r"(?<!\w)%s(?!\w)" % re.escape(tok), t) for t in texts)
+
+
+def _gaps(repo: str, rev: Optional[str], new: str, sibs: List[str], by_dir: bool, expired) -> Optional[List[dict]]:
+    """Registry gaps of one new file; None when the wall cap ran out first."""
+    toks = {s: s for s in sibs}
+    if by_dir:
+        toks.update((s.rpartition("/")[0], s) for s in sibs)
+    if expired():
+        return None
+    hits = _grep(repo, rev, sorted(toks))
+    own = {s.rpartition("/")[0] + "/" for s in sibs} if by_dir else set()
+    cand = {}  # registry file -> [(token, sibling, line, text)]
+    for f, ln, text in hits:
+        if f == new or f in sibs or _noise(f) or target.shown(f) != f or f.startswith(tuple(own)):
+            continue
+        for tok, sib in toks.items():
+            if _hit([text], tok):
+                cand.setdefault(f, []).append((tok, sib, ln, text))
+    if expired():
+        return None
+    named = {f for f, _ in _grep(repo, rev, [new] + ([new.rpartition("/")[0]] if by_dir else []), names_only=True)}
+    cand = {f: h for f, h in cand.items() if f not in named}
+    common = {t for t in toks if len({f for f, h in cand.items() if any(x[0] == t for x in h)}) > SIB_COMMON}
+    out = []
+    for f in sorted(cand):
+        h = [x for x in cand[f] if x[0] not in common]
+        if len({x[1] for x in h}) >= 2:  # a registry names at least two siblings
+            _, sib, ln, text = min(h, key=lambda x: (x[2], x[1]))
+            q = json.dumps(sanitize.escape_for_code(text[:120])[0], ensure_ascii=False)
+            out.append({"file": f, "kind": "gap", "how": "ADD %s | sibling %s | registered at %s:%d | %s | missing: %s" % (
+                target.shown(new), target.shown(sib), target.shown(f), ln, q, target.shown(new))})
+    return out
+
+
+def _cochange(repo: str, mb: str, mb_ls: dict, files: set, included: List[str]) -> List[dict]:
+    """Hints from one bounded git log: a changed file that usually changes with another unchanged file at head."""
+    raw = target.git(["log", "--no-merges", "--no-renames", "--name-only", "--format=@@%H", "-n", "1000",
+                      "--since=%d.days" % SIB_DAYS, mb, "--"], repo, check=False)
+    commits, cur = [], None
+    for ln in raw.splitlines():
+        if ln.startswith("@@"):
+            cur = set()
+            commits.append(cur)
+        elif ln and cur is not None and not ln.startswith('"'):
+            cur.add(ln)
+    commits = [c for c in commits if len(c) <= 30]
+    inc, out = set(included), []
+    for c in sorted(p for p in inc if p in mb_ls):
+        mine = [k for k in commits if c in k]
+        if len(mine) < 3:
+            continue
+        count = {}
+        for k in mine:
+            for o in k - {c}:
+                count[o] = count.get(o, 0) + 1
+        keep = sorted((o for o, n in count.items() if n >= 3 and n / len(mine) >= 0.6 and o in files and o not in inc and not _noise(o)),
+                      key=lambda o: (-count[o], o))[:SIB_COCH]
+        out += [{"file": o, "kind": "cochange", "how": "%s usually changes with %s (%d of %d commits)" % (
+            target.shown(c), target.shown(o), count[o], len(mine))} for o in keep]
+    return out[:SIB_COCH_ALL]
+
+
+def _siblings(repo: str, rev: Optional[str], mb_ls: dict, files: List[str], included: List[str],
+              mb: Optional[str] = None) -> Tuple[List[dict], bool]:
+    """([{file, how, kind}], capped): registries that name a new shipped file's siblings but not the file (kind gap), and
+    files that usually change with a changed file (kind cochange). Hints for a lane, never evidence; bounded by
+    SIB_* and, for the greps, a wall clock. git or grep trouble yields fewer hints, never an error."""
+    inc, t0 = set(included), time.monotonic()
+    unchanged = {p for p in files if p in mb_ls and p not in inc and not _noise(p) and target.shown(p) == p}
+    expired = lambda: time.monotonic() - t0 > SIB_WALL  # noqa: E731
+    probes = []
+    for p in sorted(inc):
+        d = p.split("/")[0]
+        if p in mb_ls or _is_test(p) or _is_fixture(p) or _noise(p) or d in ("docs", "doc"):
+            continue
+        sibs, by_dir = _sibs_of(p, unchanged)
+        if sibs:
+            probes.append((p, sibs, by_dir))
+    capped, entries = len(probes) > SIB_NEW, []
+    for p, sibs, by_dir in probes[:SIB_NEW]:
+        got = _gaps(repo, rev, p, sibs, by_dir, expired)
+        if got is None:
+            capped = True
+            break
+        capped = capped or len(got) > SIB_GAPS
+        entries += got[:SIB_GAPS]
+    if mb:
+        entries += _cochange(repo, mb, mb_ls, set(files), included)
+    return entries[:SIB_LINES], capped
+
+
 def _load(names: List[str]) -> dict:
     """Expected load from tracked deploy config and server or worker entry points only, never from PR or issue
     text (untrusted): "service" with the files that say so, "script" when none does, "unknown" with no files."""
@@ -315,8 +447,16 @@ def _load(names: List[str]) -> dict:
     return {"load": "service" if sig else "script" if names else "unknown", "files": sig[:5]}
 
 
-def _conv_paths(names, included: List[str]) -> set:
-    """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory."""
+def _nit_extra(n: str, d: str, b: str, dirs: set) -> bool:
+    """--nit rule sources: PR templates, Cursor rules, Gemini styleguide, GLOSSARY.md (ancestor dirs), ADRs, .okf Markdown."""
+    return (n in _NIT_FIXED or (d == ".github/PULL_REQUEST_TEMPLATE" and b.endswith(".md"))
+            or ((d + "/").startswith(".cursor/rules/") and b.endswith((".md", ".mdc"))) or (b == "GLOSSARY.md" and d in dirs)
+            or (d == "docs/adr" and b.endswith(".md")) or (n.startswith(".okf/") and b.endswith(".md")))
+
+
+def _conv_paths(names, included: List[str], nit: bool = False) -> set:
+    """Review-rule files among `names`: the fixed set plus CLAUDE/AGENTS/REVIEW in every ancestor directory;
+    with `nit`, the extra --nit sources too."""
     dirs = {""}
     for p in included:
         while "/" in p:
@@ -326,7 +466,7 @@ def _conv_paths(names, included: List[str]) -> set:
     for n in names:
         d, _, b = n.rpartition("/")
         if (b in _ANCESTOR and d in dirs) or n in _CONV_FIXED or (d == "" and b.startswith("CONTRIBUTING")) \
-                or (d == ".github/instructions" and b.endswith(".instructions.md")):
+                or (d == ".github/instructions" and b.endswith(".instructions.md")) or (nit and _nit_extra(n, d, b, dirs)):
             out.add(n)
     return out
 
@@ -348,10 +488,16 @@ def _put(root: str, rel: str, data: bytes) -> bool:
 
 
 def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
-                 included: List[str]) -> Tuple[list, list, list]:
+                 included: List[str], nit: bool = False, base_ls: Optional[dict] = None) -> Tuple[list, list, list]:
     """Copy review rules from the pinned merge base only, hidden text stripped; a head-only rule file is ignored."""
-    base_ls = target.tree_listing(mb, repo)
-    want = sorted(_conv_paths(base_ls, included))
+    base_ls = base_ls if base_ls is not None else target.tree_listing(mb, repo)
+    cand = _conv_paths(base_ls, included, nit)
+    want = sorted(cand)
+    over = []
+    if nit:  # the cap counts candidates, not copies; the first 40 extras by (_nit_rank, path) stay
+        extra = sorted(cand - _conv_paths(base_ls, included), key=lambda p: (_nit_rank(p), p))
+        over = extra[_NIT_CAP:]
+        want = sorted(cand - set(over))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
     blobs = _blobs(repo, regular.values())
     conv, ignored = [], []
@@ -380,7 +526,9 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
             diff = not ok or target.git(["hash-object", "--no-filters", "--", p], repo).strip() != base_ls[p][1]
         conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
                      "how": "base-ref"})
-    for p in sorted(_conv_paths(files, included) - set(want)):
+    for p in over:
+        ignored.append({"file": target.shown(p), "reason": "nit-cap", "how": "over the %d extra --nit rule files" % _NIT_CAP})
+    for p in sorted(_conv_paths(files, included, nit) - cand):
         ignored.append({"file": target.shown(p), "reason": "head-only", "how": "present on head, absent at the merge base"})
     notes = []
     if any(c["differs_on_head"] for c in conv) and target.git(["rev-parse", "HEAD"], repo, check=False).strip() == head:
@@ -770,7 +918,7 @@ def _section(head: str, items: List[tuple], nonce: str) -> str:
                              or "none")
 
 
-def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
+def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
@@ -788,7 +936,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     diff = _diff_lines(os.path.join(run, "change.diff")) if tj["diff_cmd"] else None
     found, capped = _discover(repo, files, included, rev, diff)
 
-    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included)
+    mb_ls = target.tree_listing(mb, repo)
+    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit, mb_ls)
 
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
@@ -803,12 +952,15 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
         "target": {k: tj[k] for k in ("kind", "base_sha", "head_sha", "merge_base")},
         "trust": "unset", "trust_asked": False,
         "symbols": found["symbols"], "callers": found["callers"], "tests": found["tests"],
-        "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"],
+        "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"], "siblings": [],
         "notes": list(tj.get("notes", [])) + conv_notes, "conventions": conventions, "ignored": ignored,
         "spec": dict({"status": spec_status, "sources": sources}, **({"adr_only": True} if adr_only else {})),
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    led["siblings"], over_sib = _siblings(repo, rev, mb_ls, files, included, mb)
+    if over_sib:  # recorded only when hit, like `adr`: a quiet run keeps the capped keys it always had
+        capped["siblings"] = True
     claimed = set(included) | {e["file"] for c in _CTX for e in led[c]}
     led["helpers"], over = _helpers(repo, idx if idx is not None else head_ls, files, included, claimed)
     capped["helpers"] = bool(over)
@@ -826,7 +978,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                     e[k] = target.shown(v)
     led["hidden_chars"] += more
     led["hidden_text"] = _dedupe_hidden(led["hidden_text"] + more_text)
-    led["label"] = "full" if any(led[c] for c in CATEGORIES[:8]) or found_spec else "triage"
+    led["label"] = "full" if any(led[c] for c in CATEGORIES[:9]) or found_spec else "triage"
     _keep_trust(run, led)
     _write_json(os.path.join(run, "ledger.json"), led)
 
@@ -866,6 +1018,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
                "- %s: %d%s" % (c, len(led[c]), " (capped)" if led["capped"].get(c) else "") for c in CATEGORIES) + load_sec)
+    sib_sec = "\n## Siblings\n\n%s\n%s\n" % (SIB_OPENER, "\n".join(e["how"] for e in led["siblings"])) if led["siblings"] else ""
     copies = {c["file"]: json.dumps(os.path.join(run, c["copy"])) for c in conventions}
     contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
@@ -875,7 +1028,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
                led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
-               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + sib_sec)
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
             "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
@@ -976,19 +1129,23 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = _trust_cli(argv[1:])
         elif argv[:2] == ["context", "--run"] and len(argv) == 3:
             out = context(argv[2])
-        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or len(argv) % 2 != 1 or (
-                argv[3::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"], ["--found", "--spec"])):
-            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
+        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or argv.count("--nit") > 1 or (
+                len(argv) - ("--nit" in argv)) % 2 != 1 or (
+                [a for a in argv[3:] if a != "--nit"][::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"],
+                                                                    ["--found", "--spec"])):
+            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit]")
         else:
-            opts = dict(zip(argv[3::2], argv[4::2]))
+            nit = "--nit" in argv
+            rest = [a for a in argv[3:] if a != "--nit"]
+            opts = dict(zip(rest[::2], rest[1::2]))
             spec, found = opts.get("--spec"), ()
             if opts.get("--found") not in (None, "-"):
-                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -]")
+                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit]")
             if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
                 spec = sys.stdin.readline().rstrip("\n")
             if "--found" in opts:  # the spec finder's paths, one per stdin line; a bad one is dropped, not refused
                 found = [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
-            out = build(argv[2], spec, found)
+            out = build(argv[2], spec, found, nit)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback

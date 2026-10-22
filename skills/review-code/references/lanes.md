@@ -6,7 +6,7 @@ Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost prev
 
 ## Tiers
 
-`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: there is no eval corpus to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
+`--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: `evals/` holds a harness but no baseline has been recorded to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
 | Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
 |------|-------|---------------------|-----------------------|----------------|--------|-------|
@@ -36,15 +36,38 @@ The axes are reported side by side and never merged or reranked. Duplicates are 
 
 ## Domain packs
 
-Packs are plain Markdown files under `references/packs/`, loaded into the Defects and Standards lane inputs by file path or by content of the changed lines (a heuristic: a hit loads a pack for a lane to read, it is never a finding). Names: `python`, `r`, `js-ts`, `sql`, `data-migrations`, `security-owasp`, `concurrency`, `api-compat`, `llm-generated-code`.
+Packs are plain Markdown files under `references/packs/`, loaded into the Defects and Standards lane inputs by file path or by content of the changed lines (a heuristic: a hit loads a pack for a lane to read, it is never a finding). Names: `python`, `r`, `js-ts`, `sql`, `data-migrations`, `security-owasp`, `concurrency`, `api-compat`, `test-quality`, `llm-generated-code`.
 
 - `python`, `r`, `js-ts` and `sql` load by file extension or name; `api-compat` by files such as `__init__.py`, `index.ts`, `openapi*`, `*.proto`, `NAMESPACE`, `package.json`.
 - `data-migrations` loads for files on a migration path, or for `.sql` files whose changed lines create, alter or drop; `security-owasp` and `concurrency` load when a changed line matches their patterns.
+- `test-quality` loads by test file names (`test_*.py`, `*_test.*`, `*.test.*`, `*.spec.*`, `*_spec.rb`, `*Tests.cs`) or a `tests/` or `__tests__/` directory.
 - `llm-generated-code` loads only with `--ai` or the deep tier: authorship is not knowable from a diff.
 - Each pack has a `## Do not flag` list. The limit is prompt-level: the list reaches the lane through its prompt and the verifier through the finding's handoff, and no code filters findings by it. A finding that matches the list can still be reported if a lane ignores it.
 - Pack text is plugin-authored data, not instructions from the reviewed code.
 
-When more packs match than the cap allows, the surplus is listed as skipped.
+When more packs match than the cap allows, packs rank by matched-file count, most files first, with the table order above breaking ties; the lowest-ranked surplus is listed as skipped, so which pack drops depends on the change, not on its name.
+
+## Nit mode
+
+`--nit` is one boolean flag, orthogonal to the tier flags; `--nit --lean` is the nits-only pass. It reaches
+`ledger.py build --nit` (every build call) and `plan.py plan --nit`, which writes `"nit": true` to plan.json and a
+`## Nit mode` section to the Standards input. Only the Standards lane may send a `nit`. Decision record:
+`docs/adr/0001-nit-mode.md`.
+
+- Two bases, both checked by the scripts, not the model. A rule nit is category `convention`, severity `nit`; its rule
+  must occur in a `conventions/` copy, exactly as for any convention. A norm nit is category `norm`: the lane names
+  `norm_for` and `norm_against` (literal strings, not patterns) and `norm_glob`; `scripts/nit.py` (the owner of every nit check) counts the lines of
+  `tree/` files matching the glob that hold each idiom. The finding stands with at least 20 such lines, `norm_for` on
+  more lines than `norm_against`, and `norm_against` inside the quote. The counts are the script's, shown in the report.
+  Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-sample-small`, `norm-not-majority`.
+- A diff target's `tree/` holds the changed files and capped helpers, so norm nits are rare there and common in path
+  and repo targets. This is a limit, not a bug.
+- Extra rule files with `--nit`, read from the merge base only, kept in this order (path order within a group) up to 40:
+  PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/**/*.md|.mdc`, `.okf/**/*.md`.
+  The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
+- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
+  rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule` or `norm`). Diff targets drop a
+  nit on an unchanged line; a repo target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
 
 ## Caps and turn ceilings
 
@@ -54,9 +77,10 @@ When more packs match than the cap allows, the surplus is listed as skipped.
 | `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `CAP_HELPER_BYTES` (`ledger.py`, 200000) | Bytes of helper files copied into `tree/` as reuse context: files in the directory of a changed file and tracked paths named util, helper, common, shared or lib, siblings of a changed file first, then helper-named paths, each in path order. They are listed under `helpers` in `ledger.json`, never counted as reviewed files; those past the cap appear in the ledger's `tree.skipped` with reason `helper-cap` | fixed |
+| `SIB_*` (`ledger.py`) | The `siblings` context category: for a new shipped file (at most 5 per run) with up to 3 unchanged siblings, `git grep` finds registries that name at least 2 siblings but not the file (a new file with fewer than 2 siblings finds none; at most 8 per file; a sibling token in more than 12 files is dropped as too common; 20 s wall clock, recorded as `capped`), plus files that changed together in at least 3 of the last 1000 commits of the past year (ratio 0.6 or more, 12 at most). Hits are copied into `tree/` and listed as at most 19 hint lines in a `## Siblings` section of the Standards input, as hints a finding must cite, never evidence. The lane may send a `smell` finding at `suggestion` from a confirmed registry gap, anchored on the new file's first line (an added line, so it is not dropped as pre-existing) with the hint as `trigger` | fixed |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
-Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 40, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
+Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 60, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
 
 ## Cost preview and headless runs
 

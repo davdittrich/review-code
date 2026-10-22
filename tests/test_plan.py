@@ -542,6 +542,38 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
+    def test_nit_flag_sets_plan_json_and_the_standards_section_only(self):
+        self.assertNotIn("nit", self.run_plan())
+        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+        p = self.run_plan("--nit")
+        self.assertIs(p["nit"], True)
+        std = self.read("inputs/standards.md")
+        for want in ("## Nit mode", "norm_for", "norm_against", "norm_glob", "20 lines"):
+            self.assertIn(want, std)
+        self.assertNotIn("## Nit mode", self.read("inputs/defects.md"))
+        self.run_plan("--nit")
+        self.assertEqual(self.read("inputs/standards.md").count("## Nit mode"), 1)
+        self.assertNotIn("nit", self.run_plan())  # a rerun without the flag drops the section
+        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+
+    def test_nit_combines_with_lean(self):
+        p = self.run_plan("--tier", "lean", "--nit")
+        self.assertEqual((p["tier"], p["nit"]), ("lean", True))
+        self.assertIn("## Nit mode", self.read("inputs/standards.md"))
+
+    def test_only_a_lean_nit_run_tells_the_lane_it_reports_nits_only(self):
+        self.run_plan("--tier", "lean", "--nit")
+        self.assertEqual(self.read("inputs/standards.md").count("reports nits only"), 1)
+        for tier in ("quick", "standard", "deep"):
+            self.run_plan("--tier", tier, "--nit")
+            self.assertIn("## Nit mode", self.read("inputs/standards.md"), tier)
+            self.assertNotIn("reports nits only", self.read("inputs/standards.md"), tier)
+        self.run_plan("--tier", "lean")
+        self.assertNotIn("reports nits only", self.read("inputs/standards.md"))
+
+    def test_standards_ceiling_is_60(self):
+        self.assertEqual(self.run_plan()["max_turns"]["standards"], 60)
+
     def test_change_target_is_never_sharded(self):
         self.assertEqual(self.run_plan("--tier", "deep")["shards"], [])
 
@@ -668,9 +700,35 @@ class ShardMerge(ShardBase):
         small = [f for f in files if "small1/m.py" in f][0]
         self.assertIn("small2/n.py", small)
 
+    def test_nit_section_reaches_every_shard_standards_input(self):
+        p = self.run_plan(nit=True)
+        self.assertTrue(p["nit"] and p["shards"])
+        for s in p["shards"]:
+            self.assertIn("## Nit mode", self.read_text("shards", str(s["id"]), "inputs", "standards.md"))
+        self.assertIn("## Nit mode", self.read_text("inputs", "standards.md"))
+
     def test_one_group_is_not_sharded(self):
         p = self.run_plan(shard_bytes=10 ** 9)
         self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
+
+
+class ShardNitSources(ShardBase):
+    base_files = dict(ShardMerge.base_files, **{".gemini/styleguide.md": "Prefer small functions.\n"})
+    feat_files = ShardMerge.feat_files
+
+    def shard_copies(self, p):
+        return [os.path.exists(os.path.join(self.run_dir, "shards", str(s["id"]), "conventions", ".gemini", "styleguide.md"))
+                for s in p["shards"]]
+
+    def test_an_extra_nit_rule_file_reaches_every_shard_only_with_nit(self):
+        p = self.run_plan(shard_bytes=100, nit=True)
+        self.assertGreater(len(p["shards"]), 1)
+        self.assertEqual(self.shard_copies(p), [True] * len(p["shards"]))
+
+    def test_the_extra_rule_file_is_absent_from_shards_without_nit(self):
+        p = self.run_plan(shard_bytes=100)
+        self.assertGreater(len(p["shards"]), 1)
+        self.assertEqual(self.shard_copies(p), [False] * len(p["shards"]))
 
 
 class Shards(ShardBase):

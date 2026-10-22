@@ -37,6 +37,13 @@ For each requirement the spec states, trace it through the changed code:
 A requirement that cannot be tested from the code, or that lies outside this change, is not a
 finding. List it as declined instead.
 
+Claim walk: the spec also makes factual claims about the code, not only requirements. Pull out each
+atomic one: a count or limit, an always, never or only statement, "handled by" some component,
+"no behaviour change". Trace each through tree/. A claim the code contradicts is a `spec-wrong` finding:
+the trigger names the claim (paraphrase it, never copy it) and the contradicting code, and the quote
+and path:line come from tree/. A true claim produces nothing; "tests pass" and the author's
+confidence are no evidence either way. A claim that cannot be checked from tree/ is declined, not a finding.
+
 ## Severity and category
 
 Severity is one of `required`, `suggestion`, `noted`. Never use `blocking`.

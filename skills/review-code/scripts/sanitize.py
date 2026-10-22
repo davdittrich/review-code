@@ -46,7 +46,7 @@ def _run_kind(ch: str) -> Optional[str]:
 
 
 _PROSE_EXT = (".md", ".livemd", ".markdown", ".mdown", ".mdwn", ".mkd", ".mkdn", ".mkdown", ".ronn", ".scd",
-              ".workbook", ".mdx", ".rmd", ".qmd", ".html", ".htm", ".txt", ".rst")
+              ".workbook", ".mdx", ".rmd", ".qmd", ".mdc", ".html", ".htm", ".txt", ".rst")
 
 
 def is_prose_file(path: str) -> bool:

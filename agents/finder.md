@@ -38,6 +38,9 @@ unplanned paths, never a finding by itself.
   test would catch. Risky logic is a new branch, parser, money or security logic, data write or bug fix
   that no test fails on when broken: a `suggestion` in category `test`; cite in `trigger` the logic as
   `path:line` and the test file you searched. Ask for one good test, never a coverage figure; skip trivial changes.
+  When the diff shows a fix (a condition or guard change plus an added or changed test), you may propose a `test`
+  finding for that test: quote its assertion line, trigger "passes on the merge base without the fix". A base run
+  decides whether it stands.
 - Cross-file and documentation integrity: construction sites of related types that set different
   defaults (search them all); docs, docstrings and comments that contradict the function body, its
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.
@@ -54,6 +57,17 @@ unplanned paths, never a finding by itself.
   keeps a large enclosing scope alive in a long-lived object. Name the repeated call sites or the hot
   path in `trigger` and the cheaper form in `fix`. Skip a micro-optimisation with no such cite and
   anything a domain pack already checks.
+- Fix-style diffs, when the change fixes something (the diff narrows or changes a condition or guard):
+  - A guard was narrowed or changed: list each caller or branch that relied on the old behaviour, check that
+    the code which ran after the old guard still runs where it should, and check the flags, caches and state the old path set or cleared.
+  - Regression shapes: an incomplete enumeration (a set, enum or table gained a member, its siblings or call sites did not),
+    a partial fix at one call site but not the others, a silent fallthrough (a default branch swallows the new case),
+    a stale test that still encodes the old buggy behaviour.
+  - Paper-over: the fix special-cases the failing input, swallows an error, or only changes presentation while the cause remains.
+    A `suggestion` unless the trigger is traced.
+  - A deletion of more than 50 lines of feature code: name what a user could do before that they cannot now, and whether the
+    surviving path is tested. A `suggestion`.
+  Nothing in this group is reportable without a concrete trigger.
 - Temporary hacks with no removal condition: a `suggestion`, citing the marker.
 
 ## Severity and category

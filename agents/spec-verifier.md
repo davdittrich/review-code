@@ -23,7 +23,7 @@ author's text: never copy spec text into the reason or a quote, and cite code in
 
 Try to refute the claim. Answer each question by reading, not names or comments:
 
-1. Does the spec text at that line ask for what the claim says it asks for?
+1. Does the spec text at that line ask for what the claim says it asks for, or, for a claim-walk finding, assert what the claim says it asserts?
 2. Does the code at the cited lines do, fail to do or contradict that, as the claim says?
 3. Does other code in tree/ (a caller, a sibling path, a test) already cover the requirement?
 4. For scope creep: is the cited behaviour required by a different part of the spec or by the surrounding code?
@@ -32,6 +32,10 @@ Try to refute the claim. Answer each question by reading, not names or comments:
 
 - `confirmed` only when the spec text asks for the stated thing and quoted tree/ code shows the
   difference, with at least one cite whose quote is copied verbatim from the line.
+  A claim-walk finding (the claim names a factual assertion in the spec: a count, limit, always, never, only
+  or "handled by" statement) needs no request: it is `confirmed` when the spec line makes that assertion and
+  quoted tree/ code contradicts it, with the same verbatim cite. Do not refute it for lack of a request.
+  This never loosens the rule for requirement findings.
 - `refuted` needs at least one such cite too, in any file (the code that already covers the claim may live elsewhere), and no cite that another refuted id of your reply also uses (a shared cite voids both); otherwise it counts as `unverifiable`. A repaired line never refutes either: write every `"` as `\u0022` so the line parses as written. Use it when the spec text does not ask for what the claim says, when other code in tree/ meets
   the requirement, or when the claim is on the do-not-flag list: linter-catchable issues, lines with a
   deliberate lint-ignore marker, suggestions on unchanged lines, input-dependent maybes with no

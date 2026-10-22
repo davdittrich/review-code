@@ -182,6 +182,41 @@ class Derivation(Base):
         self.assertEqual(f[m]["evidence_class"], "traced")
         self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
 
+    def _test_category_unverifiable(self, record):
+        self.ingest(cand(Q_NEG, 14, category="test"))
+        n = fid("src/calc.py", "test", Q_NEG)
+        self.verdicts(dict(verdict((Q_NEG, 14), "unverifiable"), id=n))
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
+            json.dump(record, fh)
+        return n
+
+    def test_only_a_base_record_upgrades_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 0, "mode": "base"})
+        self.assertEqual(self.items()[n]["evidence_class"], "reproduced")
+
+    def test_a_run_record_does_not_upgrade_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 1, "mode": "run"})
+        self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
+
+    def test_a_legacy_record_does_not_upgrade_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 0})
+        self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
+
+    def test_a_base_record_never_upgrades_a_confirmed_finding(self):
+        for category in ("bug", "security", "test"):
+            for mode, want in (("base", "traced"), ("run", "reproduced"), (None, "reproduced")):  # None: a legacy record
+                with self.subTest(category=category, mode=mode):
+                    self.rep("discard")
+                    shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
+                    self.ingest(cand(Q_ADD, 8, category=category))
+                    n = fid("src/calc.py", category, Q_ADD)
+                    self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
+                    os.makedirs(os.path.join(self.run_dir, "repro"))
+                    with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
+                        json.dump(dict({"outcome": "reproduced", "exit": 0}, **({"mode": mode} if mode else {})), fh)
+                    self.assertEqual(self.items()[n]["evidence_class"], want)
+
     def test_do_not_flag_unchanged_lines(self):
         self.ingest(cand(Q_OLD, 5, severity="suggestion", category="security"),
                     cand("return 1", 2, severity="blocking", category="security"),
@@ -1453,6 +1488,12 @@ class Repair(Base):
                for ln in REAL_LANE + REAL_VERDICTS for _, o, _ in report._objects(ln)]
         self.assertEqual(got, REAL_READINGS)
 
+    def test_a_standards_norm_line_short_one_closer_is_repaired(self):
+        for k in ("norm_for", "norm_against", "norm_glob"):  # a key LANE_OPTIONAL accepts is a repair key too
+            self.assertIn(k, report.KEYS)
+            ((_, o, fixed),) = report._objects('[["path", "a.py"], ["%s", "*.py", ["line", 3]]' % k)
+            self.assertEqual((o, fixed), ({"path": "a.py", k: "*.py", "line": 3}, True))
+
     def test_strict_lines_are_not_flagged_repaired(self):
         self.assertEqual([r for _, _, r in report._objects(json.dumps(wire(CAND)))], [False])
 
@@ -1731,6 +1772,77 @@ class RepairKeeps(Base):
         out = self.ingest(raw, {"inspected": ["src/calc.py"]})
         self.assertEqual((len(out["ids"]), out["repaired"]), (1, 1))
         self.assertEqual(self.doc()["unverifiable"][0]["fix"], 'use g("a")')
+
+
+class DroppedCloser(Base):
+    """review-code-b2pj: a verdict line short one `]` after its evidence list is read, flagged repaired, never refutes."""
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, QFEAT
+    LINE = ('[["id","%s"],["verdict","%s"],["evidence",[[["path","src/calc.py"],["line",5],["quote","return f(\\"a\\", \\"b\\")"]]],'
+            '["reason","r"]]')
+
+    def _id(self):
+        (i,) = self.ingest(dict(CAND, line=5, quote='return f("a", "b")'), {"inspected": ["src/calc.py"]})["ids"]
+        return i
+
+    def test_a_verdict_short_one_closer_after_the_evidence_list_is_repaired(self):
+        i = self._id()
+        out = self.verdicts(self.LINE % (i, "confirmed"))
+        self.assertEqual((out["confirmed"], out["repaired"]), ([i], 1))
+
+    def test_a_repaired_short_closer_refutation_is_unverifiable(self):
+        i = self._id()
+        out = self.verdicts(self.LINE % (i, "refuted"))
+        self.assertEqual((out["refuted"], out["unverifiable"]), ([], [i]))
+
+    def test_a_token_inside_a_string_is_not_a_closer_point(self):
+        for ln in ('[["id","F-0000000000"],["verdict","confirmed"],["reason","a], [\\"reason\\", \\"b"]',
+                   '[["id","F-0000000000"],["verdict","confirmed"],["evidence",[["a","b"]],["reason","r"]],["reason","r2"]]'):
+            self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
+
+    def test_a_candidate_line_short_one_closer_after_a_single_field_is_repaired_too(self):
+        # observed: the generic rule has no lane or key list, so a finding line is repaired like a verdict line
+        ln = ('[["path","src/calc.py"],["line",5,["severity","required"],["category","bug"],["title","t"],'
+              '["trigger","tr"],["quote","return 1"]]')
+        (_, o, rep), = report._objects(ln)
+        self.assertEqual((o["line"], o["quote"], rep), (5, "return 1", True))
+
+    def test_a_3_item_pair_and_an_injected_extra_pair_stay_invalid(self):
+        for ln in ('[["id","F-0123456789"],["verdict","confirmed","x"],["reason","r"]]',
+                   '[["id","F-0123456789"],["verdict","confirmed"],["reason","r"],["verdict","refuted"]]'):
+            self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
+
+    def test_a_valid_line_is_not_flagged_repaired(self):
+        ln = '[["id","F-0123456789"],["verdict","confirmed"],["reason","r"]]'
+        self.assertEqual([(o is not None, rep) for _, o, rep in report._objects(ln)], [(True, False)])
+
+    def test_multi_cite_evidence_short_one_closer_is_repaired(self):
+        c = '[["path","src/calc.py"],["line",%d],["quote","q"]]'
+        ln = '[["id","F-0123456789"],["verdict","confirmed"],["evidence",[%s,%s],["reason","r"]]' % (c % 5, c % 6)
+        (_, o, rep), = report._objects(ln)
+        self.assertEqual((len(o["evidence"]), rep), (2, True))
+
+    def test_800_pairs_are_rejected_fast(self):
+        t = time.time()
+        out = list(report._objects('[' + '["a","b"],' * 800 + '["x'))
+        self.assertEqual([o for _, o, _ in out], [None])
+        self.assertLess(time.time() - t, 2)
+
+    def test_a_missing_closer_before_quote_is_still_rejected(self):
+        i = self._id()  # the insert makes a parseable line whose cite lacks line/quote: validation, not parsing, rejects it
+        before_quote = ('[["id","%s"],["verdict","confirmed"],["evidence",[[["path","src/calc.py"],["line",5,'
+                        '["quote","return f(\\"a\\", \\"b\\")"]]]],["reason","r"]]') % i
+        self.assertEqual(self.verdicts(before_quote)["confirmed"], [])
+
+
+class DroppedCloserHostile(Base):
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, {"src/calc.py": "def load():\n    return 1\n\nz = [[\"line\", 1]]\n"}
+
+    def test_a_repaired_line_citing_a_file_that_holds_a_wire_token_keeps_no_evidence(self):
+        (i,) = self.ingest(dict(CAND, line=4, quote='z = [["line", 1]]'), {"inspected": ["src/calc.py"]})["ids"]
+        ln = ('[["id","%s"],["verdict","confirmed"],["evidence",[[["path","src/calc.py"],["line",4],'
+              '["quote","z = [[\\"line\\", 1]]"]]],["reason","r"]]') % i
+        out = self.verdicts(ln)
+        self.assertEqual((out["confirmed"], out["repaired"]), ([], 1))
 
 
 class Gate(Base):
@@ -2226,6 +2338,20 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+
+class NotRunSkips(unittest.TestCase):
+    def nr(self, skipped):
+        return report._not_run("/nonexistent", {"trust": "own"}, skipped, {}, False, [])
+
+    def test_a_skip_for_nothing_to_run_on_is_not_a_failure(self):
+        self.assertEqual(self.nr([{"what": "spec", "why": "no spec"},
+                                  {"what": "sota", "why": "no dependency or import names in the change"}]), [])
+
+    def test_tier_lean_and_shard_cap_skips_stay(self):
+        self.assertEqual(self.nr([{"what": "defects", "why": "tier lean"}, {"what": "spec", "why": "tier lean"},
+                                  {"what": "shard 2", "why": "shard cap: 9 files"}]), ["defects", "shard 2", "spec"])
+        self.assertEqual(self.nr([{"what": "spec", "why": "tier lean"}, {"what": "spec", "why": "no spec"}]), ["spec"])  # --lean without a spec
 
 
 if __name__ == "__main__":

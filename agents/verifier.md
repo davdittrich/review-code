@@ -49,7 +49,7 @@ The handoff may carry more blocks:
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore
   marker, a `shortcut:` comment that names its limit (unless the `## Expected load` in the handoff, when
   present, already crosses that limit), suggestions on unchanged lines, input-dependent maybes with no reaching input.
-- `unverifiable` when the code needed is absent from tree/ or the trace is incomplete.
+- `unverifiable` when the code needed is absent from tree/ or the trace is incomplete. A `test` finding that the test passes on the merge base cannot be read from code: answer `unverifiable` with the assertion line as a cite.
 - When unsure, the verdict is `unverifiable`.
 
 ## Output

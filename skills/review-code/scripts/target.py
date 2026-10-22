@@ -21,11 +21,12 @@ import time
 from datetime import datetime, timezone
 from typing import Iterator, List, Optional, Tuple
 
+import prior
 import sanitize
 
 MAX_PREVIEW = 25000  # Claude Code saves Bash output over 30000 characters (its default) to a file, unseen by the user
 STDOUT_KEYS = {"status", "reason", "detail", "kind", "base_sha", "head_sha", "merge_base", "number", "run",
-               "included_count", "excluded_count", "untracked_count", "candidates"}
+               "included_count", "excluded_count", "untracked_count", "candidates", "since_last"}
 # No hook or fsmonitor program from the repository runs (SC5); names arrive unquoted, so escape_for_code covers them.
 _GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
 _WIDE = "--unified=999999"
@@ -507,14 +508,34 @@ def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
     return names, renames
 
 
-def _plan_revs(base: str, head: str, mb: str, top: str) -> dict:
-    names, renames = _changed("diff-tree", [mb, head], top)
-    return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [],
-            "diff_cmd": ["git", "diff-tree", "-r"] + _DIFF_FLAGS + [mb, head, "--"],
-            "commits": git(["rev-list", "--reverse", mb + ".." + head], top).split()}
+def _plan_revs(base: str, head: str, mb: str, top: str, since: Optional[str] = None) -> dict:
+    """`mb` is the trust anchor (rules, siblings, ledger context); `since`, when set, only starts the diff range."""
+    start = since or mb
+    names, renames = _changed("diff-tree", [start, head], top)
+    return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [], "diff_base": since,
+            "diff_cmd": ["git", "diff-tree", "-r"] + _DIFF_FLAGS + [start, head, "--"],
+            "commits": git(["rev-list", "--reverse", start + ".." + head], top).split()}
 
 
-def _plan_forge(cand: dict, cwd: str) -> dict:
+def _last_review_head(info: dict, cwd: str) -> Optional[str]:
+    """The head the poster's newest own review on this pull request was written for, or None (no such review, or the
+    reviews could not be read: either way the caller reviews in full)."""
+    m = PR_URL.fullmatch(info["url"])
+    try:
+        host = ["api", "--hostname", m.group(1)]
+        me = gh_json(host + ["user"], cwd)["login"]
+        reviews = []
+        for no in range(1, 21):
+            got = gh_json(host + ["repos/%s/pulls/%s/reviews?per_page=100&page=%d" % (m.group(2), m.group(3), no)], cwd)
+            reviews += got
+            if len(got) < 100:
+                break
+        return prior.read(reviews, [], me)["last_head"]
+    except (Refuse, KeyError, TypeError, AttributeError, ValueError):
+        return None
+
+
+def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
     if cand.get("repo_key") and not any(k == cand["repo_key"] for _, k in _remotes(cwd)):
         raise Refuse("cross-repo", "the pull request belongs to a repository with no configured remote")
     info = (_view_pr if cand["kind"] == "pr" else _view_mr)(cand, cwd)
@@ -532,8 +553,20 @@ def _plan_forge(cand: dict, cwd: str) -> dict:
     mb = git(["merge-base", info["base"], info["head"]], cwd, check=False).strip()
     if not mb:
         raise Refuse("bad-ref", "no common ancestor")
-    plan = _plan_revs(info["base"], info["head"], mb, cwd)
-    plan.update(number=cand["number"], url=info["url"], notes=info["notes"])
+    note = since = None
+    if since_last:  # review only what changed since the poster's last review, or all of it, and say which
+        last = _last_review_head(info, cwd)
+        if last is None:
+            note = "full review: no earlier review of this pull request by you could be read"
+        elif not _have(last, cwd) or _run(["merge-base", "--is-ancestor", last, info["head"]], cwd)[0] != 0:
+            note = "full review: the head of your last review is not an ancestor of this head (force-push or rebase)"
+        elif git(["rev-list", "--merges", "--max-count=1", last + ".." + info["head"]], cwd, check=False).strip():
+            note = "full review: another branch was merged into this pull request since your last review"
+        else:
+            since = last  # only the diff range starts here; rules and context stay on the true merge base
+            note = "reviewing since your last review, %s..%s" % (last[:12], info["head"][:12])
+    plan = _plan_revs(info["base"], info["head"], mb, cwd, since)
+    plan.update(number=cand["number"], url=info["url"], notes=info["notes"] + ([note] if note else []), since_last=note)
     return plan
 
 
@@ -865,11 +898,13 @@ def _checkout_root(top: str, head: str) -> str:
     return os.path.realpath(top) if os.path.realpath(top) in held or not held else held[0]
 
 
-def pin(candidate: dict, cwd: str) -> dict:
+def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     top = git(["rev-parse", "--show-toplevel"], cwd).strip()
     kind = candidate["kind"]
+    if since_last and kind != "pr":
+        raise Refuse("since-last-unsupported", "--since-last works on GitHub pull requests only")
     if kind in ("pr", "mr"):
-        plan = _plan_forge(candidate, top)
+        plan = _plan_forge(candidate, top, since_last)
     elif kind == "commit":
         plan = _plan_commit(candidate["rev"], top)
     elif kind in ("branch", "range"):
@@ -912,8 +947,9 @@ def pin(candidate: dict, cwd: str) -> dict:
              for (esc, hits), _ in marks if hits]
     rec = {
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
-        "number": plan.get("number"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
+        "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
+        "diff_base": plan.get("diff_base"),
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
@@ -952,7 +988,8 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             raise Refuse("not-a-git-repo", "run inside a git repository")
         if "--stdin" in argv:  # WR-08: words as data, one per line, so no shell layer parses them
             argv = [a for a in argv if a != "--stdin"] + [w for w in sys.stdin.read().split("\n") if w]
-        args, choice = _parse_cli(argv)
+        since_last = "--since-last" in argv
+        args, choice = _parse_cli([a for a in argv if a != "--since-last"])
         cands = resolve(args, cwd)
         if choice is None and len(cands) > 1:
             emit({"status": "ambiguous", "candidates": [
@@ -962,7 +999,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             raise Refuse("bad-choice", "the choice is not one of the listed readings")
         cand = cands[(choice or 1) - 1]
         cand["arg"] = " ".join(args)
-        rec = pin(cand, cwd)
+        rec = pin(cand, cwd, since_last)
     except Refuse as r:
         emit({"status": "skip" if r.reason in SKIP_REASONS else "refuse", "reason": r.reason, "detail": r.detail})
         return 1
@@ -972,7 +1009,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
     emit({"status": "ok", "kind": rec["kind"], "base_sha": rec["base_sha"], "head_sha": rec["head_sha"],
           "merge_base": rec["merge_base"], "number": rec["number"], "run": rec["run"],
           "included_count": len(rec["included"]), "excluded_count": len(rec["excluded"]),
-          "untracked_count": len(rec["untracked"])})
+          "untracked_count": len(rec["untracked"]), **({"since_last": rec["since_last"]} if rec["since_last"] else {})})
     return 0
 
 

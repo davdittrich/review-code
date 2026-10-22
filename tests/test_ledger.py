@@ -72,13 +72,13 @@ class Base(unittest.TestCase):
         return [n for n in out.split("\0") if n]
 
     def build(self, kind="branch", included=None, untracked=(), head=None, mb=None, commits=None, number=None,
-              spec=None, url=None, found=()):
+              spec=None, url=None, found=(), nit=False):
         head = head or self.g("rev-parse", "HEAD")
         mb = mb or self.g("merge-base", "main", head)
         if included is None:
             included = self.names(mb, head)
         write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url)
-        out = ledger.build(self.run_dir, spec, found)
+        out = ledger.build(self.run_dir, spec, found, nit)
         return out, self.load()
 
     def load(self):
@@ -325,6 +325,72 @@ class Categories(Base):
         self.assertEqual(sorted(os.listdir(self.run_dir)), first)
         self.assertEqual(self.load()["version"], 1)
         self.assertFalse([n for n in os.listdir(self.run_dir) if n.startswith(".tmp-")])
+
+
+NIT_EXTRAS = {
+    ".github/pull_request_template.md": "pr a\n", ".github/PULL_REQUEST_TEMPLATE.md": "pr b\n",
+    "docs/pull_request_template.md": "pr c\n", ".github/PULL_REQUEST_TEMPLATE/bug.md": "pr d\n",
+    ".cursor/rules/style.mdc": "cur a\n", ".cursor/rules/other.md": "cur b\n", ".gemini/styleguide.md": "gem\n",
+    "GLOSSARY.md": "gloss\n", "src/GLOSSARY.md": "gloss src\n", "docs/adr/0001.md": "adr\n",
+    ".okf/concepts/a.md": "okf\n", ".cursor/rules/area/sub/y.mdc": "cur nested\n"}
+NIT_SKIPPED = {"other/GLOSSARY.md": "x\n", ".cursor/rules/x.txt": "x\n",
+               "docs/adr/sub/z.md": "x\n", ".okf/a.txt": "x\n", "pull_request_template.md": "x\n"}
+
+
+class NitConventions(Base):
+    def conv_files(self, led):
+        return sorted(e["file"] for e in led["conventions"])
+
+    def test_nit_copies_the_extras_from_the_base_only(self):
+        self.base({"CLAUDE.md": "rule\n", "src/a.py": "pass\n", **NIT_EXTRAS, **NIT_SKIPPED})
+        self.branch({"src/a.py": "x = 1\n", "docs/adr/0001.md": "HEAD-EDIT\n"})
+        _, led = self.build(nit=True)
+        self.assertEqual(self.conv_files(led), sorted(["CLAUDE.md", *NIT_EXTRAS]))
+        self.assertEqual(self.read("conventions/docs/adr/0001.md"), "adr\n")
+        self.assertEqual(led["ignored"], [])
+
+    def test_nit_ignores_an_extra_that_exists_only_on_head(self):
+        self.base({"src/a.py": "pass\n"})
+        self.branch({".gemini/styleguide.md": "new rule\n", "docs/adr/0002.md": "new adr\n"})
+        _, led = self.build(nit=True)
+        self.assertEqual(led["conventions"], [])
+        self.assertEqual(sorted((e["file"], e["reason"]) for e in led["ignored"]),
+                         [(".gemini/styleguide.md", "head-only"), ("docs/adr/0002.md", "head-only")])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "conventions", ".gemini")))
+
+    def test_nit_cap_sends_the_41st_extra_to_ignored_and_not_to_head_only(self):
+        adrs = {"docs/adr/%04d.md" % i: "adr %d\n" % i for i in range(1, 42)}
+        self.base({"CLAUDE.md": "rule\n", "src/a.py": "pass\n", **adrs})
+        self.branch({"src/a.py": "x = 1\n"})
+        _, led = self.build(nit=True)
+        self.assertEqual(len(led["conventions"]), 41)  # CLAUDE.md is not an extra and never counts
+        self.assertIn("CLAUDE.md", self.conv_files(led))
+        self.assertEqual([(e["file"], e["reason"]) for e in led["ignored"]], [("docs/adr/0041.md", "nit-cap")])
+        self.assertTrue(led["ignored"][0]["how"])
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "conventions", "docs/adr/0041.md")))
+
+    def test_without_nit_no_extra_is_copied_listed_or_ignored(self):
+        self.base({"CLAUDE.md": "rule\n", "src/a.py": "pass\n", **NIT_EXTRAS})
+        self.branch({"src/a.py": "x = 1\n", "docs/adr/0002.md": "head only\n", ".okf/b.md": "head only\n"})
+        _, led = self.build()
+        self.assertEqual(self.conv_files(led), ["CLAUDE.md"])
+        self.assertEqual(led["ignored"], [])
+        self.assertEqual(os.listdir(os.path.join(self.run_dir, "conventions")), ["CLAUDE.md"])
+
+    def test_nit_flag_reaches_build_through_the_cli(self):
+        self.base({"src/a.py": "pass\n", ".gemini/styleguide.md": "gem\n"})
+        self.branch({"src/a.py": "x = 1\n"})
+        head = self.g("rev-parse", "HEAD")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"])
+        with redirect_stdout(io.StringIO()):
+            rc = ledger.main(["build", "--run", self.run_dir, "--nit"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.conv_files(self.load()), [".gemini/styleguide.md"])
+        for argv in (["build", "--run", self.run_dir, "--nit", "--nit"], ["build", "--run", self.run_dir, "--spec", "--nit"]):
+            with redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(ledger.main(argv), 1)
+            self.assertEqual(json.loads(out.getvalue())["reason"], "usage")
 
 
 class Conventions(Base):

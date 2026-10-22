@@ -1,0 +1,26 @@
+{
+  "prompt": "Review the last commit.",
+  "change_message": "store: validate records before every write\n\nsave, save_many and import_lines now reject invalid records before anything is written.",
+  "base_files": {
+    "store.py": "import json\n\n\ndef validate(rec):\n    if not isinstance(rec.get(\"id\"), int) or not rec.get(\"name\"):\n        raise ValueError(\"bad record\")\n\n\ndef save(path, rec):\n    validate(rec)\n    with open(path, \"a\") as fh:\n        fh.write(json.dumps(rec) + \"\\n\")\n"
+  },
+  "change_files": {
+    "store.py": "import json\n\n\ndef validate(rec):\n    if not isinstance(rec.get(\"id\"), int) or not rec.get(\"name\"):\n        raise ValueError(\"bad record\")\n\n\ndef save(path, rec):\n    validate(rec)\n    with open(path, \"a\") as fh:\n        fh.write(json.dumps(rec) + \"\\n\")\n\n\ndef save_many(path, recs):\n    recs = list(recs)\n    for rec in recs:\n        validate(rec)\n    with open(path, \"a\") as fh:\n        for rec in recs:\n            fh.write(json.dumps(rec) + \"\\n\")\n\n\ndef import_lines(path, lines):\n    with open(path, \"a\") as fh:\n        for line in lines:\n            fh.write(line.rstrip(\"\\n\") + \"\\n\")\n"
+  },
+  "defects": [
+    {
+      "id": "unguarded-import",
+      "path": "store.py",
+      "line": 24,
+      "end_line": 27,
+      "lane": "spec"
+    }
+  ],
+  "decoys": [
+    {
+      "path": "store.py",
+      "line": 17
+    }
+  ],
+  "accept": []
+}

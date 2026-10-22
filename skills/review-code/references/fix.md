@@ -48,6 +48,7 @@ A verified finding on a protected path is planned like any other, and the riskie
 | `stale` | `begin` could not find the finding's quote exactly once any more, so it handed out no brief | no |
 | `bad-path` | The finding's path is not a tracked regular file reached without a symlink, or has a `.git` component; reported by `plan` (skipped) or by `begin` (the file changed since) | no |
 | `test-path` | The finding names a file that judges the fix (see Which findings); `plan` skipped it | no |
+| `nit` | A `nit` finding under `--nit`: report-only, never briefed or located; `plan` skipped it | no |
 | `not-covered` | A test file under `--fix-tests` that the post-fix run does not reach (see Test files); `plan` skipped it | no |
 | `not-reached` | The run halted before this entry's turn | no |
 | `reverted-violation` | Any other change `git status` reports: a second or deleted file, staged changes, new untracked files, an accepted file touched again, a moved `HEAD` or ref, an edit during a declined entry, or a test run that changed the entry's file. Everything is restored; the current bytes are kept in `fix/quarantine/` | yes |

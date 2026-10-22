@@ -346,7 +346,7 @@ class HiddenTextTests(unittest.TestCase):
         self.assertEqual(sanitize.strip_hidden(""), ("", []))
 
     def test_hidden_is_prose_file(self):
-        for p in ("a.md", "A.MD", "d/x.markdown", "x.html", "x.htm", "n.txt", "r.rst"):
+        for p in ("a.md", "A.MD", "d/x.markdown", "x.html", "x.htm", "n.txt", "r.rst", ".cursor/rules/x.mdc"):  # .mdc: Cursor rule files are Markdown
             self.assertTrue(sanitize.is_prose_file(p), p)
         for p in ("a.py", "x.js", "x.json", "README", "a.md.bak", "x.adoc", "x.org", "x.ipynb", "x.svg", "x.textile"):
             self.assertFalse(sanitize.is_prose_file(p), p)

@@ -1,0 +1,306 @@
+"""evals/run.py: scoring, the baseline gate, fixture checks and rescoring. Free: never invokes claude."""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RUN = os.path.join(ROOT, "evals", "run.py")
+spec = importlib.util.spec_from_file_location("evals_run", RUN)
+ev = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ev)
+
+CASE = {
+    "prompt": "p", "base_files": {}, "change_files": {"a.py": "x\n" * 40},
+    "defects": [{"id": "d1", "path": "a.py", "line": 10, "end_line": 12, "lane": "defects", "categories": ["bug"]},
+                {"id": "d2", "path": "a.py", "line": 30, "lane": "standards"}],
+    "decoys": [{"path": "a.py", "line": 20}], "accept": [{"path": "a.py", "line": 35}],
+}
+
+
+def f(line, sev="required", cat="bug", path="a.py", end=None):
+    d = {"path": path, "line": line, "severity": sev, "category": cat}
+    if end:
+        d["end_line"] = end
+    return d
+
+
+def doc(*fs):
+    return {"schema_version": 1, "findings": list(fs)}
+
+
+class Score(unittest.TestCase):
+    def test_tolerance_boundary(self):
+        self.assertTrue(ev.score(doc(f(8)), CASE)["hit"]["d1"])
+        self.assertTrue(ev.score(doc(f(14)), CASE)["hit"]["d1"])
+        s = ev.score(doc(f(7)), CASE)
+        self.assertFalse(s["hit"]["d1"])
+        self.assertEqual(s["fp_other"], 1)
+        self.assertFalse(ev.score(doc(f(15)), CASE)["hit"]["d1"])
+
+    def test_range_overlap(self):
+        self.assertTrue(ev.score(doc(f(1, end=8)), CASE)["hit"]["d1"])
+
+    def test_category_must_match(self):
+        s = ev.score(doc(f(10, cat="security")), CASE)
+        self.assertFalse(s["hit"]["d1"])
+        self.assertEqual(s["fp"], 1)
+        self.assertTrue(ev.score(doc(f(30, cat="anything")), CASE)["hit"]["d2"])  # no categories listed
+
+    def test_duplicates_collapse(self):
+        s = ev.score(doc(f(10), f(11), f(12)), CASE)
+        self.assertEqual((s["tp"], s["fp"]), (1, 0))
+
+    def test_decoy_and_unseeded_fp(self):
+        s = ev.score(doc(f(20), f(39)), CASE)
+        self.assertEqual((s["fp_decoy"], s["fp_other"], s["tp"]), (1, 1, 0))
+        self.assertEqual(ev.score(doc(f(10, path="b.py")), CASE)["fp"], 1)
+
+    def test_accept_neutral(self):
+        s = ev.score(doc(f(35)), CASE)
+        self.assertEqual((s["tp"], s["fp"]), (0, 0))
+
+    def test_nit_and_noted_ignored(self):
+        s = ev.score(doc(f(10, sev="nit"), f(39, sev="noted")), CASE)
+        self.assertEqual((s["tp"], s["fp"]), (0, 0))
+
+    def test_empty_doc_and_error_run(self):
+        s = ev.score(doc(), CASE)
+        self.assertEqual((s["tp"], s["fp"]), (0, 0))
+        self.assertIsNone(ev.score(None, CASE))
+        self.assertIsNone(ev.score({"verdict": "x"}, CASE))
+
+    def test_lane_filter_makes_other_lanes_neutral(self):
+        s = ev.score(doc(f(10), f(30, cat="convention")), CASE, lane="standards")
+        self.assertEqual(list(s["hit"]), ["d2"])
+        self.assertEqual((s["tp"], s["fp"]), (1, 0))
+
+    def test_also_location(self):
+        case = dict(CASE, defects=[{"id": "d", "path": "a.py", "line": 5, "lane": "defects", "also": [{"path": "a.py", "line": 25}]}])
+        self.assertTrue(ev.score(doc(f(26)), case)["hit"]["d"])
+
+    def test_no_defect_case(self):
+        case = dict(CASE, defects=[], decoys=[], accept=[])
+        agg = ev.aggregate([ev.score(doc(), case), ev.score(doc(f(3)), case)])
+        self.assertIsNone(agg["recall"])
+        self.assertEqual(ev.gate(agg, case, None)[0], "RED")
+        agg = ev.aggregate([ev.score(doc(), case)] * 2)
+        self.assertEqual(ev.gate(agg, case, None)[0], "GREEN")
+
+    def test_aggregate_pools_and_flags_errors(self):
+        a = ev.aggregate([ev.score(doc(f(10), f(39)), CASE), None, ev.score(doc(f(30)), CASE)])
+        self.assertEqual((a["n_runs"], a["errors"], a["hits"], a["n"]), (2, 1, 2, 4))
+        self.assertEqual(a["defects"], {"d1": [1, 2], "d2": [1, 2]})
+        self.assertAlmostEqual(a["precision"], 2 / 3)
+        self.assertEqual(ev.gate(ev.aggregate([None]), CASE, None)[0], "ERROR")
+        self.assertIsNone(ev.aggregate([ev.score(doc(), CASE)])["precision"])
+
+
+class Gate(unittest.TestCase):
+    def test_worked_numbers(self):
+        # p0 = (7+1)/(8+2... ) -> choose hits_base/n_base giving p0 = 0.8: hits 3, n 3 -> 4/5
+        p0 = (3 + 1) / (3 + 2)
+        self.assertAlmostEqual(p0, 0.8)
+        p = [ev.gate_p(h, 3, 3, 3) for h in (0, 1, 2, 3)]
+        self.assertAlmostEqual(p[0], 0.008)
+        self.assertAlmostEqual(p[1], 0.104)
+        self.assertAlmostEqual(p[2], 0.488)
+        self.assertAlmostEqual(p[3], 1.0)
+        self.assertEqual([ev.status_of(x) for x in p], ["RED", "AMBER", "GREEN", "GREEN"])
+
+    def test_gate_against_baseline(self):
+        case = dict(CASE, defects=[CASE["defects"][0]], decoys=[], accept=[])
+        base = {"hits": 3, "n": 3, "defects": {"d1": [3, 3]}}
+        red = ev.aggregate([ev.score(doc(), case)] * 3)
+        self.assertEqual(ev.gate(red, case, base)[0], "RED")
+        self.assertEqual(ev.gate(red, case, None)[0], "NEW")
+
+    def test_cheap_never_above_amber(self):
+        base = {"hits": 3, "n": 6, "defects": {"d1": [3, 3], "d2": [0, 3]}}
+        agg = ev.aggregate([ev.score(doc(f(30)), CASE, "standards")])
+        st, p = ev.gate(agg, CASE, base, "standards")
+        self.assertEqual(st, "AMBER")
+        self.assertIsNotNone(p)
+
+
+class Cases(unittest.TestCase):
+    def test_five_cases_valid_and_lint_clean(self):
+        cases = ev.load_cases()
+        self.assertEqual(set(cases), {"defects-py-seeded", "claim-walk-pr", "seam-deferral", "enum-fix-stale-test", "clean-diff-negative"})
+        for n, c in cases.items():
+            self.assertEqual(ev.check_case(c), [], n)
+            self.assertEqual(ev.lint_case(n, c), [], n)
+        self.assertEqual(cases["clean-diff-negative"]["defects"], [])
+
+    def test_lint_cli(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ev.main(["lint"]), 0)
+        self.assertIn("0 problem", out.getvalue())
+
+    def test_lint_rejects_decoy_within_tolerance_of_a_defect(self):
+        c = json.loads(json.dumps(CASE))
+        for line in (10 - ev.TOL, 12 + ev.TOL):
+            c["decoys"] = [{"path": "a.py", "line": line}]
+            self.assertTrue(any("decoy" in e for e in ev.lint_case("x", c)), line)
+        c["decoys"] = [{"path": "a.py", "line": 10 - ev.TOL - 1}]
+        self.assertEqual(ev.lint_case("x", c), [])
+
+    def test_lint_rejects_leak_and_bad_schema(self):
+        c = json.loads(json.dumps(CASE))
+        c["change_files"]["a.py"] = "x\n" * 8 + "# seeded bug\n" + "x\n" * 31
+        self.assertTrue(any("leaking" in e for e in ev.lint_case("ok-name", c)))
+        c = json.loads(json.dumps(CASE))
+        c["defects"][0]["line"] = 99
+        self.assertTrue(ev.check_case(c))
+        c = json.loads(json.dumps(CASE))
+        c["defects"][1]["lane"] = "nope"
+        self.assertTrue(ev.check_case(c))
+        self.assertTrue(ev.check_case(dict(CASE, extra=1)))
+
+
+class Driver(unittest.TestCase):
+    def test_import_has_no_side_effect_and_baseline_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = "import importlib.util as u; s = u.spec_from_file_location('r', %r); m = u.module_from_spec(s); s.loader.exec_module(m)" % RUN
+            p = subprocess.run([sys.executable, "-I", "-c", code], cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual((p.returncode, p.stdout, p.stderr, os.listdir(tmp)), (0, b"", b"", []))
+        with open(os.path.join(ROOT, "evals", "baseline.json"), encoding="utf-8") as fh:
+            self.assertIn("version", json.load(fh))
+
+    def test_extract_doc(self):
+        text = 'noise {"a": 1} ```json\n' + json.dumps(doc(f(10))) + '\n``` tail'
+        self.assertEqual(len(ev.extract_doc(text)["findings"]), 1)
+        self.assertIsNone(ev.extract_doc("no json here"))
+
+    def test_rescore_canned_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            case = ev.load_cases("defects-py-seeded")["defects-py-seeded"]
+            d = os.path.join(tmp, "defects-py-seeded")
+            os.makedirs(d)
+            hit = {"path": "app/pager.py", "line": 3, "severity": "required", "category": "bug"}
+            for i, text in enumerate(["```json\n" + json.dumps(doc(hit)) + "\n```", "garbled"]):
+                with open(os.path.join(d, "run%d.json" % i), "w") as fh:
+                    json.dump({"text": text}, fh)
+            old, ev.BASELINE = ev.BASELINE, os.path.join(tmp, "no-baseline.json")  # a real --accept must not turn this red
+            self.addCleanup(setattr, ev, "BASELINE", old)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = ev.main(["--rescore", tmp, "--case", "defects-py-seeded"])
+            self.assertEqual(rc, 0, out.getvalue())
+            self.assertIn("recall 1/3", out.getvalue())
+            self.assertIn("errors=1", out.getvalue())
+            self.assertIn("slice-off-by-one=1/1", out.getvalue())
+            self.assertEqual(ev.score(ev.extract_doc("garbled"), case), None)
+
+    def test_noninteractive_needs_yes(self):
+        if shutil.which("claude") is None:
+            self.skipTest("claude absent: the earlier guard answers first")
+        # stdin of the test runner is not a tty; the guard must stop before any paid call
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = ev.main(["--case", "clean-diff-negative", "--runs", "1"]) if not os.isatty(0) else 2
+        self.assertEqual(rc, 2)
+
+
+class Paid(unittest.TestCase):
+    """main() with the paid call faked: baseline writing, neutral repo names, per-case meta."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.base = os.path.join(self.tmp, "baseline.json")
+        self.repos = []
+        for name, val in (("BASELINE", self.base), ("OUT", os.path.join(self.tmp, "out"))):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+        for name, val in (("copy_plugin", lambda d: os.makedirs(d)), ("build_repo", lambda c, r: None)):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+        self.addCleanup(setattr, ev, "run_claude", ev.run_claude)
+        p = mock.patch.object(ev.shutil, "which", return_value="/bin/claude")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def fake(self, fail_on=()):
+        calls = []
+
+        def run_claude(repo, plugin, case, lean, budget):
+            self.repos.append(repo)
+            calls.append(repo)
+            if len(calls) in fail_on:
+                raise RuntimeError("boom")
+            return "```json\n" + json.dumps(doc()) + "\n```", 1.0
+        ev.run_claude = run_claude
+
+    def main(self, *args):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return ev.main(["--yes", "--runs", "2"] + list(args))
+
+    def test_accept_refused_when_every_call_failed(self):
+        self.fake(fail_on=(1, 2))
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 2)
+        self.assertFalse(os.path.exists(self.base))
+
+    def test_accept_refused_on_a_partial_error(self):
+        self.fake(fail_on=(2,))
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 2)
+        self.assertFalse(os.path.exists(self.base))
+
+    def test_accept_writes_per_run_cost_and_per_case_meta(self):
+        self.fake()
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            b = json.load(fh)
+        c = b["cases"]["clean-diff-negative"]
+        self.assertEqual((c["n_runs"], c["cost"]), (2, 1.0))
+        self.assertTrue(c["meta"]["tiers_hash"])
+        self.assertNotIn("git_sha", b["meta"])
+
+    def test_accept_one_case_keeps_other_cases_meta(self):
+        with open(self.base, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"other": {"meta": {"tiers_hash": "stale"}}}}, fh)
+        self.fake()
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            b = json.load(fh)
+        self.assertEqual(b["cases"]["other"]["meta"], {"tiers_hash": "stale"})
+        self.assertTrue(any("stale" in w and "other" in w for w in ev.meta_warnings(b)))
+
+    def test_a_case_without_its_own_meta_asks_for_re_accept_not_a_drift_claim(self):
+        w = ev.meta_warnings({"meta": {"tiers_hash": "old"}, "cases": {"a": {}, "b": {"meta": {}}}})
+        self.assertEqual(w, ["baseline a predates per-case meta: re-accept it", "baseline b predates per-case meta: re-accept it"])
+        self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
+
+    def test_repo_dir_does_not_name_the_case(self):
+        self.fake()
+        self.main("--case", "defects-py-seeded")
+        self.assertEqual(len(self.repos), 2)
+        for r in self.repos:
+            self.assertNotRegex(r, r"defects|seeded|stale|enum|clean")
+
+
+class TiersHash(unittest.TestCase):
+    def test_hash_is_a_string_and_follows_tiers(self):
+        h = ev.tiers_hash()
+        self.assertTrue(isinstance(h, str) and h)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        sc = os.path.join(d, "skills", "review-code", "scripts")
+        shutil.copytree(os.path.join(ROOT, "skills", "review-code", "scripts"), sc, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(os.path.join(sc, "plan.py"), "a") as fh:
+            fh.write("\nTIERS = dict(TIERS, zz_extra=1)\n")
+        old, ev.ROOT = ev.ROOT, d
+        try:
+            h2 = ev.tiers_hash()
+        finally:
+            ev.ROOT = old
+        self.assertNotEqual(h, h2)
+
+
+if __name__ == "__main__":
+    unittest.main()
