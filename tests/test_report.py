@@ -240,7 +240,8 @@ class Derivation(Base):
                           cand(Q_ADD, 8, path="nope.py"), cand("x", 1, path="link.py"), cand("not on the line", 8),
                           cand(Q_ADD, 99), cand(Q_ADD, True), cand(Q_ADD, 8, severity="fatal"),
                           cand(Q_ADD, 8, category="style"), "{broken", "[1]", "{}")
-        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 12))  # [1] is prose, a brace line is the old form
+        # [1] is prose, a brace line is the old form; the two repeats of `good` (one by relocation) are rows, not counted (gh#18)
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 10))
 
     def test_candidate_self_rating_is_ignored(self):
         self.ingest(dict(cand(Q_ADD, 8), id="F-0000000000", score=100, evidence_class="reproduced",
@@ -516,15 +517,16 @@ class MultiLane(Lanes):
 
     def test_summary_over_length_second_and_wrong_lane_are_invalid(self):
         out = self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]])
-        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # rejected, never truncated
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (0, []))  # rejected, never truncated; not counted (gh#18)
+        self.assertEqual(out["dispositions"][0]["reason"], "bad-summary")
         out = self.lane("defects", [["summary", "first"]], [["summary", "second"]])
-        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, [{"lane": "defects", "text": "first"}]))
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (0, [{"lane": "defects", "text": "first"}]))
         self.rep("discard")
         self.lane("defects", [["summary", "x" * (report.SUMMARY_MAX + 1)]], {"inspected": ["src/calc.py"]})
         self.assertEqual((self.doc()["verdict"], "Warning" in self.rep("render")[1]), ("No blocking findings", False))  # a bad summary hides no finding
         self.rep("discard")
         out = self.lane("standards", [["summary", "s"]])  # only the Defects lane summarises
-        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))
+        self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # a rejected row: missing-field
 
     def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
         self.set_cap(1)
@@ -699,8 +701,25 @@ class SpecAxis(Base):
         self.assertEqual(self.doc()["declined"], [{"spec_line": inner, "why": "tests cover it"}])
         rc, text = self.rep("render")
         self.assertIn("Declined\n- inputs/spec.md:%d: tests cover it" % inner, text)
-        out = self.lane({"declined": "nope"})
+        out = self.lane({"declined": "nope"}, {"inspected": []})
         self.assertEqual(out["dropped"]["invalid"], 1)
+
+    def test_every_counted_invalid_line_has_a_rejected_row_and_a_disposition(self):  # gh#18
+        rows, inner, opn, cls = self.spec_rows()
+        out = self.lane({"declined": [{"spec_line": inner, "why": "tests cover it"}, {"spec_line": opn, "why": "x"},
+                                      {"spec_line": inner, "why": "y" * 301}, {"spec_line": inner, "why": rows[inner - 1]}]},
+                        {"inspected": []})
+        self.assertEqual(out["lane_dropped"]["invalid"], 3)
+        self.assertEqual([r["check"] for r in out["rejected"]],
+                         ["declined-invalid:bad-entry", "declined-invalid:too-long", "declined-invalid:copied-from-spec"])
+        (d1, d2) = out["dispositions"]
+        self.assertEqual((d1["disposition"], d1["reason"]), ("downgraded", "declined-invalid:bad-entry"))  # the good entry is kept
+        self.assertEqual(d2["disposition"], "accepted")
+        with open(os.path.join(self.run_dir, "rejected", "spec.txt"), encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 3)
+        out = self.lane({"declined": "nope"}, {"inspected": []})
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["dispositions"][0]["disposition"]),
+                         (["declined-invalid:bad-entry"], "rejected"))
 
     def test_declined_is_ignored_on_other_lanes(self):
         _, inner, _, _ = self.spec_rows()
@@ -1170,11 +1189,22 @@ class LostRecovery(Lanes):  # gh-14: a lost line counts as recovered only when t
         d = self.doc()
         self.assertEqual((d["lost"], d.get("recovered"), d["verdict"]), ({"standards": 1}, None, "Needs discussion"))
 
-    def test_a_line_that_never_parsed_stays_lost_after_a_full_retry(self):
+    def test_a_complete_retry_recovers_a_lost_line_that_named_no_id(self):  # gh#18: a retry replaces the lane wholesale
         self.lane("standards", '[["path","src/calc.py"],', self.INS)
+        self.assertEqual(self.doc()["lost"], {"standards": 1})
         self.lane("standards", self.conv(RULE_REVIEW), self.INS)
         d = self.doc()
-        self.assertEqual((d["lost"], d.get("recovered")), ({"standards": 1}, None))
+        self.assertEqual((d.get("lost"), d["recovered"]), (None, {"standards": 1}))
+        st = json.loads(self.rep("status")[1])
+        self.assertEqual((st["lost"], st["attempts"]["standards"]["attempts"]), ({}, 2))
+
+    def test_an_incomplete_retry_or_one_that_loses_a_line_again_keeps_the_loss(self):  # gh#18
+        self.lane("standards", '[["path","src/calc.py"],')  # the lane never completes
+        self.lane("standards", self.conv(RULE_REVIEW))  # no inspected line: the lane is still incomplete
+        self.assertEqual(self.doc()["lost"], {"standards": 1})
+        self.lane("standards", '[["path","src/calc.py"],', self.conv(RULE_REVIEW), self.INS)  # loses one again
+        d = self.doc()
+        self.assertEqual((d["lost"], d.get("recovered")), ({"standards": 2}, None))  # losses add up while a retry loses lines
 
 
 class RuleMarkdown(Lanes):  # gh-14: convention files are Markdown, the lane quotes the rendered rule
@@ -1639,9 +1669,9 @@ class Gate(Base):
         self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 1}})
         self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
         st = self.status()
-        self.assertEqual((st["rejected_total"], st["attempts"]), (0, {"defects": {"attempts": 2, "lost": 1}}))
+        self.assertEqual((st["rejected_total"], st["attempts"]), (0, {"defects": {"attempts": 2, "lost": 0}}))  # recovered (gh#18)
         self.ingest(self.GOOD, bad, bad, {"inspected": ["src/calc.py"]})
-        self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 3, "lost": 3}})
+        self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 3, "lost": 2}})
         self.rep("discard")
         self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})
         self.assertEqual(self.status()["attempts"], {"defects": {"attempts": 1, "lost": 0}})
@@ -1660,7 +1690,7 @@ class Gate(Base):
         self.assertIsNone(self.status()["blocked"])
 
     def test_a_line_lost_once_keeps_the_verdict_open_and_shows_in_status_and_render(self):  # review-code-dc5 (4)
-        bad = "[[\"truncated\", \"x"
+        bad = dict(self.GOOD, quote="not on the line")  # a line that names its id (gh#18: an id-less loss is cleared by a complete retry)
         self.ingest(self.GOOD, bad, {"inspected": ["src/calc.py"]})
         self.ingest({"inspected": ["src/calc.py"]})  # the retry dropped the lost line instead of re-sending it
         self.assertEqual(self.status()["rejected_total"], 0)
@@ -1953,6 +1983,19 @@ class Dispositions(Lanes):
             self.assertIn(k, out)
 
     OBJ = '{"id": "%s", "verdict": "confirmed", "evidence": [{"path": "src/calc.py", "line": 3, "quote": "%s"}], "reason": "r"}'
+
+    def test_a_duplicate_finding_and_an_extra_summary_are_rows_but_not_counted_invalid(self):  # gh#18
+        out = self.lane("defects", mc(3), mc(3), [["summary", "one"]], [["summary", "two"]], self.INS)
+        self.assertEqual(out["lane_dropped"]["invalid"], 0)
+        self.assertEqual(out["rejected"], [])
+        self.assertEqual([(d["disposition"], d["reason"]) for d in out["dispositions"]],
+                         [("accepted", None), ("rejected", "duplicate"), ("accepted", None), ("rejected", "bad-summary"),
+                          ("accepted", None)])
+
+    def test_the_lanes_own_counts_match_its_rejected_rows(self):  # gh#18: no stale cumulative count beside rejected []
+        self.lane("standards", mc(3), self.INS)  # invalid in the Standards lane (a Defects category)
+        out = self.lane("defects", mc(4), self.INS)
+        self.assertEqual((out["dropped"]["invalid"], out["lane_dropped"]["invalid"], out["rejected"]), (1, 0, []))
 
     def test_a_retired_object_verdict_is_rejected_by_name_and_listed(self):  # gh#20
         (i,) = self.lane("defects", mc(3), self.INS)["ids"]

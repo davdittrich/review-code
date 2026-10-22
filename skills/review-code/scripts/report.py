@@ -6,7 +6,7 @@ element or a non-string key, and a raw JSON object at any depth (the retired obj
 A line that is not JSON because a string holds raw double quotes is read again by _repair (a quote ends a string only
 where the line goes on with `,` or `]`); the ingest and verdicts stdout count such lines as `repaired`. A line that parses
 but is no pair array is never repaired.
-Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, or `failed-validation:<check>` with check one of missing-field,
+Gate (review-code-19l): every rejected line is kept as `<reason> <line>` (a lane line's reason is `invalid-json`, `retired-object-form`, or `failed-validation:<check>` with check one of declined-invalid:bad-entry|too-long|copied-from-spec (one row per invalid entry of a spec `declined` trailer), missing-field,
 bad-type, spec-line-invalid, sota-invalid, copied-from-spec, path-not-in-tree, line-out-of-range, unreadable, quote-not-at-line, rule-malformed, rule-source-unknown, rule-not-in-conventions) in <run>/rejected/<lane or batch>.txt (batch-K,
 serial), replaced by a re-ingest of the same lane or batch. `status` shows rejected, rejected_total and no_verdict;
 `render` shows a Warning section and does not go above Needs discussion while either is nonzero.
@@ -15,7 +15,8 @@ Dispositions (gh#29): `ingest` and `verdicts` stdout also carry `dispositions`, 
 per wire line of that call (index counts wire lines, prose is skipped): disposition is accepted, rejected or downgraded;
 reason is a key of REASONS (the one closed reason -> retry hint table, also the source of the capture reader's refusals) or
 null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: `dropped` sums every stored lane
-(`lane_dropped` is the ingested lane's own count) and verdicts.json holds every stored batch. `verdicts` stdout: confirmed,
+(`lane_dropped` is the ingested lane's own count; every line counted in `invalid` has a rejected row, while a repeated finding
+and a second summary are dispositions only and are not counted) and verdicts.json holds every stored batch. `verdicts` stdout: confirmed,
 refuted and unverifiable are cumulative over the stored batches (unverifiable = a stored verdict that neither confirms
 with a cite nor refutes); `batch_ids` names the ids this call covers (every queued id for a serial reply); `no_verdict`
 lists queued ids with no stored verdict (batch not ingested yet, or their line was rejected), apart from unverifiable.
@@ -135,6 +136,9 @@ REASONS = {
     "bad-type": "resend the line with each field of its documented type and an allowed value",
     "spec-line-invalid": "cite a spec_line that lies inside an UNTRUSTED block of the spec",
     "sota-invalid": "cite a checklist item, its name as the quote and 1 to 5 https sources",
+    "declined-invalid:bad-entry": "send each declined entry as spec_line (inside an UNTRUSTED block) and a why",
+    "declined-invalid:too-long": "keep a declined why to 300 characters",
+    "declined-invalid:copied-from-spec": "paraphrase the declined why: it holds a run of words copied from the spec",
     "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
     "path-not-in-tree": "cite a file that exists in tree/",
     "line-out-of-range": "cite a line range inside the file",
@@ -667,11 +671,12 @@ def _rejected(run):
 COUNTERS = ("attempts", "lost", "repaired", "recovered", "lost_ids")
 
 
-def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=None, found=()):
+def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=None, found=(), complete=False):
     """<run>/counters.json: {"attempts": {name: n}, "lost": {name: n}, "repaired": {name: n}, "recovered": {name: n},
     "lost_ids": {name: [id or None]}} per lane key and per verify batch ("batch-K", "serial"). The script keeps them so
     the 2-try cap never rests on the model's memory (bgq): attempts and lost add up over every ingest of `name` and only
-    discard resets them, except that a lane ingest moves a lost line to recovered once its finding id arrives; repaired is the latest reading of each name, replaced by `repaired` after `drop` removes the
+    discard resets them, except that a lane ingest moves a lost line to recovered once its finding id arrives (a lost line
+    that named no id: once a complete retry of the lane loses no such line again, gh#18); repaired is the latest reading of each name, replaced by `repaired` after `drop` removes the
     names it covers. A lane ingest passes `ids`, the finding id of each line it lost (None when the line named none),
     and `found`, the ids it accepted: a lost line whose id is in `found` moves from lost to recovered. Returns the
     stored counters."""
@@ -693,7 +698,8 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
         else:
             prior = c["lost_ids"].get(name, [])
             prior += [None] * (c["lost"].get(name, 0) - len(prior))  # counted before the ids were kept
-            keep = [i for i in prior if i is None or i not in found]
+            clear = complete and None not in ids  # a complete retry replaces the lane wholesale: an id-less loss is recovered
+            keep = [i for i in prior if (i is None and not clear) or (i is not None and i not in found)]
             c["recovered"][name] = c["recovered"].get(name, 0) + len(prior) - len(keep)
             c["lost_ids"][name] = keep + ids
             c["lost"][name] = len(c["lost_ids"][name])
@@ -848,13 +854,21 @@ def _cap_of(run):
 
 
 def _declined(o, ctx, copied):
-    """(valid entries, invalid count) of a {"declined": [{spec_line, why}]} trailer."""
+    """(valid entries, reasons of the invalid ones) of a {"declined": [{spec_line, why}]} trailer."""
     if not isinstance(o["declined"], list):
-        return [], 1
-    good = [{"spec_line": d["spec_line"], "why": _ws(d["why"])} for d in o["declined"] if isinstance(d, dict)
-            and _int(d.get("spec_line")) and d["spec_line"] in ctx and isinstance(d.get("why"), str)
-            and _ws(d["why"]) and len(d["why"]) <= 300 and not copied(d["why"])]
-    return good, len(o["declined"]) - len(good)
+        return [], ["declined-invalid:bad-entry"]
+    good, bad = [], []
+    for d in o["declined"]:
+        if not (isinstance(d, dict) and _int(d.get("spec_line")) and d["spec_line"] in ctx and isinstance(d.get("why"), str)
+                and _ws(d["why"])):
+            bad.append("declined-invalid:bad-entry")
+        elif len(d["why"]) > 300:
+            bad.append("declined-invalid:too-long")
+        elif copied(d["why"]):
+            bad.append("declined-invalid:copied-from-spec")
+        else:
+            good.append({"spec_line": d["spec_line"], "why": _ws(d["why"])})
+    return good, bad
 
 
 def _read_lane(text, lane, tree, run, shard=None):
@@ -873,8 +887,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             if summary is None and isinstance(sm, str) and _ws(sm) and len(sm) <= SUMMARY_MAX:
                 summary = _ws(sm)
                 disp.append(_disp(n, None, "accepted", ok))
-            else:
-                invalid += 1  # counted, but not a rejected line: a summary holds no finding, so it never flips the verdict
+            else:  # not counted invalid and not a rejected row: a summary holds no finding, so it never flips the verdict
                 disp.append(_disp(n, None, "rejected", "bad-summary"))
             continue
         if o is not None and "path" not in o and ("inspected" in o or ("declined" in o and lane == "spec")):
@@ -886,7 +899,11 @@ def _read_lane(text, lane, tree, run, shard=None):
                 areas += [a for a in got if _real(tree, a)]
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
-                declined, invalid = declined + good, invalid + bad
+                declined, invalid = declined + good, invalid + len(bad)
+                rejected += [(b, ln) for b in bad]  # one row per invalid entry (gh#18)
+                if bad:
+                    disp.append(_disp(n, None, "downgraded" if good else "rejected", bad[0]))
+                    continue
             disp.append(_disp(n, None, "accepted", ok))
             continue
         if lane == "sota" and o is not None:  # the inventory, never the lane, picks the path and line
@@ -897,8 +914,8 @@ def _read_lane(text, lane, tree, run, shard=None):
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
-            invalid += 1
-            if c is None:  # a duplicate loses nothing
+            if c is None:  # a duplicate loses nothing: no rejected row, so it is not counted invalid either
+                invalid += 1
                 rejected.append((why or check, ln))
                 disp.append(_disp(n, _lost_id(ln, lane), "rejected", why or check))
             else:
@@ -1035,7 +1052,8 @@ def _ingest(run, text, lane, shard):
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs))
     _reject(run, key, rejected)
     _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
-            [_lost_id(ln, lane) for _, ln in rejected], {c["id"] for c in lanes[key]["candidates"]})
+            [_lost_id(ln, lane) for _, ln in rejected], {c["id"] for c in lanes[key]["candidates"]},
+            lanes[key].get("complete") is True)
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
