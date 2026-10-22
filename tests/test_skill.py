@@ -174,6 +174,15 @@ class Phase4Procedure(unittest.TestCase):
                   "`lost` in `status`"):
             self.assertIn(t, self.flat)
 
+    def test_capped_lane_is_resumed_once_for_free_then_named_lost(self):  # gh#36
+        for t in ("capped lane", "stopped at its turn limit", "Stop exploring and send your full report now.",
+                  "does not count against the 2 tries", "at most one cap-resume per call",
+                  "tell the user which lane was lost"):
+            self.assertIn(t, self.flat)
+        lanes = " ".join(ref("lanes.md").split())
+        for t in ("capped lane", "resumes it once", "files exceed half the ceiling"):
+            self.assertIn(t, lanes)
+
     def test_steps_7_and_8_ingest_by_agent_id_with_stdin_as_the_fallback(self):  # gh#8
         for t in ("report.py ingest --run <run> --lane <lane> --agent <agentId>",
                   "report.py verdicts --run <run> --batch <batch> --agent <agentId>",

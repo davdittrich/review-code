@@ -170,7 +170,11 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `review-code:sota`), `prompt` its `prompt` exactly, `model` its `model`, `effort` its `effort` and a short
    `description`. Fan-out rule: issue all calls of a wave in one message; wait until every call of the wave has returned or notified completion before the next step.
    Agent calls may answer "launched" first and deliver the reply later as a notification: do not poll
-   or message the agent. When the wave is done, run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py status --run <run>`: a call whose lane (`lane`, or `lane@shard` with a shard) is in `missing_lanes` (or `status` refuses `no-candidates`: none is ingested) is not ingested. Ingest each such call with `--agent <agentId>` (the agentId of its Agent launch result), `--lane` the call's `lane` and `--shard` its `shard` when that is not null; the script reads the reply the plugin hook stored, whole, and consumes it:
+   or message the agent. When the wave is done, run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py status --run <run>`: a call whose lane (`lane`, or `lane@shard` with a shard) is in `missing_lanes` (or `status` refuses `no-candidates`: none is ingested) is not ingested. A call in `missing_lanes` whose Agent result gave an agentId but no usable reply (the harness note says the agent
+   stopped at its turn limit and produced no report) is a capped lane: first resume that agent once (SendMessage to its agentId) with exactly
+   "Stop exploring and send your full report now.", then ingest the reply as below. The resume does not count against the 2 tries
+   (`attempts` counts ingests; the reply's ingest is attempt 1). Make at most one cap-resume per call, ignore partial text from the capped
+   call, and if the resumed agent is capped again leave the lane in `missing_lanes` and tell the user which lane was lost. Ingest each such call with `--agent <agentId>` (the agentId of its Agent launch result), `--lane` the call's `lane` and `--shard` its `shard` when that is not null; the script reads the reply the plugin hook stored, whole, and consumes it:
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> --agent <agentId>

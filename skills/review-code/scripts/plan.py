@@ -406,6 +406,18 @@ def _estimate(call):
     return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
 
 
+def _files_ceiling(call):
+    """(included file count, turn ceiling) of a lane call, or None for a call without both (sota, main thread)."""
+    ceiling = MAX_TURNS.get(call["agent"].rsplit(":", 1)[-1])
+    if call["input"] is None or ceiling is None or call["agent"] == "main-thread":
+        return None
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(call["input"])), "target.json"), encoding="utf-8") as fh:
+            return len(json.load(fh).get("included", [])), ceiling
+    except (OSError, ValueError):
+        return None
+
+
 def _preview(doc):
     """Lines built only from numbers, fixed words, tier, model and effort values, lane and pack names and shard ids."""
     ver, calls, caps = doc["verifier"], doc["calls"], doc["caps"]
@@ -415,10 +427,17 @@ def _preview(doc):
     if doc["shards"] or any(x["what"].startswith("shard ") for x in doc["skipped"]):
         out.append("Shards: %d of %d kept" % (len(doc["shards"]), len(doc["shards"]) + sum(
             1 for x in doc["skipped"] if x["what"].startswith("shard "))))
+    warns = []
     for c in calls:
-        out.append("Call %s%s: %s, about %d input tokens (estimate)" % (
-            c["lane"], ", shard %d" % c["shard"] if c["shard"] else "",
-            "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c)))
+        name = "%s%s" % (c["lane"], ", shard %d" % c["shard"] if c["shard"] else "")
+        fc = _files_ceiling(c)
+        out.append("Call %s: %s, about %d input tokens (estimate)%s" % (
+            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c),
+            ", %d files, ceiling %d turns" % fc if fc else ""))
+        if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
+            warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
+                         "and the skill then resumes it once" % (name, fc[0], fc[1]))
+    out += warns
     b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one shard, so calls lie between cap/b and cap
     out.append("Verifier ids: up to %d (calls of up to %d ids in one shard, so %d to %d calls), %s" % (
         verifier_cap, b, -(-verifier_cap // b), verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))

@@ -911,6 +911,27 @@ class Preview(Fixture):
         self.assertIn("main thread", pv)
 
 
+class CeilingWarning(Fixture):
+    """gh#36: the preview names files per call against the lane's turn ceiling and warns above half of it."""
+    base_files = {"f%02d.py" % i: "x = %d\n" % i for i in range(25)}
+    feat_files = {"f%02d.py" % i: "x = %d\nz = 1\n" % i for i in range(25)}
+
+    def test_call_over_half_its_ceiling_warns(self):
+        self.plan("plan", "--run", self.run_dir)
+        pv = self.plan_json()["preview"]
+        line = next(x for x in pv if x.startswith("Call defects:"))
+        self.assertIn("25 files, ceiling 40 turns", line)
+        self.assertIn("input tokens (estimate)", line)
+        warn = [x for x in pv if x.startswith("Warning:")]
+        self.assertTrue(any("defects" in w and "25 files" in w and "40-turn" in w for w in warn), warn)
+
+    def test_exactly_half_does_not_warn(self):
+        import plan as mod
+        with mock.patch.object(mod, "MAX_TURNS", dict(mod.MAX_TURNS, finder=50, standards=50, spec=50)):
+            pv = mod.plan(self.run_dir, "standard", {})["preview"]
+        self.assertEqual([x for x in pv if x.startswith("Warning:")], [])
+
+
 class PreviewShards(ShardBase):
     base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
     feat_files = {"auth/login.py": PAD + "other = 2\n"}
