@@ -402,7 +402,7 @@ class FixDocs(unittest.TestCase):
         doc = self.read(self.REFS, "fix.md")
         found, outcomes = self.names()
         self.assertGreater(len(found), 25, found)  # the walk found the Refuse calls
-        self.assertEqual(len(outcomes), 10, outcomes)
+        self.assertEqual(len(outcomes), 13, outcomes)
         missing = sorted(r for r in found if "`%s`" % r not in doc)
         self.assertEqual(missing, [], "fix.md has no backticked entry for these refusal reasons or outcomes")
 

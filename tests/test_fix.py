@@ -1482,6 +1482,51 @@ class ContinueAfterRevert(Scope):
         self.assertEqual(slurp(self.p("src/calc.py")), FEAT.encode())
 
 
+class ReportCoverage(Scope):
+    """review-code#35: every verified finding appears once in the report, fixed or with a reason; the counts sum to it."""
+    feat_files = dict(Scope.feat_files, **{"src/third.py": THIRD, "src/dup.py": "def f(x):\n    return x * 2\n\ndef g(x):\n    return x * 2\n"})
+    DUP = two("src/dup.py", 2, "return x * 2", "return x * 3")
+    CANDS = [CAND, SECOND_CAND, THIRD_CAND, DUP]
+    EDITS = {"src/calc.py": (QUOTE, "return a + b"), "src/second.py": ("return a / b", "return a * b"),
+             "src/third.py": ("return a // b", "return a / b")}
+    WORDS = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second, third"]
+
+    def check(self, run, want):
+        rc, text, r = self.report(run)
+        ids = [report_id(c) for c in self.CANDS]
+        for i in ids:
+            self.assertEqual(len(re.findall(r"(?m)^%s " % i, text.split("\n== ")[0])), 1, (i, text))
+        self.assertEqual(r["verified"], 4)
+        line = re.search(r"(?m)^verified findings: (\d+) = (.*)$", text)
+        self.assertEqual(sum(int(x) for x in re.findall(r"(\d+) [a-z-]+", line.group(2))), int(line.group(1)), line.group(0))
+        self.assertEqual(dict((k, int(n)) for n, k in re.findall(r"(\d+) ([a-z-]+)", line.group(2))), want, line.group(0))
+        return rc, text, r
+
+    def test_halted_run_names_the_entries_it_never_reached(self):
+        run, fid, bg = self.started(*self.CANDS, words=self.WORDS)
+        self.edit(bg["path"], *self.EDITS[bg["path"]])
+        self.edit("src/other.py", "return 'o'", "return 'p'")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-violation")
+        rc, text, r = self.check(run, {"reverted-violation": 1, "not-reached": 2, "stale": 1})
+        self.assertEqual((rc, r["not_reached"]), (1, 2))
+        self.assertRegex(text, r"(?m)^%s src/dup.py stale$" % report_id(self.DUP))
+
+    def test_failed_declined_and_fixed_entries_each_show_once(self):
+        run, fid, bg = self.started(*self.CANDS, words=self.WORDS)
+        outcomes = []
+        for status in ("applied", "applied", "declined"):
+            if outcomes:
+                bg = self.begin(run)[2]
+            if status == "applied" and len(outcomes) == 1:
+                self.edit(bg["path"], self.EDITS[bg["path"]][0], "return a +")  # a failing edit
+            elif status == "applied":
+                self.edit(bg["path"], *self.EDITS[bg["path"]])
+            outcomes.append(self.finish(run, bg["seal"], status)[2]["outcome"])
+        self.assertEqual(outcomes, ["fixed", "reverted-tests", "declined"])
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+        self.check(run, {"fixed": 1, "reverted-tests": 1, "declined": 1, "stale": 1})
+
+
 class Report(Scope):
     def test_two_entries_and_the_untrusted_tail(self):
         words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc, second"]
