@@ -140,7 +140,7 @@ def _covered(path: str, cmd_files: set, known: set) -> bool:
     """Is a test file one the post-fix run can reach: in the target or the ledger's tests, or a command word names it or a
     directory above it. shortcut: names, not an execution trace; a command that ignores a named file still passes."""
     return (target.shown(path) in known or path in cmd_files
-            or any(w == "." or path.startswith(w.rstrip("/") + "/") for w in cmd_files))
+            or any(w == "." or path.startswith(w + "/") for w in cmd_files))
 
 
 def _live(repo: str, path) -> Optional[str]:
@@ -410,14 +410,15 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
     # shortcut: a relative script word only; an absolute path into the repo is not matched, upgrade with os.path.relpath
     cmd_files = {os.path.normpath(w) for w in words if not os.path.isabs(w)}
     entries, skipped = [], []
-    known = {e["file"] for e in target.load_json(run, "ledger.json").get("tests", []) if isinstance(e, dict)} | set(tj["included"])
+    known = fix_tests and {e["file"] for e in target.load_json(run, "ledger.json").get("tests", []) if isinstance(e, dict)} | set(tj["included"])
     found = report.build(run)["findings"]
     for f in found:
         fix_text = f.get("fix")
         derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
         judges = _judges(f["path"], cmd_files)
-        if judges and not (fix_tests and _editable_test(f["path"])):
+        script = f["path"] in cmd_files and not ledger._TEST_NAME.match(f["path"].rpartition("/")[2])  # the command's own script
+        if judges and not (fix_tests and _editable_test(f["path"]) and not script):
             why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in for test files only
         elif judges and not _covered(f["path"], cmd_files, known):
             why = "not-covered"  # the post-fix run would not judge this edit

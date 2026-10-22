@@ -15,7 +15,7 @@ RULES = {
     ".py": (_C, re.compile(r"\bassert\b|\bself\.assert\w*\(|\bpytest\.raises\b|\bself\.fail\("),
             re.compile(r"\b(?:skip|skipIf|skipUnless|xfail|importorskip)\b")),
     ".rb": (_C, re.compile(r"\bexpect\s*[({]|\bassert\w*|\bshould\b"), re.compile(r"\b(?:skip|pending|xit|xdescribe|xcontext)\b")),
-    ".go": (("//", "/*", "*"), re.compile(r"\b(?:assert|require)\.\w+|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"),
+    ".go": (_SLASH, re.compile(r"\b(?:assert|require)\.\w+|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"),
             re.compile(r"\bt\.Skip\w*")),
     ".cs": (_SLASH, re.compile(r"\bAssert\.\w+|\.Should\b"), re.compile(r"\[Ignore\b|\bSkip\s*=")),
 }

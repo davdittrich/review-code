@@ -1692,7 +1692,7 @@ class WeakenGate(Base):
     TEST = "def test_x():\n    assert 1 - 1\n    assert 2 - 1\n"
     base_files = dict(BASE, **{"tests/test_old.py": "def test_o():\n    assert 1 - 1\n"})
     feat_files = {"src/calc.py": FEAT, "tests/test_calc.py": TEST, "conftest.py": "def f():\n    return 2 - 1\n",
-                  "jest.config.js": "module.exports = 3 - 1;\n", "ci/run-tests.sh": RUN, "src/second.py": "def g(a, b):\n    return a / b\n"}
+                  "jest.config.js": "module.exports = 3 - 1;\n", "ci/run-tests.sh": RUN, "tests/run.sh": RUN, "src/second.py": "def g(a, b):\n    return a / b\n"}
     WORDS = [sys.executable, "-B", "-c", "assert '-' in open('tests/test_calc.py').read()"]
     TC = two("tests/test_calc.py", 2, "assert 1 - 1", "assert 1 + 1", severity="blocking")
 
@@ -1721,6 +1721,11 @@ class WeakenGate(Base):
         self.assertEqual(skipped, {c["path"]: "test-path" for c in cands})
         self.assertEqual(applied, ["tests/test_calc.py"])  # in the target: covered without being named
 
+    def test_a_command_script_inside_a_test_dir_stays_protected(self):
+        run_sh = two("tests/run.sh", 2, "run 3 - 1", "run 3 + 1")
+        self.assertEqual(self.planned([run_sh, self.TC], ["./tests/run.sh"])[2], {"tests/run.sh": "test-path"})
+        self.assertEqual(self.planned([self.TC])[3], ["tests/test_calc.py"])  # a test file the command names stays editable
+
     def test_a_test_file_in_the_target_is_covered(self):
         _, j, skipped, applied = self.planned([self.TC])
         self.assertEqual((skipped, applied, j["test_files"]), ({}, ["tests/test_calc.py"], 1))
@@ -1730,7 +1735,6 @@ class WeakenGate(Base):
         self.assertTrue(cov("tests/a.py", set(), {"tests/a.py"}))
         self.assertTrue(cov("tests/a.py", {"tests/a.py"}, set()))
         self.assertTrue(cov("tests/a.py", {"tests"}, set()))
-        self.assertTrue(cov("tests/sub/a.py", {"tests/"}, set()))
         self.assertTrue(cov("tests/a.py", {"."}, set()))
         self.assertFalse(cov("tests/a.py", {"pytest"}, {"tests/b.py"}))
         self.assertFalse(cov("tests2/a.py", {"tests"}, set()))
