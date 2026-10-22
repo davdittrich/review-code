@@ -1730,6 +1730,14 @@ class WeakenGate(Base):
         run_sh = two("tests/run.sh", 2, "run 3 - 1", "run 3 + 1")
         self.assertEqual(self.planned([run_sh, self.TC])[2], {"tests/run.sh": "test-path"})  # the words do not name it
 
+    def test_a_test_file_the_command_names_stays_protected(self):
+        # `python tests/test_calc.py` runs the file itself: replacing its unittest.main() would pass without running a test
+        run = self.pin()
+        self.ingest(run, self.TC)
+        self.confirm(run, (report_id(self.TC), dict(path=self.TC["path"], line=self.TC["line"], quote=self.TC["quote"])))
+        j = self.fixrun(["plan", "--run", run, "--fix-tests"], sys.executable + "\ntests/test_calc.py\n")[2]
+        self.assertEqual((j["reason"], j["detail"]), ("nothing-to-fix", "skipped: test-path 1"))
+
     def test_plan_skips_an_uncovered_test_file(self):
         # shortcut: a finding can only name a target file, which counts as covered, so the branch is reached by mocking
         run = self.pin()

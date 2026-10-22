@@ -14,7 +14,7 @@ _JS = (_SLASH, re.compile(r"\bexpect\s*\(|\bassert\b|\.should\b"),
 _JAVA = (_SLASH, re.compile(r"\bassert\w*\s*\(|\bAssert\.|\bfail\s*\("), re.compile(r"@Ignore\b|@Disabled\b"))
 RULES = {
     ".py": (_C, re.compile(r"\bassert\b|\bself\.assert\w*\(|\bpytest\.raises\b|\bself\.fail\("),
-            re.compile(r"\b(?:skip|skipIf|skipUnless|skipTest|SkipTest|xfail|importorskip)\b")),
+            re.compile(r"\b(?:skip|skipif|skipIf|skipUnless|skipTest|SkipTest|xfail|importorskip)\b")),
     ".rb": (_C, re.compile(r"\bexpect\s*[({]|\bassert\w*|\bshould\b"), re.compile(r"\b(?:skip|pending|xit|xdescribe|xcontext)\b")),
     ".go": (_SLASH, re.compile(r"\b(?:assert|require)\.\w+|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\b"),
             re.compile(r"\bt\.Skip\w*")),
