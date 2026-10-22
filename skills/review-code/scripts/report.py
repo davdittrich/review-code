@@ -582,8 +582,8 @@ def _candidate(o, tree, lane, base, ctx=None):
         rows, again = _cite(tree, c["path"], c["line"], end, fixed)
         if rows is not None:
             c["quote"], c["rows"], why = fixed, rows, again
-        elif again != "quote-not-at-line":
-            alt = fixed  # the line is out of range, so the quote cannot tell the readings apart: _relocate tries both
+        else:
+            alt = fixed  # neither reading sits at the cited line, so the quote cannot tell them apart: _relocate tries both
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and lane != "sota":  # sota cites its checklist item, not a line to move
         moved = None
         for q in (c["quote"], alt):

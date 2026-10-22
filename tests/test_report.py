@@ -1540,6 +1540,14 @@ class Backslash(Base):
             (c,) = json.load(fh)["candidates"]
         self.assertEqual(c["quote"], "WB = r'\\bfoo\\b'")
 
+    def test_a_single_backslash_b_quote_citing_the_wrong_in_range_line_is_moved(self):
+        ln = self.LINE % "WB = r'\\bfoo\\b'"  # cites line 4 (in range, holds RX); line 6 holds the backslash quote
+        out = self.ingest(ln, {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["ids"]), out["rejected"]), (1, []))
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual((c["quote"], c["line"]), ("WB = r'\\bfoo\\b'", 6))
+
     def test_a_control_character_quote_that_still_fails_is_rejected(self):
         ln = (self.LINE % "WB = r'\\bnope\\b'").replace('["line",4]', '["line",6]')
         out = self.ingest(ln, {"inspected": ["src/calc.py"]})
