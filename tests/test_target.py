@@ -586,6 +586,11 @@ class TestWordsFromStdin(Local):
         rc, out = self.stdin_pin("src/x.py\nsrc/y.py\n\n")  # blank lines are not words
         self.assertEqual(load(out["run"])["included"], ["src/x.py", "src/y.py"])
 
+    def test_a_short_number_naming_a_path_is_pr_or_path_by_design(self):
+        gitfix.commit(self.repo, {"1234/m.txt": "m\n"}, "directory named like a PR number")
+        rc, out = self.pin("1234")
+        self.assertEqual((rc, out["status"], sorted(c["kind"] for c in out["candidates"])), (2, "ambiguous", ["path", "pr"]))
+
     def test_stdin_with_choice_and_flags(self):
         gitfix.commit(self.repo, {"main/m.txt": "m\n"}, "dir named like a branch")
         rc, out = self.stdin_pin("main\n")
