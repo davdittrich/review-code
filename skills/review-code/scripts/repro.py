@@ -26,7 +26,8 @@ ID_RE = report.ID_RE
 TIMEOUT = 120  # seconds; read at call time
 ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TERM")
 SENTINEL = "REPRO-"
-USAGE = "usage: repro.py run --run DIR --id ID --test RELPATH -- CMD [ARG ...]"
+USAGE = ("usage: repro.py run --run DIR --id ID --test RELPATH -- CMD [ARG ...]"
+         " | repro.py base --run DIR --test RELPATH -- CMD [ARG ...]")
 
 
 def _test_path_ok(rel: str) -> bool:
@@ -117,22 +118,89 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes) -> dic
     return dict(result, status="ok", id=fid)
 
 
+def base(run_dir: str, test: str, cmd: List[str]) -> dict:
+    """Base check: the change's own test must pass at head and fail at the merge base (the fix reverted)."""
+    if not _test_path_ok(test):
+        raise target.Refuse("bad-test-path")
+    ledger.trust_gate(run_dir, cmd)
+    try:
+        with open(os.path.join(run_dir, "target.json"), encoding="utf-8") as fh:
+            rec = json.load(fh)
+        repo, kind, head, mb = rec["repo"], rec["kind"], rec["head_sha"], rec["merge_base"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise target.Refuse("no-target")
+    wts = [os.path.join(run_dir, "wt-base-" + n) for n in ("head", "base")]
+    home, tmp = (os.path.join(run_dir, p + "base") for p in ("repro-home-", "repro-tmp-"))
+    outcome, codes = "error", {}
+    try:
+        for wt, rev in zip(wts, (head, mb)):
+            target.git_bytes(["worktree", "add", "--detach", wt, rev], repo)
+        if kind in ledger.INPLACE:  # head = HEAD plus the tracked diff, as in run; the base stays HEAD
+            args = ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color"]
+            diff = target.git_bytes(args + (["--cached"] if kind == "staged" else []) + ["HEAD"], repo)
+            if diff:
+                target.git_bytes(["apply", "--binary"], wts[0], stdin=diff)
+        src, dst = (os.path.realpath(os.path.join(w, test)) for w in wts)
+        if not (src.startswith(os.path.realpath(wts[0]) + os.sep) and dst.startswith(os.path.realpath(wts[1]) + os.sep)):
+            raise target.Refuse("bad-test-path")
+        if not os.path.isfile(src):
+            raise target.Refuse("no-test-file")  # untracked files are not carried
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+        os.mkdir(home, 0o700)
+        os.mkdir(tmp, 0o700)
+        env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
+        env.update(HOME=home, TMPDIR=tmp)
+        for name, wt in zip(("head", "base"), wts):
+            res = _execute(cmd, wt, env, "")
+            codes[name] = res["exit"]
+            if res["outcome"] in ("timeout", "error"):
+                outcome = res["outcome"]
+                break
+            if (res["exit"] == 0) != (name == "head"):  # head must pass; base must fail
+                outcome = "fails-on-head" if name == "head" else "passes-on-base"
+                break
+        else:
+            outcome = "verified"
+    except (target.Refuse, OSError) as e:
+        if isinstance(e, target.Refuse) and e.reason in ("bad-test-path", "no-test-file"):
+            raise
+    finally:
+        for wt in wts:
+            target.git_bytes(["worktree", "remove", "--force", wt], repo, check=False)
+            shutil.rmtree(wt, ignore_errors=True)
+        target.git_bytes(["worktree", "prune"], repo, check=False)
+        shutil.rmtree(home, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+    out_dir = os.path.join(run_dir, "repro")
+    os.makedirs(out_dir, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    record = {"outcome": outcome, "head_exit": codes.get("head"), "base_exit": codes.get("base"), "test": test}
+    # a name no finding id can have, so report.py _repro never reads it
+    target.write_private(os.path.join(out_dir, "base-" + re.sub(r"\W", "_", test) + ".json"),
+                         json.dumps(record, sort_keys=True))
+    return dict(record, status="ok")
+
+
 def main(argv: List[str], stdin: Optional[object] = None) -> int:
     try:
-        if argv[:1] != ["run"] or "--" not in argv:
+        if argv[:1] not in (["run"], ["base"]) or "--" not in argv:
             raise target.Refuse("usage", USAGE)
         i = argv.index("--")
         opts = argv[1:i]
-        if len(opts) != 6 or opts[0::2] != ["--run", "--id", "--test"] or i == len(argv) - 1:
+        keys = ["--run", "--id", "--test"] if argv[0] == "run" else ["--run", "--test"]
+        if len(opts) != 2 * len(keys) or opts[0::2] != keys or i == len(argv) - 1:
             raise target.Refuse("usage", USAGE)
-        source = (stdin or sys.stdin.buffer).read()
-        out = run(opts[1], opts[3], opts[5], argv[i + 1:], source)
+        if argv[0] == "base":
+            out = base(opts[1], opts[3], argv[i + 1:])
+        else:
+            out = run(opts[1], opts[3], opts[5], argv[i + 1:], (stdin or sys.stdin.buffer).read())
         rc = 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
-    print(json.dumps({k: v for k, v in out.items() if k in ("status", "reason", "detail", "id", "outcome", "exit")},
+    print(json.dumps({k: v for k, v in out.items() if k in ("status", "reason", "detail", "id", "outcome", "exit", "head_exit", "base_exit")},
                      sort_keys=True))
     return rc
 
