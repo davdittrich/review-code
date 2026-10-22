@@ -33,7 +33,7 @@ score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout 
     --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
                                    (capture.py) instead of stdin: handback capture before stop capture, and the stored agent
                                    type must be the plan's agent for the lane (plan.json calls) or the batch (verify_calls),
-                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced, and it still counts as a try. A successful call consumes the capture;
+                                   else agent-mismatch (verdicts: also when the reply names none of the batch's ids); none stored: no-capture; only a stop capture and it lacks that line: capture-incomplete (wait for the agent's completion notification, or use stdin); an id that already served another call of the run (<run>/agents.json, kept until discard): agent-reused; no inspected line (ingest) or wire line (verdicts): empty-capture. An ingest with findings but no `inspected` line for a lane already complete: no-inspected-line, nothing replaced, and it still counts as a try. A successful call consumes the capture;
                                    verdicts needs --batch. The reply then goes through the stdin validation unchanged.
     report.py render   --run DIR [--format text|json|sarif]
     report.py status   --run DIR   read-only: ids, spec_ids, verify_calls, lane_state, missing_lanes, missing_batches, confirmed,
@@ -144,6 +144,7 @@ REASONS = {
     "other-batch": "the id belongs to another verify batch",
     "unknown-id": "the id is no candidate of this run",
     "empty-capture": "the capture holds no wire line of the expected kind",
+    "capture-incomplete": "only the agent's closing message is captured: wait for its completion notification, or pass the reply on stdin",
     "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
 }
@@ -943,8 +944,9 @@ def _bind(run, agent, key, record=False):
 
 def _take(run, agent, want, needs_inspected):
     """The reply the capture hook stored for `agent` (handback before stop), when it came from agent type `want` and
-    holds what the step needs: an `inspected` line for a lane (`needs_inspected` true), else any wire line. Else empty-capture,
-    so closing words alone never stand in for a reply."""
+    holds what the step needs: an `inspected` line for a lane (`needs_inspected` true), else any wire line. Else
+    empty-capture (a handback without it) or capture-incomplete (a stop capture without it: the handback is not captured
+    yet), so closing words alone never stand in for a reply."""
     target.load_json(run, "target.json")
     for kind in capture.KINDS:
         try:
@@ -956,7 +958,7 @@ def _take(run, agent, want, needs_inspected):
             if got.get("agent_type") != want:
                 raise _refuse("agent-mismatch")
             if not any(o is not None and "inspected" in o and "path" not in o if needs_inspected else True for _, o, _ in _objects(got["message"])):
-                raise _refuse("empty-capture")
+                raise _refuse("capture-incomplete" if kind == "stop" else "empty-capture")  # a stop capture holds the closing words only
             return got["message"].encode("utf-8", "replace").decode("utf-8")  # a lone surrogate cannot be stored
     raise _refuse("no-capture")
 

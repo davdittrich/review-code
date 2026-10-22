@@ -1871,11 +1871,29 @@ class AgentReply(Captured, Base):
     def test_a_capture_without_an_inspected_line_is_refused_and_kept(self):
         self.capture("All done, see my report above.", kind="stop")
         out = self.agent_ingest(rc=1)
-        self.assertEqual(out["reason"], "empty-capture")
+        self.assertEqual(out["reason"], "capture-incomplete")  # gh#28: only the closing words, the handback is not captured yet
         self.assertEqual(self.held(), [AID + ".stop.json"])
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(lines(QCAND))  # a candidate line alone does not complete the lane either
+        self.assertEqual(self.agent_ingest(rc=1)["reason"], "empty-capture")  # a handback with no inspected line
+
+    def test_a_handback_with_no_wire_lines_is_empty_and_a_stop_only_capture_is_incomplete(self):  # gh#28
+        self.capture("I found nothing to report.")
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "empty-capture")
+        self.assertEqual(self.agent_ingest(aid="e" * 17, rc=1)["reason"], "no-capture")
+        self.capture("Done. I reviewed the change.", kind="stop", aid="e" * 17)
+        self.assertEqual(self.agent_ingest(aid="e" * 17, rc=1)["reason"], "capture-incomplete")
+        with self.assertRaises(report.target.Refuse) as cm:
+            report._take(self.run_dir, "e" * 17, "review-code:finder", True)
+        self.assertIn("completion notification", cm.exception.detail)
+        self.assertIn("stdin", cm.exception.detail)
+
+    def test_a_stop_only_capture_is_incomplete_on_the_verdicts_path_too(self):  # gh#28
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        self.capture("Verified all of them, thanks.", kind="stop", agent_type="review-code:verifier")
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"]), (1, "capture-incomplete"))
+        self.assertEqual(self.held(), [AID + ".stop.json"])
 
     def test_a_capture_without_a_verdict_line_is_refused_and_kept(self):
         self.ingest(QCAND, {"inspected": ["src/calc.py"]})

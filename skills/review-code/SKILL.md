@@ -173,7 +173,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> --agent <agentId>
    ```
 
-   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
+   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> <<'REVIEW_FINDINGS'
