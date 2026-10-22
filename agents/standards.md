@@ -24,6 +24,12 @@ tagged `smell` as yours; the other checks belong to another lane. A `## Smells` 
 lists the baseline smell file: read it.
 A rule source may also be a `.okf/` bundle file listed in the input: read it as plain Markdown conventions.
 Never open inputs/spec.md, and never read PR, MR, issue or commit text: the change author's claims are not evidence.
+A `## Siblings` section, when present, holds hints, never evidence. For an `ADD` line, read the registry line in tree/ at the cited `R:line`.
+If the registry really omits the new file, send a `smell` finding with severity `suggestion`, anchored on the new file's first line (an added line;
+`path`, `line` and `quote` copied verbatim from tree/), the title `<new file> is not registered where <sibling> is`, and the hint line verbatim as
+`trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line; it is unchanged and would be dropped.
+If the registry line does not confirm the gap, send nothing; a glob-based or auto-generated registry is no gap.
+A line `<file> usually changes with <other>` never yields a finding alone: it only tells you what to read.
 
 ## What to check
 
