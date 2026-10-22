@@ -387,10 +387,9 @@ def plan(run: str, words: List[str]) -> dict:
     found = report.build(run)["findings"]
     for f in found:
         fix_text = f.get("fix")
+        derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
-        if not isinstance(fix_text, str) or not fix_text.strip():
-            why = "no-fix"
-        elif _protected(f["path"]):
+        if _protected(f["path"]):
             why = "protected-path"
         elif _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
@@ -401,7 +400,8 @@ def plan(run: str, words: List[str]) -> dict:
         if why:
             skipped.append({"id": f["id"], "path": f["path"], "why": why})
             continue
-        e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote", "fix")}
+        e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote")}
+        e["fix"], e["derived"] = ("" if derived else fix_text), derived
         e["line"], e["end_line"] = line, line + (f["end_line"] - f["line"])
         e["model"], e["effort"] = _tier(e)
         entries.append(e)
@@ -421,7 +421,8 @@ def plan(run: str, words: List[str]) -> dict:
                                                       e["severity"], e["category"], e["origin"], e["model"],
                                                       e["effort"]))
         for label in ("title", "fix"):
-            rows = [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
+            rows = ["derived by fixer: no fix text"] if label == "fix" and e["derived"] else \
+                [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
             text += ["  %s: %s" % (label, rows[0])] + ["      " + r for r in rows[1:]]
     if skipped:
         text.append("== skipped ==")
@@ -514,7 +515,9 @@ def begin(run: str) -> dict:
         nonce = secrets.token_hex(8)
         brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
                  "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
-        brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote", "fix")]
+        brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote")]
+        brief.append("fix: none. No fix text exists for this finding; derive the smallest edit that resolves it from the "
+                     "title, trigger and quote above." if e["derived"] else "fix:\n" + ledger.block(e["fix"], nonce))
         target.write_private(os.path.join(fd, e["id"] + ".md"), "\n".join(brief) + "\n")
         st["in_flight"] = {"id": e["id"], "path": e["path"], "mode": stat.S_IMODE(os.stat(real).st_mode)}
         _save(run, st)

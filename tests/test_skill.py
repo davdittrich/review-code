@@ -278,6 +278,11 @@ class Phase6Procedure(unittest.TestCase):
         for k in ("reverted-tests", "reverted-too-large", "reverted-timeout"):
             self.assertEqual(rows[k], "no", k)
 
+    def test_no_fix_is_no_longer_a_skip_reason(self):  # review-code#33
+        flat = " ".join(ref("fix.md").split())
+        self.assertNotIn("no-fix", flat)
+        self.assertIn("derived by fixer", flat)
+
     def test_baseline_and_finish_are_not_pre_approved(self):
         fm = self.text.split("\n---", 1)[0]
         self.assertNotIn("fix.py baseline", fm)

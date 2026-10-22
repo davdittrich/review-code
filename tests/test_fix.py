@@ -306,10 +306,6 @@ class PlanGates(Base):
         run = self.pin()
         self.ingest(run, CAND)  # never confirmed: unverifiable
         self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: none")
-        run = self.pin()
-        (fid,) = self.ingest(run, dict(CAND, fix=""))
-        self.confirm(run, (fid, CITE))
-        self.assertEqual(self.refused(run, "nothing-to-fix")["detail"], "skipped: no-fix 1")
 
     def test_same_plan_twice_same_digest(self):
         run, _ = self.ready()
@@ -332,15 +328,46 @@ class Skips(Base):
         self.assertEqual(len(self.ingest(run, *cands)), 4)
         self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
         rc, out, j = self.plan(run)
-        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 3), out)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 2, 2), out)
         block = out.split("== skipped ==\n")[1].split("\n")
-        want = {report_id(cands[1]): "stale", report_id(cands[2]): "no-fix", report_id(cands[3]): "protected-path"}
-        got = {ln.split()[0]: ln.split()[2] for ln in block[:3]}
+        want = {report_id(cands[1]): "stale", report_id(cands[3]): "protected-path"}
+        got = {ln.split()[0]: ln.split()[2] for ln in block[:2]}
         self.assertEqual(got, want)
         with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
             doc = json.load(fh)
         self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
-        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py"])
+        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py", "src/nofix.py"])
+
+
+class DerivedFixes(Base):
+    """review-code#33: a verified finding with no fix text is planned, marked, and handed to the fixer to derive."""
+    feat_files = {"src/calc.py": FEAT}
+
+    def test_finding_without_fix_text_is_planned_marked_and_briefed(self):
+        run, fid = self.ready(dict(CAND, fix=""))
+        rc, out, j = self.plan(run)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), out)
+        self.assertIn("derived by fixer", out)
+        self.assertNotIn("no-fix", out)
+        self.assertEqual(self.baseline(run, j["digest"])[2]["status"], "ok")
+        bg = self.begin(run)[2]
+        self.assertEqual((bg["status"], bg["id"]), ("ok", fid), bg)
+        with open(bg["brief"], encoding="utf-8") as fh:
+            brief = fh.read()
+        self.assertIn("fix: none. No fix text exists", brief)
+        for label, text in (("title", "add subtracts"), ("trigger", "add(2, 3) returns -1"), ("quote", QUOTE)):
+            self.assertRegex(brief, r"(?m)^%s:\n<<<UNTRUSTED-[0-9a-f]+\n%s\n" % (label, re.escape(text)))
+        self.assertNotRegex(brief, r"(?m)^fix:\n")
+        self.edit("src/calc.py", QUOTE, "return a + b")  # the derived edit is judged like any other
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+
+    def test_derived_fix_that_breaks_the_tests_is_reverted(self):
+        run, fid = self.ready(dict(CAND, fix=""))
+        self.go(run)
+        bg = self.begin(run)[2]
+        self.edit("src/calc.py", QUOTE, "return a +")
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+        self.assertEqual(self.git("status", "--porcelain"), "")
 
 
 class SecondFileNamed(Base):
