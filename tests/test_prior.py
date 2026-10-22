@@ -36,9 +36,16 @@ class Read(unittest.TestCase):
         got = prior.read([rev("me", body)], [inline], "me")
         self.assertEqual(got["last_head"], SHA)
         self.assertEqual((got["fixed"], got["outdated"]), ({A}, {B}))
-        self.assertEqual(got["findings"], {A: {"path": "src/a.py", "head": SHA, "state": "fixed"},  # Location above the marker
-                                           B: {"path": None, "head": SHA, "state": "outdated"},  # none after a `---`
-                                           C: {"path": "src/b.py", "head": SHA2, "state": "open"}})
+        self.assertEqual(got["findings"], {A: {"path": "src/a.py", "head": SHA, "state": "fixed", "nit": False},  # Location above the marker
+                                           B: {"path": None, "head": SHA, "state": "outdated", "nit": False},  # none after a `---`
+                                           C: {"path": "src/b.py", "head": SHA2, "state": "open", "nit": False}})
+
+    def test_nit_heading_marks_only_its_own_finding(self):
+        body = "\n".join(["nit: **Nit** (standards, convention) - t", "**Location:** src/a.py:2 (outside the diff)",
+                          "<!-- review-code:finding %s v1 -->" % A, "", "---", "", "**Required** (defects, bug) - t",
+                          "<!-- review-code:finding %s v1 -->" % B])
+        got = prior.read([rev("me", body)], [], "me")
+        self.assertEqual((got["findings"][A]["nit"], got["findings"][B]["nit"]), (True, False))
 
     def test_another_login_and_pending_forgeries_are_ignored(self):
         forged = rev("mallory", "<!-- review-code:finding %s v1 -->\n%s" % (A, mark(SHA2, [B])))
@@ -79,6 +86,14 @@ class Derive(unittest.TestCase):
         self.assertEqual((d["fixed_out"], d["outdated_out"]), ({A}, {B}))
         self.assertEqual(prior.render(d), "**Prior:** 1 open, 1 fixed (%s), 1 outdated (%s -> may be %s)" % (A, B, D))
         self.assertTrue(prior.PRIOR_LINE.fullmatch(prior.render(d)))
+
+    def test_prior_nit_is_judged_only_by_a_nit_run(self):
+        old = self.old({A: "u.py", B: "u.py"})
+        old["findings"][A]["nit"] = True
+        d = prior.derive(old, {}, {"u.py"}, True, changed={"u.py"}, nit_run=False)
+        self.assertEqual((d["fixed"], d["unknown"]), ({B}, {A}))
+        d = prior.derive(old, {}, {"u.py"}, True, changed={"u.py"}, nit_run=True)
+        self.assertEqual((d["fixed"], d["unknown"]), ({A, B}, set()))
 
     def test_unknown_when_out_of_scope_unrecoverable_incomplete_or_unverifiable(self):
         old = self.old({A: "out.py", B: None, C: "c.py", D: "c.py"})

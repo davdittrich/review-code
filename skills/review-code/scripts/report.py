@@ -305,8 +305,8 @@ REPAIR_STEPS = 250  # string ends and values it will try on one line (the 15 rea
 INGEST_STEPS = 20000  # ... and on all lines of one ingest call or one stored verdicts batch
 SUMMARY_MAX = 600  # characters of a change summary: one to three sentences
 LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only keys whose string may hold a raw quote (e7e)
-KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + (
-    "rule", "rule_source", "sources", "spec_line", "item", "inspected", "declined", "why", "summary"))
+KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + tuple(k for v in LANE_OPTIONAL.values() for k in v) + (
+    "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
 _ESC = re.compile(r'(\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))|\\|"')  # a valid escape (kept), else a lone backslash or quote
 _CONTROL = {8: "\\b", 9: "\\t", 10: "\\n", 12: "\\f", 13: "\\r"}  # the control characters a lone \b \t \n \f \r in a quote decodes to
@@ -715,7 +715,8 @@ def _rejected(run):
     d, lanes, batches = os.path.join(run, "rejected"), {}, {}
     for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
         with open(os.path.join(d, n), encoding="utf-8", newline="") as fh:
-            k = fh.read().count("\n")
+            text = fh.read()
+        k = text.count("\n") - len(re.findall(r"^failed-validation:(?:%s) " % "|".join(sorted(nit.REFUSED)), text, re.M))  # a refused nit loses nothing
         if n.endswith(".txt") and k:
             is_batch = n.startswith("batch-") or n == "serial.txt"
             (batches if is_batch else lanes)[n[:-4].replace("batch-", "", 1) if is_batch else n[:-4]] = k
@@ -1110,8 +1111,9 @@ def _ingest(run, text, lane, shard):
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs))
     _reject(run, key, rejected)
-    _counts(run, key, len(rejected), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
-            [_lost_id(ln, lane) for _, ln in rejected], {c["id"] for c in lanes[key]["candidates"]},
+    lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
+    _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
+            [_lost_id(ln, lane) for _, ln in lost], {c["id"] for c in lanes[key]["candidates"]},
             lanes[key].get("complete") is True)
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
@@ -1272,12 +1274,12 @@ def _cap(cls, category):
     return "noted"
 
 
-def _repro(run, fid, mode=None):
-    """The repro outcome of a finding; with mode, only a record that repro.py wrote in that mode (older records have none)."""
+def _repro(run, fid, modes=None):
+    """The repro outcome of a finding; with `modes`, only a record that repro.py wrote in one of them (older records have none: None)."""
     try:
         with open(os.path.join(run, "repro", fid + ".json"), encoding="utf-8") as fh:
             rec = json.load(fh)
-        return rec.get("outcome") if mode is None or rec.get("mode") == mode else None
+        return rec.get("outcome") if modes is None or rec.get("mode") in modes else None
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -1330,8 +1332,8 @@ def _build(run):
         elif kind == "confirmed" and cites and serial:  # a self-score is not independent verification (VERI-03)
             cls, reason = "inferred", "self-scored"
         elif kind == "confirmed" and cites:
-            cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
-        elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], "base") == "reproduced":
+            cls, reason = ("reproduced" if _repro(run, c["id"], ("run", None)) == "reproduced" else "traced"), v["reason"]
+        elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], ("base",)) == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"

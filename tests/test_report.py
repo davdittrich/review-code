@@ -203,6 +203,20 @@ class Derivation(Base):
         n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 0})
         self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
 
+    def test_a_base_record_never_upgrades_a_confirmed_finding(self):
+        for category in ("bug", "security", "test"):
+            for mode, want in (("base", "traced"), ("run", "reproduced"), (None, "reproduced")):  # None: a legacy record
+                with self.subTest(category=category, mode=mode):
+                    self.rep("discard")
+                    shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
+                    self.ingest(cand(Q_ADD, 8, category=category))
+                    n = fid("src/calc.py", category, Q_ADD)
+                    self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
+                    os.makedirs(os.path.join(self.run_dir, "repro"))
+                    with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
+                        json.dump(dict({"outcome": "reproduced", "exit": 0}, **({"mode": mode} if mode else {})), fh)
+                    self.assertEqual(self.items()[n]["evidence_class"], want)
+
     def test_do_not_flag_unchanged_lines(self):
         self.ingest(cand(Q_OLD, 5, severity="suggestion", category="security"),
                     cand("return 1", 2, severity="blocking", category="security"),
@@ -1473,6 +1487,12 @@ class Repair(Base):
         got = [hashlib.sha256(json.dumps(o, sort_keys=True).encode()).hexdigest()[:12]
                for ln in REAL_LANE + REAL_VERDICTS for _, o, _ in report._objects(ln)]
         self.assertEqual(got, REAL_READINGS)
+
+    def test_a_standards_norm_line_short_one_closer_is_repaired(self):
+        for k in ("norm_for", "norm_against", "norm_glob"):  # a key LANE_OPTIONAL accepts is a repair key too
+            self.assertIn(k, report.KEYS)
+            ((_, o, fixed),) = report._objects('[["path", "a.py"], ["%s", "*.py", ["line", 3]]' % k)
+            self.assertEqual((o, fixed), ({"path": "a.py", k: "*.py", "line": 3}, True))
 
     def test_strict_lines_are_not_flagged_repaired(self):
         self.assertEqual([r for _, _, r in report._objects(json.dumps(wire(CAND)))], [False])

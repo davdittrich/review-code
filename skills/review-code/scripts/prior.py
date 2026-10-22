@@ -26,6 +26,7 @@ _SAME = r"[0-9]+ unknown \(%s(?:, %s)*: file unchanged since the last review\)" 
 _PART = "|".join((_OPEN, _GONE, _OUT, _SAME))
 PRIOR_LINE = re.compile(r"\*\*Prior:\*\* (?:%s)(?:, (?:%s))*" % (_PART, _PART))
 STATE_LINE = re.compile(r"\*\*State:\*\* new")
+NIT_HEAD = "nit: **Nit** ("
 
 
 def review_mark(head: str, fixed=(), outdated=()) -> str:
@@ -79,30 +80,33 @@ def read(reviews: list, comments: list, me) -> dict:
                 continue
             marks = [m for m in map(parse_mark, _lines(item["body"])) if m] if kind == "review" else []
             last = marks[-1] if marks else last
-            loc = None
+            loc, nit = None, False
             for ln in _lines(item["body"]):
                 m = _LOCATION.fullmatch(ln)
+                if ln.startswith(NIT_HEAD):  # post.py's `_render` opens a nit's heading so; a nit is judged only by a --nit run
+                    nit = True
                 if m:
                     loc = _path(_unescape(m.group(1)))
                 elif ln == "---":
-                    loc = None
+                    loc, nit = None, False
                 elif FINDING.fullmatch(ln):
-                    rec = found.setdefault(FINDING.fullmatch(ln).group(1), {"path": None, "head": None})
+                    rec = found.setdefault(FINDING.fullmatch(ln).group(1), {"path": None, "head": None, "nit": False})
+                    rec["nit"] = rec["nit"] or nit
                     rec["path"] = _path(item.get("path")) or loc or rec["path"]
                     rec["head"] = _sha(item.get("commit_id")) or (marks[-1][0] if marks else None) or rec["head"]
-                    loc = None
+                    loc, nit = None, False
     fixed, outdated = (last[1], last[2]) if last else (frozenset(), frozenset())
     for i, rec in found.items():
         rec["state"] = "fixed" if i in fixed else "outdated" if i in outdated else "open"
     return {"findings": found, "last_head": last[0] if last else None, "fixed": set(fixed), "outdated": set(outdated)}
 
 
-def derive(old: dict, now: Dict[str, str], scope, complete: bool, unverifiable=(), changed=None) -> dict:
+def derive(old: dict, now: Dict[str, str], scope, complete: bool, unverifiable=(), changed=None, nit_run=True) -> dict:
     """Set algebra over P (`old["findings"]`, with the carried sets) and R (`now`: this run's finding id -> path).
     new = R - P, plus any id earlier found fixed; open = R & P; a prior id absent from R is `outdated` when a new id sits
     on its path (the quote moved or changed, so the hash did; not claimed fixed), `fixed` when the run is complete, the
     path was in scope, no new id sits there and `changed` (the paths git says differ between the prior review head and this
-    head; None when that is unknown) holds the path ("no longer found by this review", never proven), else `unknown`; an
+    head; None when that is unknown) holds the path ("no longer found by this review", never proven), else `unknown`, as is a prior nit when `nit_run` is false; an
     absent id whose file did not change is also listed in `unchanged`, since a lane that missed it proves nothing.
     Ids already carried as fixed or outdated are not reported again. `fixed_out` and `outdated_out` are the sets to carry."""
     old_f, old_o, P, R = old["fixed"], old["outdated"], old["findings"], set(now)
@@ -111,7 +115,7 @@ def derive(old: dict, now: Dict[str, str], scope, complete: bool, unverifiable=(
     for i in sorted(set(P) - R - old_f - old_o):
         path = P[i]["path"]
         twin = sorted(n for n in new if now[n] == path)
-        if path is None or i in unverifiable:
+        if path is None or i in unverifiable or (P[i].get("nit") and not nit_run):  # a run without --nit never looked for nits
             out["unknown"].add(i)
         elif twin:
             out["outdated"][i] = twin[0]

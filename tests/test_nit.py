@@ -246,6 +246,22 @@ class Counts(NitBase):
         self.assertNotIn("nits:", self.rep("render")[1])
 
 
+class RefusedNitVerdict(SmallSample):
+    """A refused nit candidate is dropped on retry; it must not leave a lost line that changes the verdict."""
+
+    def test_a_refused_norm_nit_leaves_the_verdict(self):
+        self.lane(self.nit())  # norm-sample-small
+        self.lane({"inspected": ["src/calc.py"]})  # the retry drops it
+        d = self.doc()
+        self.assertEqual((d["verdict"], d.get("lost"), d.get("rejected")), ("No blocking findings", None, None))
+
+    def test_a_refused_non_nit_line_still_forces_needs_discussion(self):
+        self.lane(dict(self.nit(), severity="suggestion", category="smell", quote="not on that line"))
+        self.lane({"inspected": ["src/calc.py"]})
+        d = self.doc()
+        self.assertEqual((d["verdict"], bool(d.get("lost"))), ("Needs discussion", True))
+
+
 class Nineteen(NitBase):
     DOM, DEV = 16, 3  # 19 observations
 
@@ -358,10 +374,6 @@ class Render(NitBase):
         self.assertEqual(res["properties"]["basis"], "norm")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Unit(unittest.TestCase):
     """scripts/nit.py through its own interface, no run directory."""
 
@@ -423,3 +435,7 @@ class Unit(unittest.TestCase):
         self.assertEqual((len(heads), heads[0], len(out)), (nit.NIT_RULE_CAP, "- rule: Rule 0. (4 findings)", nit.NIT_RULE_CAP * 4 + 1))
         self.assertEqual(out[-1], "(+2 more rules not shown)")
         self.assertEqual(nit.rows([mk(0, 0)], str)[0], "- rule: Rule 0. (1 finding)")
+
+
+if __name__ == "__main__":
+    unittest.main()

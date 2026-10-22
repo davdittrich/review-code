@@ -137,7 +137,7 @@ class GitHub:
     refs = None  # GitLab only: the diff refs read by the last state()
     login = None  # the user existing() checked; a failed create deletes only a pending review of theirs
     ids = frozenset()  # the finding ids of the payload the last create sent
-    prior = prior.read([], [], None)  # existing() replaces it with this PR's own earlier reviews
+    prior_state = prior.read([], [], None)  # existing() replaces it with this PR's own earlier reviews
     unknown = False  # the event's outcome could not be read: cleanup must leave the review alone
 
     def __init__(self, info: dict):
@@ -191,8 +191,8 @@ class GitHub:
         for r in reviews:
             if isinstance(r, dict) and r.get("state") == "PENDING" and (r.get("user") or {}).get("login") == me:
                 raise Refuse("pending-review-exists")
-        self.prior = prior.read(reviews, _pages("gh", self.i["host"], self.pr + "/comments", self.i["run"]), me)
-        return set(self.prior["findings"])
+        self.prior_state = prior.read(reviews, _pages("gh", self.i["host"], self.pr + "/comments", self.i["run"]), me)
+        return set(self.prior_state["findings"])
 
     def create(self, payload: dict) -> int:
         self.ids = {c["id"] for c in payload["comments"]}  # cleanup deletes a review only when it holds nothing else
@@ -307,7 +307,7 @@ class GitLab:
 
     _REFS = ("base_sha", "start_sha", "head_sha")
     refs = None  # {base_sha, start_sha, head_sha} read by the last state()
-    prior = prior.read([], [], None)  # GitLab keeps no prior state: `--since-last` refuses there, re-reviews post as before
+    prior_state = prior.read([], [], None)  # GitLab keeps no prior state: `--since-last` refuses there, re-reviews post as before
 
     def __init__(self, info: dict):
         self.i = info
@@ -691,14 +691,14 @@ def build(run: str) -> dict:
     anchors = _anchors(gh.diff())
     posted = gh.existing(gh.me())
     _live(gh, head, refs)  # check (b): nothing moved while the reads ran
-    old = gh.prior
+    old = gh.prior_state
     skip = posted - old["fixed"]  # an id found fixed earlier that is back in this run is new again
     complete = (doc["mode"] == "parallel" and not any(doc.get(k) for k in ("rejected", "rejected_batches", "no_verdict", "lost"))
                 and all(v == "complete" for n, v in doc["lanes"].items() if n.split("@")[0] in ("defects", "standards", "spec"))
                 and not any(s.get("what") in ("defects", "standards") or (s.get("what") == "spec" and s.get("why") != "no spec")
                             for s in doc["skipped"]))  # else absence proves nothing; "no spec" is the usual case and blocks nothing
     d = prior.derive(old, {f["id"]: f["path"] for f in doc["findings"]}, set(doc["inspected"]["files"]), complete,
-                     {i["id"] for i in doc["unverifiable"]}, _changed(run, old["last_head"], head))
+                     {i["id"] for i in doc["unverifiable"]}, _changed(run, old["last_head"], head), "nit" in doc)
     fresh = [f for f in doc["findings"] if f["id"] not in skip]
     if not fresh and not (d["fixed"] or d["outdated"]):  # a body-only status review is allowed when a prior state changed
         raise Refuse("already-posted" if doc["findings"] or old["fixed"] or old["outdated"] else "nothing-to-post")
@@ -770,9 +770,13 @@ def submit(run: str, digest: str) -> dict:
     _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
     _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (c): before the first write
-    posted = gh.existing(gh.me()) - gh.prior["fixed"]  # fresh: a pending review made since build would be stacked on or confused with ours
+    posted = gh.existing(gh.me()) - gh.prior_state["fixed"]  # fresh: a pending review made since build would be stacked on or confused with ours
     if posted & ({c["id"] for c in payload["comments"]} | set(payload["in_body"])):
         raise Refuse("already-posted")  # a retry after a timeout, or a first submit that died after its event call
+    last = gh.prior_state
+    if not payload["comments"] and not payload["in_body"] and \
+            prior.parse_mark(payload["body"].split("\n")[-1]) == (last["last_head"], last["fixed"], last["outdated"]):
+        raise Refuse("already-posted")  # a body-only status review has no id to find: its marker is the record
     handle = gh.create(payload)
     try:
         gh.verify(payload, handle)

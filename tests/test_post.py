@@ -1186,6 +1186,22 @@ class Idempotency(Base):
         self.assertEqual(len(self.fake.writes()), writes)  # no POST and no DELETE
         self.assertEqual([r["state"] for r in self.fake.reviews.values() if r["user"]["login"] == "me"], ["COMMENTED"])
 
+    def test_body_only_status_review_not_posted_twice(self):
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        mark = post.prior.review_mark(payload["head_sha"], [self.ids[2]])  # a status review: a prior id found fixed, no finding
+        payload.update(body="**Verdict:** No blocking findings (advisory)\n\n" + mark, comments=[], in_body=[], skipped=[])
+        post.target.write_private(self.payload_path(), json.dumps(payload, sort_keys=True, indent=2))
+        digest = hashlib.sha256(open(self.payload_path(), "rb").read()).hexdigest()
+        rc, out, _ = self.call("submit", "--run", self.run_dir, "--digest", digest)
+        self.assertEqual(rc, 0, out)
+        writes = len(self.fake.writes())  # the answer of the first submit is lost; the user submits again
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", digest)
+        self.assertEqual((rc, st["reason"]), (1, "already-posted"), out)
+        self.assertEqual(len(self.fake.writes()), writes)
+        self.assertEqual([r["state"] for r in self.fake.reviews.values() if r["user"]["login"] == "me"], ["COMMENTED"])
+
     def test_new_head_posts_only_new(self):
         self.posted_once()
         old = self.fake
