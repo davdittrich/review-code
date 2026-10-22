@@ -30,6 +30,14 @@ _CONV_FIXED = frozenset(("CODING_STANDARDS.md", ".github/CONTRIBUTING.md", "docs
 _NIT_FIXED = frozenset((".github/pull_request_template.md", ".github/PULL_REQUEST_TEMPLATE.md",
                         "docs/pull_request_template.md", ".gemini/styleguide.md"))
 _NIT_CAP = 40  # extra --nit rule files copied at most; the fixed review-rule set never counts
+
+
+def _nit_rank(p: str) -> int:
+    """Authority order of an extra --nit source, highest first; the cap drops the highest ranks last."""
+    if p.startswith(".github/PULL_REQUEST_TEMPLATE") or p.lower().endswith("pull_request_template.md"):
+        return 0
+    return (p.endswith("GLOSSARY.md") and 1) or (p.startswith("docs/adr/") and 2) or (p.startswith(".gemini/") and 3) \
+        or (p.startswith(".cursor/") and 4) or 5
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
@@ -365,8 +373,8 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
     cand = _conv_paths(base_ls, included, nit)
     want = sorted(cand)
     over = []
-    if nit:  # the cap counts candidates, not copies; the first 40 extras by path stay
-        extra = sorted(cand - _conv_paths(base_ls, included))
+    if nit:  # the cap counts candidates, not copies; the first 40 extras by (_nit_rank, path) stay
+        extra = sorted(cand - _conv_paths(base_ls, included), key=lambda p: (_nit_rank(p), p))
         over = extra[_NIT_CAP:]
         want = sorted(cand - set(over))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
