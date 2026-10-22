@@ -13,7 +13,7 @@ import plan  # noqa: E402
 import report  # noqa: E402
 
 PACK_NAMES = ("security-owasp", "concurrency", "api-compat", "data-migrations", "llm-generated-code",
-              "python", "r", "js-ts", "sql")
+              "python", "r", "js-ts", "sql", "test-quality")
 OWN_AXES = set(report.LANE_CATEGORIES["defects"]) | set(report.LANE_CATEGORIES["standards"])
 BANNED = re.compile(r"slop|lazy|lazi", re.IGNORECASE)  # D-14: internal pejoratives never ship
 BULLET_CAT = re.compile(r"\(`([a-z-]+)`\)\s*$")
@@ -138,6 +138,36 @@ class PathRouting(unittest.TestCase):
             self.assertIn("security-owasp", self.packs(path), path)
         self.assertNotIn("security-owasp", self.packs("src/calc.py"))
         self.assertNotIn("security-owasp", self.packs("migrations/001_add.sql"))
+
+
+class TestQualityPack(unittest.TestCase):
+    def packs(self, *paths):
+        return [n for n, _ in plan._match_packs(list(paths), {}, False)]
+
+    def test_test_files_load_it_and_source_files_do_not(self):
+        for path in ("test_calc.py", "calc_test.go", "src/app.test.ts", "a/b.spec.js", "tests/helper.rb",
+                     "web/__tests__/x.js", "spec/user_spec.rb", "Api/UserTests.cs"):
+            self.assertIn("test-quality", self.packs(path), path)
+        for path in ("src/calc.py", "lib/contest.py", "README.md"):
+            self.assertNotIn("test-quality", self.packs(path), path)
+
+    def test_existing_packs_keep_their_order_and_llm_stays_last(self):
+        names = [r[0] for r in plan.PACKS]
+        self.assertEqual(names[:8], list(PACK_NAMES[:0]) + ["python", "r", "js-ts", "sql", "data-migrations",
+                                                            "security-owasp", "concurrency", "api-compat"])
+        self.assertEqual(names[-1], plan.LLM_PACK)
+        self.assertIn("test-quality", names)
+
+    def test_checks_are_test_category_and_severity_rule_is_stated(self):
+        text = read(pack_path("test-quality"))
+        for b in bullets(sections(text)["Checks"]):
+            self.assertRegex(b, r"\(`test`\)\s*$")
+        self.assertGreaterEqual(len(bullets(sections(text)["Checks"])), 6)
+        self.assertIn("suggestion", text)
+        self.assertIn("convention", text)
+
+    def test_lanes_md_lists_the_name(self):
+        self.assertIn("`test-quality`", read(os.path.join(REFS, "lanes.md")))
 
 
 if __name__ == "__main__":

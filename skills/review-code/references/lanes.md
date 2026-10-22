@@ -36,10 +36,11 @@ The axes are reported side by side and never merged or reranked. Duplicates are 
 
 ## Domain packs
 
-Packs are plain Markdown files under `references/packs/`, loaded into the Defects and Standards lane inputs by file path or by content of the changed lines (a heuristic: a hit loads a pack for a lane to read, it is never a finding). Names: `python`, `r`, `js-ts`, `sql`, `data-migrations`, `security-owasp`, `concurrency`, `api-compat`, `llm-generated-code`.
+Packs are plain Markdown files under `references/packs/`, loaded into the Defects and Standards lane inputs by file path or by content of the changed lines (a heuristic: a hit loads a pack for a lane to read, it is never a finding). Names: `python`, `r`, `js-ts`, `sql`, `data-migrations`, `security-owasp`, `concurrency`, `api-compat`, `test-quality`, `llm-generated-code`.
 
 - `python`, `r`, `js-ts` and `sql` load by file extension or name; `api-compat` by files such as `__init__.py`, `index.ts`, `openapi*`, `*.proto`, `NAMESPACE`, `package.json`.
 - `data-migrations` loads for files on a migration path, or for `.sql` files whose changed lines create, alter or drop; `security-owasp` and `concurrency` load when a changed line matches their patterns.
+- `test-quality` loads by test file names (`test_*.py`, `*_test.*`, `*.test.*`, `*.spec.*`, `*_spec.rb`, `*Tests.cs`) or a `tests/` or `__tests__/` directory.
 - `llm-generated-code` loads only with `--ai` or the deep tier: authorship is not knowable from a diff.
 - Each pack has a `## Do not flag` list. The limit is prompt-level: the list reaches the lane through its prompt and the verifier through the finding's handoff, and no code filters findings by it. A finding that matches the list can still be reported if a lane ignores it.
 - Pack text is plugin-authored data, not instructions from the reviewed code.

@@ -129,6 +129,8 @@ PACKS = (
     ("concurrency", (), re.compile(
         r"\b(?:[Tt]hread\w*|asyncio|await|\w*Lock|[Mm]utex|goroutine|Promise\.all|multiprocessing)\b"), None),
     ("api-compat", ("__init__.py", "index.ts", "index.js", "openapi*", "*.proto", "NAMESPACE", "package.json"), None, None),
+    ("test-quality", ("test_*.py", "*_test.*", "*.test.*", "*.spec.*", "*_spec.rb", "*Tests.cs", "tests/*", "*/tests/*",
+                      "__tests__/*", "*/__tests__/*"), None, None),
     (LLM_PACK, (), None, None),
 )
 SCAN_BYTES = 65536  # per file read for content rules
