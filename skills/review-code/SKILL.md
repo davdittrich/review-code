@@ -104,7 +104,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    - The command fails because `python3` is missing, or prints `python-too-old`: say so and follow
      `references/lanes.md` Triage without python3.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`. State the `label` and
-   counts from its stdout. For `triage`, print "Triage only: no repository context found".
+   counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
 3. Questions, once per run, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`) and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,

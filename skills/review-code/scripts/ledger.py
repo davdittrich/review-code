@@ -31,7 +31,7 @@ _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs")  # the context-file categories of ledger.json
 STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
-               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only"}
+               "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_chars", "more", "adr_only", "adr_omitted"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -551,23 +551,35 @@ def _bd_show(repo: str, ref: str) -> Optional[str]:
         return None
 
 
-def _adr_files(repo: str, head_ls: dict, named, taken, skip) -> Dict[str, str]:
+def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=()) -> tuple:
     """path -> text of the decision records: prose files under an adr, adrs, decisions or architecture-decisions
-    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry."""
+    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry.
+    Returns (path -> text, number of records left out). Records the change names come first: `hay` (change text) holds
+    the record's path or number, or the record's text names a changed file or its directory; the rest follow in path order."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
 
     def record(p: str) -> bool:
         return p.lower().endswith(_PROSE_EXT) and (
             bool(_ADR_DIRS & set(p.lower().split("/")[:-1])) or any(p.startswith(d + "/") for d in dirs))
-    want = sorted(p for p in reg if record(p) and p not in taken and p not in skip)[:CAP_ADR]
-    blobs = _blobs(repo, [reg[p] for p in want])
+    cand = sorted(p for p in reg if record(p) and p not in taken and p not in skip)
+    blobs = _blobs(repo, [reg[p] for p in cand])
+    hay = hay.lower()
+    spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
+
+    def score(p: str) -> int:
+        n = re.match(r"[0-9]+", posixpath.basename(p))
+        text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
+        return (p.lower() in hay) + bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay)) + (
+            bool(text) and any(c in text.lower() for c in spots))
+    rank = {p: score(p) for p in cand}
+    want = sorted(cand, key=lambda p: (-rank[p], p))
     out, used = {}, 0
     for p in want:
         text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
-        if text is not None and used + len(text) <= CAP_ADR_BYTES:
+        if len(out) < CAP_ADR and text is not None and used + len(text) <= CAP_ADR_BYTES:
             out[p], used = text, used + len(text)
-    return out
+    return out, len(cand) - len(out)
 
 
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
@@ -670,9 +682,10 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
 
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    adrs = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else ())
+    adrs, adr_omitted = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
+                                   "\n".join(prose + tj["included"]), tj["included"])
     sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
-    sections = {"adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
+    sections = {"adr_omitted": adr_omitted, "adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
                 "pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
                 [("issue " + r, xtexts[r]) for r in sorted(xtexts)] + [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
@@ -718,6 +731,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
     tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
     sources, capped["issues"], sections, found_spec, adr_only = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
+    if sections["adr_omitted"]:
+        capped["adr"] = sections["adr_omitted"]
 
     led = {
         "version": 1,
@@ -763,7 +778,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                       _section("Commit messages", [("commit " + c, m) for c, m in zip(tj["commits"], messages)], nonce),
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
-                      _section("Decision records", sections["adrs"], nonce))))
+                      _section("Decision records", sections["adrs"], nonce) +
+                      ("\n%d decision records omitted by the cap, not shown here: the absence of a record is not a finding.\n"
+                       % sections["adr_omitted"] if sections["adr_omitted"] else ""))))
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
                    if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
@@ -797,7 +814,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=()) -> dict:
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec))
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {})}
+            "trust": _stored(led), "asked": led["trust_asked"] is True, **({"adr_only": True} if adr_only else {}),
+            **({"adr_omitted": capped["adr"]} if "adr" in capped else {})}
 
 
 TRUST_VALUES = ("own", "external")

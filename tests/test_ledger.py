@@ -1061,6 +1061,20 @@ class Spec(Base):
         self.assertNotIn("adr_only", out)
         self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
 
+    def test_adr_cut_keeps_relevant_records_and_reports_the_rest(self):  # issue 24
+        files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
+        files["docs/adr/0035-d.md"] = "ADR-35 governs src/a.py\n"
+        self.base(dict({"README.md": "r\n"}, **files))
+        self.g("checkout", "-q", "-b", "wip")
+        sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a, per ADR-37")
+        out, led = self.build(commits=[sha])
+        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
+        self.assertEqual(len(refs), ledger.CAP_ADR)
+        self.assertIn("docs/adr/0037-d.md", refs)  # named in the commit message
+        self.assertIn("docs/adr/0035-d.md", refs)  # names a changed file
+        self.assertEqual((led["capped"]["adr"], out["adr_omitted"]), (10, 10))
+        self.assertIn("10 decision records omitted", self.read("inputs/spec.md"))
+
     def test_adr_set_has_a_byte_budget(self):
         big = "x" * 150000
         _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
