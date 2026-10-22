@@ -74,7 +74,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` (step 12), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
-   `--serial`, `--ai` (step 5; two different tier flags: stop and say so). Target forms in words: for one
+   `--serial`, `--ai` (step 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
+   `--own` with `--external`: stop and say so). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
 
@@ -105,7 +106,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`. State the `label` and
    counts from its stdout. For `triage`, print "Triage only: no repository context found".
 3. Questions, once per run, before reading any run-dir file. When step 2's
-   stdout has `asked` true, skip to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
+   stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
+   `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`) and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
    spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
    commit messages, decision records (every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions`

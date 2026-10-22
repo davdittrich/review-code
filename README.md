@@ -35,7 +35,7 @@ Invoke by asking for a code review (the skill auto-triggers) or with `/review-co
 
 ## Tiers and flags
 
-Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--lean` runs only the Standards lane and its verifier, for a cleanup pass; it is a flag only, not a `default_tier` value, and its report says Defects and Spec were skipped. `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode.
+Add `--quick`, `--standard` or `--deep` to pick a tier (default `standard`). `--lean` runs only the Standards lane and its verifier, for a cleanup pass; it is a flag only, not a `default_tier` value, and its report says Defects and Spec were skipped. `--sota` adds the SOTA lane to any tier and `--no-sota` removes it. `--ai` loads the LLM-generated-code pack. `--serial` forces serial mode. `--own` or `--external` answers the trust question up front, so it is not asked.
 
 | Tier | Lanes | Finder | Verifier |
 |------|-------|--------|----------|

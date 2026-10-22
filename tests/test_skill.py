@@ -137,6 +137,12 @@ class Phase4Procedure(unittest.TestCase):
                 "verifier_effort", "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
+    def test_trust_flags_answer_the_question(self):  # issue 23
+        flat = " ".join(self.text.split())
+        for t in ("`--own`", "`--external`", "ledger.py trust set own --run <run>` without asking",
+                  "`--own` with `--external`: stop and say so"):
+            self.assertIn(t, flat)
+
     def test_spec_file_is_never_opened(self):
         lines = [ln for ln in self.text.splitlines() if "inputs/spec.md" in ln]
         self.assertTrue(lines)
