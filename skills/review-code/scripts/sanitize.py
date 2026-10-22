@@ -7,7 +7,7 @@ text and hidden elements each become a `[hidden-KIND removed: N chars]` marker, 
 numbers and diff anchors hold; each removal is returned as {line, kind, length}, never the payload, plus a short `signal`
 when the span is worth a reviewer's look (gh#25): `added` (strip_hidden_diff: the span lies on a line the change adds),
 `assistant` (it names the assistant or its instructions), `encoded` (a base64-like run or an invisible character),
-`markup` (nested markup) or `long` (over 200 characters). The wording signals are a best-effort list that a paraphrase
+`url` (a link), `markup` (nested markup) or `long` (over 200 characters). The wording signals are a best-effort list that a paraphrase
 evades; the unsignalled rest is routine.
 Not covered: attributes, link titles and definitions, entity-encoded markup, homoglyphs, base64 and
 plain-language injection. The defence there is structural: PR text reaches only the Spec input and lanes run
@@ -102,6 +102,7 @@ _HIDDEN = re.compile(
 _ADDRESSING = re.compile(r"\b(?:assistants?|ai|llms?|claude|reviewers?|ignor\w*|disregard\w*|system prompt|instructions?)\b",
                          re.IGNORECASE)
 _BASE64 = re.compile(r"[A-Za-z0-9+/]{40,}")
+_URL = re.compile(r"\b(?:https?|ftp)://", re.IGNORECASE)
 _NESTED = re.compile(r"-->|<[A-Za-z/!]")
 LONG_SPAN = 200  # characters; a longer hidden span is never a one-line authoring hint
 
@@ -113,6 +114,8 @@ def _signal(kind: str, payload: str) -> Optional[str]:
         return "assistant"
     if _BASE64.search(inner) or any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") and c not in "\t\n\r" for c in inner):
         return "encoded"
+    if _URL.search(inner):
+        return "url"
     if kind != "element" and _NESTED.search(inner):
         return "markup"
     return "long" if len(payload) > LONG_SPAN else None

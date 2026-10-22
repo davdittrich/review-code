@@ -546,6 +546,11 @@ class HiddenSignals(unittest.TestCase):
         self.assertEqual(self.sig("<!-- see <script>x</script> -->"), ["markup"])  # nested markup
         self.assertEqual(self.sig("<!-- " + "word " * 3 + "QUJD" * 9 + " -->"), [None])  # 36 characters: below the run length
 
+    def test_a_url_is_flagged(self):
+        self.assertEqual(self.sig("<!-- see https://evil.example/x -->"), ["url"])
+        self.assertEqual(self.sig("<!-- docs at HTTP://a.b/c -->"), ["url"])
+        self.assertEqual(self.sig("<!-- http is a protocol -->"), [None])  # no scheme separator
+
     def test_a_long_span_is_flagged(self):
         self.assertEqual(self.sig("<!-- " + "plain words here " * 14 + "-->"), ["long"])
         self.assertEqual(self.sig("<!-- " + "x " * 90 + "-->"), [None])  # 188 characters with the delimiters
