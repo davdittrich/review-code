@@ -404,6 +404,19 @@ class TestKinds(Local):
         self.assertEqual(load(o1["run"])["head_sha"], self.c2)
 
 
+class TestBareNumber(Local):
+    def test_short_digits_are_a_pr_not_a_commit_prefix(self):
+        sha = None
+        for i in range(400):  # find a commit whose id starts with four decimal digits
+            c = gitfix.commit(self.repo, {"n.txt": "%d\n" % i}, "n%d" % i)
+            if c[:4].isdigit():
+                sha = c
+                break
+        self.assertTrue(sha, "no digit-prefixed commit found")
+        got = target._classify(sha[:4], self.repo)
+        self.assertEqual([c["kind"] for c in got], ["pr"])
+
+
 class TestAmbiguity(Local):
     def ask(self, *args):
         rc, out = self.pin(*args)
