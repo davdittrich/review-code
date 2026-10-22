@@ -183,6 +183,14 @@ class Phase4Procedure(unittest.TestCase):
         for t in ("capped lane", "resumes it once", "files exceed half the ceiling"):
             self.assertIn(t, lanes)
 
+    def test_fix_tests_flag_is_parsed_confirmed_and_documented(self):  # review-code#26
+        fix = " ".join(ref("fix.md").split())
+        for t in ("`--fix-tests`", "without `--fix`: stop and say so"):
+            self.assertIn(t, self.flat)
+        for t in ("fix.py plan --run <run> --fix-tests", "`test_files`", "test file", "does not check that the test command runs the file"):
+            self.assertIn(t, fix)
+        self.assertIn("--fix-tests", " ".join(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8").read().split()))
+
     def test_steps_7_and_8_ingest_by_agent_id_with_stdin_as_the_fallback(self):  # gh#8
         for t in ("report.py ingest --run <run> --lane <lane> --agent <agentId>",
                   "report.py verdicts --run <run> --batch <batch> --agent <agentId>",

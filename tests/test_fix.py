@@ -486,6 +486,49 @@ class TestPathSkips(Base):
                 self.setUp()
 
 
+class FixTestsOptIn(Base):
+    """review-code#26: `plan --fix-tests` lets test-file findings into the plan, flagged and counted; the tests gate is unchanged."""
+    feat_files = TestPathSkips.feat_files
+    TEST_CAND = two("tests/test_calc.py", 2, "assert 1 - 1", "assert 1 + 1")
+    WORDS = [sys.executable, "-B", "-c", "assert '-' in open('tests/test_calc.py').read()"]
+
+    def opted(self, extra=("--fix-tests",)):
+        run = self.pin()
+        cands = [CAND, self.TEST_CAND]
+        self.ingest(run, *cands)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.fixrun(["plan", "--run", run, *extra], "".join(w + "\n" for w in self.WORDS))
+        return run, rc, out, j
+
+    def test_default_still_skips_the_test_file(self):
+        run, rc, out, j = self.opted(extra=())
+        self.assertEqual((rc, j["apply"], j["skipped"], j.get("test_files", 0)), (0, 1, 1, 0), out)
+
+    def test_flag_plans_the_test_file_labels_it_and_counts_it(self):
+        run, rc, out, j = self.opted()
+        self.assertEqual((rc, j["apply"], j["skipped"], j["test_files"]), (0, 2, 0, 1), out)
+        self.assertIn("; 1 test file;", out.split("\n")[0])
+        rows = [ln for ln in out.split("\n") if ln[:1].isdigit()]
+        self.assertEqual({ln.split()[2].split(":")[0]: ln.endswith("test file") for ln in rows},
+                         {"src/calc.py": False, "tests/test_calc.py": True})
+        self.assertNotIn("test-path", out)
+
+    def test_brief_warns_and_a_red_post_fix_run_still_reverts(self):
+        run, rc, out, j = self.opted()
+        self.assertEqual(self.baseline(run, j["digest"])[2]["status"], "ok")
+        for _ in range(2):
+            bg = self.begin(run)[2]
+            with open(bg["brief"], encoding="utf-8") as fh:
+                self.assertEqual("test file:" in fh.read(), bg["path"] == "tests/test_calc.py")
+            if bg["path"] == "tests/test_calc.py":
+                self.edit(bg["path"], "assert 1 - 1", "assert 1 + 1")  # drops the '-' the command asserts: red
+                self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+                self.assertIn("assert 1 - 1", slurp(os.path.join(self.repo, "tests/test_calc.py")).decode())
+            else:
+                self.edit(bg["path"], QUOTE, "return a + b")
+                self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+
+
 def report_id(c):
     return "F-" + hashlib.sha256("\0".join((c["path"], c["category"], " ".join(c["quote"].split()))).encode()).hexdigest()[:10]
 

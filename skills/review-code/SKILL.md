@@ -73,7 +73,7 @@ Style findings are Required or Suggestions at most, and only when a linter would
 Follow the steps in order. Ask each question at most once per run. Edit files only through the fixer in step 12, post only through step 11, and run target code only in steps 9 and 12.
 
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
-   `--comment` (step 11), `--fix` (step 12), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
+   `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai` (step 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
    `--own` with `--external`: stop and say so). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
@@ -208,7 +208,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 11. Post, when step 1 removed `--comment`: Read the first 30 lines of `references/posting.md` (limit 30) and
    follow its Flow (build, relay, one confirmation, submit; also what `nothing-to-post` means). Open further
    sections only to explain a refusal.
-12. Fix, when step 1 removed `--fix`, after steps 10 and 11: Read the first 30 lines of `references/fix.md`
+12. Fix, when step 1 removed `--fix`, after steps 10 and 11 (pass `--fix-tests` to `fix.py plan` only when step 1 removed it): Read the first 30 lines of `references/fix.md`
    (limit 30) and follow its Flow (test command, plan, one confirmation, baseline, the fixer loop, report; also
    what `nothing-to-fix` means). Open further sections only to explain a refusal or an outcome.
 13. Report the run directory path and that it is removed automatically 14 days after its last write, at
