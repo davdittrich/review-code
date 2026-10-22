@@ -125,7 +125,7 @@ The plugin root is the repository root, so every tracked file ships to installer
 
 ## Development
 
-`python3 -m unittest discover -s tests` runs the unit suite. `sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
+`python3 -m unittest discover -s tests` runs the unit suite. `evals/` holds an optional, paid eval harness (`python3 evals/run.py`, see `evals/README.md`); the unit suite and the package gate never run it. `sh scripts/check-package.sh` needs `git`, `jq`, `tar` and the `claude` CLI. It checks the tracked state (the index and tracked modifications), never untracked working-tree files. It validates the manifests with `claude plugin validate --strict`, installs the plugin into a throwaway `CLAUDE_CONFIG_DIR`, and checks skill properties, licence files and tracked-file hygiene.
 
 ## Licence
 

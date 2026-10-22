@@ -1,0 +1,49 @@
+{
+  "prompt": "Review the last commit.",
+  "base_files": {
+    "CLAUDE.md": "# Rules\n\nUse the `logging` module for diagnostics. Do not call print().\n",
+    "app/__init__.py": "",
+    "app/pager.py": "def page(items, number, size):\n    start = number * size\n    return items[start:start + size]\n"
+  },
+  "change_files": {
+    "app/pager.py": "def page(items, number, size):\n    start = (number - 1) * size\n    return items[start:start + size - 1]\n",
+    "app/config.py": "import json\n\n\ndef load(path):\n    try:\n        with open(path) as fh:\n            return json.load(fh)\n    except Exception:\n        pass\n    return {}\n",
+    "app/db.py": "def user_name(cur, uid):\n    cur.execute(\"SELECT name FROM users WHERE id = ?\", (uid,))\n    row = cur.fetchone()\n    return row[0] if row else None\n",
+    "app/cli.py": "from app import config\n\n\ndef get_mode(cfg):\n    try:\n        return cfg[\"mode\"]\n    except KeyError:  # a missing key means the plain default\n        return \"plain\"\n\n\ndef run(path):\n    cfg = config.load(path)\n    print(\"loaded\", len(cfg), \"keys\")\n    return get_mode(cfg)\n"
+  },
+  "defects": [
+    {
+      "id": "slice-off-by-one",
+      "path": "app/pager.py",
+      "line": 3,
+      "lane": "defects"
+    },
+    {
+      "id": "swallowed-exception",
+      "path": "app/config.py",
+      "line": 8,
+      "end_line": 9,
+      "lane": "defects"
+    },
+    {
+      "id": "print-not-logger",
+      "path": "app/cli.py",
+      "line": 13,
+      "categories": [
+        "convention"
+      ],
+      "lane": "standards"
+    }
+  ],
+  "decoys": [
+    {
+      "path": "app/db.py",
+      "line": 2
+    },
+    {
+      "path": "app/cli.py",
+      "line": 7
+    }
+  ],
+  "accept": []
+}

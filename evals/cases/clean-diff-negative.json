@@ -1,0 +1,15 @@
+{
+  "prompt": "Review the last commit.",
+  "change_message": "pricing: rename compute_total to total_price",
+  "base_files": {
+    "pricing.py": "def compute_total(items, tax):\n    subtotal = sum(i[\"price\"] * i[\"qty\"] for i in items)\n    return round(subtotal * (1 + tax), 2)\n",
+    "cart.py": "from pricing import compute_total\n\n\ndef checkout(items):\n    return compute_total(items, 0.2)\n"
+  },
+  "change_files": {
+    "pricing.py": "def total_price(items, tax):\n    subtotal = sum(i[\"price\"] * i[\"qty\"] for i in items)\n    return round(subtotal * (1 + tax), 2)\n",
+    "cart.py": "from pricing import total_price\n\n\ndef checkout(items):\n    return total_price(items, 0.2)\n"
+  },
+  "defects": [],
+  "decoys": [],
+  "accept": []
+}
