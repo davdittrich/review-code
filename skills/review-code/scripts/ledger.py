@@ -403,7 +403,7 @@ def _cochange(repo: str, mb: str, mb_ls: dict, files: set, included: List[str]) 
         for k in mine:
             for o in k - {c}:
                 count[o] = count.get(o, 0) + 1
-        keep = sorted((o for o, n in count.items() if n >= 3 and n / len(mine) >= 0.6 and o in files and o not in inc),
+        keep = sorted((o for o, n in count.items() if n >= 3 and n / len(mine) >= 0.6 and o in files and o not in inc and not _noise(o)),
                       key=lambda o: (-count[o], o))[:SIB_COCH]
         out += [{"file": o, "kind": "cochange", "how": "%s usually changes with %s (%d of %d commits)" % (
             target.shown(c), target.shown(o), count[o], len(mine))} for o in keep]
@@ -450,7 +450,7 @@ def _load(names: List[str]) -> dict:
 def _nit_extra(n: str, d: str, b: str, dirs: set) -> bool:
     """--nit rule sources: PR templates, Cursor rules, Gemini styleguide, GLOSSARY.md (ancestor dirs), ADRs, .okf Markdown."""
     return (n in _NIT_FIXED or (d == ".github/PULL_REQUEST_TEMPLATE" and b.endswith(".md"))
-            or (d == ".cursor/rules" and b.endswith((".md", ".mdc"))) or (b == "GLOSSARY.md" and d in dirs)
+            or ((d + "/").startswith(".cursor/rules/") and b.endswith((".md", ".mdc"))) or (b == "GLOSSARY.md" and d in dirs)
             or (d == "docs/adr" and b.endswith(".md")) or (n.startswith(".okf/") and b.endswith(".md")))
 
 
@@ -488,9 +488,9 @@ def _put(root: str, rel: str, data: bytes) -> bool:
 
 
 def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head_ls: Optional[dict],
-                 included: List[str], nit: bool = False) -> Tuple[list, list, list]:
+                 included: List[str], nit: bool = False, base_ls: Optional[dict] = None) -> Tuple[list, list, list]:
     """Copy review rules from the pinned merge base only, hidden text stripped; a head-only rule file is ignored."""
-    base_ls = target.tree_listing(mb, repo)
+    base_ls = base_ls if base_ls is not None else target.tree_listing(mb, repo)
     cand = _conv_paths(base_ls, included, nit)
     want = sorted(cand)
     over = []
@@ -936,7 +936,8 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     diff = _diff_lines(os.path.join(run, "change.diff")) if tj["diff_cmd"] else None
     found, capped = _discover(repo, files, included, rev, diff)
 
-    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit)
+    mb_ls = target.tree_listing(mb, repo)
+    conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit, mb_ls)
 
     messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
         "utf-8", "surrogateescape")) for c in tj["commits"]]
@@ -957,7 +958,6 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
         "hidden_chars": list(tj["hidden_chars"]), "hidden_text": list(tj.get("hidden_text", [])), "capped": capped,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    mb_ls = target.tree_listing(mb, repo)
     led["siblings"], over_sib = _siblings(repo, rev, mb_ls, files, included, mb)
     if over_sib:  # recorded only when hit, like `adr`: a quiet run keeps the capped keys it always had
         capped["siblings"] = True

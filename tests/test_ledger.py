@@ -332,8 +332,8 @@ NIT_EXTRAS = {
     "docs/pull_request_template.md": "pr c\n", ".github/PULL_REQUEST_TEMPLATE/bug.md": "pr d\n",
     ".cursor/rules/style.mdc": "cur a\n", ".cursor/rules/other.md": "cur b\n", ".gemini/styleguide.md": "gem\n",
     "GLOSSARY.md": "gloss\n", "src/GLOSSARY.md": "gloss src\n", "docs/adr/0001.md": "adr\n",
-    ".okf/concepts/a.md": "okf\n"}
-NIT_SKIPPED = {"other/GLOSSARY.md": "x\n", ".cursor/rules/x.txt": "x\n", ".cursor/rules/sub/y.md": "x\n",
+    ".okf/concepts/a.md": "okf\n", ".cursor/rules/area/sub/y.mdc": "cur nested\n"}
+NIT_SKIPPED = {"other/GLOSSARY.md": "x\n", ".cursor/rules/x.txt": "x\n",
                "docs/adr/sub/z.md": "x\n", ".okf/a.txt": "x\n", "pull_request_template.md": "x\n"}
 
 

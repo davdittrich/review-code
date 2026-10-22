@@ -223,6 +223,22 @@ class CoChange(Sib):
         _, led = self.build(included=["c.py"])
         self.assertEqual(led["siblings"], [])
 
+    def test_lockfiles_and_history_files_are_not_cochange_partners(self):
+        extra = {i: {"package-lock.json": "{%d}\n" % i, "CHANGELOG.md": "c%d\n" % i} for i in range(3)}
+        history(self.repo, 3, 0, extra)
+        _, led = self.edit()
+        self.assertEqual([e["file"] for e in led["siblings"]], ["o.py"])
+
+    def test_the_merge_base_is_listed_once_per_build(self):
+        history(self.repo, 3, 2)
+        seen = []
+        real = target.tree_listing
+        with mock.patch.object(target, "tree_listing", side_effect=lambda r, repo: (seen.append(r), real(r, repo))[1]):
+            _, led = self.edit()
+        self.assertEqual([e["file"] for e in led["siblings"]], ["o.py"])
+        mb = self.g("merge-base", "main", "HEAD")
+        self.assertEqual(seen.count(mb), 1, seen)
+
     def test_a_partner_in_the_change_is_not_a_hint(self):
         history(self.repo, 3, 0)
         self.g("checkout", "-q", "-b", "feat")

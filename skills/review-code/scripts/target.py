@@ -508,11 +508,13 @@ def _changed(sub: str, revs: List[str], top: str) -> Tuple[List[str], dict]:
     return names, renames
 
 
-def _plan_revs(base: str, head: str, mb: str, top: str) -> dict:
-    names, renames = _changed("diff-tree", [mb, head], top)
-    return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [],
-            "diff_cmd": ["git", "diff-tree", "-r"] + _DIFF_FLAGS + [mb, head, "--"],
-            "commits": git(["rev-list", "--reverse", mb + ".." + head], top).split()}
+def _plan_revs(base: str, head: str, mb: str, top: str, since: Optional[str] = None) -> dict:
+    """`mb` is the trust anchor (rules, siblings, ledger context); `since`, when set, only starts the diff range."""
+    start = since or mb
+    names, renames = _changed("diff-tree", [start, head], top)
+    return {"base": base, "head": head, "mb": mb, "names": names, "renames": renames, "untracked": [], "diff_base": since,
+            "diff_cmd": ["git", "diff-tree", "-r"] + _DIFF_FLAGS + [start, head, "--"],
+            "commits": git(["rev-list", "--reverse", start + ".." + head], top).split()}
 
 
 def _last_review_head(info: dict, cwd: str) -> Optional[str]:
@@ -551,7 +553,7 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
     mb = git(["merge-base", info["base"], info["head"]], cwd, check=False).strip()
     if not mb:
         raise Refuse("bad-ref", "no common ancestor")
-    note = None
+    note = since = None
     if since_last:  # review only what changed since the poster's last review, or all of it, and say which
         last = _last_review_head(info, cwd)
         if last is None:
@@ -559,9 +561,9 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
         elif not _have(last, cwd) or _run(["merge-base", "--is-ancestor", last, info["head"]], cwd)[0] != 0:
             note = "full review: the head of your last review is not an ancestor of this head (force-push or rebase)"
         else:
-            info["base"] = mb = last
+            since = last  # only the diff range starts here; rules and context stay on the true merge base
             note = "reviewing since your last review, %s..%s" % (last[:12], info["head"][:12])
-    plan = _plan_revs(info["base"], info["head"], mb, cwd)
+    plan = _plan_revs(info["base"], info["head"], mb, cwd, since)
     plan.update(number=cand["number"], url=info["url"], notes=info["notes"] + ([note] if note else []), since_last=note)
     return plan
 
@@ -945,6 +947,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
+        "diff_base": plan.get("diff_base"),
         "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
