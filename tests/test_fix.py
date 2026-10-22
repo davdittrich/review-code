@@ -436,7 +436,8 @@ class NoNarrowing(Base):
 RUN = "# runner\nrun 3 - 1\n"
 SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
            "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs",
-           "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml", "package.json", "Makefile")
+           "pytest.ini", "tox.ini")
+SHARED = ("package.json", "pyproject.toml", "setup.cfg", "Makefile")  # judge the tests only when the test command names them
 KEPT = ("ci/run-tests.sh", "src/spec/parser.py", "src/testing_utils.py", "src/latest.py", "src/contest.py", "src/Contests.cs",
         "lib/specs.rb", "src/webpack.configs.js")
 
@@ -444,7 +445,7 @@ KEPT = ("ci/run-tests.sh", "src/spec/parser.py", "src/testing_utils.py", "src/la
 class TestPathSkips(Base):
     feat_files = dict({"src/calc.py": FEAT, "tests/test_calc.py": "def test_x():\n    assert 1 - 1\n",
                        "conftest.py": "def f():\n    return 2 - 1\n", "jest.config.js": "module.exports = 3 - 1;\n"},
-                      **{p: RUN for p in SKIPPED + KEPT})
+                      **{p: RUN for p in SKIPPED + KEPT + SHARED + tuple("sub/" + q for q in SHARED)})
 
     def planned(self, cands, words=None):
         run = self.pin()
@@ -469,6 +470,24 @@ class TestPathSkips(Base):
         skipped, applied = self.planned(cands)
         self.assertEqual(skipped, {p: "test-path" for p in SKIPPED})
         self.assertEqual(applied, ["src/calc.py"])
+
+    def test_shared_config_judges_only_when_the_test_command_names_it(self):
+        cands = [two(p, 2, "run 3 - 1", "run 3 + 1") for p in ("package.json", "sub/package.json", "sub/Makefile")]
+        skipped, applied = self.planned(cands)  # not named: all fixable, flagged protected
+        self.assertEqual((skipped, sorted(applied)), ({}, sorted(c["path"] for c in cands)))
+        self.tearDown()
+        self.setUp()
+        skipped, applied = self.planned(cands, ["./package.json"])
+        self.assertEqual(skipped, {"package.json": "test-path"})
+        self.assertEqual(sorted(applied), ["sub/Makefile", "sub/package.json"])
+
+    def test_named_shared_config_is_planned_with_fix_tests(self):
+        run = self.pin()
+        c = two("package.json", 2, "run 3 - 1", "run 3 + 1")
+        self.ingest(run, c)
+        self.confirm(run, (report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])))
+        rc, out, j = self.fixrun(["plan", "--run", run, "--fix-tests"], "package.json\n")
+        self.assertEqual((rc, j["apply"], j["test_files"]), (0, 1, 1), out)
 
     def test_source_files_with_test_like_names_stay_fixable(self):
         cands = [two(p, 2, "run 3 - 1", "run 3 + 1") for p in KEPT]

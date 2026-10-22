@@ -39,8 +39,10 @@ _MANIFEST = re.compile(
     r"build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|pom\.xml|NAMESPACE|.*\.csproj|"
     r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
-_RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
-                     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs|pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|package\.json|Makefile)\Z")
+_RUNNER = re.compile(
+    r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
+    r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs|pytest\.ini|tox\.ini)\Z")
+# multi-purpose files: they judge the tests only when the test command names them (cmd_files), not by basename
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-reached")
 RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # restored, and the tree is trusted: the run goes on
