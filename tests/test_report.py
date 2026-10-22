@@ -423,6 +423,17 @@ class Renders(Base):
         d = self.doc()
         self.assertEqual((len(d["hidden_content"]), d["hidden_content_omitted"]), (40, 5))
 
+    def test_adr_omitted_count_from_the_ledger_is_surfaced(self):  # gh#24
+        self.seed()
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led.setdefault("capped", {})["adr"] = 3
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        self.assertEqual(self.doc()["adr_omitted"], 3)
+        self.assertIn("3 ADR files omitted by the cap", self.rep("render")[1])
+
     def test_text_sections_and_escape(self):
         self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")
         rc, out = self.rep("render")

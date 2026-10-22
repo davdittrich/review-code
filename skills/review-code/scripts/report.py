@@ -54,6 +54,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   do_not_flag, invalid}, inspected{files, ledger_counts, areas}, and, only when non-empty, hidden_content[{file, line|null,
   kind, length or codepoints, name, signal (removed text spans only)}] (notes, not findings; capped at 40) with
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal (gh#25),
+  adr_omitted (the ledger's capped.adr, only when above 0: ADR files the spec lane never saw, gh#24),
   counted per file, so hidden_content plus the counts always sum to the ledger's records. A span's `signal` is `added`
   (it lies on a line the change adds, or in a touched file with no diff), `assistant`, `encoded`, `markup` or `long`.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|noted), category, title, trigger,
@@ -1322,6 +1323,8 @@ def _build(run):
             "lean_lines": sum(i["end_line"] - i["line"] + 1 for i in findings if i["category"] == "lean"),  # an estimate
             "inspected": {"files": tj["included"], "areas": areas,
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
+    if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # gh#24: ADRs the spec lane never saw
+        doc["adr_omitted"] = led["capped"]["adr"]
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
            "signal": h["signal"]} for h in flagged]
@@ -1453,7 +1456,9 @@ def _text(doc):
             + ["- %s  %d routine hidden span%s removed (%s)" % (
                 e(r["file"]), r["count"], "" if r["count"] == 1 else "s",
                 ", ".join("%s %d" % (k, n) for k, n in sorted(r["kinds"].items()))) for r in doc.get("hidden_routine", [])])
-    out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
+    out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
+                   + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
+                      if doc.get("adr_omitted") else []))
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
 
