@@ -433,6 +433,28 @@ def _hostile(tree, path):
         return _TOKEN.search(fh.read()) is not None
 
 
+def _close(ln):
+    """ln with a `]` put before the first verdict-key pair that sits inside another pair (a closer dropped after a one-cite
+    evidence list, seen live), else ln. The caller parses the result strictly and validates it."""
+    depth, i = 0, 0
+    while i < len(ln):
+        if ln[i] == '"':
+            try:
+                i = json.decoder.scanstring(ln, i + 1)[1]
+            except ValueError:
+                return ln
+            continue
+        if ln[i] == "[":
+            if depth == 2 and re.match(r'\[\s*"(?:id|verdict|evidence|reason)"\s*,', ln[i:]):
+                head = ln[:i].rstrip()
+                return head[:-1] + "]," + ln[i:] if head.endswith(",") else ln
+            depth += 1
+        elif ln[i] == "]":
+            depth -= 1
+        i += 1
+    return ln
+
+
 def _parse(ln, load):
     """(read, dict or None) of a wire line under `load`; the second candidate is the line with its outer bracket restored.
     read is False only when no candidate is JSON syntax: a line that reads but is no pair array (repeated key, raw object,
@@ -462,6 +484,11 @@ def _objects(text, total=None):
         if re.match(r'\s*(\{|\[\s*[\["])', ln):
             # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
+            if not parsed and _close(ln) != ln:
+                _, o = _parse(_close(ln), _loads)
+                if o is not None:
+                    yield ln, o, True
+                    continue
             if not parsed:
                 line = [REPAIR_STEPS]
                 _, o = _parse(ln, lambda c: _repair(c, total, line))

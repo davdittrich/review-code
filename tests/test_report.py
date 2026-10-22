@@ -1733,6 +1733,40 @@ class RepairKeeps(Base):
         self.assertEqual(self.doc()["unverifiable"][0]["fix"], 'use g("a")')
 
 
+class DroppedCloser(Base):
+    """review-code-b2pj: a verdict line short one `]` after its evidence list is read, flagged repaired, never refutes."""
+    base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, QFEAT
+    LINE = ('[["id","%s"],["verdict","%s"],["evidence",[[["path","src/calc.py"],["line",5],["quote","return f(\\"a\\", \\"b\\")"]]],'
+            '["reason","r"]]')
+
+    def _id(self):
+        (i,) = self.ingest(dict(CAND, line=5, quote='return f("a", "b")'), {"inspected": ["src/calc.py"]})["ids"]
+        return i
+
+    def test_a_verdict_short_one_closer_after_the_evidence_list_is_repaired(self):
+        i = self._id()
+        out = self.verdicts(self.LINE % (i, "confirmed"))
+        self.assertEqual((out["confirmed"], out["repaired"]), ([i], 1))
+
+    def test_a_repaired_short_closer_refutation_is_unverifiable(self):
+        i = self._id()
+        out = self.verdicts(self.LINE % (i, "refuted"))
+        self.assertEqual((out["refuted"], out["unverifiable"]), ([], [i]))
+
+    def test_a_token_inside_a_string_is_not_a_closer_point(self):
+        for ln in ('[["id","F-0000000000"],["verdict","confirmed"],["reason","a], [\\"reason\\", \\"b"]',
+                   '[["id","F-0000000000"],["verdict","confirmed"],["evidence",[["a","b"]],["reason","r"]],["reason","r2"]]'):
+            self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
+
+    def test_a_candidate_line_and_a_closer_missing_elsewhere_are_untouched(self):
+        cand = '[["path","src/calc.py"],["line",5],["reason","x"]'
+        self.assertEqual(report._close(cand), cand)
+        i = self._id()  # the insert makes a parseable line whose cite lacks line/quote: validation, not parsing, rejects it
+        before_quote = ('[["id","%s"],["verdict","confirmed"],["evidence",[[["path","src/calc.py"],["line",5,'
+                        '["quote","return f(\\"a\\", \\"b\\")"]]]],["reason","r"]]') % i
+        self.assertEqual(self.verdicts(before_quote)["confirmed"], [])
+
+
 class Gate(Base):
     """review-code-19l: a rejected line is kept, counted in status and warned in the report, never skipped silently."""
     base_files, feat_files = {"src/calc.py": "def load():\n    return 1\n"}, QFEAT
