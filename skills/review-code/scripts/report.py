@@ -19,6 +19,8 @@ null. `dispositions` is scoped to the call. Cumulative figures stay cumulative: 
 refuted and unverifiable are cumulative over the stored batches (unverifiable = a stored verdict that neither confirms
 with a cite nor refutes); `batch_ids` names the ids this call covers (every queued id for a serial reply); `no_verdict`
 lists queued ids with no stored verdict (batch not ingested yet, or their line was rejected), apart from unverifiable.
+`rejected` [{batch (K or "serial"), index (row of that batch's rejected file), check}] lists this call's rejected lines, never the wire line;
+the retired object form is rejected by name (`retired-object-form`), and an `--agent` reply none of whose lines parses is not an agent-mismatch.
 
 Stdlib only, Python 3.9 grammar. The LLM supplies claims and verdicts; this script derives id, evidence class,
 score, origin, severity cap and order. Subcommands (stdin is JSON lines; stdout is one JSON status line, except
@@ -128,6 +130,7 @@ WHOLE = ("path", "repo")  # targets that are not a change: every finding is `exi
 # missing from the table is a KeyError (a test drives it).
 REASONS = {
     "invalid-json": "resend the line as one JSON pair array, every string escaped",
+    "retired-object-form": "resend as pair arrays [[\"key\", value], ...], never as a { } object",
     "missing-field": "resend the line with every required field",
     "bad-type": "resend the line with each field of its documented type and an allowed value",
     "spec-line-invalid": "cite a spec_line that lies inside an UNTRUSTED block of the spec",
@@ -166,6 +169,11 @@ def _disp(index, id, disposition, reason=None):
 def _did(x):
     """x when it has the shape of a finding id, else None: a row never echoes model text."""
     return x if isinstance(x, str) and ID_FULL.fullmatch(x) else None
+
+
+def _syntax(ln):
+    """The reason of a wire line that is no pair array at all: the retired object form, or plain invalid JSON."""
+    return "retired-object-form" if ln.lstrip().startswith("{") else "invalid-json"
 
 
 def _refuse(reason, detail=None):
@@ -859,7 +867,7 @@ def _read_lane(text, lane, tree, run, shard=None):
     for n, (ln, o, fixed) in enumerate(_objects(text), 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
-        why = "invalid-json" if o is None else None  # else the check that failed
+        why = _syntax(ln) if o is None else None  # else the check that failed
         if o is not None and "path" not in o and "summary" in o and lane == "defects":  # the one summary per lane: the first valid wins
             sm = o["summary"]
             if summary is None and isinstance(sm, str) and _ws(sm) and len(sm) <= SUMMARY_MAX:
@@ -912,7 +920,8 @@ def _reject(run, name, rows):
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        _put(path, "".join("%s %s\n" % (why if why == "invalid-json" else "failed-validation:" + why, ln) for why, ln in rows))
+        _put(path, "".join("%s %s\n" % (why if why in ("invalid-json", "retired-object-form") else "failed-validation:" + why, ln)
+                                  for why, ln in rows))
     elif os.path.exists(path):
         os.remove(path)
 
@@ -1060,7 +1069,7 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
-            why = "invalid-json" if o is None else "bad-type"
+            why = _syntax(ln) if o is None else "bad-type"
             bad.append((why, ln))
             disp.append(_disp(n, _did(o and o.get("id")), "rejected", why))
             continue
@@ -1119,7 +1128,8 @@ def _verdicts(run, text, batch, agent=None):
             raise target.Refuse("batch-required", "--agent needs --batch")
         _bind(run, agent, "batch-%d" % batch)
         text = _take(run, agent, next(c.get("agent") for c in cand["verify_calls"] if isinstance(c, dict) and c.get("batch") == batch), False)
-        if not any(o is not None and isinstance(o.get("id"), str) and o["id"] in calls[batch] for _, o, _ in _objects(text)):  # another batch's reply
+        objs = [o for _, o, _ in _objects(text) if o is not None]  # a line that does not parse is rejected below, by name
+        if objs and not any(isinstance(o.get("id"), str) and o["id"] in calls[batch] for o in objs):  # another batch's reply
             raise _refuse("agent-mismatch")
     store = _replies(run)
     if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
@@ -1129,7 +1139,7 @@ def _verdicts(run, text, batch, agent=None):
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
-    got, foreign, repaired, fixes, lost, disp = {}, 0, 0, {}, 0, []
+    got, foreign, repaired, fixes, lost, disp, rej = {}, 0, 0, {}, 0, [], []
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
@@ -1137,7 +1147,8 @@ def _verdicts(run, text, batch, agent=None):
             with open(os.path.join(store, n), encoding="utf-8") as fh:
                 f, bad, fixed, rows = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths,
                                            [INGEST_STEPS])  # each stored batch has its own repair budget (one hostile batch starves no other)
-            disp = rows if k == batch else disp
+            if k == batch:
+                disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, _) in enumerate(bad, 1)]
             _reject(run, "serial" if k is None else "batch-%d" % k, bad)
             fixes["serial" if k is None else "batch-%d" % k] = fixed
             lost += len(bad) if k == batch else 0
@@ -1152,7 +1163,7 @@ def _verdicts(run, text, batch, agent=None):
     # this call, no_verdict the queued ids with no stored verdict (not yet ingested, or their line was rejected)
     out = {"status": "ok", "confirmed": conf, "refuted": ref, "unverifiable": sorted(set(got) - set(conf) - set(ref)),
            "no_verdict": sorted(ids - set(got)), "batch_ids": sorted(ids if batch is None else calls[batch]),
-           "repaired": repaired, "dispositions": disp}
+           "repaired": repaired, "dispositions": disp, "rejected": rej}
     return out if batch is None else dict(out, foreign=foreign)
 
 

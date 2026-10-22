@@ -1952,6 +1952,32 @@ class Dispositions(Lanes):
         for k in ("status", "confirmed", "refuted", "unverifiable", "repaired", "foreign"):
             self.assertIn(k, out)
 
+    OBJ = '{"id": "%s", "verdict": "confirmed", "evidence": [{"path": "src/calc.py", "line": 3, "quote": "%s"}], "reason": "r"}'
+
+    def test_a_retired_object_verdict_is_rejected_by_name_and_listed(self):  # gh#20
+        (i,) = self.lane("defects", mc(3), self.INS)["ids"]
+        rc, out = self.rep("verdicts", self.OBJ % (i, MQ[3]) + "\n", extra=["--batch", "1"])
+        out = json.loads(out)
+        self.assertEqual([(d["id"], d["disposition"], d["reason"]) for d in out["dispositions"]],
+                         [(None, "rejected", "retired-object-form")])
+        self.assertEqual(out["rejected"], [{"batch": 1, "index": 1, "check": "retired-object-form"}])
+        self.assertEqual(out["no_verdict"], [i])
+        with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("retired-object-form {"))
+
+    def test_the_agent_guard_does_not_call_an_unparseable_reply_a_mismatch(self):  # gh#20
+        (i,) = self.lane("defects", mc(3), self.INS)["ids"]
+        cap = Captured.capture
+        cap(self, self.OBJ % (i, MQ[3]), agent_type="review-code:verifier")
+        rc, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        out = json.loads(out)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual([d["reason"] for d in out["dispositions"]], ["retired-object-form"])
+        cap(self, lines({"id": "F-0000000000", "verdict": "confirmed", "evidence": [], "reason": "r"}),
+            agent_type="review-code:verifier", aid="f" * 17)  # a parsed reply that names none of the batch's ids
+        rc, out = self.rep("verdicts", extra=["--batch", "1", "--agent", "f" * 17])
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "agent-mismatch"))
+
     def test_every_emitted_reason_is_in_the_table(self):
         with open(os.path.join(SCRIPTS, "report.py"), encoding="utf-8") as fh:
             src = fh.read()
