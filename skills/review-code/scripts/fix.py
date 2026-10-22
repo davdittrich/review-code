@@ -45,7 +45,7 @@ OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "re
             "reverted-timeout", "reverted-interrupt", "tampered")
 REVERTED = tuple(o for o in OUTCOMES if o.startswith("reverted-")) + ("tampered",)  # each one is restored (or left, if tampered)
 RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # the restored tree is trusted: the run goes on
-STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "skipped", "id", "brief", "path", "line", "model",
+STDOUT_KEYS = ("status", "reason", "detail", "digest", "apply", "protected", "skipped", "id", "brief", "path", "line", "model",
                "effort", "agent", "seal", "outcome", "exit", "tail", "fixed", "reverted", "declined", "halted")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 USAGE = ("usage: fix.py plan --run DIR (test command on stdin, one word per line) | baseline --run DIR --digest HEX | "
@@ -389,12 +389,10 @@ def plan(run: str, words: List[str]) -> dict:
         fix_text = f.get("fix")
         derived = not isinstance(fix_text, str) or not fix_text.strip()  # no fix text: the fixer derives the edit
         why, line = None, None
-        if _protected(f["path"]):
-            why = "protected-path"
-        elif _judges(f["path"], cmd_files):
+        if _judges(f["path"], cmd_files):
             why = "test-path"  # a fix there could weaken the tests that judge it
         else:
-            real = _live(repo, f["path"])
+            real = None if ".git" in f["path"].split("/") else _live(repo, f["path"])
             line = None if real is None else _relocate(_read(real).decode("utf-8", "replace"), f["quote"])
             why = "bad-path" if real is None else "stale" if line is None else None
         if why:
@@ -402,6 +400,7 @@ def plan(run: str, words: List[str]) -> dict:
             continue
         e = {k: f[k] for k in ("id", "path", "severity", "category", "origin", "title", "trigger", "quote")}
         e["fix"], e["derived"] = ("" if derived else fix_text), derived
+        e["protected"] = _protected(f["path"])  # the riskiest edits: flagged in the preview, not refused
         e["line"], e["end_line"] = line, line + (f["end_line"] - f["line"])
         e["model"], e["effort"] = _tier(e)
         entries.append(e)
@@ -412,14 +411,15 @@ def plan(run: str, words: List[str]) -> dict:
         raise target.Refuse("nothing-to-fix", "skipped: " + (", ".join("%s %d" % kv for kv in sorted(counts.items()))
                                                              or "none"))
     doc = {"version": 1, "head_sha": tj["head_sha"], "command": words, "entries": entries, "skipped": skipped}
-    text = ["review-code fix plan: %d to apply, %d skipped; tests: %s" % (len(entries), len(skipped),
-                                                                          _e(shlex.join(words)))]
+    prot = sum(e["protected"] for e in entries)
+    text = ["review-code fix plan: %d to apply, %d skipped%s; tests: %s" % (
+        len(entries), len(skipped), "; %d protected path" % prot if prot else "", _e(shlex.join(words)))]
     if _elsewhere(tj):
         text.append("checkout: " + _e(repo))
     for k, e in enumerate(entries, 1):
-        text.append("%d/%d %s %s:%d %s %s %s %s/%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
-                                                      e["severity"], e["category"], e["origin"], e["model"],
-                                                      e["effort"]))
+        text.append("%d/%d %s %s:%d %s %s %s %s/%s%s" % (k, len(entries), e["id"], _e(e["path"]), e["line"],
+                                                        e["severity"], e["category"], e["origin"], e["model"],
+                                                        e["effort"], " protected path" if e["protected"] else ""))
         for label in ("title", "fix"):
             rows = ["derived by fixer: no fix text"] if label == "fix" and e["derived"] else \
                 [sanitize.escape_for_code(r)[0] for r in e[label].split("\n")]
@@ -436,7 +436,7 @@ def plan(run: str, words: List[str]) -> dict:
     data = json.dumps(doc, sort_keys=True, indent=2).encode("utf-8")
     target.write_atomic(os.path.join(fd, "plan.json"), data)
     return {"status": "ok", "text": body, "digest": hashlib.sha256(data).hexdigest(), "apply": len(entries),
-            "skipped": len(skipped)}
+            "protected": prot, "skipped": len(skipped)}
 
 
 def baseline(run: str, digest: str) -> dict:
@@ -515,6 +515,7 @@ def begin(run: str) -> dict:
         nonce = secrets.token_hex(8)
         brief = ["# Fix finding %s" % e["id"], "repo: " + json.dumps(os.path.realpath(repo)),
                  "file: " + json.dumps(real), "lines: %d-%d" % (line, line + (e["end_line"] - e["line"]))]
+        brief += ["protected path: this file is a lockfile, manifest, config or CI file; keep the edit minimal"] * e["protected"]
         brief += ["%s:\n%s" % (k, ledger.block(e[k], nonce)) for k in ("title", "trigger", "quote")]
         brief.append("fix: none. No fix text exists for this finding; derive the smallest edit that resolves it from the "
                      "title, trigger and quote above." if e["derived"] else "fix:\n" + ledger.block(e["fix"], nonce))

@@ -328,15 +328,15 @@ class Skips(Base):
         self.assertEqual(len(self.ingest(run, *cands)), 4)
         self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
         rc, out, j = self.plan(run)
-        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 2, 2), out)
+        self.assertEqual((rc, j["apply"], j["skipped"]), (0, 3, 1), out)
         block = out.split("== skipped ==\n")[1].split("\n")
-        want = {report_id(cands[1]): "stale", report_id(cands[3]): "protected-path"}
-        got = {ln.split()[0]: ln.split()[2] for ln in block[:2]}
+        want = {report_id(cands[1]): "stale"}
+        got = {ln.split()[0]: ln.split()[2] for ln in block[:1]}
         self.assertEqual(got, want)
         with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
             doc = json.load(fh)
         self.assertEqual({s["id"]: s["why"] for s in doc["skipped"]}, want)
-        self.assertEqual([e["path"] for e in doc["entries"]], ["src/calc.py", "src/nofix.py"])
+        self.assertEqual([e["path"] for e in doc["entries"]], ["setup.py", "src/calc.py", "src/nofix.py"])
 
 
 class DerivedFixes(Base):
@@ -1381,6 +1381,58 @@ class TestRuns(Scope):
         rc, out, _ = cli("fix.py", ["baseline", "--run", run, "--digest", j["digest"]], self.repo, self.tmp,
                          extra={"REVIEW_CODE_SECRET": "x"})
         self.assertEqual(rc, 0, out)
+
+
+class ProtectedPaths(Scope):
+    """review-code#34: protected paths join the plan flagged; untracked, symlinked and .git paths stay refused."""
+    feat_files = dict(Scope.feat_files, **{"requirements.txt": "pkg==1\n"})  # lockfiles are excluded from a review's diff
+    LOCK_CAND = two("requirements.txt", 1, "pkg==1", "pkg==2")
+    WORDS = [sys.executable, "-B", "-c", "assert '==' in open('requirements.txt').read()"]
+
+    def test_lockfile_finding_is_planned_flagged_confirmed_and_tests_gated(self):
+        run, fid, bg = self.started(self.LOCK_CAND, words=self.WORDS)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            (entry,) = json.load(fh)["entries"]
+        self.assertEqual((entry["id"], entry["path"], entry["protected"]), (fid, "requirements.txt", True))
+        self.edit("requirements.txt", "pkg==1", "pkg")  # the tests gate reverts it
+        self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "reverted-tests")
+        self.assertEqual(slurp(self.p("requirements.txt")), b"pkg==1\n")
+
+    def test_preview_marks_each_protected_row_and_counts_them_for_the_question(self):
+        run = self.pin()
+        cands = [CAND, self.LOCK_CAND]
+        self.ingest(run, *cands)
+        self.confirm(run, *[(report_id(c), dict(path=c["path"], line=c["line"], quote=c["quote"])) for c in cands])
+        rc, out, j = self.plan(run, self.WORDS)
+        self.assertEqual((rc, j["apply"], j["protected"], j["skipped"]), (0, 2, 1, 0), out)
+        self.assertIn("; 1 protected path;", out.split("\n")[0])
+        rows = [ln for ln in out.split("\n") if ln[:1].isdigit()]
+        self.assertEqual({ln.split()[2].split(":")[0]: ln.endswith("protected path") for ln in rows},
+                         {"src/calc.py": False, "requirements.txt": True})
+        self.assertNotIn("protected-path", out)
+        rc, _, b = self.baseline(run, j["digest"])
+        self.assertEqual((rc, b["status"]), (0, "ok"), b)
+        edits = {"src/calc.py": (QUOTE, "return a + b"), "requirements.txt": ("pkg==1", "pkg==2")}
+        for _ in range(2):
+            bg = self.begin(run)[2]
+            with open(bg["brief"], encoding="utf-8") as fh:
+                self.assertEqual("protected path:" in fh.read(), bg["path"] == "requirements.txt")
+            self.edit(bg["path"], *edits[bg["path"]])
+            self.assertEqual(self.finish(run, bg["seal"])[2]["outcome"], "fixed")
+        self.assertEqual(self.begin(run)[2], {"status": "done"})
+
+    def test_untracked_symlink_and_git_internal_paths_are_still_refused(self):
+        found = [dict(id="F-000000000%d" % i, path=p, line=1, end_line=1, severity="required", category="bug",
+                      origin="defects", title="t", trigger="g", quote="x", fix="y")
+                 for i, p in enumerate((".git/config", "src/untracked.py", "link.py"))]
+        os.symlink("src/calc.py", self.p("link.py"))
+        self.git("add", "link.py")
+        self.git("commit", "-q", "-m", "link")
+        run = self.pin()
+        with gitfix.isolated(self.tmp), mock.patch.object(fix.report, "build", return_value={"findings": found}):
+            with self.assertRaises(target.Refuse) as cm:
+                fix.plan(run, self.cmd())
+        self.assertEqual((cm.exception.reason, cm.exception.detail), ("nothing-to-fix", "skipped: bad-path 3"))
 
 
 THIRD = "def div(a, b):\n    return a // b\n"

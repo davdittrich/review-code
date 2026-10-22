@@ -24,7 +24,7 @@ Make no edit, and reply declined with a `code` and one sentence, when:
 
 - `quote-not-unique`: the quote is not at the given lines and occurs more than once in the file. Add `line`, the 1-based line where its first match starts.
 - `line-mismatch`: the quote is not at the given lines and occurs nowhere in the file.
-- `scope-multi-file`: the fix needs a second file or a dependency, lockfile, CI, config or test file.
+- `scope-multi-file`: the fix needs a second file or a dependency, lockfile, CI, config or test file beyond the one the brief names. The file the brief names is yours to edit even when it is a protected path (the brief says so); keep that edit minimal.
 - `needs-context`: the fix text (or, with no fix text, the finding) does not determine an edit, or determining it needs reading beyond the one file.
 
 Fixer calls on one file are sequential: an earlier call moves the lines, so rely on the quote, not the line number.
