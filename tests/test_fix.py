@@ -435,7 +435,8 @@ class NoNarrowing(Base):
 
 RUN = "# runner\nrun 3 - 1\n"
 SKIPPED = ("playwright.config.ts", "jest.setup.js", "webpack.config.babel.js", "setupTests.ts",
-           "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs")
+           "e2e/login.cy.ts", "src/Foo.test.mjs", "src/Foo.spec.cjs", "lib/foo_spec.rb", "src/FooTests.cs",
+           "pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml", "package.json", "Makefile")
 KEPT = ("ci/run-tests.sh", "src/spec/parser.py", "src/testing_utils.py", "src/latest.py", "src/contest.py", "src/Contests.cs",
         "lib/specs.rb", "src/webpack.configs.js")
 

@@ -40,7 +40,7 @@ _MANIFEST = re.compile(
     r".*\.fsproj|.*\.vbproj|Directory\.Build\.props|Directory\.Packages\.props|packages\.config|composer\.json|"
     r"Jenkinsfile|CMakeLists\.txt|.*\.cabal|mix\.exs)\Z")
 _RUNNER = re.compile(r"(?:(?:jest|vitest|karma|webpack|babel|playwright|cypress|mocha|ava)\.conf(?:ig)?(?:\.\w+)+|"
-                     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs)\Z")
+                     r"(?:jest\.setup|setupTests)(?:\.\w+)+|noxfile\.py|Rakefile|build\.rs|pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|package\.json|Makefile)\Z")
 OUTCOMES = ("fixed", "declined", "no-change", "stale", "reverted-violation", "reverted-too-large", "reverted-tests",
             "reverted-timeout", "reverted-interrupt", "tampered", "bad-path", "test-path", "not-reached")
 RECOVERABLE = ("reverted-tests", "reverted-too-large", "reverted-timeout")  # restored, and the tree is trusted: the run goes on
@@ -109,7 +109,7 @@ def _tier(f: dict) -> Tuple[str, str]:
 
 
 def _protected(path: str) -> bool:
-    """Paths no fix may touch: dot components, lockfiles, manifests, config and CI files (the fixer's brief excludes them)."""
+    """Paths flagged in the preview and the brief as the riskiest edits: dot components, lockfiles, manifests, config and CI files."""
     parts = path.split("/")
     base = parts[-1]
     return (any(p.startswith(".") for p in parts) or base in target._LOCKFILES or base.endswith(".lock")
