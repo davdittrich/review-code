@@ -166,6 +166,18 @@ class TestQualityPack(unittest.TestCase):
         self.assertIn("suggestion", text)
         self.assertIn("convention", text)
 
+    def test_do_not_flag_covers_swallowed_exception_and_scopes_fuzz_to_input_coverage(self):
+        dnf = " ".join(" ".join(sections(read(pack_path("test-quality")))["Do not flag"]).split())
+        self.assertIn("swallowed exception", dnf)
+        self.assertIn("For input-coverage checks, property-based or fuzz tests", dnf)
+        self.assertNotIn("- Property-based or fuzz tests,", dnf)
+
+    def test_pack_cap_drops_the_pack_matching_fewest_files_not_a_named_one(self):
+        files = ["a.py", "b.py", "tests/test_a.py"]
+        self.assertEqual([n for n, _ in plan._match_packs(files, {}, False)][:2], ["python", "test-quality"])
+        text = " ".join(read(os.path.join(REFS, "lanes.md")).split())
+        self.assertIn("most files first", text)
+
     def test_lanes_md_lists_the_name(self):
         self.assertIn("`test-quality`", read(os.path.join(REFS, "lanes.md")))
 

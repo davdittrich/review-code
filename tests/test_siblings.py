@@ -67,9 +67,9 @@ class Gaps(Sib):
         self.assertEqual(led["siblings"], [])
         self.assertNotIn("## Siblings", self.standards())
 
-    def test_one_sibling_is_enough_when_only_one_exists(self):
+    def test_a_new_file_with_one_sibling_gets_no_gap(self):
         _, led = self.sib({"skills/a/SKILL.md": "# a\n", MKT: mkt("a")}, {"skills/x/SKILL.md": "# x\n"})
-        self.assertEqual([e["file"] for e in led["siblings"]], [MKT])
+        self.assertEqual(led["siblings"], [])  # a registry must name at least two siblings
 
     def test_a_registry_that_already_names_the_new_file_is_no_gap(self):
         _, led = self.sib(BASE, {"skills/x/SKILL.md": "# x\n", MKT: mkt("a", "b", "c", "x")})

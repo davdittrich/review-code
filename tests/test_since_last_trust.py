@@ -26,9 +26,9 @@ class SinceLastTrust(tt.PRWorld):
         self.head3 = gitfix.run(["git", "rev-parse", "HEAD"], src).strip()
         gitfix.run(["git", "push", "-q", "--force", self.bare, "HEAD:refs/pull/7/head"], src)
 
-    def run_since_last(self):
+    def run_since_last(self, head=None):
         from prior import review_mark
-        pr = self.payload(headRefOid=self.head3)
+        pr = self.payload(headRefOid=head or self.head3)
 
         def fake(args, cwd):
             if args[0] == "pr":
@@ -53,6 +53,19 @@ class SinceLastTrust(tt.PRWorld):
         self.assertEqual([e for e in led["conventions"] if e["file"] == "REVIEW.md"], [])
         self.assertIn(("REVIEW.md", "head-only"), [(e["file"], e["reason"]) for e in led["ignored"]])
         self.assertEqual(led["target"]["merge_base"], rec["merge_base"])
+
+    def test_base_branch_merged_after_the_last_review_takes_the_full_review_path(self):
+        src = os.path.join(self.tmp, "src3")
+        gitfix.make_repo(src)
+        gitfix.run(["git", "fetch", "-q", self.bare, "refs/pull/7/head", "main"], src)
+        gitfix.run(["git", "checkout", "-q", "--detach", self.head3], src)
+        gitfix.run(["git", "merge", "-q", "--no-ff", "-m", "Merge main", "FETCH_HEAD"], src)
+        merged = gitfix.run(["git", "rev-parse", "HEAD"], src).strip()
+        gitfix.run(["git", "push", "-q", "--force", self.bare, "HEAD:refs/pull/7/head"], src)
+        out, rec = self.run_since_last(merged)
+        self.assertTrue(out["since_last"].startswith("full review: "), out)
+        self.assertIn("merged", out["since_last"])
+        self.assertNotEqual(rec["diff_base"], self.last)  # not last..head
 
 
 if __name__ == "__main__":

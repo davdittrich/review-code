@@ -374,7 +374,7 @@ def _gaps(repo: str, rev: Optional[str], new: str, sibs: List[str], by_dir: bool
     out = []
     for f in sorted(cand):
         h = [x for x in cand[f] if x[0] not in common]
-        if len({x[1] for x in h}) >= min(2, len(sibs)):
+        if len({x[1] for x in h}) >= 2:  # a registry names at least two siblings
             _, sib, ln, text = min(h, key=lambda x: (x[2], x[1]))
             q = json.dumps(sanitize.escape_for_code(text[:120])[0], ensure_ascii=False)
             out.append({"file": f, "kind": "gap", "how": "ADD %s | sibling %s | registered at %s:%d | %s | missing: %s" % (

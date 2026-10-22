@@ -33,6 +33,20 @@ class ClaimWalkPrompt(unittest.TestCase):
             self.assertIn(s, self.text)
 
 
+class ClaimWalkVerifier(unittest.TestCase):
+    def setUp(self):
+        self.text = "\n".join(parts("spec-verifier")[1]).lower()
+        self.confirmed = " ".join(self.text.split("- `confirmed`", 1)[1].split("- `refuted`", 1)[0].split())
+
+    def test_contradicted_factual_claim_is_confirmed_without_a_request(self):
+        self.assertRegex(self.confirmed, r"claim-walk finding.*needs no request")
+        self.assertRegex(self.confirmed, r"contradicts it")
+
+    def test_requirement_rule_is_not_loosened(self):
+        self.assertIn("only when the spec text asks for the stated thing", self.confirmed)
+        self.assertIn("never loosens the rule for requirement findings", self.confirmed)
+
+
 class ClaimWalkIngest(tr.Base):
     pin = tr.SpecAxis.pin
     spec_rows = tr.SpecAxis.spec_rows

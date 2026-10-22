@@ -14,7 +14,8 @@ Applies to changes that add or edit test files. Severity is `suggestion` unless 
 
 ## Do not flag
 
-- Property-based or fuzz tests, which pick boundaries and malformed inputs by generation.
+- For input-coverage checks, property-based or fuzz tests that generate the relevant boundary or malformed inputs.
+- A swallowed exception in a test that asserts the call does not raise and says so, or a best-effort cleanup test whose point is that a failure is tolerated.
 - A deliberate retry, polling or timeout test whose wait is bounded and named, or a test that fakes the clock.
 - A self-comparison that tests equality, hashing or sorting itself (`assert a == a`), or a no-assertion test that only checks the call does not raise and says so.
 - A limit the tests reach through a named constant or parametrised table that includes its neighbours.

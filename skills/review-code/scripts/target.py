@@ -560,6 +560,8 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
             note = "full review: no earlier review of this pull request by you could be read"
         elif not _have(last, cwd) or _run(["merge-base", "--is-ancestor", last, info["head"]], cwd)[0] != 0:
             note = "full review: the head of your last review is not an ancestor of this head (force-push or rebase)"
+        elif git(["rev-list", "--merges", "--max-count=1", last + ".." + info["head"]], cwd, check=False).strip():
+            note = "full review: another branch was merged into this pull request since your last review"
         else:
             since = last  # only the diff range starts here; rules and context stay on the true merge base
             note = "reviewing since your last review, %s..%s" % (last[:12], info["head"][:12])
