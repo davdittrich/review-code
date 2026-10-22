@@ -2,6 +2,7 @@
 import json
 import os
 import unittest
+from unittest import mock
 
 import paths  # noqa: F401
 
@@ -386,8 +387,17 @@ class Unit(unittest.TestCase):
         self.assertEqual(self.norm(self.tree(22, 3), norm_glob="*.js")[1], "norm-sample-small")
         self.assertEqual(self.norm(self.tree(22, 3), norm_glob="")[1], "norm-malformed")
 
+    def test_norm_scan_budget_and_binary_files(self):
+        d = self.tree(22, 3)
+        self.assertEqual(self.norm(d, norm_glob="*")[1], None)
+        with mock.patch.object(nit, "NORM_SCAN_BYTES", 50):
+            self.assertEqual(self.norm(d, norm_glob="*")[1], "norm-too-large")
+        with open(os.path.join(d, "blob.py"), "wb") as fh:  # a NUL byte in the first 8 KB: skipped, so it neither counts nor spends budget
+            fh.write(b"\0" + (DOMINANT + "\n").encode() * 500)
+        self.assertEqual(self.norm(d)[0]["norm"], {"for": 22, "against": 3, "total": 25})
+
     def test_every_check_and_norm_reason_has_a_retry_hint(self):
-        for why in ("nit-not-enabled", "nit-only", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-sample-small", "norm-not-majority"):
+        for why in ("nit-not-enabled", "nit-only", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-sample-small", "norm-too-large", "norm-not-majority"):
             self.assertIn(why, report.REASONS)
 
     def test_check_order_and_basis(self):

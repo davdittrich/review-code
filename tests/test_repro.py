@@ -60,7 +60,7 @@ class Tracer(Base):
         rc, out = self.repro(run, "tests/test_repro_case.py", [sys.executable, "tests/test_repro_case.py"])
         self.assertEqual((rc, out["status"], out["outcome"]), (0, "ok", "reproduced"))
         self.assertNotEqual(out["exit"], 0)
-        self.assertEqual(self.record(run), {"outcome": "reproduced", "exit": out["exit"]})
+        self.assertEqual(self.record(run), {"outcome": "reproduced", "exit": out["exit"], "mode": "run"})
         self.assert_clean(run)
         self.assertEqual(self.state(), before)
 
@@ -161,7 +161,7 @@ class Rules(Base):
                              "sleep 30 & sleep 30"], stdin=io.BytesIO(b"x"))
         self.assertLess(time.monotonic() - t0, bound + 5 + 5)
         self.assertEqual((rc, json.loads(out.getvalue())["outcome"]), (0, "timeout"))
-        self.assertEqual(self.record(run), {"outcome": "timeout", "exit": None})
+        self.assertEqual(self.record(run), {"outcome": "timeout", "exit": None, "mode": "run"})
         self.assert_clean(run)
 
     def test_py39_grammar(self):

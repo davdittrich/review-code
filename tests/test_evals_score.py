@@ -196,5 +196,23 @@ class Driver(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class TiersHash(unittest.TestCase):
+    def test_hash_is_a_string_and_follows_tiers(self):
+        h = ev.tiers_hash()
+        self.assertTrue(isinstance(h, str) and h)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        sc = os.path.join(d, "skills", "review-code", "scripts")
+        shutil.copytree(os.path.join(ROOT, "skills", "review-code", "scripts"), sc, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(os.path.join(sc, "plan.py"), "a") as fh:
+            fh.write("\nTIERS = dict(TIERS, zz_extra=1)\n")
+        old, ev.ROOT = ev.ROOT, d
+        try:
+            h2 = ev.tiers_hash()
+        finally:
+            ev.ROOT = old
+        self.assertNotEqual(h, h2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -182,6 +182,27 @@ class Derivation(Base):
         self.assertEqual(f[m]["evidence_class"], "traced")
         self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
 
+    def _test_category_unverifiable(self, record):
+        self.ingest(cand(Q_NEG, 14, category="test"))
+        n = fid("src/calc.py", "test", Q_NEG)
+        self.verdicts(dict(verdict((Q_NEG, 14), "unverifiable"), id=n))
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
+            json.dump(record, fh)
+        return n
+
+    def test_only_a_base_record_upgrades_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 0, "mode": "base"})
+        self.assertEqual(self.items()[n]["evidence_class"], "reproduced")
+
+    def test_a_run_record_does_not_upgrade_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 1, "mode": "run"})
+        self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
+
+    def test_a_legacy_record_does_not_upgrade_an_unverifiable_test_finding(self):
+        n = self._test_category_unverifiable({"outcome": "reproduced", "exit": 0})
+        self.assertEqual(self.items("unverifiable")[n]["evidence_class"], "inferred")
+
     def test_do_not_flag_unchanged_lines(self):
         self.ingest(cand(Q_OLD, 5, severity="suggestion", category="security"),
                     cand("return 1", 2, severity="blocking", category="security"),
@@ -2297,6 +2318,20 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+
+class NotRunSkips(unittest.TestCase):
+    def nr(self, skipped):
+        return report._not_run("/nonexistent", {"trust": "own"}, skipped, {}, False, [])
+
+    def test_a_skip_for_nothing_to_run_on_is_not_a_failure(self):
+        self.assertEqual(self.nr([{"what": "spec", "why": "no spec"},
+                                  {"what": "sota", "why": "no dependency or import names in the change"}]), [])
+
+    def test_tier_lean_and_shard_cap_skips_stay(self):
+        self.assertEqual(self.nr([{"what": "defects", "why": "tier lean"}, {"what": "spec", "why": "tier lean"},
+                                  {"what": "shard 2", "why": "shard cap: 9 files"}]), ["defects", "shard 2", "spec"])
+        self.assertEqual(self.nr([{"what": "spec", "why": "tier lean"}, {"what": "spec", "why": "no spec"}]), ["spec"])  # --lean without a spec
 
 
 if __name__ == "__main__":

@@ -160,6 +160,7 @@ REASONS = {
     "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters, for example \"= []\", \"= list()\", \"*.py\"; the idioms are at least 3 characters, neither holds the other, and the quote holds norm_against but not norm_for",
     "norm-quote-mismatch": "quote the deviating line itself: it must contain the exact text of norm_against",
     "norm-sample-small": "the two idioms occur on fewer than 20 lines of the tree/ files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
+    "norm-too-large": "the files norm_glob matches hold more text than the skill will count: narrow norm_glob to the files you counted",
     "norm-not-majority": "norm_for must occur on more lines than norm_against: if the repo writes norm_against more often there is no norm, so drop the finding",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
@@ -1271,10 +1272,12 @@ def _cap(cls, category):
     return "noted"
 
 
-def _repro(run, fid):
+def _repro(run, fid, mode=None):
+    """The repro outcome of a finding; with mode, only a record that repro.py wrote in that mode (older records have none)."""
     try:
         with open(os.path.join(run, "repro", fid + ".json"), encoding="utf-8") as fh:
-            return json.load(fh).get("outcome")
+            rec = json.load(fh)
+        return rec.get("outcome") if mode is None or rec.get("mode") == mode else None
     except (OSError, ValueError, AttributeError):
         return None
 
@@ -1282,11 +1285,15 @@ def _repro(run, fid):
 NOT_RUN_ITEM = r"(?:defects|standards|spec|sota)(?:@[0-9]+)?|shard [0-9]+|repro|serial"
 
 
+# plan.py skips that mean there was nothing to run on (no spec given, no dependency to check), not a lane that failed to run
+NOT_A_FAILURE_SKIPS = ("no spec", "no dependency or import names in the change")
+
+
 def _not_run(run, led, skipped, lanes, serial, findings):
     """What this run did not do, from data it already has, in a closed vocabulary (a pack name or free text never passes):
     plan skipped[] `what`s, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro
     outcome while the ledger lists tests or config (the case step 9 could have run)."""
-    out = {s.get("what") for s in skipped if isinstance(s.get("what"), str)} | {n for n, v in lanes.items() if v != "complete"}
+    out = {s.get("what") for s in skipped if isinstance(s.get("what"), str) and s.get("why") not in NOT_A_FAILURE_SKIPS} | {n for n, v in lanes.items() if v != "complete"}
     out = {n for n in out if re.fullmatch(NOT_RUN_ITEM, n)} | ({"serial"} if serial else set())
     if ledger.stored_trust(led) != "own" or (not serial and (led.get("tests") or led.get("config"))
                                                and any(_repro(run, i["id"]) is None for i in findings)):
@@ -1324,7 +1331,7 @@ def _build(run):
             cls, reason = "inferred", "self-scored"
         elif kind == "confirmed" and cites:
             cls, reason = ("reproduced" if _repro(run, c["id"]) == "reproduced" else "traced"), v["reason"]
-        elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"]) == "reproduced":
+        elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], "base") == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"

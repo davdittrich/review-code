@@ -6,6 +6,7 @@ import json
 import os
 
 NIT_RULE_CAP = 15  # rules the text report lists under Nits; the JSON keeps every nit
+NORM_SCAN_BYTES = 8 << 20  # bytes of tree/ files norm() may read per call: a norm_glob of "*" on a big repo is refused, not slow
 NORM_MIN = 20  # lines naming either idiom that a norm needs before a deviation from it is a finding
 
 
@@ -44,6 +45,7 @@ def norm(o, tree, quote):
     if got["norm_for"] in quote:  # the deviating line must not use the norm it deviates from
         return None, "norm-malformed"
     n = {"for": 0, "against": 0}
+    budget = NORM_SCAN_BYTES
     for root, _, files in os.walk(tree):
         for f in files:
             if os.path.islink(os.path.join(root, f)):  # tree/ holds no link by construction; never read one that appears
@@ -51,11 +53,18 @@ def norm(o, tree, quote):
             rel = os.path.relpath(os.path.join(root, f), tree)
             if not (fnmatch.fnmatch(rel, got["norm_glob"]) or fnmatch.fnmatch(f, got["norm_glob"])):
                 continue
-            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+            path = os.path.join(root, f)
+            with open(path, "rb") as fh:
+                if b"\0" in fh.read(8192):  # binary: no idiom lives there
+                    continue
+            budget -= os.path.getsize(path)
+            if budget < 0:
+                return None, "norm-too-large"
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 for row in fh:
-                    a, b = got["norm_for"] in row, got["norm_against"] in row
-                    if a != b:  # a line holding both idioms says nothing about which one the repo prefers
-                        n["for" if a else "against"] += 1
+                    has_for, has_against = got["norm_for"] in row, got["norm_against"] in row
+                    if has_for != has_against:  # a line holding both idioms says nothing about which one the repo prefers
+                        n["for" if has_for else "against"] += 1
     total = n["for"] + n["against"]
     if total < NORM_MIN:
         return None, "norm-sample-small"

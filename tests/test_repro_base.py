@@ -36,7 +36,7 @@ class BaseCheck(RunBase):
         before = self.state()
         rc, out = self.base(run)
         self.assertEqual((rc, out["status"], out["outcome"], out["exit"]), (0, "ok", "reproduced", 0))
-        self.assertEqual(self.record(run), {"outcome": "reproduced", "exit": 0})
+        self.assertEqual(self.record(run), {"outcome": "reproduced", "exit": 0, "mode": "base"})
         self.assert_clean(run)
         self.assertEqual(self.state(), before)
 

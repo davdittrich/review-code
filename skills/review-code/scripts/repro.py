@@ -129,7 +129,7 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
     out_dir = os.path.join(run_dir, "repro")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
-    record = {k: result[k] for k in ("outcome", "exit")}  # the tail is target output: it is not kept
+    record = dict({k: result[k] for k in ("outcome", "exit")}, mode="base" if base else "run")  # the tail is target output: it is not kept
     target.write_private(os.path.join(out_dir, fid + ".json"), json.dumps(record, sort_keys=True))
     return dict(result, status="ok", id=fid)
 

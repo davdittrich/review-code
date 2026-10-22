@@ -217,13 +217,16 @@ def extract_doc(text):
 # ---- baseline --------------------------------------------------------------------------------
 
 def tiers_hash():
+    """Hash of plan.py TIERS. plan.py imports its sibling scripts, so their dir is on sys.path for the load; a failure raises."""
+    d = os.path.join(ROOT, "skills", "review-code", "scripts")
+    sys.path.insert(0, d)
     try:
-        spec = importlib.util.spec_from_file_location("_plan", os.path.join(ROOT, "skills", "review-code", "scripts", "plan.py"))
+        spec = importlib.util.spec_from_file_location("_plan", os.path.join(d, "plan.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return hashlib.sha256(json.dumps(mod.TIERS, sort_keys=True, default=str).encode()).hexdigest()[:16]
-    except Exception:
-        return None
+    finally:
+        sys.path.remove(d)
+    return hashlib.sha256(json.dumps(mod.TIERS, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def git_sha():
