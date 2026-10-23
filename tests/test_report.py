@@ -952,6 +952,55 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
 
 
+class _SpecAdrUnreadable(Base):
+    """review-code-py53: a listed decision record the guard cannot read whole (over MAX_FILE, or not text) refuses
+    record-unreadable instead of adding no words: a lane can still read it in parts and copy it."""
+    ADR = "docs/adr/0001-integers.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n" + "padding words here\n" * 10
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+
+    def row(self):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            return [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+
+    def call(self, argv, reply, cap):
+        """report.main in-process with MAX_FILE at `cap` (above src/calc.py, below the record): (rc, its JSON line)."""
+        out = io.StringIO()
+        stdin = io.TextIOWrapper(io.BytesIO(reply.encode("utf-8")))
+        with gitfix.isolated(self.tmp), mock.patch.object(report.target, "MAX_FILE", cap), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue())
+
+
+class SpecAdrOversize(_SpecAdrUnreadable):
+    def test_a_record_over_max_file_refuses_spec_ingest_and_spec_verdicts(self):
+        cap = len(FEAT) + 1
+        self.assertGreater(len(self.BODY), cap)
+        reply = lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []})
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, len(self.BODY))  # the control: read whole
+        self.assertEqual((rc, [r["check"] for r in out["rejected"]]), (0, ["declined-invalid:copied-from-spec"]))
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        (sid,) = json.loads(out)["spec_ids"]
+        rc, out = self.call(["verdicts", "--run", self.run_dir],
+                            lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": self.WHY}), cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+
+
+class SpecAdrNotText(_SpecAdrUnreadable):
+    base_files = dict(BASE, **{_SpecAdrUnreadable.ADR: "\0" + _SpecAdrUnreadable.BODY})
+
+    def test_a_record_that_is_not_text_refuses_spec_ingest(self):
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "record-unreadable"))
+
+
 class SpecAdrInPlace(Base):
     """review-code-bbch: an in-place run reviews the working copy, so its records are listed from the pinned tree, never from
     HEAD. A record renamed there is listed under its new name and its body still counts for the copy guard (a lane can read

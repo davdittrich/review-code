@@ -180,6 +180,7 @@ REASONS = {
     "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
     "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
+    "record-unreadable": "a decision record the ledger lists is over the size cap or not text (a NUL byte), so the spec copy guard cannot check a reply against it: shrink it, save it as plain text (UTF-8) or move it out of the record directory, then review again",
     "bad-ledger": "ledger.json or inputs/spec.md cannot be read: run ledger.py build again, or review again",
 }
 
@@ -253,10 +254,11 @@ class _Pinned:
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
-        blob = {p: oid for p, (_, oid) in ledger.regular_blobs(self.tree, want, self.top).items()}
+        sized = ledger.regular_blobs(self.tree, want, self.top)
+        blob = {p: oid for p, (_, oid) in sized.items()}
         self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
-        uniq = sorted(set(need.values()))
+        uniq = sorted({oid for p, oid in need.items() if sized[p][0] <= target.MAX_FILE})  # an oversize blob is never streamed
         text = {oid: None if data is None else ledger._text(data)
                 for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], self.top, True, target.MAX_FILE))}
         for p, oid in need.items():
@@ -671,7 +673,10 @@ def _spec_copy(run):
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
 
     def with_records(pin, adr):
-        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
+        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch).
+        # One the pin could not read whole (over MAX_FILE, or not text) refuses: a lane can read it in parts (review-code-py53)
+        if any(pin.rows.get(p, "") is None for p in map(_norm, adr)):
+            raise target.Refuse("record-unreadable", REASONS["record-unreadable"])
         w = spec + [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
         runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
