@@ -621,5 +621,18 @@ class PostingDocs(unittest.TestCase):
         self.assertIn("live `gh pr diff`", " ".join(self.read(self.REFS, "posting.md").split()))
 
 
+class ReviewFixesPR60(unittest.TestCase):
+    """PR #60 review items: the docs say what the code does."""
+
+    def flat(self, *parts):
+        with open(os.path.join(ROOT, *parts), encoding="utf-8") as fh:
+            return " ".join(fh.read().split())
+
+    def test_shards_copy_the_checkout_difference_not_their_files(self):  # review-code-g5qv.5 (C5)
+        t = self.flat("skills", "review-code", "references", "lanes.md")
+        self.assertIn("Each shard copies the checkout difference into its own `tree/`; every other file is read from the repository.", t)
+        self.assertNotIn("takes more disk", t)
+
+
 if __name__ == "__main__":
     unittest.main()
