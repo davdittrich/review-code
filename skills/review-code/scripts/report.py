@@ -79,7 +79,8 @@ line lists item numbers; it gets no verifier call, class inferred, reason web-so
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
 lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
 checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. render adds
-integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause}, or null without a snapshot. A handoff for a file listed by a plan.json pack
+integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause, and only above 5,000
+untracked files untracked{count, changed} (changed is a warning, not itemised)}, or null without a snapshot. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
 """
 import sys
@@ -1638,9 +1639,14 @@ def _text(doc):
         rows = (["integrity warning: %s (working tree) %s" % (e(p), ig["cause"]) for p in ig["working_tree"]]
                 + (["integrity warning: index " + ig["cause"]] if ig["index"] else [])
                 + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
+        u = ig.get("untracked")  # over the snapshot cap: a change is detected, not itemised
+        nf = "not fully seen: %d untracked files" % u["count"] if u else ""
+        rows = (["integrity warning: untracked files changed (%s, not itemised) %s" % (nf, ig["cause"])] if u and u["changed"] else []) + rows
+        if u and not u["changed"] and rows:
+            rows.append("integrity note: " + nf)  # the clean line is not shown, so say it here
         out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
                 if rows else ["integrity: no change to the checkout, index or tool knowledge during the run "
-                              "(not seen: submodule worktrees, nested repositories)"])
+                              "(not seen: submodule worktrees, nested repositories%s)" % ("; " + nf if u else "")])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
