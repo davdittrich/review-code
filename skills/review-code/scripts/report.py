@@ -267,11 +267,10 @@ class _Pinned:
         for a norm candidate, whose sample is the reviewed content (gh#52), not tree/."""
         if self._every is None:
             self._every = []
-            for rec in target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top).split(b"\0"):
-                meta, tab, name = rec.partition(b"\t")
-                f = meta.split()
-                if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # never a link: its blob is a path, not code
-                    self._every.append((name.decode("utf-8", "surrogateescape"), int(f[3]), f[2].decode()))
+            for mode, oid, name, size in ledger.ls_records(
+                    target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top), True):
+                if mode in ("100644", "100755"):  # never a link: its blob is a path, not code
+                    self._every.append((name, int(size), oid))
         return self._every
 
     def blobs(self, oids):

@@ -621,27 +621,28 @@ def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> b
     return b"".join(out)
 
 
+def ls_records(raw: bytes, long: bool = False) -> List[Tuple[str, str, str, bytes]]:
+    """[(mode, blob id, name, size)] of the NUL-separated records of one `ls-tree -z` (`-l` when `long`); size is the raw
+    field, b"" without `-l`. The one parser of those records: a record of another field count is skipped."""
+    out = []
+    for rec in raw.split(b"\0"):
+        meta, tab, name = rec.partition(b"\t")
+        f = meta.split()
+        if tab and len(f) == (4 if long else 3):
+            out.append((f[0].decode(), f[2].decode(), name.decode("utf-8", "surrogateescape"), f[3] if long else b""))
+    return out
+
+
 def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple[int, str]]:
     """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
     or a directory is no file whose content can be read."""
-    out = {}
-    for rec in ls_tree(tree, paths, repo, long=True).split(b"\0"):
-        meta, tab, name = rec.partition(b"\t")
-        f = meta.split()
-        if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):
-            out[name.decode("utf-8", "surrogateescape")] = (int(f[3]), f[2].decode())
-    return out
+    return {n: (int(size), oid) for mode, oid, n, size in ls_records(ls_tree(tree, paths, repo, long=True), True)
+            if mode in ("100644", "100755")}
 
 
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
     """path -> (mode, oid) of exactly `paths` in the pinned tree: ls_tree's chunks, literal pathspecs, never the whole tree."""
-    out = {}
-    for rec in ls_tree(tree, paths, repo).split(b"\0"):
-        meta, tab, name = rec.partition(b"\t")
-        f = meta.split()
-        if tab and len(f) == 3:
-            out[name.decode("utf-8", "surrogateescape")] = (f[0].decode(), f[2].decode())
-    return out
+    return {n: (mode, oid) for mode, oid, n, _ in ls_records(ls_tree(tree, paths, repo))}
 
 
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], tj: dict,
