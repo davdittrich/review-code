@@ -143,21 +143,30 @@ def _glob(path, globs):
     return any(fnmatch.fnmatchcase(path, g) or fnmatch.fnmatchcase(base, g) for g in globs)
 
 
+def _reviewed(run, repo, p, limit):
+    """The first `limit` bytes of path p as reviewed, or None: its tree/ copy for a checkout-difference file, else the
+    checkout file, which for path and repo targets is the pinned content (gh#52). Never a link, FIFO or path outside."""
+    for root in (os.path.join(run, "tree"), repo):
+        top = os.path.realpath(root)
+        fp = os.path.join(top, p)
+        up = os.path.realpath(os.path.dirname(fp))
+        if up == top or up.startswith(top + os.sep):
+            status, data = target.read_working(fp, target.MAX_FILE)
+            if status != "missing":
+                return data[:limit] if status == "ok" else None
+    return None
+
+
 def _scan_lines(run, tj):
-    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each tree/ copy."""
+    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each reviewed file,
+    stripped and escaped as tree/ copies are (ledger._scan)."""
     inc, out = set(tj["included"]), {}
     if tj["kind"] in ("path", "repo"):
-        tree = os.path.realpath(os.path.join(run, "tree"))
         for p in sorted(inc):
-            fp = os.path.realpath(os.path.join(tree, p))
-            if not fp.startswith(tree + os.sep):
-                continue
-            try:
-                with open(fp, "rb") as fh:
-                    data = fh.read(SCAN_BYTES)
-            except OSError:
-                continue
-            out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(data.decode("utf-8", "replace").split("\n"), 1)]
+            data = _reviewed(run, tj["repo"], p, SCAN_BYTES)
+            if data is not None:
+                text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
+                out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(text.split("\n"), 1)]
         return out
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         diff, used = fh.read(), {}
@@ -418,11 +427,14 @@ def _included(call):
 def _estimate(call, included):
     """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
 
-    tree/ is browsed, not loaded, so only the files the change touches count (a floor: lanes also open context files)."""
+    Only the included files count (a floor: lanes also open context files), each as its tree/ copy for a checkout-difference
+    file, else as the repository file (gh#52)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    files = [call["input"], os.path.join(base, "change.diff")] + [os.path.join(base, "tree", p) for p in included or []]
+    repo = target.load_json(base, "target.json")["repo"] if included else ""
+    files = [call["input"], os.path.join(base, "change.diff")] + [
+        next((f for f in (os.path.join(base, "tree", p), os.path.join(repo, p)) if os.path.isfile(f)), "") for p in included or []]
     return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
 
 

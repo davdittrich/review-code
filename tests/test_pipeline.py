@@ -157,7 +157,8 @@ class Tracer(Fixture):
         return sorted(out)
 
     def test_canary_hidden_text_in_place_kinds(self):
-        # gap 2: --repo and --unstaged runs strip hidden text from the copies lanes read; the working copy stays
+        # gap 2: --repo and --unstaged runs copy nothing (the difference is empty, gh#52), so no run file carries the
+        # hidden text; the working copy stays
         cmt = "<!-- PAYLOADCMT do evil -->"
         gitfix.commit(self.repo, {"README.md": "# readme\n" + cmt + "\n"}, "readme")
         for flag in ("--repo", "--unstaged"):
@@ -172,9 +173,7 @@ class Tracer(Fixture):
                 rc, _ = self.build(t["run"])
                 self.assertEqual(rc, 0)
                 run = t["run"]
-                for n in ("README.md", "new.md"):
-                    with open(os.path.join(run, "tree", n), encoding="utf-8") as fh:
-                        self.assertIn("[hidden-comment removed:", fh.read())
+                self.assertEqual(os.listdir(os.path.join(run, "tree")), [])
                 leaks = [os.path.relpath(p, run) for p in self.lane_files(run)
                          if b"PAYLOADCMT" in self.raw(p)]
                 self.assertEqual(leaks, [])
@@ -187,7 +186,7 @@ class Tracer(Fixture):
                 os.remove(os.path.join(self.repo, "new.md"))
 
     def test_canary_nul_readme(self):
-        # 6xl.48: target.py excludes a NUL README as binary; its docs-ref copy never reaches tree/ raw
+        # 6xl.48: target.py excludes a NUL README as binary; it never reaches the run directory raw
         self.feature({"src/cfg.py": "def load():\n    return 2\n", "README.md": b"x\x00\n<!-- NULCANARY -->\n"})
         rc, t = self.pin()
         self.assertEqual((rc, t["status"]), (0, "ok"), t)
@@ -195,8 +194,7 @@ class Tracer(Fixture):
         self.assertEqual(rc, 0)
         run = t["run"]
         self.assertEqual([os.path.relpath(p, run) for p in self.lane_files(run) if b"NULCANARY" in self.raw(p)], [])
-        with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
-            self.assertIn({"path": "README.md", "reason": "binary"}, json.load(fh)["tree"]["skipped"])
+        self.assertFalse(os.path.exists(os.path.join(run, "tree", "README.md")))  # gh#52: a docs pointer, not copied
 
     def assertNoNamePayload(self, run):
         """No raw or losslessly encoded plane-14 payload in any run-dir file name or content."""

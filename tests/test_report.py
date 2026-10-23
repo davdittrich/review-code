@@ -1068,7 +1068,7 @@ class Shards(Lanes):
     def setUp(self):
         super().setUp()
         for n in (1, 2):
-            shutil.copytree(os.path.join(self.run_dir, "tree"), os.path.join(self.run_dir, "shards", str(n), "tree"))
+            os.makedirs(os.path.join(self.run_dir, "shards", str(n), "tree", "src"))
         with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
             fh.write("def f(a):\n    return a\n")  # shard 2's copy lacks the flagged lines; cites read the pinned tree (gh#50)
         write_plan(self.run_dir, shards=[{"id": 1, "run": "shards/1", "files": ["src/calc.py", "src/only.py"], "risk": 3},
@@ -1126,10 +1126,7 @@ class Shards(Lanes):
         (f,) = d["findings"]
         self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))
 
-    def test_two_shards_flagging_the_same_range_merge(self):
-        with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
-            with open(os.path.join(self.run_dir, "tree", "src", "calc.py")) as src:
-                fh.write(src.read())
+    def test_two_shards_flagging_the_same_range_merge(self):  # both cite the pinned tree, whatever the shard copies hold
         self.shard(1, mc(3))
         out = self.shard(2, mc(3))
         self.assertEqual((len(out["ids"]), out["merged"]), (1, 1))

@@ -56,7 +56,7 @@ class Gaps(Sib):
         self.assertTrue(how.endswith(" | missing: skills/x/SKILL.md"), how)
         self.assertIn(json.dumps('    {"source": "./skills/a"},'), how)
         self.assertEqual(out["counts"]["siblings"], 1)
-        self.assertTrue(os.path.exists(os.path.join(self.run_dir, "tree", MKT)))  # the lane reads only tree/
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", MKT)))  # gh#52: read from the repository
         self.assertIn("- siblings: 1", self.read("inputs/defects.md"))
         sec = self.standards().split("## Siblings\n", 1)[1]
         self.assertIn(OPENER, sec)
@@ -207,7 +207,7 @@ class CoChange(Sib):
         self.assertEqual([(e["file"], e["kind"], e["how"]) for e in led["siblings"]],
                          [("o.py", "cochange", "c.py usually changes with o.py (3 of 5 commits)")])
         self.assertIn(OPENER + "\n" + "c.py usually changes with o.py (3 of 5 commits)", self.standards())
-        self.assertTrue(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))  # gh#52: read from the repository
 
     def test_a_commit_touching_more_than_thirty_files_is_skipped(self):
         big = {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(30)} for i in range(3, 6)}  # c + 30 fillers = 31 files

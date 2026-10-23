@@ -755,8 +755,7 @@ class Shards(ShardBase):
             self.assertEqual(self.read_text("shards", str(s["id"]), "change.diff"), "")
             tree = os.path.join(d, "tree")
             on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
-            # util/helpers.py is helper-named, so every shard tree holds it as reuse context (review-code-3ea.2)
-            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md"}, set(s["files"]) - {"util/helpers.py"})
+            self.assertEqual(on_disk, set())  # gh#52: a shard tree holds the whole checkout difference, empty here
             self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
         self.assertEqual(self.read_text("ledger.json"), before)
         self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)
@@ -952,7 +951,8 @@ class Preview(Fixture):
             fh.write(b"x" * 400000)  # browsable but not included: must not show in the estimate
         self.plan("plan", "--run", self.run_dir)
         p = self.plan_json()
-        total = (sum(os.path.getsize(os.path.join(self.run_dir, "tree", f)) for f in inc) + os.path.getsize(call["input"])
+        # gh#52: tree/ holds only the checkout difference (none here), so the included files are sized in the repository
+        total = (sum(os.path.getsize(os.path.join(self.repo, f)) for f in inc) + os.path.getsize(call["input"])
                  + os.path.getsize(os.path.join(self.run_dir, "change.diff")))
         line = next(x for x in p["preview"] if x.startswith("Call defects:"))
         self.assertIn("about %d input tokens (estimate)" % ((total + 3) // 4), line)

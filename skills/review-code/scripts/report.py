@@ -60,7 +60,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
-A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over tree/. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
+A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
@@ -163,7 +163,7 @@ REASONS = {
     "nit-basis": "a nit has severity nit and category convention (with rule and rule_source) or norm; a norm is never above nit, and only the Standards lane sends either",
     "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters, for example \"= []\", \"= list()\", \"*.py\"; the idioms are at least 3 characters, neither holds the other, and the quote holds norm_against but not norm_for",
     "norm-quote-mismatch": "quote the deviating line itself: it must contain the exact text of norm_against",
-    "norm-sample-small": "the two idioms occur on fewer than 20 lines of the tree/ files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
+    "norm-sample-small": "the two idioms occur on fewer than 20 lines of the reviewed files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
     "norm-too-large": "the files norm_glob matches hold more text than the skill will count: narrow norm_glob to the files you counted",
     "norm-not-majority": "norm_for must occur on more lines than norm_against: if the repo writes norm_against more often there is no norm, so drop the finding",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
@@ -238,12 +238,13 @@ def _norm(path):
 class _Pinned:
     """The pinned tree's regular files that one ingest, verdicts or post call names (gh#50): `files` from one `ls-tree`
     of exactly those paths, `rows` {path: lines, or None when unreadable} of the `cited` ones from one `cat-file --batch`,
-    each blob read once by id. Rows hold the text tree/ held (ledger._scan: escaped, prose stripped), so a cite matches
+    each blob read once by id. Rows hold the text ledger._scan makes (escaped, prose stripped), so a cite matches
     what the lanes were shown and post.py never renders a raw invisible character."""
 
     def __init__(self, run, paths, cited=()):
         tj = target.load_json(run, "target.json")
         self.top, self.files, self.rows, blob = tj["repo"], set(), {}, {}
+        self.tree, self._every = tj["pinned_tree"], None
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
@@ -264,6 +265,23 @@ class _Pinned:
         for p, oid in need.items():
             t = text.get(oid)
             self.rows[p] = None if t is None else _lines(ledger._scan(p, t)[0])
+
+
+    def every(self):
+        """[(path, size, blob id)] of every regular file of the pinned tree: one `ls-tree -r -l`, run once per call and only
+        for a norm candidate, whose sample is the reviewed content (gh#52), not tree/."""
+        if self._every is None:
+            self._every = []
+            for rec in target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top).split(b"\0"):
+                meta, tab, name = rec.partition(b"\t")
+                f = meta.split()
+                if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # never a link: its blob is a path, not code
+                    self._every.append((name.decode("utf-8", "surrogateescape"), int(f[3]), f[2].decode()))
+        return self._every
+
+    def blobs(self, oids):
+        """{blob id: bytes, or None over MAX_FILE} from one `cat-file --batch`."""
+        return {o: data for o, (_, data) in zip(oids, target.cat_batch([o.encode() for o in oids], self.top, True, target.MAX_FILE))}
 
 
 def _lines(text):
@@ -636,8 +654,8 @@ def _sources(x):
     return x
 
 
-def _candidate(o, tree, pin, lane, base, ctx=None, nit_mode=False):
-    """(candidate, None), or (None, the failing check): cites are judged in the pinned tree `pin`, a norm count in tree/."""
+def _candidate(o, pin, lane, base, ctx=None, nit_mode=False):
+    """(candidate, None), or (None, the failing check): cites and a norm count are judged in the pinned tree `pin`."""
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None, "missing-field"
@@ -689,7 +707,7 @@ def _candidate(o, tree, pin, lane, base, ctx=None, nit_mode=False):
             return None, why
         c["rule"], c["rule_source"] = r
     if c["category"] == "norm":
-        n, why = nit.norm(o, tree, c["quote"])
+        n, why = nit.norm(o, pin.every(), pin.blobs, c["quote"])
         if n is None:
             return None, why
         c.update(n)
@@ -959,10 +977,6 @@ def _plan(run):
         raise
 
 
-def _tree(run, shard=None):
-    return os.path.realpath(os.path.join(run, "tree") if shard is None else os.path.join(run, "shards", str(shard), "tree"))
-
-
 def _packs(run):
     """[(files, Do not flag text)] of plan.json packs whose file lies inside <run>/inputs/packs and has that section."""
     packs, root, out = _plan(run).get("packs"), os.path.realpath(os.path.join(run, "inputs", "packs")), []
@@ -1009,7 +1023,7 @@ def _declined(o, ctx, copied):
     return good, bad
 
 
-def _read_lane(text, lane, tree, run, shard=None):
+def _read_lane(text, lane, run, shard=None):
     kept, areas, invalid, ignored, complete, declined, rejected, repaired = {}, [], 0, 0, False, [], [], 0
     summary = None
     disp = []
@@ -1061,7 +1075,7 @@ def _read_lane(text, lane, tree, run, shard=None):
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
         if fixed and o is not None and _hostile(pin, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c, check = _candidate(o, tree, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
+        c, check = _candidate(o, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
@@ -1169,7 +1183,6 @@ def _ingest(run, text, lane, shard):
         sh = _plan(run).get("shards")
         if not any(isinstance(x, dict) and x.get("id") == shard and _int(x["id"]) for x in (sh if isinstance(sh, list) else [])):
             raise target.Refuse("bad-shard", "--shard is not a shard id of plan.json")
-    tree = _tree(run, shard)
     nonce = secrets.token_hex(8)
     try:
         lanes = target.load_json(run, "candidates.json").get("lanes")
@@ -1178,7 +1191,7 @@ def _ingest(run, text, lane, shard):
     lanes = lanes if isinstance(lanes, dict) else {}
     cap = _cap_of(run)
     key = lane if shard is None else "%s@%d" % (lane, shard)
-    new = _read_lane(text, lane, tree, run, shard)
+    new = _read_lane(text, lane, run, shard)
     if (lanes.get(key, {}).get("complete") is True and new.get("complete") is not True
             and (new["candidates"] or new["rejected"])):  # a partial retry of findings would lose the rest
         _counts(run, key)  # a refused retry is still a try

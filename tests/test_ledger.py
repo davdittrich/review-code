@@ -7,7 +7,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import tracemalloc
 import unittest
 from contextlib import redirect_stdout
@@ -25,8 +24,10 @@ DIFF = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 
 
-def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None):
-    """Write target.json and change.diff for a run dir straight from git, without running target.py."""
+def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None,
+                 difference=None):
+    """Write target.json and change.diff for a run dir straight from git, without running target.py. `difference`, when
+    given, is written as difference.json (each path `modified`) with the pin keys target.py records (gh#48)."""
     os.makedirs(run, exist_ok=True)
     if kind in INPLACE:
         diff = gitfix.run(["git", "diff"] + DIFF + [head_sha, "--"], repo)
@@ -41,6 +42,15 @@ def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untr
            "untracked": list(untracked), "hidden_chars": [], "notes": [], "created": "2026-01-01T00:00:00Z"}
     with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
         json.dump(rec, fh, sort_keys=True, indent=2)
+    if difference is not None:
+        pinned = gitfix.run(["git", "rev-parse", head_sha + "^{tree}"], repo).strip()
+        d = os.path.join(run, "difference.json")
+        with open(d, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "pinned_tree": pinned, "paths": [{"path": x, "tag": "modified"} for x in sorted(difference)]}, fh)
+        rec.update(pinned_tree=pinned, pinned_head=None if kind in INPLACE else head_sha, checkout_head=head_sha, difference=d,
+                   difference_count=len(difference))
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, sort_keys=True, indent=2)
     return rec
 
 
@@ -72,12 +82,12 @@ class Base(unittest.TestCase):
         return [n for n in out.split("\0") if n]
 
     def build(self, kind="branch", included=None, untracked=(), head=None, mb=None, commits=None, number=None,
-              spec=None, url=None, found=(), nit=False):
+              spec=None, url=None, found=(), nit=False, difference=None):
         head = head or self.g("rev-parse", "HEAD")
         mb = mb or self.g("merge-base", "main", head)
         if included is None:
             included = self.names(mb, head)
-        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url)
+        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url, difference)
         out = ledger.build(self.run_dir, spec, found, nit)
         return out, self.load()
 
@@ -154,7 +164,7 @@ class Categories(Base):
             for e in led[cat]:
                 self.assertTrue(e["how"], (cat, e))
         self.assertEqual(led["capped"], {c: False for c in
-                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues", "helpers")})
+                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues")})
 
     def test_crlf_change_diff_reads_like_text_mode(self):
         # 6xl.54: a change.diff written in text mode on Windows ends lines with CRLF; discovery must not change
@@ -488,8 +498,8 @@ class Tree(Base):
         self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, "src/use.py": "parse_cfg('x')\n",
                    "tests/test_cfg.py": "parse_cfg\n", "unrelated.txt": "nope\n"})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
-        _, led = self.build()
-        self.assertEqual(self.tree_files(), ["src/cfg.py", "src/use.py", "tests/test_cfg.py"])
+        _, led = self.build(difference=["src/cfg.py"])
+        self.assertEqual(self.tree_files(), ["src/cfg.py"])  # gh#52: the caller and the test stay in the repository
         head = self.g("rev-parse", "HEAD")
         want = subprocess.run(["git", "show", head + ":src/cfg.py"], cwd=self.repo, stdout=subprocess.PIPE,
                               env=gitfix.env(), check=True).stdout
@@ -497,50 +507,6 @@ class Tree(Base):
             self.assertEqual(fh.read(), want)
         self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "source": "head commit", "skipped": []})
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
-
-    def test_tree_copies_helper_files_as_context(self):  # review-code-3ea.2
-        self.base({"src/a.py": "x = 1\n", "src/sibling.py": "def s(): pass\n", "pkg/utils.py": "def u(): pass\n",
-                   "lib/x.py": "def l(): pass\n", "other/zzz.py": "z = 1\n"})
-        self.branch({"src/a.py": "x = 2\n"})
-        out, led = self.build()
-        self.assertEqual(self.tree_files(), ["lib/x.py", "pkg/utils.py", "src/a.py", "src/sibling.py"])
-        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("src/sibling.py", "sibling of a changed file"), ("lib/x.py", "helper-named file"),
-                          ("pkg/utils.py", "helper-named file")])
-        self.assertEqual(out["counts"], {c: 0 for c in ledger.CATEGORIES})  # context, not reviewed files
-        self.assertEqual(led["tree"]["skipped"], [])
-
-    def test_helper_copy_is_capped_by_bytes(self):  # review-code-3ea.2
-        self.base({"src/a.py": "x = 1\n", "src/b_util.py": "b" * 60 + "\n", "src/c_util.py": "c" * 60 + "\n"})
-        self.branch({"src/a.py": "x = 2\n"})
-        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
-            _, led = self.build()
-        self.assertEqual(self.tree_files(), ["src/a.py", "src/b_util.py"])
-        self.assertEqual(files_of(led, "helpers"), ["src/b_util.py"])
-        self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
-        self.assertTrue(led["capped"]["helpers"])
-
-    def test_same_directory_siblings_rank_before_helper_named_trees(self):  # review-code-oen
-        self.base({"lib/a.py": "x = 1\n", "lib/zz.py": "z" * 60 + "\n", "lib/sub/big1.py": "b" * 60 + "\n",
-                   "lib/sub/big2.py": "c" * 60 + "\n"})
-        self.branch({"lib/a.py": "x = 2\n"})
-        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
-            _, led = self.build()
-        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("lib/zz.py", "sibling of a changed file")])
-        self.assertEqual(led["tree"]["skipped"], [{"path": "lib/sub/big1.py", "reason": "helper-cap"},
-                                                  {"path": "lib/sub/big2.py", "reason": "helper-cap"}])
-
-    def test_helper_sizes_are_looked_up_in_one_pass(self):  # review-code-cag
-        n = 6000
-        listing = {"d/f%d.py" % i: ("100644", "%040x" % i) for i in range(n)}
-        raw = "".join("%040x 10\n" % i for i in range(n)).encode()
-        with mock.patch.object(target, "git_bytes", return_value=raw):
-            t0 = time.monotonic()
-            kept, over = ledger._helpers("/unused", listing, sorted(listing), ["d/a.py"], set())
-            took = time.monotonic() - t0
-        self.assertEqual((len(kept), over), (n, []))
-        self.assertLess(took, 2.0)
 
     def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
         self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
@@ -597,8 +563,8 @@ class Tree(Base):
         self.unused_claim_fixture()
         with mock.patch.object(ledger, "CAP_CALLERS", 1):
             _, led = self.build()
-        self.assertEqual(len(led["callers"]), 1)  # one caller copied; the rest are invisible to the verifier
-        self.assertEqual(self.tree_files(), ["app/a.py", "src/cfg.py"])
+        self.assertEqual(len(led["callers"]), 1)  # one caller listed; the rest are not even pointed at
+        self.assertEqual(self.tree_files(), [])  # gh#52: no difference, so the callers are read from the repository
         self.assertEqual([(s["name"], s["refs"]) for s in led["symbols"]], [("helper_fn", 3)])
         import report
         refs = {None: report._refs(self.run_dir)}
@@ -651,7 +617,7 @@ class Tree(Base):
         self.g("add", "leak")
         self.g("update-index", "--add", "--cacheinfo", "160000,%s,sub" % self.g("rev-parse", "HEAD"))
         gitfix.commit(self.repo, {"a.txt": "y\n"}, "links")
-        _, led = self.build()
+        _, led = self.build(difference=["a.txt", "leak", "sub"])
         self.assertEqual(self.tree_files(), ["a.txt"])
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "sub")))
@@ -670,7 +636,7 @@ class Tree(Base):
         self.base({"a.txt": "x\n"})
         self.branch({".gitattributes": "hidden.py export-ignore\nver.txt export-subst\n",
                      "hidden.py": "secret = 1\n", "ver.txt": "$Format:%H$\n"})
-        self.build()
+        self.build(difference=["hidden.py", "ver.txt"])
         self.assertIn("hidden.py", self.tree_files())
         self.assertEqual(self.read("tree/ver.txt"), "$Format:%H$\n")
 
@@ -678,7 +644,7 @@ class Tree(Base):
         rlo = chr(0x202E)
         self.base({"a.txt": "x\n"})
         self.branch({"a.txt": "ok\nevil %s line\n" % rlo})
-        _, led = self.build()
+        _, led = self.build(difference=["a.txt"])
         text = self.read("tree/a.txt")
         self.assertIn("<U+202E>", text)
         self.assertNotIn(rlo, text)
@@ -689,7 +655,7 @@ class Tree(Base):
         code = "x = 1  # <!-- CODECMT --> ![CODEALT](u)\n"
         self.base({"a.txt": "x\n"})
         self.branch({"notes.md": notes, "src/c.py": code})
-        _, led = self.build()
+        _, led = self.build(difference=["notes.md", "src/c.py"])
         text = self.read("tree/notes.md")
         for payload in ("HIDDENCMT", "ALTINJECT", "HIDDENEL"):
             self.assertNotIn(payload, text)
@@ -704,7 +670,7 @@ class Tree(Base):
         self.base({"a.txt": "x\n"})
         names = ("n.mdown", "n.mkdn", "n.mkd")
         self.branch({n: "intro\n<!-- HT_%s -->\n" % n[2:].upper() for n in names})
-        _, led = self.build()
+        _, led = self.build(difference=list(names))
         for n in names:
             self.assertNotIn("HT_", self.read("tree/" + n))
         self.assertEqual(sorted(h["file"] for h in led["hidden_text"]), sorted(names))
@@ -716,14 +682,14 @@ class Tree(Base):
         self.assertTrue(ledger._put(root, "a/b.txt", b"x"))
 
     def test_tree_hidden_named_ref_is_refused(self):
-        # 6xl.51: a referenced-only file whose name holds Tags is listed escaped and never copied into tree/
+        # 6xl.51: a file whose name holds Tags is listed escaped and never copied into tree/; the difference names it escaped
         tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")
         evil = "src/use" + tags + ".py"
         body = "".join("    x = %d\n" % i for i in range(12))
         self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, evil: "parse_cfg('x')\n"})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
-        _, led = self.build()
         shown = "src/use<TAGS:5>.py"
+        _, led = self.build(difference=["src/cfg.py", shown])
         self.assertIn(shown, files_of(led, "callers"))
         self.assertIn({"path": shown, "reason": "hidden-name"}, led["tree"]["skipped"])
         for d, dirs, names in os.walk(self.run_dir):
@@ -736,14 +702,14 @@ class Tree(Base):
                 self.assertNotIn(b"\\udb40", data, n)
 
     def test_tree_hidden_hits_listed_for_changed_files_only(self):
-        # 6xl.46: referenced-only copies are stripped and escaped, but their hits are not change defects
+        # 6xl.46: difference-only copies are stripped and escaped, but their hits are not change defects
         rlo = chr(0x202E)
         body = "".join("    x = %d\n" % i for i in range(12))
         self.base({"README.md": "readme\n<!-- HT_REF_README -->\n", "src/cfg.py": "def parse_cfg(s):\n" + body,
                    "src/use.py": "parse_cfg('x')  # %s\n" % rlo})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99") + "# %s\n" % rlo,
                      "notes.md": "n\n<!-- HT_CHANGED -->\n"})
-        _, led = self.build()
+        _, led = self.build(difference=["README.md", "notes.md", "src/cfg.py", "src/use.py"])
         self.assertIn("src/use.py", files_of(led, "callers"))
         self.assertIn("README.md", files_of(led, "docs"))
         self.assertNotIn("HT_REF_README", self.read("tree/README.md"))
@@ -775,13 +741,13 @@ class Tree(Base):
             list(ledger._blob_stream(bare, ["0" * 40]))
 
     def test_tree_skips_huge_referenced_file(self):
-        # 6xl.75: a referenced-only file over the cap is skipped with a reason, never read whole
+        # 6xl.75: a difference file over the cap is skipped with a reason, never read whole
         line = "x" * 99 + "\n"
         self.base({"README.md": line * (target.MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
         tracemalloc.start()
         try:
-            _, led = self.build()
+            _, led = self.build(difference=["README.md"])
             peak = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
@@ -810,7 +776,7 @@ class Tree(Base):
         led = self.load()
         self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18, "provenance": "added"}])
         self.assertNotIn("HIDDENCMT", json.dumps(led))
-        self.assertNotIn("HIDDENCMT", self.read("tree/a.md"))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "a.md")))  # gh#52: scanned, not copied
 
     def test_tree_hidden_text_carries_target_entries(self):
         self.base({"a.txt": "x\n"})
@@ -842,7 +808,7 @@ class Tree(Base):
         self.branch({"src/a.py": "x = 2\n", "README.md": b"x\x00\n<!-- HT_EVIL_BIN_README -->\n"})
         head = self.g("rev-parse", "HEAD")
         mb = self.g("merge-base", "main", head)
-        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"])
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"], difference=["README.md", "src/a.py"])
         ledger.build(self.run_dir)
         led = self.load()
         self.assertIn("README.md", files_of(led, "docs"))
@@ -858,7 +824,7 @@ class Tree(Base):
         blob = b"# \xff " + chr(0x202E).encode("utf-8") + chr(0xE0041).encode("utf-8") + b"\n"
         self.base({"a.txt": "x\n"})
         self.branch({"src/d.py": blob})
-        _, led = self.build()
+        _, led = self.build(difference=["src/d.py"])
         with open(os.path.join(self.run_dir, "tree", "src", "d.py"), "rb") as fh:
             raw = fh.read()
         self.assertIn(b"<U+202E>", raw)
@@ -888,7 +854,7 @@ class Tree(Base):
         os.symlink(secret, os.path.join(self.repo, "leak"))
         ledger.build(self.run_dir)
         led = self.load()
-        self.assertEqual(self.read("tree/a.txt"), "x\nbad <U+202E>\n")
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "a.txt")))  # gh#52: no difference, no copy
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
         self.assertEqual((led["tree"]["source"], led["tree"]["skipped"]), ("working copy", [{"path": "leak", "reason": "symlink"}]))
         self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
