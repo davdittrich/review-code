@@ -47,6 +47,21 @@ class Integrity(tpost.Base):
         self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
         self.assertIn(self.CLEAN, out.split("\n"))
 
+    def test_an_edit_inside_a_submodule_worktree_is_a_blind_spot_the_line_names(self):  # review-code-exrf
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"lib.py": "x = 1\n"}, "sub base")
+        gitfix.run(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor"], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "add submodule"], self.repo)
+        self.make_run()
+        self.review(5)
+        tp.write(self.repo, "vendor/lib.py", "x = 2\n")  # modified content inside the submodule: status =dirty hides it
+        tp.write(self.repo, "vendor/new.py", "y = 1\n")
+        out = self.render()
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
+        self.assertIn(self.CLEAN, out.split("\n"))
+        gitfix.run(["git", "commit", "-q", "-am", "move"], os.path.join(self.repo, "vendor"))
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], ["vendor"])  # the moved pointer is seen
+
     def test_a_tracked_edit_is_a_warning_with_its_path_and_cause(self):
         tp.write(self.repo, "src/calc.py", "edited\n")
         self.assertIn("integrity warning: src/calc.py (working tree) " + CAUSE, self.render().split("\n"))
