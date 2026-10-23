@@ -136,11 +136,16 @@ def _rev_path(flag: str, cwd: str, *operand: str) -> str:
     return out[:-1] if out.endswith("\n") else out
 
 
-def _head_branch(cwd: str) -> Optional[str]:
-    """The checked-out branch name, lossless (surrogateescape) with the one trailing LF dropped; None when detached."""
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+def _symref(cwd: str, *args: str) -> Optional[str]:
+    """`symbolic-ref --quiet` output, lossless (surrogateescape) with the one trailing LF dropped; None on a non-zero exit."""
+    rc, out, _ = _run(["symbolic-ref", "--quiet", *args], cwd)
     name = out.decode("utf-8", "surrogateescape")
     return None if rc != 0 else name[:-1] if name.endswith("\n") else name
+
+
+def _head_branch(cwd: str) -> Optional[str]:
+    """The checked-out branch name; None when detached."""
+    return _symref(cwd, "--short", "HEAD")
 
 
 def _no_filters(cwd: str) -> dict:
@@ -362,10 +367,9 @@ def _q(name: str) -> str:
 
 def default_branch(cwd: str) -> Optional[tuple]:
     """(ref usable in git, local branch name) of the default branch, or None."""
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
-    if rc == 0:
-        ref = out.decode("utf-8", "surrogateescape")  # lossless, the one trailing LF dropped, as _head_branch (iw9p)
-        ref = (ref[:-1] if ref.endswith("\n") else ref)[len("refs/remotes/"):]
+    ref = _symref(cwd, "refs/remotes/origin/HEAD")
+    if ref is not None:
+        ref = ref[len("refs/remotes/"):]
         if _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)[0] == 0:
             return ref, ref.split("/", 1)[-1]
     for name in ("main", "master"):
