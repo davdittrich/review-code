@@ -22,7 +22,7 @@ The input lists the convention copies you may cite, under conventions/ in the ru
 tagged `smell` as yours; the other checks belong to another lane. A `## Smells` section, when present,
 lists the baseline smell file: read it.
 A rule source may also be a `.okf/` bundle file listed in the input: read it as plain Markdown conventions.
-Never open inputs/spec.md, and never read PR, MR, issue or commit text: the change author's claims are not evidence.
+Never open inputs/spec.md or read PR, MR, issue or commit text except history files: the change author's claims are not evidence.
 A `## Siblings` section, when present, holds hints, never evidence. For an `ADD` line, read the registry line at the cited `R:line`.
 If the registry really omits the new file, send a `smell` finding with severity `suggestion`, anchored on the new file's first line (an added line;
 `path`, `line` and `quote` copied verbatim), the title `<new file> is not registered where <sibling> is`, and the hint line verbatim as

@@ -447,7 +447,8 @@ class SharedPhrases(unittest.TestCase):
     """review-code-4nc: a lane subagent sees only its own file, so shared rules are copied on purpose; each copy is pinned here."""
     ESCAPE = ("write each `{` as `\\u007b` and each `\"` as `\\u0022`: the shell guard denies a brace followed by a quote "
               "and a backslash-escaped quote, and the skill decodes both.")
-    NO_SPEC = "Never open inputs/spec.md, and never read PR, MR, issue or commit text: the change author's claims are not evidence."
+    # history files are commit text by earlier authors, handed to both lanes as context (gh#53): the rule exempts them
+    NO_SPEC = "Never open inputs/spec.md or read PR, MR, issue or commit text except history files: the change author's claims are not evidence."
 
     # gh#52: one evidence rule for every agent that reads the repository: the checkout difference from tree/, the rest from
     # the repository, tool answers evidence only off the difference, read economically
@@ -460,7 +461,7 @@ class SharedPhrases(unittest.TestCase):
     # The six reader prompts measured 34,905 bytes before gh#52 (whole files; gh#52's "30,585" matches no measurement of
     # them): the rule is paid for by the tree/ wording it replaced, so the total never grows. The cap is the real total:
     # slack would let a clause in unpaid.
-    READER_BYTES = 34889
+    READER_BYTES = 34874
 
     def text(self, name):
         return "\n".join(parts(name)[1])
@@ -502,6 +503,7 @@ class SharedPhrases(unittest.TestCase):
     def test_finder_and_standards_never_open_the_spec(self):
         for name in ("finder", "standards"):
             self.assertIn(self.NO_SPEC, self.text(name), name)
+            self.assertNotIn("issue or commit text:", self.text(name), name)  # the blanket ban that contradicted history
 
     def test_do_not_flag_lists(self):
         for name in ("finder", "spec", "standards") + VERIFIERS:

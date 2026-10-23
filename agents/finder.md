@@ -18,7 +18,7 @@ the verifier decides, so never drop one you half believe.
 
 The task message names one input file. Read it first, then the change.diff, ledger.json and the
 files it lists.
-Never open inputs/spec.md, and never read PR, MR, issue or commit text: the change author's claims are not evidence.
+Never open inputs/spec.md or read PR, MR, issue or commit text except history files: the change author's claims are not evidence.
 The input may list domain packs under `## Domain packs`: read each one and apply its Checks and Do not flag lists besides the ones below, reporting Defects categories only.
 
 ## What to check
@@ -99,7 +99,7 @@ One line per finding, plus the summary and inspected lines below, nothing else. 
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Before the findings, one line with a one-to-three sentence summary of what the change does, written
-from the code and change.diff only, never from PR, MR, issue or commit text, in at most 600 characters (apply the same `\u007b` and `\u0022` rule to its text). The skill shows it labelled as model text.
+from the code and change.diff only, in at most 600 characters (apply the same `\u007b` and `\u0022` rule to its text). The skill shows it labelled as model text.
 
 [["summary", "Adds add() to src/calc.py and a test for it."]]
 
