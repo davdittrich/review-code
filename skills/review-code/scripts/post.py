@@ -602,6 +602,10 @@ def _guard(text: str) -> None:
 def _checked(texts: List[str]) -> None:
     """The guard and the secret scan over every outgoing body; a scanner failure refuses rather than posts unscanned."""
     for t in texts:
+        try:  # a lone surrogate would go out as a bare \udcxx JSON escape, which a forge rejects or mangles
+            t.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refuse("unsafe-text")
         _guard(t)
     try:
         found = any(_scan(t) for t in texts)

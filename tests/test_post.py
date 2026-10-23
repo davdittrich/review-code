@@ -745,6 +745,20 @@ class NonUtf8Path(Base):
         self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "non-utf8-name"), out)
         self.assertEqual(self.fake.calls, [])
 
+    def test_an_edited_payload_comment_body_with_a_lone_surrogate_and_a_recomputed_digest_refuses_before_any_write(self):  # review-code-ilqr
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        payload["comments"][0]["body"] = payload["comments"][0]["body"].replace("title 20", "title 20\udcff", 1)
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()  # ensure_ascii writes the surrogate as an escape
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "unsafe-text"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
 
 class EmptyRun(Base):
     def test_zero_verified_findings_refuse_nothing_to_post(self):
