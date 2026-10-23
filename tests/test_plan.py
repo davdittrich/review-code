@@ -5,12 +5,14 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
+import target  # noqa: E402
 import test_packs as tp  # noqa: E402
 import test_report as tr  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import CAND, CITE, cand, cli, fid, verdict  # noqa: E402
@@ -926,6 +928,49 @@ class InventoryEmpty(Fixture):
 
 def _tree_bytes(d):
     return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs)
+
+
+class ScanHead(Fixture):
+    """review-code-axql (51cd011): a path or repo plan scans only the first SCAN_BYTES of each reviewed file. The read itself is no
+    output a test can see, so the bound is pinned by what it decides: a content rule matches inside the head, not beyond it."""
+    HEAD = "x = 1\n" * 12000  # 72000 bytes, past SCAN_BYTES (65536)
+    base_files = {"near.txt": "import subprocess\n" + HEAD, "far.txt": HEAD + "import subprocess\n"}
+    feat_files = {"z.txt": "z = 1\n"}
+    pin_args = ["."]
+
+    def test_a_content_rule_matches_inside_the_scanned_head_and_not_beyond_it(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        (owasp,) = [x for x in self.plan_json()["packs"] if x["name"] == "security-owasp"]
+        self.assertEqual(owasp["files"], ["near.txt"])
+
+
+class ReadWorkingHead(unittest.TestCase):
+    """review-code-axql: read_working(head=True) returns the first `limit` bytes of a larger regular file, and still refuses a
+    link and a FIFO; without head the same file is too large."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.d = self._td.name
+
+    def put(self, name, data):
+        with open(os.path.join(self.d, name), "wb") as fh:
+            fh.write(data)
+        return os.path.join(self.d, name)
+
+    def test_a_file_over_the_limit_gives_its_head_and_a_smaller_one_whole(self):
+        big, small = self.put("big", b"0123456789"), self.put("small", b"0123")
+        self.assertEqual(target.read_working(big, 4, head=True), ("ok", b"0123"))
+        self.assertEqual(target.read_working(small, 4, head=True), ("ok", b"0123"))
+        self.assertEqual(target.read_working(big, 4), ("too-large", 10))
+
+    def test_a_link_and_a_fifo_are_no_file_even_for_a_head_read(self):
+        os.symlink(self.put("real", b"abcdef"), os.path.join(self.d, "link"))
+        os.mkfifo(os.path.join(self.d, "fifo"))
+        self.assertEqual(target.read_working(os.path.join(self.d, "link"), 4, head=True)[0], "symlink")
+        self.assertEqual(target.read_working(os.path.join(self.d, "fifo"), 4, head=True)[0], "special")
+        self.assertEqual(target.read_working(os.path.join(self.d, "gone"), 4, head=True)[0], "missing")
 
 
 class Preview(Fixture):
