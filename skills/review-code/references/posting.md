@@ -75,7 +75,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 
 ## Refusals
 
-`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
+`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. `plan.py`, a `report.py ingest --lane spec` and a `report.py verdicts` call on spec findings also raise `no-ledger` and `bad-ledger`. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
@@ -85,7 +85,9 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `no-target` | `target.json` is missing or unreadable | Re-run the review from step 1 |
 | `no-pin` | `target.json` has no `pinned_tree`: the run predates the pin | Review again |
 | `pin-pruned` | The pinned tree is gone (a `git gc` pruned the synthetic tree of an in-place pin) | Review again |
-| `bad-ref` | A git command that reads the pinned tree failed (`ls-tree` or `cat-file`) | Re-run; report it if it repeats |
+| `bad-ref` | A git command that reads the pinned tree failed (`ls-tree` or `cat-file`), or the tree lists a missing blob | Re-run; report it if it repeats |
+| `no-ledger` | The run has no `ledger.json` (`plan.py`, spec ingest and spec verdicts) | Run `ledger.py build` for the run, or review again |
+| `bad-ledger` | `ledger.json` cannot be read or has the wrong shape, or `inputs/spec.md` cannot be read; the spec copy guard refuses rather than pass text it cannot check | Run `ledger.py build` again, or review again |
 | `not-a-forge-target` | The target is not a PR or MR | Run without `--comment` |
 | `bad-target-url` | The URL, host, repository, number or head in `target.json` is malformed | Re-run the review |
 | `gh-missing` | `gh` is not installed | Install `gh` |

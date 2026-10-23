@@ -179,6 +179,8 @@ REASONS = {
     "capture-incomplete": "only the agent's closing message is captured: wait for its completion notification, or pass the reply on stdin",
     "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
+    "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
+    "bad-ledger": "ledger.json or inputs/spec.md cannot be read: run ledger.py build again, or review again",
 }
 
 

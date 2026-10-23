@@ -565,6 +565,27 @@ class PostingDocs(unittest.TestCase):
         rows = [ln.split("|")[1].strip(" `") for ln in self.read(self.REFS, "posting.md").splitlines() if ln.startswith("| `")]
         self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
+    def test_every_spec_copy_guard_reason_has_a_retry_hint_and_a_posting_table_row(self):  # review-code-va2s
+        """The literal Refuse reasons of report._spec_copy, plus no-<stem> and bad-<stem> of each load_json it calls."""
+        import paths  # noqa: F401  (puts the scripts on sys.path)
+        import report
+        tree = ast.parse(self.read(os.path.dirname(self.POST), "report.py"))
+        (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_spec_copy"]
+        found = set()
+        for node in ast.walk(fn):
+            name = getattr(getattr(node, "func", None), "attr", getattr(getattr(node, "func", None), "id", None))
+            if name == "Refuse" and isinstance(node.args[0], ast.Constant):
+                found.add(node.args[0].value)
+            elif name == "load_json" and isinstance(node.args[-1], ast.Constant):
+                stem = node.args[-1].value.split(".")[0]
+                found.update(("no-" + stem, "bad-" + stem))
+        self.assertLessEqual({"no-ledger", "bad-ledger"}, found, found)
+        rows = [ln.split("|")[1].strip(" `") for ln in self.read(self.REFS, "posting.md").splitlines() if ln.startswith("| `")]
+        self.assertEqual(sorted(found - set(rows)), [], "posting.md has no table row for these spec copy guard reasons")
+        self.assertEqual(sorted(found - set(report.REASONS)), [], "REASONS has no retry hint for these spec copy guard reasons")
+        flat = " ".join(self.read(self.REFS, "posting.md").split())
+        self.assertIn("raise `no-ledger` and `bad-ledger`", flat)
+
     def test_the_pin_reasons_are_explained_where_plan_ingest_and_verdicts_refuse_too(self):  # review-code-lbum
         posting = " ".join(self.read(self.REFS, "posting.md").split())
         self.assertRegex(posting, r"`plan\.py`, `report\.py ingest` and `report\.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too")
