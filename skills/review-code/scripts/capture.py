@@ -4,17 +4,19 @@ Runs on SubagentStop (the agent's last message) and on PostToolUse of SubagentHa
 back, where the harness runs it in auto mode). The hook input is JSON on stdin. A reply is kept only for this
 plugin's lane and verifier agents, only under a strict agent_id, and only when the repository's review-code state
 directory (`git rev-parse --git-path review-code`, as target.py names it) already exists: this script never makes it.
-It stays standalone and does not import target: target.write_atomic touches the run directory and target's run-dir
-creation makes directories, but the hook must never create the state directory, and must stay import-light and fail-silent.
+It imports target only for its git seam (target._run: the fixed -c options and env of every git call): it calls none of
+target's run-directory code, which makes directories, because the hook must never create the state directory, and it
+stays fail-silent (it imports target inside keep, and a failed import keeps nothing). The seam adds one git config read per firing.
 It writes <state>/captures/<agent_id>.<handback|stop>.json = {agent_type, message}, mode 0600, through a temp file and
 os.replace, and always exits 0 and prints nothing, so it can never block the agent. Stdlib only; keep the syntax
 Python 3.9 safe. A custom agent_prefix plugin setting is not captured (the hook cannot read it: an unset option
 fails a hook), so those runs use stdin.
 """
+import contextlib
+import io
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 
@@ -43,9 +45,14 @@ def keep(ev):
     aid, typ = ev.get("agent_id"), ev.get("agent_type")
     if kind is None or not isinstance(text, str) or typ not in AGENTS or not (isinstance(aid, str) and ID.fullmatch(aid)):
         return
-    p = subprocess.run(["git", "rev-parse", "--git-path", "review-code"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    rel = p.stdout.decode("utf-8", "replace").strip()
-    if p.returncode != 0 or not rel:
+    try:  # here, not at the top: a missing or broken sibling must keep the hook silent; target's Python-too-old guard prints
+        with contextlib.redirect_stdout(io.StringIO()):  # to stdout, then raises SystemExit
+            import target
+    except BaseException:
+        return
+    rc, out, _ = target._run(["rev-parse", "--git-path", "review-code"], os.getcwd())
+    rel = out.decode("utf-8", "replace").strip()
+    if rc != 0 or not rel:
         return
     base = os.path.join(os.getcwd(), rel)
     try:
