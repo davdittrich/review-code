@@ -1903,6 +1903,91 @@ class EventConstant(unittest.TestCase):
                 self.assertNotIn("reviewer_state", n.value)
                 self.assertIsNone(re.search(r"/(?:un)?approve\b|/merge\b", n.value), n.value)
 
+# Verbatim copy of the pre-fix reference regex and _prose (review-code-32ah): the oracle the linear scan must match.
+_OLD_REF = re.compile(
+    r"[@#!&~%$^](?=\w)[\w./-]*"
+    r'|[~%]"[^"`]*"|\*iteration:(?:"[^"`]*"|[\w./-]+)'
+    r"|\[\[[^\]`]*\]\]|\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):[^\]`]*\]"
+    r"|(?:GL|GH)-\d+|[\w.-]+/[\w.-][\w./-]*>")
+
+
+def _old_escape(t):
+    return t.replace("&", "&amp;").replace("\\", "\\\\").replace("<", "&lt;").replace("[", "\\[")
+
+
+def _old_prose(s):
+    t = sanitize.escape_line(s).replace("`", "'")
+    out, at = [], 0
+    for m in _OLD_REF.finditer(t):
+        out += [_old_escape(t[at:m.start()]), "`" + m.group() + "`"]
+        at = m.end()
+    return "".join(out + [_old_escape(t[at:])])
+
+
+class _Count:
+    """Stands in for a compiled regex and counts calls to the named methods."""
+    def __init__(self, rx):
+        self.rx, self.calls = rx, 0
+
+    def match(self, *a):
+        self.calls += 1
+        return self.rx.match(*a)
+
+
+class _Forbidden:
+    def __getattr__(self, name):
+        raise AssertionError("the quadratic _REF scan is back: _REF.%s" % name)
+
+
+class ProseLinear(unittest.TestCase):
+    """CPython `re` has no step counter, so the guard bounds the scanner's own calls to the one backtracking
+    alternative: once per run of word characters, never once per match or character."""
+
+    def calls(self, text):
+        c = _Count(post._NS)
+        with mock.patch.object(post, "_NS", c), mock.patch.object(post, "_REF", _Forbidden()):
+            post._prose(text)
+            post._guard("**Fix:** " + post._prose(text))
+        return c.calls
+
+    def test_long_word_costs_the_same_at_any_length(self):
+        self.assertEqual(self.calls("a" * 1000), self.calls("a" * 64000))
+
+    def test_many_matches_in_one_run_scan_that_run_once(self):
+        for unit in ("GH-1", "GH-1x", "GH-1.", "GH-1_"):  # the later ones leave a gap, so the next match starts after the resume point
+            self.assertEqual(self.calls(unit * 200), self.calls(unit * 12000), unit)
+            self.assertLessEqual(self.calls(unit * 12000), 2 * 2, unit)  # _prose and _guard, one run each
+
+    TOKENS = ["@user", "#123", "!45", "&epic", "~label", "%mile", "$snip", "^alert", "GL-1", "GH-12", "_GH-1_", "GH-1x/y>",
+              "GH-12GH-3", "a@b/c>", "@a/b>c/d>", "x/y>z/w>", "ns/proj>", "ns/proj", "[[x]]", "[[x", "[issue:1]", "[epic:", "~\"a b\"",
+              '%"m"', "*iteration:\"x\"", "*iteration:x", "http://h.io/p/q?a=1#f>", "https://x.y/z", "a" * 40, "0123456789abcdef" * 2 + "01234567",
+              "word", "é", "٣", "_", "a.b-c", "-", ".", "/", ">", "`", "\\", "&", "<", "[", "]", "\r", "\n", " ", "  ", "@", "#", "!1", "a/b", "a/b>"]
+
+    def inputs(self):
+        import random
+        rnd = random.Random(32)
+        for _ in range(4000):
+            yield "".join(rnd.choice(self.TOKENS) + rnd.choice(["", "", " ", "x", "1", "/"]) for _ in range(rnd.randint(1, 9)))
+        for tok in self.TOKENS:
+            yield tok * 5
+            yield "w" * 300 + tok + "w" * 300
+
+    def test_output_is_byte_identical_to_the_old_implementation(self):
+        for text in self.inputs():
+            self.assertEqual(post._prose(text), _old_prose(text), repr(text))
+
+    def test_guard_finds_a_reference_exactly_when_the_old_search_did(self):
+        for text in self.inputs():
+            t = sanitize.escape_line(text).replace("`", "'")
+            self.assertEqual(post._REF_G.search(t) is not None, _OLD_REF.search(t) is not None, repr(text))
+
+    def test_the_fast_pattern_anchors_the_backtracking_alternative_at_run_starts(self):
+        # shortcut: re exposes no step count, so a dropped lookbehind (quadratic, same output) is caught by shape
+        self.assertTrue(post._REF_G.pattern.endswith(r"(?<![\w.-])" + post._NS.pattern))
+
+    def test_the_pattern_is_the_one_the_span_regex_embeds(self):
+        self.assertEqual(post._REF.pattern, _OLD_REF.pattern)
+
 
 class HiddenNameInline(Base):
     """review-code-avhn: a cite under a file's raw hidden-character name is accepted, so the finding's path is raw. The forge

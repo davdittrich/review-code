@@ -45,6 +45,32 @@ _REF = re.compile(r"[@#!&~%$^](?=\w)[\w./-]*"  # @user #1 !1 &epic ~label %miles
                   # GL-1 GH-1 issue keys, namespace/project>. No boundary anchor: `_GH-1_` renders `GH-1` as its own text,
                   # and so does `GH-2GH-1` once `GH-2` is a code span; a span inside a word is only cosmetic
                   r"|(?:GL|GH)-\d+|[\w.-]+/[\w.-][\w./-]*>")
+# `_REF` is quadratic on a long word: its last alternative rescans the word from every start. Its verdict at any start in
+# a run of [\w.-] depends only on what follows the run, so `_REF_G` tries it at run starts only and `_refs` repairs the
+# one start `finditer` could still reach mid-run (the resume point after a match), once per run.
+_NS = re.compile(r"[\w.-]+/[\w.-][\w./-]*>")
+_REF_G = re.compile(_REF.pattern.removesuffix(_NS.pattern) + r"(?<![\w.-])" + _NS.pattern)
+_RUN = re.compile(r"[\w.-]+")
+
+
+def _refs(t: str):
+    """The matches `_REF.finditer(t)` yields, in linear time on a long word."""
+    at, dead = 0, 0  # dead: the end of a run where _NS is known to fail from `at`
+    while True:
+        m = _REF_G.search(t, at)
+        if at and at >= dead and _RUN.match(t, at - 1, at) and (m is None or m.start() > at):
+            n = _NS.match(t, at)
+            if n:
+                m = n
+            else:
+                r = _RUN.match(t, at)
+                dead = r.end() if r else at
+        if m is None:
+            return
+        yield m
+        at = m.end()  # no alternative matches empty
+
+
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
 # A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
 # CRLF, string literals), so a hit blanks every free-text field of the finding instead of guessing where the key ends.
@@ -524,7 +550,7 @@ def _prose(s) -> str:
     escape the escape. A code span shows its text as written, so nothing inside one is escaped."""
     t = sanitize.escape_line(s).replace("`", "'")
     out, at = [], 0
-    for m in _REF.finditer(t):
+    for m in _refs(t):
         out += [_escape(t[at:m.start()]), "`" + m.group() + "`"]
         at = m.end()
     return "".join(out + [_escape(t[at:])])
@@ -593,7 +619,7 @@ def _guard(text: str) -> None:
             raise Refuse("unsafe-text")
         else:
             bare = _SPAN.sub(r"\1 ", ln)  # a space: a span is a code element, so text around it never joins into a reference
-            if _LOOSE.search(bare) or _REF.search(_shown(bare)):
+            if _LOOSE.search(bare) or _REF_G.search(_shown(bare)):
                 raise Refuse("unsafe-text")
     if fence:
         raise Refuse("unsafe-text")
