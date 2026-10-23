@@ -1233,7 +1233,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     else:
         raise Refuse("bad-ref", "unknown target kind")
     if kind in ("commit", "branch", "range") and plan["head"] != _head_oid(top):  # forge kinds gate in _plan_forge
-        if _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], top)[0] != 0 or \
+        if _symref(top, "refs/remotes/origin/HEAD") is None or \
                 _run(["config", "--get", "remote.origin.url"], top)[0] != 0:  # no url: ls-remote reads a path `origin`
             raise Refuse("no-upstream-remote", "the upstream is the remote behind origin/HEAD, and there is none "
                                                "(`git remote set-head origin --auto` sets it)")  # gh#49

@@ -638,6 +638,11 @@ class ReviewFixesPR60(unittest.TestCase):
         self.assertNotIn("none for a review of what is checked out", t)
         self.assertIn("a staged review lists the worktree edits on top of the index", t)
 
+    def test_readme_lists_every_path_that_stays_in_the_checkout_difference(self):  # review-code-5qbz
+        t = self.flat("README.md")
+        self.assertIn("a staged review lists the worktree edits on top of the index and its unmerged paths; "
+                      "for example, a changed or untracked path that is a directory, FIFO, socket or oversized file also stays in the difference", t)
+
     def test_a_drop_with_a_remaining_writer_is_not_exempt(self):  # review-code-g5qv.2 (C2)
         t = self.flat("skills", "review-code", "references", "packs", "data-migrations.md")
         self.assertIn("A drop of a column or table whose name a search of the repository finds in no code that reads or writes it.", t)
