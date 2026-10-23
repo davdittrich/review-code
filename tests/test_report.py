@@ -917,6 +917,62 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
 
 
+class SpecAdrInPlace(Base):
+    """review-code-bbch: an in-place run reviews the working copy, so its records are listed from the pinned tree, never from
+    HEAD. A record renamed there is listed under its new name and its body still counts for the copy guard (a lane can read
+    the renamed file); a record deleted there is not listed. The record kept in place is the control."""
+    ADR = "docs/adr/0001-integers.md"
+    NEW = "docs/adr/0002-renamed.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+    REFS = [ADR]
+
+    def edit(self):
+        pass
+
+    def setUp(self):
+        gitfix.FeatureRepo.setUp(self)
+        with open(os.path.join(self.repo, "src", "calc.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n# edit\n")
+        self.edit()
+        self.run_dir = self.pin(["--unstaged"])
+
+    def test_the_copy_guard_reads_the_record_where_the_working_copy_holds_it(self):
+        refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
+        self.assertEqual(refs, self.REFS)
+        pinned = gitfix.run(["git", "ls-tree", "-r", "--name-only", tp.load(self.run_dir)["pinned_tree"]], self.repo).split("\n")
+        self.assertTrue(all(r in pinned for r in refs))
+        if not refs:  # nothing listed: spec.md has no record row to decline against
+            return
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": self.WHY}]}, {"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["declined-invalid:copied-from-spec"])
+
+
+class SpecAdrDeletedInPlace(SpecAdrInPlace):
+    REFS = []
+
+    def edit(self):
+        os.remove(os.path.join(self.repo, self.ADR))
+
+
+class SpecAdrRenamedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        os.rename(os.path.join(self.repo, self.ADR), os.path.join(self.repo, self.NEW))
+
+
+class SpecAdrGitMovedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        gitfix.run(["git", "mv", self.ADR, self.NEW], self.repo)
+
+
 class SpecAdrHiddenVS(SpecAdrHiddenName):
     """review-code-1t2v: the same guard for the <VS:n> mark (a run of variation selectors)."""
     RAW = "docs/adr/0002-ints\ufe00\ufe00.md"

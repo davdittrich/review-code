@@ -669,6 +669,7 @@ def _spec_copy(run, pin, adr):
             w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
     except OSError:
         w = []
+    # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
     w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
     runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
