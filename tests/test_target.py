@@ -1187,3 +1187,18 @@ class TestHiddenText(Local):
         self.assertEqual(rc, 0)
         self.assertNotIn("HIDDENCMT", self.diff(out))
         self.assertEqual([h["kind"] for h in load(out["run"])["hidden_text"]], ["comment"])
+
+
+class TestRepoPathEndingInCR(Base):
+    """review-code-wb5s: a repository whose directory name ends in CR; the toplevel loses its newline only."""
+
+    def test_a_repo_path_ending_in_cr_reviews_and_dot_is_the_whole_repo(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r\r"))
+        gitfix.commit(repo, {"a.py": "a = 1\n"}, "base")
+        with open(os.path.join(repo, "a.py"), "w") as fh:
+            fh.write("a = 2\n")
+        rc, out = call([], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out.get("kind")), (0, "ok", "worktree"), out)
+        rc, out = call(["."], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "repo"), out)
+        self.assertEqual(load(out["run"])["repo"], repo)

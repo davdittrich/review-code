@@ -118,6 +118,12 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
     return git_bytes(args, cwd, stdin, check, env).decode("utf-8", "replace")
 
 
+def _toplevel(cwd: str) -> str:
+    """The repository root, without .strip(): that would also drop a CR the directory name ends in (wb5s)."""
+    out = git(["rev-parse", "--show-toplevel"], cwd)
+    return out[:-1] if out.endswith("\n") else out
+
+
 def _no_filters(cwd: str) -> dict:
     """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
     required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
@@ -407,7 +413,7 @@ def _classify(arg: str, cwd: str) -> List[dict]:
             return [{"kind": "range", "base": left, "head": right, "reading": "changes on %s since %s" % (right, left)}]
         except Refuse:
             pass  # not a range: may be a path that contains ".."
-    if arg == "." and os.path.realpath(cwd) == os.path.realpath(git(["rev-parse", "--show-toplevel"], cwd).strip()):
+    if arg == "." and os.path.realpath(cwd) == os.path.realpath(_toplevel(cwd)):
         return [{"kind": "repo", "reading": "the whole repository"}]  # elsewhere '.' is a cwd path (6xl.78)
     cands, err = [], None
     if _DIGITS.fullmatch(arg):
@@ -1172,7 +1178,7 @@ def _checkout_root(top: str, head: str) -> str:
 
 
 def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
-    top = git(["rev-parse", "--show-toplevel"], cwd).strip()
+    top = _toplevel(cwd)
     kind = candidate["kind"]
     if since_last and kind != "pr":
         raise Refuse("since-last-unsupported", "--since-last works on GitHub pull requests only")
