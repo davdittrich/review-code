@@ -360,8 +360,8 @@ _MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\
                       % (_NAME, _GONE, _NAME), re.I)
 
 
-# a bare name "missing from the imports/scope/namespace/module" is a symbol claim; a path-like name (a "/" or a "."), or any
-# other tail, stays a file claim; shortcut: a name with a dot ("os.path") is read as a file, kept as a finding only by the verifier
+# a name "missing from the imports/scope/namespace/module" is a symbol claim unless it holds a "/"; any other tail stays a file claim;
+# shortcut: a slashless file name with this tail ("config.yaml is missing from the module") also stays a finding, left to the verifier
 _SYMBOL_TAIL = re.compile(r"\s*(?:from|in)\s+(?:the\s+|this\s+|its\s+)?(?:imports?|scope|namespace|module)\b", re.I)
 
 
@@ -371,7 +371,7 @@ def _claimed(o):
     for k in ("title", "trigger"):
         for m in _MISSING.finditer(o[k]) if isinstance(o.get(k), str) else ():
             a, b = m.groups()
-            if not (a and not {"/", "."} & set(a) and _SYMBOL_TAIL.match(o[k], m.end())):
+            if not (a and "/" not in a and _SYMBOL_TAIL.match(o[k], m.end())):
                 names.add((a or b).rstrip("."))
     return names
 
