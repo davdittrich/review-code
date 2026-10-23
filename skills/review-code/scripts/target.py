@@ -649,7 +649,9 @@ def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
 
 def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     """gh#49: a head that is not checked out is reviewed only from the main checkout on the upstream default branch at
-    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
+    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip. For a fork
+    `remote` is the parent's: the test is that local HEAD contains the live upstream tip, a deliberate local-HEAD reading
+    (gh#49 allows one ls-remote, and the fork's own published main is never resolved or compared)."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
