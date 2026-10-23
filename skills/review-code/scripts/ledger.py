@@ -1022,7 +1022,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
             for k, v in e.items():
                 if isinstance(v, str):
                     e[k] = target.shown(v)
-    led["history"], cut = history.build(run, repo, mb, _put, mb_ls, target.index_listing(repo) if tj["kind"] == "unstaged" else None)  # gh#53
+    hbase = tj.get("diff_base") or mb  # change.diff's old side: the last reviewed head on a --since-last run
+    hls = mb_ls if hbase == mb else target.tree_listing(hbase, repo)
+    led["history"], cut = history.build(run, repo, hbase, _put, hls, target.index_listing(repo) if tj["kind"] == "unstaged" else None)  # gh#53
     if cut:
         capped["history"] = cut
     led["hidden_chars"] += more
