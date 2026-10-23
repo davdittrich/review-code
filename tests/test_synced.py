@@ -206,6 +206,16 @@ class GateProcessCount(tt.PRWorld):
             self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
 
 
+class GateRemoteIsOperand(tt.PRWorld):
+    def test_the_gates_ls_remote_ends_options_before_the_remote_name(self):  # review-code-j2os
+        log = os.path.join(self.tmp, "ls.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        (argv,) = [a for a in tp.starts(log) if "ls-remote" in a]
+        self.assertEqual(argv[argv.index("ls-remote"):], ["ls-remote", "--symref", "--", "origin", "HEAD"])
+
+
 class NetStdin(tt.Base):
     """review-code-rio1: no caller passes stdin on the network path, so the private seam is the only route to it; the
     argument is still honoured there, never dropped."""

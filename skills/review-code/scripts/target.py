@@ -627,7 +627,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
-    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd, net=True)
+    rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
     rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
