@@ -462,7 +462,7 @@ class SharedPhrases(unittest.TestCase):
     # The six reader prompts measured 34,905 bytes before gh#52 (whole files; gh#52's "30,585" matches no measurement of
     # them): the rule is paid for by the tree/ wording it replaced, so the total never grows. The cap is the real total:
     # slack would let a clause in unpaid.
-    READER_BYTES = 34815
+    READER_BYTES = 34814
 
     def text(self, name):
         return "\n".join(parts(name)[1])

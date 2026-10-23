@@ -649,7 +649,7 @@ class PostingDocs(unittest.TestCase):
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22416)  # gh#52 shrank both; never raise these caps
+        self.assertLessEqual(os.path.getsize(SKILL), 22347)  # gh#52 shrank both; never raise these caps
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
