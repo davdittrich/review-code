@@ -997,6 +997,13 @@ def _sections(lines: Iterator[str]) -> Iterator[str]:
         yield "".join(x + "\n" for x in cur)
 
 
+def _write_index_tree(top: str, env: dict, records: bytes) -> str:
+    """Load `records` (-z --index-info lines) into the index file `env` names, then write-tree it; no records, no load."""
+    if records:
+        git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=records)
+    return git(["write-tree"], top, env=env).strip()
+
+
 def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str,
                 blobs: dict) -> Tuple[list, list]:
     """Strip and escape the change diff file by file into change.diff, so memory holds one file's diff and,
@@ -1010,9 +1017,8 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
             return
         env = {"GIT_INDEX_FILE": os.path.join(os.path.dirname(path), "untracked.index.tmp")}
         try:
-            git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=b"".join(
+            tree = _write_index_tree(top, env, b"".join(
                 ("%s\t" % want[u]).encode() + u.encode("utf-8", "surrogateescape") + b"\0" for u in sorted(want)))
-            tree = git(["write-tree"], top, env=env).strip()
         finally:
             if os.path.exists(env["GIT_INDEX_FILE"]):
                 os.remove(env["GIT_INDEX_FILE"])
@@ -1122,10 +1128,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                     raise Refuse("bad-ref", "a git command failed")
                 blobs = {p: "%s %s" % (mode, oid) for (p, mode, _), oid in zip(srcs, oids)}
                 recs.update(blobs)
-            if recs:
-                git_bytes(["update-index", "-z", "--index-info"], top, env=env,
-                          stdin=b"".join(("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
-            tree = git(["write-tree"], top, env=env).strip()
+            tree = _write_index_tree(top, env, b"".join(
+                ("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
             paths = {p: t for p, t in paths.items() if p not in recs or p in unmerged}
     finally:
         for t in tmp + [idx]:
