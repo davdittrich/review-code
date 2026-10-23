@@ -987,9 +987,12 @@ class SpecAdrOversize(_SpecAdrUnreadable):
                            extra=["--lane", "spec"])
         self.assertEqual(rc, 0, out)
         (sid,) = json.loads(out)["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        before = SpecAxis.snapshot(self)
         rc, out = self.call(["verdicts", "--run", self.run_dir],
                             lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": self.WHY}), cap)
         self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        self.assertEqual(SpecAxis.snapshot(self), before)  # review-code-szle: the record read precedes every write
 
 
 class SpecAdrNotText(_SpecAdrUnreadable):
@@ -1234,6 +1237,19 @@ class SpecAxis(Base):
             rc, out = self.rep(sub, lines(reply, {"inspected": []}) if sub == "ingest" else lines(reply), extra=extra)
             self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
             self.assertEqual(self.snapshot(), before, sub)
+
+    def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
+        _, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = "0" * 40  # the pin's ls-tree of the cites and records fails
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        before = self.snapshot()
+        rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "refuted", "evidence": [CITE], "reason": "second"}))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "pin-pruned"))
+        self.assertEqual(self.snapshot(), before)
 
     def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
         rows, inner, _, _ = self.spec_rows()
