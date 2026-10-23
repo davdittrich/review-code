@@ -1641,7 +1641,7 @@ def _text(doc):
                 + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
         out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
                 if rows else ["integrity: no change to the checkout, index or tool knowledge during the run "
-                              "(not seen: files inside untracked directories, submodule worktrees)"])
+                              "(not seen: submodule worktrees, nested repositories)"])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
