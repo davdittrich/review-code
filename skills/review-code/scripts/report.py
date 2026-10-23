@@ -267,11 +267,10 @@ class _Pinned:
         for a norm candidate, whose sample is the reviewed content (gh#52), not tree/."""
         if self._every is None:
             self._every = []
-            for rec in target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top).split(b"\0"):
-                meta, tab, name = rec.partition(b"\t")
-                f = meta.split()
-                if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # never a link: its blob is a path, not code
-                    self._every.append((name.decode("utf-8", "surrogateescape"), int(f[3]), f[2].decode()))
+            for mode, oid, name, size in ledger.ls_records(
+                    target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top), True):
+                if mode in ("100644", "100755"):  # never a link: its blob is a path, not code
+                    self._every.append((name, int(size), oid))
         return self._every
 
     def blobs(self, oids):
@@ -763,19 +762,19 @@ def _refs(run, shard=None):
 def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
-        c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
+        c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
-                                                         os.path.join(run, "shards", str(c["shard"]), "tree")))
-    out += "checkout_difference: %s\n" % json.dumps(diff) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
+                                                         os.path.join(run, "shards", str(c["shard"]), "tree"), ensure_ascii=False))
+    out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
-    out += "history: %s\n" % json.dumps(hist) if os.path.isfile(hist) else ""
+    out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")
     if c["axis"] == "spec":
-        out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
+        out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md"), ensure_ascii=False), c["spec_line"])
     if c["category"] == "lean":  # an unused-code claim needs the whole-repo count, not only what tree/ holds
         n, have = ledger.defined_name(c["quote"]), (refs or {}).get(c.get("shard"), {})
         out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n][1], c["path"])
@@ -1047,9 +1046,12 @@ def _read_lane(text, lane, run, shard=None):
     for _, o, _ in parsed:
         if o is None:
             continue
-        cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
+        p = ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path")
+        if isinstance(p, str):  # a list or dict path is unhashable: _candidate rejects that one line as bad-type
+            cited.add(p)
         if isinstance(o.get("inspected"), list):
-            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
+            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"]
+                         if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named, cited)
     for n, (ln, o, fixed) in enumerate(parsed, 1):
@@ -1216,6 +1218,15 @@ def _ingest(run, text, lane, shard):
     queue = _queue(cands, doomed)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
+    packs = _packs(run)
+    refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
+    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
+    texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
+    try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
+        for t in texts:
+            t.encode("utf-8")
+    except UnicodeEncodeError:
+        raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
     for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     for n in _rejected(run)[1]:  # their replies are gone (4gj)
@@ -1224,11 +1235,8 @@ def _ingest(run, text, lane, shard):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700, exist_ok=True)
-    packs = _packs(run)
-    refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = target.load_json(run, "target.json").get("difference")
-    for c in queue:
-        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs, diff))
+    for c, t in zip(queue, texts):
+        target.write_private(os.path.join(hand, c["id"] + ".md"), t)
     _reject(run, key, rejected)
     lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
     _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
@@ -1349,7 +1357,8 @@ def _verdicts(run, text, batch, agent=None):
                 replies.append((k, list(_objects(fh.read(), [INGEST_STEPS]))))  # (one hostile batch starves no other)
     # every stored batch is judged again, so all their cites share one ls-tree and one cat-file
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
-                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"] if isinstance(e, dict)}
+                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
+                                   if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited, cited)
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)

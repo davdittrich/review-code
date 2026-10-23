@@ -13,7 +13,7 @@ Applies to files under `migrations/`, `alembic/` and similar, and to `*.sql` fil
 
 - Migrations that are reversible by design: a working down step, or a step that only adds and is dropped by the matching down step.
 - Purely additive changes: a new table, or a new nullable column or index on a table the same migration creates.
-- A drop of a column or table that the diff shows no code in the repository reads, after a search for its name.
+- A drop of a column or table whose name a search of the repository finds in no code that reads or writes it.
 - Lock-time concerns for tables shown to be small (seed or lookup tables) or created in the same migration.
 - Destructive statements in test fixtures, local-only seed scripts and migrations already released and applied (editing history is a separate finding).
 

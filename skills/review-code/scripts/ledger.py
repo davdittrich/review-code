@@ -43,7 +43,7 @@ def _nit_rank(p: str) -> int:
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
-PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity")  # gh#48, gh#51
+PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_list", "difference_count", "integrity")  # gh#48, gh#51
 STDOUT_KEYS = {"status", "difference", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
                "source"}
@@ -628,27 +628,28 @@ def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> b
     return b"".join(out)
 
 
+def ls_records(raw: bytes, long: bool = False) -> List[Tuple[str, str, str, bytes]]:
+    """[(mode, blob id, name, size)] of the NUL-separated records of one `ls-tree -z` (`-l` when `long`); size is the raw
+    field, b"" without `-l`. The one parser of those records: a record of another field count is skipped."""
+    out = []
+    for rec in raw.split(b"\0"):
+        meta, tab, name = rec.partition(b"\t")
+        f = meta.split()
+        if tab and len(f) == (4 if long else 3):
+            out.append((f[0].decode(), f[2].decode(), name.decode("utf-8", "surrogateescape"), f[3] if long else b""))
+    return out
+
+
 def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple[int, str]]:
     """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
     or a directory is no file whose content can be read."""
-    out = {}
-    for rec in ls_tree(tree, paths, repo, long=True).split(b"\0"):
-        meta, tab, name = rec.partition(b"\t")
-        f = meta.split()
-        if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):
-            out[name.decode("utf-8", "surrogateescape")] = (int(f[3]), f[2].decode())
-    return out
+    return {n: (int(size), oid) for mode, oid, n, size in ls_records(ls_tree(tree, paths, repo, long=True), True)
+            if mode in ("100644", "100755")}
 
 
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
     """path -> (mode, oid) of exactly `paths` in the pinned tree: ls_tree's chunks, literal pathspecs, never the whole tree."""
-    out = {}
-    for rec in ls_tree(tree, paths, repo).split(b"\0"):
-        meta, tab, name = rec.partition(b"\t")
-        f = meta.split()
-        if tab and len(f) == 3:
-            out[name.decode("utf-8", "surrogateescape")] = (f[0].decode(), f[2].decode())
-    return out
+    return {n: (mode, oid) for mode, oid, n, _ in ls_records(ls_tree(tree, paths, repo))}
 
 
 def _materialize(run: str, repo: str, listing: Optional[dict], included: List[str], tj: dict,
@@ -920,7 +921,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     body = forge["body"] if forge else ""
     branch = forge["branch"] if forge else ""
     if kind in ("branch", "worktree", "path", "repo"):
-        branch = target.git(["symbolic-ref", "--short", "-q", "HEAD"], tj["repo"], check=False).strip()
+        branch = target._head_branch(tj["repo"]) or ""
     toks = _tokens(branch)
     if kind == "path":
         toks |= _tokens(" ".join(tj["included"]))
@@ -1046,7 +1047,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
             for k, v in e.items():
                 if isinstance(v, str):
                     e[k] = target.shown(v)
-    led["history"], cut = history.build(run, repo, mb, _put, mb_ls, target.index_listing(repo) if tj["kind"] == "unstaged" else None)  # gh#53
+    hbase = tj.get("diff_base") or mb  # change.diff's old side: the last reviewed head on a --since-last run
+    hls = mb_ls if hbase == mb else target.tree_listing(hbase, repo)
+    led["history"], cut = history.build(run, repo, hbase, _put, hls, target.index_listing(repo) if tj["kind"] == "unstaged" else None)  # gh#53
     if cut:
         capped["history"] = cut
     led["hidden_chars"] += more
@@ -1186,7 +1189,7 @@ def _basis(tj: dict) -> str:
         return ""
     n = tj["difference_count"]
     return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
-        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj["difference"], n, "" if n == 1 else "s")
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj.get("difference_list", tj["difference"]), n, "" if n == 1 else "s")
 
 
 def context(run: str) -> dict:
@@ -1197,7 +1200,7 @@ def context(run: str) -> dict:
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     n = tj.get("difference_count")
-    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj["difference"])] if n is not None else []
+    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj.get("difference_list", tj["difference"]))] if n is not None else []
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": seen + led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
              "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}

@@ -136,11 +136,16 @@ def _rev_path(flag: str, cwd: str, *operand: str) -> str:
     return out[:-1] if out.endswith("\n") else out
 
 
-def _head_branch(cwd: str) -> Optional[str]:
-    """The checked-out branch name, lossless (surrogateescape) with the one trailing LF dropped; None when detached."""
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+def _symref(cwd: str, *args: str) -> Optional[str]:
+    """`symbolic-ref --quiet` output, lossless (surrogateescape) with the one trailing LF dropped; None on a non-zero exit."""
+    rc, out, _ = _run(["symbolic-ref", "--quiet", *args], cwd)
     name = out.decode("utf-8", "surrogateescape")
     return None if rc != 0 else name[:-1] if name.endswith("\n") else name
+
+
+def _head_branch(cwd: str) -> Optional[str]:
+    """The checked-out branch name; None when detached."""
+    return _symref(cwd, "--short", "HEAD")
 
 
 def _no_filters(cwd: str) -> dict:
@@ -362,10 +367,9 @@ def _q(name: str) -> str:
 
 def default_branch(cwd: str) -> Optional[tuple]:
     """(ref usable in git, local branch name) of the default branch, or None."""
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
-    if rc == 0:
-        ref = out.decode("utf-8", "surrogateescape")  # lossless, the one trailing LF dropped, as _head_branch (iw9p)
-        ref = (ref[:-1] if ref.endswith("\n") else ref)[len("refs/remotes/"):]
+    ref = _symref(cwd, "refs/remotes/origin/HEAD")
+    if ref is not None:
+        ref = ref[len("refs/remotes/"):]
         if _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)[0] == 0:
             return ref, ref.split("/", 1)[-1]
     for name in ("main", "master"):
@@ -645,7 +649,9 @@ def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
 
 def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     """gh#49: a head that is not checked out is reviewed only from the main checkout on the upstream default branch at
-    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
+    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip. For a fork
+    `remote` is the parent's: the test is that local HEAD contains the live upstream tip, a deliberate local-HEAD reading
+    (gh#49 allows one ls-remote, and the fork's own published main is never resolved or compared)."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
@@ -1227,7 +1233,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     else:
         raise Refuse("bad-ref", "unknown target kind")
     if kind in ("commit", "branch", "range") and plan["head"] != _head_oid(top):  # forge kinds gate in _plan_forge
-        if _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], top)[0] != 0 or \
+        if _symref(top, "refs/remotes/origin/HEAD") is None or \
                 _run(["config", "--get", "remote.origin.url"], top)[0] != 0:  # no url: ls-remote reads a path `origin`
             raise Refuse("no-upstream-remote", "the upstream is the remote behind origin/HEAD, and there is none "
                                                "(`git remote set-head origin --auto` sets it)")  # gh#49
@@ -1259,8 +1265,11 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
         {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2,
         ensure_ascii=False))  # lanes Grep it for a path as written (gh#52); shown() leaves no lone surrogate
+    list_path = os.path.join(run, "difference.txt")  # what lanes Grep: one path per line, so ^path$ anchors and no JSON escape hides a name
+    write_private(list_path, "".join(p + "\n" for p in sorted(
+        shown(p).replace("\n", "<U+000A>").replace("\r", "<U+000D>") for p in pt["paths"])))
     rec = {
-        "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
+        "difference_list": list_path, "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
         "difference": diff_path, "difference_count": len(pt["paths"]), "integrity": integ,
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85

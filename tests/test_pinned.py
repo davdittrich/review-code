@@ -606,7 +606,7 @@ class LaneInputs(tt.Base):
         run = out["run"]
         rc, out, err = cli("ledger.py", ["build", "--run", run], self.repo, self.tmp)
         self.assertEqual(rc, 0, out + err)
-        path = load(run)["difference"]
+        path = load(run)["difference_list"]
         inputs = os.path.join(run, "inputs")
         for name in ("defects.md", "standards.md", "spec.md", "spec-find.md"):
             with self.subTest(name=name), open(os.path.join(inputs, name), encoding="utf-8") as fh:
@@ -693,6 +693,34 @@ class PinnedListingArgMax(tt.Base):
         with self.assertRaises(target.Refuse) as cm:
             ledger._pinned_listing(self.repo, "0" * 40, ["a.py"])
         self.assertEqual(cm.exception.reason, "pin-pruned")
+
+
+class LsRecords(unittest.TestCase):
+    """PR60 D2: one parser of ls-tree records feeds regular_blobs, _pinned_listing and _Pinned.every."""
+    OID = "a" * 40
+    LONG = (b"100644 blob " + OID.encode() + b"      12\tsrc/a.py\0" + b"100755 blob " + OID.encode() + b"       3\tb\xff.sh\0"
+            + b"120000 blob " + OID.encode() + b"       4\tlink\0" + b"160000 commit " + OID.encode() + b"       -\tsub\0")
+
+    def test_long_records_give_mode_oid_name_size_and_skip_malformed(self):
+        got = ledger.ls_records(self.LONG + b"junk\0no-tab 1 2\0", True)
+        self.assertEqual(got, [("100644", self.OID, "src/a.py", b"12"), ("100755", self.OID, "b\udcff.sh", b"3"),
+                               ("120000", self.OID, "link", b"4"), ("160000", self.OID, "sub", b"-")])
+
+    def test_short_records_need_three_fields(self):
+        short = b"100644 blob " + self.OID.encode() + b"\tx.py\0"
+        self.assertEqual(ledger.ls_records(short), [("100644", self.OID, "x.py", b"")])
+        self.assertEqual(ledger.ls_records(self.LONG), [])  # four fields: not a short record
+
+    def test_regular_blobs_keeps_modes_100644_and_100755_only(self):
+        with mock.patch.object(ledger, "ls_tree", return_value=self.LONG):
+            self.assertEqual(ledger.regular_blobs("t", ["x"], "r"),
+                             {"src/a.py": (12, self.OID), "b\udcff.sh": (3, self.OID)})
+
+    def test_pinned_listing_takes_every_row(self):
+        short = b"100644 blob " + self.OID.encode() + b"\tx.py\0" + b"120000 blob " + self.OID.encode() + b"\tl\0"
+        with mock.patch.object(ledger, "ls_tree", return_value=short):
+            self.assertEqual(ledger._pinned_listing("r", "t", ["x"]),
+                             {"x.py": ("100644", self.OID), "l": ("120000", self.OID)})
 
 
 if __name__ == "__main__":
