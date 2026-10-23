@@ -620,17 +620,11 @@ def _words(s):
     return re.findall(r"\w+", s.casefold())
 
 
-def _spec_copy(run):
-    """Predicate: True when a string holds SPEC_RUN consecutive words (case and punctuation ignored) of the text inside
-    the UNTRUSTED blocks of inputs/spec.md and of the indexed decision records. The text stays inside this closure (CTX-03)."""
-    inside = _spec_lines(run)
-    try:
-        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
-            w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
-    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
-        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
-    # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57). Fails
-    # closed (review-code-27ht): an unreadable ledger or a failed tree read refuses, since nothing proves the reply copies no record
+def _spec_refs(run):
+    """The decision records indexed in the ledger, as the paths the pinned tree is asked for. Fails closed (review-code-27ht):
+    an unreadable ledger refuses, since nothing proves the reply copies no record. A record named with a hidden character is
+    listed by its escaped ref (lanes read ledger.json, so no raw name goes there): every tree name that escapes to such a ref is
+    read, a file literally named as the escaped form included (review-code-ktry)."""
     led = target.load_json(run, "ledger.json")
     try:
         adr = [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "adr"]
@@ -638,18 +632,54 @@ def _spec_copy(run):
         adr = None
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
-    # a record named with a hidden character is listed by its escaped ref (lanes read ledger.json, so no raw name goes there):
-    # read every tree name that escapes to such a ref, a file literally named as the escaped form included (review-code-ktry)
     shown = {p for p in adr if _ESCAPED.search(p)}
-    adr += [n for n, _, _ in _Pinned(run, ()).every() if sanitize.escape_for_code(n)[0] in shown] if shown else []
-    pin = _Pinned(run, adr, adr)
-    w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
-    runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
+    return adr + (_hidden_names(run, shown) if shown else [])
 
-    def copied(s):
-        t = _words(s)
-        return any(tuple(t[i:i + SPEC_RUN]) in runs for i in range(len(t) - SPEC_RUN + 1))
-    return copied
+
+def _hidden_names(run, shown):
+    """Every name of the pinned tree that escapes to a ref in `shown`. The whole-tree listing runs once per run, not once per
+    call (review-code-fot3): marks.json keeps the answer, keyed by the pinned tree and the marked refs, both read live, so a
+    changed pin or ledger lists again. Ascii-escaped, so no raw hidden byte lands in a file a lane may read. The names still
+    pass through the pin's exact-path ls-tree: a forged entry adds no file the tree lacks, it can only hide one."""
+    pin = _Pinned(run, ())
+    key = {"tree": pin.tree, "shown": sorted(shown)}
+    path = os.path.join(run, "marks.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+        if (isinstance(got, dict) and all(got.get(k) == v for k, v in key.items())
+                and isinstance(got.get("names"), list) and all(isinstance(n, str) for n in got["names"])):
+            return got["names"]
+    except (OSError, ValueError):
+        pass
+    names = [n for n, _, _ in pin.every() if sanitize.escape_for_code(n)[0] in shown]
+    _put(path, json.dumps(dict(key, names=names)))
+    return names
+
+
+def _spec_copy(run):
+    """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
+    the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin and the
+    indexed decision records `adr` (gh#57), whose rows the pin read with the reply's own cites in the same ls-tree and
+    cat-file (review-code-1zqz). That gives the predicate: True when a string holds SPEC_RUN consecutive words (case and
+    punctuation ignored) of either text. The text stays inside these closures (CTX-03)."""
+    inside = _spec_lines(run)
+    try:
+        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
+            spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
+    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
+        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
+
+    def with_records(pin, adr):
+        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
+        w = spec + [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
+        runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
+
+        def copied(s):
+            t = _words(s)
+            return any(tuple(t[i:i + SPEC_RUN]) in runs for i in range(len(t) - SPEC_RUN + 1))
+        return copied
+    return with_records
 
 
 def _inventory(run):
@@ -1045,7 +1075,7 @@ def _read_lane(text, lane, run, shard=None):
     summary = None
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
-    copied = _spec_copy(run) if lane == "spec" else None
+    adr = _spec_refs(run) if lane == "spec" else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
@@ -1061,7 +1091,8 @@ def _read_lane(text, lane, run, shard=None):
             named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"]
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
-    pin = _Pinned(run, cited | named, cited)
+    pin = _Pinned(run, cited | named | set(adr), cited | set(adr))
+    copied = _spec_copy(run)(pin, adr) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
@@ -1333,7 +1364,8 @@ def _verdicts(run, text, batch, agent=None):
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
-    copied = _spec_copy(run) if spec else None
+    adr = _spec_refs(run) if spec else []
+    spec_text = _spec_copy(run) if spec else None  # before any write below
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
     if batch is None and calls and _plan(run).get("mode") == "parallel":  # it would replace every stored batch (review-code-3k5)
         raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
@@ -1367,7 +1399,8 @@ def _verdicts(run, text, batch, agent=None):
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
-    pin = _Pinned(run, cited, cited)
+    pin = _Pinned(run, cited | set(adr), cited | set(adr))
+    copied = spec_text(pin, adr) if spec else None
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
         if k == batch:

@@ -496,6 +496,10 @@ class SharedPhrases(unittest.TestCase):
         self.assertIn("(Read a record it names, offset/limit)", self.text("spec-verifier"))
         self.assertIn("a record it names and the code they point to", self.text("spec-verifier"))  # the read-scope line allows it
 
+    def test_the_spec_readers_keep_the_other_decision_record_clauses(self):  # review-code-dd1m: found unpinned by mutation
+        self.assertIn("Decision records under an `adr` or `decisions` directory are already included: do not name them.", self.text("spec-finder"))
+        self.assertIn("Never open a handoff file that is not listed, candidates.json or verdicts.json.", self.text("spec-verifier"))
+
     def test_the_reader_prompts_do_not_grow(self):
         self.assertLessEqual(sum(os.path.getsize(os.path.join(ROOT, "agents", n + ".md")) for n in self.READERS), self.READER_BYTES)
 

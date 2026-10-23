@@ -477,6 +477,10 @@ class FixDocs(unittest.TestCase):
         self.assertNotIn("runs only through step 9 of the skill", flat)
         self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
 
+    def test_the_decision_record_index_clauses_are_pinned(self):  # review-code-dd1m: found unpinned by mutation
+        self.assertIn("each indexed in spec.md by path, title and size, never pasted", self.flat(ROOT, "skills", "review-code", "SKILL.md"))
+        self.assertIn("decision-record text included", self.flat(self.REFS, "untrusted-input.md"))
+
     def test_known_limits_say_what_the_defects_summary_is_written_from(self):
         """review-code-xuts: finder.md says the summary is written from the code and change.diff."""
         flat = self.flat(self.REFS, "untrusted-input.md")
@@ -566,13 +570,15 @@ class PostingDocs(unittest.TestCase):
         self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
     def test_every_spec_copy_guard_reason_has_a_retry_hint_and_a_posting_table_row(self):  # review-code-va2s
-        """The literal Refuse reasons of report._spec_copy, plus no-<stem> and bad-<stem> of each load_json it calls."""
+        """The literal Refuse reasons of report._spec_copy and of _spec_refs, which reads its ledger (review-code-1zqz), plus
+        no-<stem> and bad-<stem> of each load_json they call."""
         import paths  # noqa: F401  (puts the scripts on sys.path)
         import report
         tree = ast.parse(self.read(os.path.dirname(self.POST), "report.py"))
-        (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_spec_copy"]
+        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_spec_copy", "_spec_refs")]
+        self.assertEqual(sorted(n.name for n in fns), ["_spec_copy", "_spec_refs"])
         found = set()
-        for node in ast.walk(fn):
+        for node in (x for fn in fns for x in ast.walk(fn)):
             name = getattr(getattr(node, "func", None), "attr", getattr(getattr(node, "func", None), "id", None))
             if name == "Refuse" and isinstance(node.args[0], ast.Constant):
                 found.add(node.args[0].value)

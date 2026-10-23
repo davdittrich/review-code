@@ -967,7 +967,10 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
 
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    adrs = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
+    # an in-place run reviews the working copy, so its records are listed from the pinned tree: a record renamed there is listed
+    # under its new name and read by the copy guard, and none is listed that the reviewed tree lacks (review-code-bbch)
+    adr_ls = target.tree_listing(tj["pinned_tree"], tj["repo"]) if kind in INPLACE and tj.get("pinned_tree") else head_ls
+    adrs = _adr_files(tj["repo"], adr_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
                       "\n".join(prose + tj["included"]), tj["included"], toks)
     sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
     sections = {"adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), adrs[p]) for p in adrs],

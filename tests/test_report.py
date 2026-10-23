@@ -817,7 +817,28 @@ class SpecAdrCite(Base):
     def test_a_spec_ingest_runs_the_same_tree_reads_for_three_records_and_thirty(self):
         three, thirty = self.traced_spec_ingest(3), self.traced_spec_ingest(30)
         self.assertEqual(len(three), len(thirty))
-        self.assertLessEqual(sum(1 for a in thirty if "ls-tree" in a), 2)  # the cite pin, and the one over the indexed records
+        # review-code-1zqz: the records ride the reply's own pin, so one ls-tree and one cat-file --batch serve cites and records
+        self.assertEqual(len([a for a in thirty if "ls-tree" in a]), 1, thirty)
+        self.assertEqual(len([a for a in thirty if "cat-file" in a]), 1, thirty)
+
+    def test_a_spec_verdicts_call_runs_one_ls_tree_and_one_cat_file_batch(self):  # review-code-1zqz
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        log = os.path.join(self.tmp, "verdicts-trace.json")
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp,
+                           lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        got = [a for a in tp.starts(log) if "ls-tree" in a or ("cat-file" in a and "--batch" in a)]
+        self.assertEqual([("ls-tree" in a) for a in got], [True, False], got)
+
+    def test_a_verdict_reason_copying_a_record_is_dropped(self):  # review-code-1zqz: the verdicts pin reads the records too
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=row)), extra=["--lane", "spec"])
+        (sid,) = json.loads(out)["spec_ids"]  # it cites src/calc.py: only the records' own read brings the record's words
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "The adder MUST-RETURN-INT Calls pass ints"})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec"], [sid]))
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "Adders are meant to give whole numbers"})
+        self.assertEqual(out["confirmed"], [sid])
 
     def test_a_quote_the_record_does_not_hold_is_rejected(self):
         out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
@@ -884,6 +905,120 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(refs, [self.SHOWN])
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
         self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
+
+
+    def traced_ingest(self, n):
+        """git process starts of one spec ingest; the whole-tree listing is the one `ls-tree -r`."""
+        log = os.path.join(self.tmp, "marks%d.json" % n)
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
+                           lines({"inspected": []}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        with open(log, encoding="utf-8", errors="surrogateescape") as fh:  # a non-UTF-8 name sits raw in the trace
+            argvs = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start"]
+        return len([a for a in argvs if "ls-tree" in a and "-r" in a])
+
+    def test_the_whole_tree_listing_for_marked_refs_runs_once_per_run(self):  # review-code-fot3
+        self.assertEqual([self.traced_ingest(1), self.traced_ingest(2)], [1, 0])
+
+    def test_a_changed_pin_or_ledger_lists_again(self):  # review-code-fot3: the cache cannot go stale
+        self.assertEqual(self.traced_ingest(1), 1)
+        gitfix.commit(self.repo, {"extra.txt": "x\n"}, "later")
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = gitfix.run(["git", "rev-parse", "HEAD^{tree}"], self.repo).strip()
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        self.assertEqual(self.traced_ingest(2), 1)  # another pinned tree
+        path = os.path.join(self.run_dir, "ledger.json")
+        led = tp.load(self.run_dir, "ledger.json")
+        led["spec"]["sources"].append({"kind": "adr", "ref": "docs/adr/0003-none<U+0041>.md"})
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        self.assertEqual(self.traced_ingest(3), 1)  # another marked ref
+        self.assertEqual(self.traced_ingest(4), 0)
+
+    def test_a_corrupt_marks_file_is_listed_again_not_trusted(self):  # review-code-fot3
+        self.assertEqual(self.traced_ingest(1), 1)
+        with open(os.path.join(self.run_dir, "marks.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"tree": 1')
+        self.assertEqual(self.traced_ingest(2), 1)
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
+class SpecAdrInPlace(Base):
+    """review-code-bbch: an in-place run reviews the working copy, so its records are listed from the pinned tree, never from
+    HEAD. A record renamed there is listed under its new name and its body still counts for the copy guard (a lane can read
+    the renamed file); a record deleted there is not listed. The record kept in place is the control."""
+    ADR = "docs/adr/0001-integers.md"
+    NEW = "docs/adr/0002-renamed.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+    REFS = [ADR]
+
+    def edit(self):
+        pass
+
+    def setUp(self):
+        gitfix.FeatureRepo.setUp(self)
+        with open(os.path.join(self.repo, "src", "calc.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n# edit\n")
+        self.edit()
+        self.run_dir = self.pin(["--unstaged"])
+
+    def test_the_copy_guard_reads_the_record_where_the_working_copy_holds_it(self):
+        refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
+        self.assertEqual(refs, self.REFS)
+        pinned = gitfix.run(["git", "ls-tree", "-r", "--name-only", tp.load(self.run_dir)["pinned_tree"]], self.repo).split("\n")
+        self.assertTrue(all(r in pinned for r in refs))
+        if not refs:  # nothing listed: spec.md has no record row to decline against
+            return
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": self.WHY}]}, {"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["declined-invalid:copied-from-spec"])
+
+
+class SpecAdrDeletedInPlace(SpecAdrInPlace):
+    REFS = []
+
+    def edit(self):
+        os.remove(os.path.join(self.repo, self.ADR))
+
+
+class SpecAdrRenamedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        os.rename(os.path.join(self.repo, self.ADR), os.path.join(self.repo, self.NEW))
+
+
+class SpecAdrGitMovedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        gitfix.run(["git", "mv", self.ADR, self.NEW], self.repo)
+
+
+class SpecAdrHiddenVS(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <VS:n> mark (a run of variation selectors)."""
+    RAW = "docs/adr/0002-ints\ufe00\ufe00.md"
+    SHOWN = "docs/adr/0002-ints<VS:2>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenCodepoint(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <U+XXXX> mark (one invisible character)."""
+    RAW = "docs/adr/0002-ints\u200b.md"
+    SHOWN = "docs/adr/0002-ints<U+200B>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenBytes(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <BYTES:n> mark (a name that is not UTF-8)."""
+    RAW = "docs/adr/0002-ints\udc80.md"
+    SHOWN = "docs/adr/0002-ints<BYTES:1>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
 
 
 class SpecAdrHiddenDecoy(SpecAdrHiddenName):
