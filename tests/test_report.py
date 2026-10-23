@@ -4,8 +4,11 @@ import hashlib
 import json
 import os
 import re
+import io
 import shutil
+import tempfile
 import time
+from unittest import mock
 import unittest
 
 import paths  # noqa: F401
@@ -2381,6 +2384,19 @@ class LoneSurrogate(Base):
     base_files = {"src/calc.py": "x = 1\n"}
     feat_files = {os.fsdecode(b"bad\xff.py"): "def f():\n    return a - b\n", "src/calc.py": FEAT}
 
+    @staticmethod
+    def make_bad_name(directory):
+        with open(os.path.join(os.fsencode(directory), b"bad\xff.py"), "w"):
+            pass
+
+    def setUp(self):
+        with tempfile.TemporaryDirectory() as d:  # probe first: only this OSError skips, a setUp failure elsewhere stays an error
+            try:
+                self.make_bad_name(d)
+            except OSError as e:
+                raise unittest.SkipTest("the file system refuses a non-UTF-8 file name: %s" % e)
+        super().setUp()
+
     def snap(self):
         out = {}
         for r, _, fs in os.walk(self.run_dir):
@@ -2397,6 +2413,15 @@ class LoneSurrogate(Base):
             rc, out = self.rep("ingest", lines(c))
             self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
             self.assertEqual(self.snap(), before)
+
+
+class LoneSurrogateSkips(unittest.TestCase):  # review-code-iz9u
+    def test_a_file_system_that_refuses_the_name_skips_not_errors(self):
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(LoneSurrogate)
+        with mock.patch.object(LoneSurrogate, "make_bad_name", side_effect=OSError("Illegal byte sequence")):
+            res = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
+        self.assertEqual((len(res.skipped), res.errors, res.failures), (1, [], []))
+        self.assertIn("refuses a non-UTF-8 file name", res.skipped[0][1])
 
 
 class NotRunSkips(unittest.TestCase):
