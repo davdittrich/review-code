@@ -5,12 +5,16 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
+import gitfix  # noqa: E402
+import target  # noqa: E402
+import test_pinned as tp2  # noqa: E402
 import test_packs as tp  # noqa: E402
 import test_report as tr  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import CAND, CITE, cand, cli, fid, verdict  # noqa: E402
@@ -926,6 +930,118 @@ class InventoryEmpty(Fixture):
 
 def _tree_bytes(d):
     return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs)
+
+
+class ScanHead(Fixture):
+    """review-code-axql (51cd011): a path or repo plan scans only the first SCAN_BYTES of each reviewed file. The read itself is no
+    output a test can see, so the bound is pinned by what it decides: a content rule matches inside the head, not beyond it."""
+    HEAD = "x = 1\n" * 12000  # 72000 bytes, past SCAN_BYTES (65536)
+    base_files = {"near.txt": "import subprocess\n" + HEAD, "far.txt": HEAD + "import subprocess\n"}
+    feat_files = {"z.txt": "z = 1\n"}
+    pin_args = ["."]
+
+    def test_a_content_rule_matches_inside_the_scanned_head_and_not_beyond_it(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        (owasp,) = [x for x in self.plan_json()["packs"] if x["name"] == "security-owasp"]
+        self.assertEqual(owasp["files"], ["near.txt"])
+
+
+class ReadWorkingHead(unittest.TestCase):
+    """review-code-axql: read_working(head=True) returns the first `limit` bytes of a larger regular file, and still refuses a
+    link and a FIFO; without head the same file is too large."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.d = self._td.name
+
+    def put(self, name, data):
+        with open(os.path.join(self.d, name), "wb") as fh:
+            fh.write(data)
+        return os.path.join(self.d, name)
+
+    def test_a_file_over_the_limit_gives_its_head_and_a_smaller_one_whole(self):
+        big, small = self.put("big", b"0123456789"), self.put("small", b"0123")
+        self.assertEqual(target.read_working(big, 4, head=True), ("ok", b"0123"))
+        self.assertEqual(target.read_working(small, 4, head=True), ("ok", b"0123"))
+        self.assertEqual(target.read_working(big, 4), ("too-large", 10))
+
+    def test_a_link_and_a_fifo_are_no_file_even_for_a_head_read(self):
+        os.symlink(self.put("real", b"abcdef"), os.path.join(self.d, "link"))
+        os.mkfifo(os.path.join(self.d, "fifo"))
+        self.assertEqual(target.read_working(os.path.join(self.d, "link"), 4, head=True)[0], "symlink")
+        self.assertEqual(target.read_working(os.path.join(self.d, "fifo"), 4, head=True)[0], "special")
+        self.assertEqual(target.read_working(os.path.join(self.d, "gone"), 4, head=True)[0], "missing")
+
+
+class PinnedContent(Fixture):
+    """review-code-zcrc: plan reads the reviewed files as the pinned tree holds them, so an edit after the pin moves neither the
+    packs, nor the inventory, nor the token estimate (it read the live checkout)."""
+    base_files = {"near.txt": "import subprocess\n", "clean.txt": "x = 1\n"}
+    feat_files = {"z.txt": "z = 1\n"}
+    pin_args = ["."]
+
+    def owasp(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        return [x["files"] for x in self.plan_json()["packs"] if x["name"] == "security-owasp"]
+
+    def test_an_edit_after_the_pin_does_not_move_a_content_pack(self):
+        with open(os.path.join(self.repo, "near.txt"), "w") as fh:
+            fh.write("x = 1\n")
+        with open(os.path.join(self.repo, "clean.txt"), "w") as fh:
+            fh.write("import subprocess\n")
+        self.assertEqual(self.owasp(), [["near.txt"]])
+
+    def test_a_run_without_a_pinned_tree_refuses_no_pin(self):
+        path = os.path.join(self.run_dir, "target.json")
+        with open(path, encoding="utf-8") as fh:
+            tj = json.load(fh)
+        del tj["pinned_tree"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual((rc, out["reason"]), (1, "no-pin"))
+
+    def test_a_file_deleted_after_the_pin_is_still_scanned(self):
+        os.remove(os.path.join(self.repo, "near.txt"))
+        self.assertEqual(self.owasp(), [["near.txt"]])
+
+    def line(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        return next(x for x in out["preview"] if x.startswith("Call defects:"))
+
+    def test_growing_an_included_file_after_the_pin_does_not_move_the_estimate(self):
+        before = self.line()
+        with open(os.path.join(self.repo, "near.txt"), "a") as fh:
+            fh.write("y = 2\n" * 100000)
+        self.assertEqual(self.line(), before)
+
+
+class PlanProcessCount(tr.Base):
+    """review-code-zcrc: the pinned blobs cost one ls-tree and one cat-file --batch whatever the number of files."""
+    pin_args = ["."]
+
+    def count(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d" % n))
+        gitfix.commit(repo, {"f%02d.py" % i: "v = %d\n" % i for i in range(n)}, "base")
+        rc, out, _ = cli("target.py", ["."], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        run = json.loads(out)["run"]
+        rc, out, _ = cli("ledger.py", ["build", "--run", run], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        log = os.path.join(self.tmp, "plan-trace%d.json" % n)
+        rc, out, err = cli("plan.py", ["plan", "--run", run], repo, self.tmp, "", {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return [x for x in tp2.starts(log)]
+
+    def test_plan_runs_the_same_git_processes_for_three_files_and_thirty(self):
+        a, b = self.count(3), self.count(30)
+        self.assertEqual(len(a), len(b))
+        for argv in (a, b):
+            self.assertEqual(sum(1 for x in argv if "ls-tree" in x), 1)
+            self.assertEqual(sum(1 for x in argv if "cat-file" in x and "--batch" in x), 1)
 
 
 class Preview(Fixture):

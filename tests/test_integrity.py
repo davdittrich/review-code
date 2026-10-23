@@ -31,9 +31,21 @@ class Integrity(tpost.Base):
         self.assertEqual((rc, err), (0, ""), out)
         return json.loads(out) if fmt else out
 
+    CLEAN = ("integrity: no change to the checkout, index or tool knowledge during the run "
+             "(not seen: files inside untracked directories, submodule worktrees)")
+
     def test_a_clean_run_reports_no_change_in_either_tier(self):
-        self.assertIn("integrity: no change to the checkout, index or tool knowledge during the run", self.render())
+        self.assertIn(self.CLEAN, self.render().split("\n"))
         self.assertEqual(self.render("json")["integrity"], {"working_tree": [], "index": False, "knowledge": [], "cause": CAUSE})
+
+    def test_an_edit_inside_an_untracked_directory_is_a_blind_spot_the_line_names(self):  # review-code-8434
+        tp.write(self.repo, "scratch/notes.txt", "one\n")  # status collapses the wholly untracked directory to one entry
+        self.make_run()
+        self.review(5)
+        tp.write(self.repo, "scratch/notes.txt", "one, two, three, four\n")
+        out = self.render()
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
+        self.assertIn(self.CLEAN, out.split("\n"))
 
     def test_a_tracked_edit_is_a_warning_with_its_path_and_cause(self):
         tp.write(self.repo, "src/calc.py", "edited\n")

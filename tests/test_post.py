@@ -1096,6 +1096,43 @@ class QuoteNumbers(Base):
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
+class OutsideTree(Base):
+    """review-code-k79l: a finding on a tracked file the change leaves alone has no copy in tree/. Its quote is numbered from the
+    pinned blob (report._Pinned), not from a copy that is not there."""
+
+    OTHER = "o1 = 1\no2 = 2\no3 = 3\n"
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"src/calc.py": source(False, 0), "src/other.py": self.OTHER}, "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        gitfix.commit(self.repo, {"src/calc.py": source(True, 0)}, "feat")
+        self.make_run()
+
+    def test_the_quote_is_numbered_from_the_pinned_blob(self):
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "src", "other.py")))
+        cand = {"path": "src/other.py", "line": 2, "end_line": 2, "severity": "required", "category": "bug", "title": "t",
+                "trigger": "t", "quote": "o2 = 2", "fix": "f"}
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp,
+                           lines(cand, {"inspected": ["src/other.py"]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        (i,) = json.loads(out)["ids"]
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp, lines(
+            {"id": i, "verdict": "confirmed", "reason": "r", "evidence": [{"path": "src/other.py", "line": 2, "quote": "o2 = 2"}]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        self.retarget(kind="pr", url=PR_URL, number=7)
+        self.fake = FakeGitHub(self.run_dir)
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        body = self.payload()[1]["body"]
+        self.assertIn("**Location:** src/other.py:2 (outside the diff)", body)
+        self.assertIn("\n2: o2 = 2\n", body)
+        self.assertNotIn("quoted without line numbers", body)
+
+
 SIGILS = ("&123", "~bug", '~"feature request"', "%v1.23", '%"release candidate"', "$45", "^alert", '*iteration:"s 1"',
           "[issue:12]", "[work_item:g/p/3]", "[[Home]]", "GL-7", "GH-8", "grp/proj>")
 

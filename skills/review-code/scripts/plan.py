@@ -143,30 +143,23 @@ def _glob(path, globs):
     return any(fnmatch.fnmatchcase(path, g) or fnmatch.fnmatchcase(base, g) for g in globs)
 
 
-def _reviewed(run, repo, p, limit):
-    """The first `limit` bytes of path p as reviewed, or None: its tree/ copy for a checkout-difference file, else the
-    checkout file, which for path and repo targets is the pinned content (gh#52). Never a link, FIFO or path outside."""
-    for root in (os.path.join(run, "tree"), repo):
-        top = os.path.realpath(root)
-        fp = os.path.join(top, p)
-        up = os.path.realpath(os.path.dirname(fp))
-        if up == top or up.startswith(top + os.sep):
-            status, data = target.read_working(fp, limit, head=True)
-            if status != "missing":
-                return data if status == "ok" else None
-    return None
+def _heads(tj, blobs):
+    """{path: first SCAN_BYTES of its pinned blob} for `blobs` ({path: (size, blob id)}), from one `cat-file --batch`: the
+    reviewed content, whatever the checkout holds now (review-code-zcrc). A blob over MAX_FILE gives none."""
+    uniq = sorted({oid for _, oid in blobs.values()})
+    head = {oid: None if data is None else data[:SCAN_BYTES]
+            for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], tj["repo"], True, target.MAX_FILE))}
+    return {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
 
 
-def _scan_lines(run, tj):
-    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each reviewed file,
-    stripped and escaped as tree/ copies are (ledger._scan)."""
+def _scan_lines(run, tj, blobs):
+    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each file's pinned blob,
+    stripped and escaped as tree/ copies are (ledger._scan). `blobs` is ledger.regular_blobs of the included files."""
     inc, out = set(tj["included"]), {}
     if tj["kind"] in ("path", "repo"):
-        for p in sorted(inc):
-            data = _reviewed(run, tj["repo"], p, SCAN_BYTES)
-            if data is not None:
-                text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
-                out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(text.split("\n"), 1)]
+        for p, data in sorted(_heads(tj, blobs).items()):
+            text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
+            out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(text.split("\n"), 1)]
         return out
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         diff, used = fh.read(), {}
@@ -424,18 +417,16 @@ def _included(call):
         return None
 
 
-def _estimate(call, included):
+def _estimate(call, included, sizes):
     """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
 
-    Only the included files count (a floor: lanes also open context files), each as its tree/ copy for a checkout-difference
-    file, else as the repository file (gh#52)."""
+    Only the included files count (a floor: lanes also open context files), each at its size in the pinned tree
+    (`sizes` {path: bytes}), the content the lanes review, not what the checkout holds now (review-code-zcrc)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    repo = target.load_json(base, "target.json")["repo"] if included else ""
-    files = [call["input"], os.path.join(base, "change.diff")] + [
-        next((f for f in (os.path.join(base, "tree", p), os.path.join(repo, p)) if os.path.isfile(f)), "") for p in included or []]
-    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
+    files = [call["input"], os.path.join(base, "change.diff")]
+    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + sum(sizes.get(p, 0) for p in included or []) + 3) // 4
 
 
 def _files_ceiling(call, included):
@@ -444,7 +435,7 @@ def _files_ceiling(call, included):
     return None if included is None or ceiling is None else (len(included), ceiling)
 
 
-def _preview(doc):
+def _preview(doc, sizes):
     """Lines built only from numbers, fixed words, tier, model and effort values, lane and pack names and shard ids."""
     ver, calls, caps = doc["verifier"], doc["calls"], doc["caps"]
     agents = sum(1 for c in calls if c["agent"] != "main-thread")
@@ -459,7 +450,7 @@ def _preview(doc):
         inc = _included(c)
         fc = _files_ceiling(c, inc)
         out.append("Call %s: %s, about %d input tokens (estimate)%s" % (
-            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc),
+            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc, sizes),
             ", %d files, ceiling %d turns" % fc if fc else ""))
         if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
             warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
@@ -536,7 +527,10 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     if tier == "lean":  # the report must say which axes never ran
         skipped += [{"what": w, "why": "tier lean"} for w in ("defects", "spec") + (("sota",) if sota else ())
                     if not any(x["what"] == w for x in skipped)]
-    lines = _scan_lines(run, tj)
+    if not tj.get("pinned_tree"):  # a run from before the pin: its included files have no pinned content to read
+        raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
+    blobs = ledger.regular_blobs(tj["pinned_tree"], tj["included"], tj["repo"])
+    lines = _scan_lines(run, tj, blobs)
     inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
@@ -591,7 +585,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         doc["nit"] = True
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
-    doc["preview"] = _preview(doc)
+    doc["preview"] = _preview(doc, {p: size for p, (size, _) in blobs.items()})
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
     return {"status": "ok", "tier": tier, "mode": doc["mode"],
             "calls": [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard", "input") if k != "input" or serial}

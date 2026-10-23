@@ -55,7 +55,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
   so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
   the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
-  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
+  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw. history_cut (the ledger's capped.history, only when non-empty): what the history caps left out, {hunks, logs, files_omitted, unread: counts, bytes, log_failed: true}. Additive keys keep schema_version 1.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -151,7 +151,7 @@ REASONS = {
     "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
     "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
     "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
-    "claims-missing": "the reviewed content has the file or symbol the finding calls missing: check it there, then drop or reword the finding",
+    "claims-missing": "the reviewed content has the file the finding calls missing: check it there, then drop or reword the finding",
     "line-out-of-range": "cite a line range inside the file",
     "unreadable": "cite a file that is readable text",
     "quote-not-at-line": "quote text that the file holds at the cited line",
@@ -243,21 +243,15 @@ class _Pinned:
 
     def __init__(self, run, paths, cited=()):
         tj = target.load_json(run, "target.json")
-        self.top, self.files, self.rows, blob = tj["repo"], set(), {}, {}
-        self.tree, self._every = tj["pinned_tree"], None
+        self.top, self.files, self.rows = tj["repo"], set(), {}
+        self.tree, self._every = tj.get("pinned_tree"), None
+        if not self.tree:  # a run from before the pin (14-day retention) has nothing to judge a cite against
+            raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
-        # shortcut: the paths go on one argv (ls-tree reads no pathspec file); a reply naming ~100k paths would pass ARG_MAX
-        out = target.git_bytes(["ls-tree", "-z", "-l", "--full-tree", tj["pinned_tree"], "--"] + want, self.top,
-                               env={"GIT_LITERAL_PATHSPECS": "1"})
-        for rec in out.split(b"\0"):
-            meta, tab, name = rec.partition(b"\t")
-            f = meta.split()
-            if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # a link, submodule or directory is no cited file
-                p = name.decode("utf-8", "surrogateescape")
-                self.files.add(p)
-                blob[p] = f[2].decode()
+        blob = {p: oid for p, (_, oid) in ledger.regular_blobs(self.tree, want, self.top).items()}
+        self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
         uniq = sorted(set(need.values()))
         text = {oid: None if data is None else ledger._text(data)
@@ -745,14 +739,6 @@ def _refs(run, shard=None):
         return {}
 
 
-def _symbols(base):
-    """{symbol: defining file} of the ledger at `base` (the run or a shard); {} when unreadable."""
-    try:
-        return {s["name"]: s.get("file") for s in target.load_json(base, "ledger.json")["symbols"]}
-    except (target.Refuse, KeyError, TypeError):
-        return {}
-
-
 def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
@@ -1036,15 +1022,14 @@ def _read_lane(text, lane, run, shard=None):
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
     parsed = list(_objects(text))  # read once: the paths of every line go into one ls-tree and one cat-file
-    cited, named, syms = set(), set(), _symbols(base)
+    cited, named = set(), set()
     for _, o, _ in parsed:
         if o is None:
             continue
         cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
         if isinstance(o.get("inspected"), list):
             named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
-        for name in _claimed(o):
-            named.update((name, syms.get(name)))
+        named.update(_claimed(o))
     pin = _Pinned(run, cited | named, cited)
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
@@ -1092,7 +1077,7 @@ def _read_lane(text, lane, run, shard=None):
             ignored += 1
             disp.append(_disp(n, c["id"], "rejected", "do-not-flag"))
         else:
-            if any(_norm(x) in pin.files for name in _claimed(c) for x in (name, syms.get(name))):
+            if any(_norm(name) in pin.files for name in _claimed(c)):
                 c["downgraded"] = "claims-missing"  # the pinned tree has what the finding calls missing: no verifier call
             disp.append(_disp(n, c["id"], "downgraded" if "downgraded" in c else "accepted", c.get("downgraded", ok)))
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
@@ -1525,6 +1510,9 @@ def _build(run):
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
     if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
         doc["adr_omitted"] = led["capped"]["adr"]
+    cut = _history_cut(led)
+    if cut:  # what history.build's caps left out of the files lanes were told to read
+        doc["history_cut"] = cut
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
            "signal": h["signal"], **({"provenance": h["provenance"]} if h.get("provenance") else {})} for h in flagged]
@@ -1544,6 +1532,29 @@ def _build(run):
     if routine:
         doc.update(hidden_routine=routine)
     return doc
+
+
+def _history_cut(led):
+    """The ledger's capped.history ({hunks, logs, files_omitted, unread: positive counts; bytes, log_failed: true}) with
+    every other key or value dropped, or None: a hand-edited ledger never reaches the report as free text."""
+    cut = led.get("capped", {}).get("history")
+    if not isinstance(cut, dict):
+        return None
+    out = {k: cut[k] for k in ("hunks", "logs", "files_omitted", "unread") if type(cut.get(k)) is int and cut[k] > 0}
+    out.update((k, True) for k in ("bytes", "log_failed") if cut.get(k) is True)
+    return out or None
+
+
+def _cut_text(cut):
+    """The one report row for a history cut, from fixed words and counts."""
+    def n(k, noun):
+        return "%d %s%s" % (cut[k], noun, "" if cut[k] == 1 else "s")
+    parts = ([n("hunks", "hunk") + " with older commits not shown"] if "hunks" in cut else []) + (
+        [n("logs", "log") + " with older commits not shown"] if "logs" in cut else [])
+    if "bytes" in cut:
+        parts.append("byte cap reached (%s without history)" % (n("files_omitted", "file") if "files_omitted" in cut else "0 files"))
+    parts += [n("unread", "file") + " without blame"] if "unread" in cut else []
+    return "- change history cut: " + ", ".join(parts + (["log call failed"] if "log_failed" in cut else []))
 
 
 _LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "nit": "note", "noted": "note"}
@@ -1606,7 +1617,8 @@ def _text(doc):
                 + (["integrity warning: index " + ig["cause"]] if ig["index"] else [])
                 + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
         out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
-                if rows else ["integrity: no change to the checkout, index or tool knowledge during the run"])
+                if rows else ["integrity: no change to the checkout, index or tool knowledge during the run "
+                              "(not seen: files inside untracked directories, submodule worktrees)"])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
@@ -1683,7 +1695,8 @@ def _text(doc):
                 for r in doc.get("hidden_routine", [])])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
                    + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
-                      if doc.get("adr_omitted") else []))
+                      if doc.get("adr_omitted") else [])
+                   + ([_cut_text(doc["history_cut"])] if doc.get("history_cut") else []))
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
 

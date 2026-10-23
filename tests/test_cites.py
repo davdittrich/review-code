@@ -115,10 +115,95 @@ class Invisible(tr.Base):
 
 
 class MissingSymbol(tr.Base):
-    def test_a_finding_that_calls_a_ledger_symbol_undefined_is_downgraded(self):
-        out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"))
-        self.assertEqual(reasons(out), [("downgraded", "claims-missing")])
+    """review-code-fr02: a symbol the ledger knows is defined in some file; a finding that calls it undefined or not imported
+    is about the cited file and stays a finding (only a claim that a file is missing is judged against the pinned tree)."""
+
+    def test_a_finding_that_calls_a_ledger_symbol_undefined_in_the_cited_file_is_accepted(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"),
+                          tr.cand("def load():", 1, title="undefined name load", trigger="load is missing from the imports"))
+        self.assertEqual(reasons(out), [("accepted", None), ("accepted", None)])
+        self.assertEqual(len(out["ids"]), 2)
+
+
+class InvisibleEntryPoints(tr.Lanes):
+    """review-code-kiq3: every other place a lane's raw quote enters (a repaired control character, a lost line's id) reads
+    it through report._esc as well, so an invisible character matches the escaped rows and a retry recovers the line."""
+    base_files = dict(tr.MBASE, **{"pkg/re.py": 'pat = r"\\bx\u200b"\n', "pkg/zw.py": "x = 1\u200b\n",
+                                   "REVIEW.md": tr.RULE_REVIEW + "\n"})
+    feat_files = {"src/calc.py": tr.MFEAT["src/calc.py"]}
+
+    def test_a_quote_read_back_after_a_control_character_repair_is_escaped_too(self):
+        out = self.lane("defects", dict(tr.CAND, path="pkg/re.py", line=1, end_line=1, quote='pat = r"\x08x\u200b"'))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0), out)
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual(c["quote"], 'pat = r"\\bx<U+200B>"')
+
+    def test_a_lost_line_with_a_raw_invisible_quote_is_recovered_by_the_retry_that_carries_its_finding(self):
+        conv = dict(tr.CAND, path="pkg/zw.py", line=1, end_line=1, quote="x = 1\u200b", category="convention",
+                    rule_source="conventions/REVIEW.md")
+        ins = {"inspected": ["pkg/zw.py"]}
+        out = self.lane("standards", dict(conv, rule="Always subtract where the name says add."), ins)
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-not-in-conventions"])
+        self.assertEqual(self.doc()["lost"], {"standards": 1})
+        self.lane("standards", dict(conv, rule=tr.RULE_REVIEW), ins)
+        d = self.doc()
+        self.assertEqual((d.get("lost"), d["recovered"]), (None, {"standards": 1}))
+
+
+class OldRun(tr.Base):
+    """review-code-1kf3: a run directory older than the pin (14-day retention) has no pinned_tree to judge a cite against."""
+
+    def age(self):
+        tj = tp.load(self.run_dir)
+        for k in ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity"):
+            tj.pop(k, None)
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+
+    def refused(self, sub, text, extra=()):
+        rc, out, err = gitfix.cli("report.py", [sub, "--run", self.run_dir] + list(extra), self.repo, self.tmp, text)
+        self.assertEqual((rc, err, out.count("\n")), (1, "", 1), out)
+        return json.loads(out)
+
+    def test_ingest_refuses_with_one_json_line_naming_the_old_run(self):
+        self.age()
+        self.assertEqual(self.refused("ingest", tr.lines(tr.CAND)), {"status": "refuse", "reason": "no-pin"})
+
+    def test_verdicts_refuse_with_one_json_line_naming_the_old_run(self):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+        (i,) = self.ingest(tr.CAND)["ids"]
+        self.age()
+        out = self.refused("verdicts", tr.lines({"id": i, "verdict": "confirmed", "evidence": [], "reason": "r"}), ["--batch", "1"])
+        self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
+
+
+class ArgMax(tr.Base):
+    """review-code-eixz: the cited paths go on one ls-tree argv, so a reply naming more path bytes than the kernel's ARG_MAX
+    killed ingest. ls-tree reads no paths from a file or stdin, so they now run in chunks: one process per budget of path bytes."""
+
+    def over(self):
+        n = os.sysconf("SC_ARG_MAX") // 4000 + 2  # paths of 4000 bytes, none in the tree: more bytes than any one argv may carry
+        return [dict(tr.CAND, path="d%04d/%s" % (k, "x" * 3990), title="t%d" % k) for k in range(n)]
+
+    def test_a_reply_citing_more_path_bytes_than_arg_max_is_judged_not_crashed(self):
+        out = self.ingest(*self.over())
+        self.assertEqual({(d["disposition"], d["reason"]) for d in out["dispositions"]}, {("rejected", "path-not-in-tree")})
         self.assertEqual(out["ids"], [])
+
+    def test_a_path_no_file_can_have_is_not_in_the_tree_not_an_error(self):
+        out = self.ingest(dict(tr.CAND, path="d/" + "x" * 200000), tr.CAND)
+        self.assertEqual(reasons(out), [("rejected", "path-not-in-tree"), ("accepted", None)])
+
+    def test_the_chunks_cost_one_ls_tree_per_budget_of_path_bytes_not_one_per_path(self):
+        log = os.path.join(self.tmp, "trace.json")
+        rc, out, err = gitfix.cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp, tr.lines(*self.over()),
+                                  {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        lists = [x for x in tp.starts(log) if "ls-tree" in x]
+        self.assertGreater(len(lists), 1)
+        self.assertLess(len(lists), 2 * len(self.over()) * 4000 // 100000)  # about one per 100000 path bytes, not one per path
 
 
 class Worktree(tr.Base):
@@ -134,6 +219,20 @@ class Worktree(tr.Base):
         tp.write(self.repo, "src/calc.py", tr.FEAT + "\ndef mul(a, b):\n    return a * b\n")
         out = self.ingest(tr.cand("return a * a", 8), tr.cand("return a * b", 8))
         self.assertEqual(reasons(out), [("accepted", None), ("rejected", "quote-from-checkout")])
+
+    # review-code-omyf: the synthetic tree of an in-place pin is unreferenced, so a gc that prunes now removes it mid-run
+    def test_a_pruned_pinned_tree_refuses_with_its_own_reason(self):
+        self.git("gc", "-q", "--prune=now")
+        rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "pin-pruned"}))
+
+    def test_a_failing_ls_tree_with_the_root_tree_present_stays_bad_ref(self):
+        sub = self.git("rev-parse", tp.load(self.run_dir)["pinned_tree"] + ":src")  # a subtree the listing must read: damage it
+        loose = os.path.join(self.repo, ".git", "objects", sub[:2], sub[2:])
+        os.chmod(loose, 0o600)
+        os.remove(loose)
+        rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ref"}))
 
 
 class ProcessCount(tr.Base):

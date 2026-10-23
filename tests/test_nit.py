@@ -323,6 +323,29 @@ class NormGlob(NitBase):
         self.assertEqual([r["check"] for r in self.check("*.rs")["rejected"]], ["norm-sample-small"])
 
 
+class NormSample(NitBase):
+    """review-code-givt: since #50 the norm sample is every file of the pinned tree norm_glob matches, counted as the raw blob."""
+    DOM, DEV = 12, 3  # 15 lines in src/calc.py: below NORM_MIN alone
+    base_files = dict(NitBase.base_files, **{"lib/old.py": "".join("o%d = []\n" % i for i in range(12)),
+                                             "docs/n.md": "".join("<!-- c%d = [] -->\n" % i for i in range(10))})
+
+    def test_an_unchanged_tracked_file_counts_though_tree_does_not_copy_it(self):
+        out = self.lane(self.nit())
+        self.assertEqual(out["rejected"], [])
+        self.confirm(out, [self.cite()])
+        self.assertEqual(self.doc()["findings"][0]["norm"], {"for": 24, "against": 3, "total": 27})
+
+    def test_a_checkout_edit_after_the_pin_does_not_change_the_sample(self):
+        os.remove(os.path.join(self.repo, "lib", "old.py"))  # the pinned tree still holds its 12 lines
+        self.assertEqual(self.lane(self.nit())["rejected"], [])
+
+    def test_the_count_runs_on_the_raw_blob_hidden_prose_included(self):
+        out = self.lane(self.nit(norm_glob="*"))
+        self.assertEqual(out["rejected"], [])
+        self.confirm(out, [self.cite()])
+        self.assertEqual(self.doc()["findings"][0]["norm"], {"for": 34, "against": 3, "total": 37})
+
+
 class ManyRules(NitBase):
     RULES = ["Rule number %d applies." % k for k in range(17)]
     DOM, DEV, SPREAD = 60, 17, 3

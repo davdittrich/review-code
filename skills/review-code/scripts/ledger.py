@@ -580,12 +580,53 @@ def _difference(tj: dict) -> List[str]:
         raise target.Refuse("no-target", "the run directory has no readable difference.json")
 
 
-def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
-    """path -> (mode, oid) of exactly `paths` in the pinned tree: one ls-tree, literal pathspecs, never the whole tree."""
+ARGV_BYTES = 100000  # path bytes per ls-tree call: far under ARG_MAX, which is 256 KiB on macOS and counts the environment
+PATH_MAX = 4096  # no file has a longer path, so a longer name is in no tree and never reaches an argv
+
+
+def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> bytes:
+    """The NUL-separated `ls-tree` records of exactly `paths` in `tree` (literal pathspecs, never the whole tree). ls-tree takes
+    its paths on argv only (no pathspec file, no stdin; cat-file's %(objectmode) needs 2.51), so a list past ARGV_BYTES runs
+    in chunks: one process for any list that fits, one more per further budget of path bytes. A tree that no longer
+    exists (a gc pruned the synthetic tree of an in-place pin) refuses pin-pruned, found by object id, not by the message."""
+    head = ["ls-tree", "-z"] + (["-l"] if long else []) + ["--full-tree", tree, "--"]
+    chunks, cur, size = [], [], 0
+    for p in paths:
+        n = len(os.fsencode(p)) + 1
+        if n > PATH_MAX:
+            continue
+        if cur and size + n > ARGV_BYTES:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(p)
+        size += n
+    out = []
+    for chunk in chunks + ([cur] if cur else []):
+        rc, got, _ = target._run(head + chunk, repo, env={"GIT_LITERAL_PATHSPECS": "1"})
+        if rc != 0:
+            if target._run(["cat-file", "-e", tree], repo)[0] != 0:
+                raise target.Refuse("pin-pruned", "the pinned tree is gone (a gc pruned it): review again")
+            raise target.Refuse("bad-ref", "a git command failed")
+        out.append(got)
+    return b"".join(out)
+
+
+def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple[int, str]]:
+    """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
+    or a directory is no file whose content can be read."""
     out = {}
-    # shortcut: the paths go on one argv (ls-tree reads no pathspec file); a difference of ~100k paths would pass ARG_MAX
-    for rec in target.git_bytes(["ls-tree", "-z", "--full-tree", tree, "--"] + paths, repo,
-                                env={"GIT_LITERAL_PATHSPECS": "1"}).split(b"\0"):
+    for rec in ls_tree(tree, paths, repo, long=True).split(b"\0"):
+        meta, tab, name = rec.partition(b"\t")
+        f = meta.split()
+        if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):
+            out[name.decode("utf-8", "surrogateescape")] = (int(f[3]), f[2].decode())
+    return out
+
+
+def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
+    """path -> (mode, oid) of exactly `paths` in the pinned tree: ls_tree's chunks, literal pathspecs, never the whole tree."""
+    out = {}
+    for rec in ls_tree(tree, paths, repo).split(b"\0"):
         meta, tab, name = rec.partition(b"\t")
         f = meta.split()
         if tab and len(f) == 3:
