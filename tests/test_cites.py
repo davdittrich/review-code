@@ -179,6 +179,33 @@ class OldRun(tr.Base):
         self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
 
 
+class ArgMax(tr.Base):
+    """review-code-eixz: the cited paths go on one ls-tree argv, so a reply naming more path bytes than the kernel's ARG_MAX
+    killed ingest. ls-tree reads no paths from a file or stdin, so they now run in chunks: one process per budget of path bytes."""
+
+    def over(self):
+        n = os.sysconf("SC_ARG_MAX") // 4000 + 2  # paths of 4000 bytes, none in the tree: more bytes than any one argv may carry
+        return [dict(tr.CAND, path="d%04d/%s" % (k, "x" * 3990), title="t%d" % k) for k in range(n)]
+
+    def test_a_reply_citing_more_path_bytes_than_arg_max_is_judged_not_crashed(self):
+        out = self.ingest(*self.over())
+        self.assertEqual({(d["disposition"], d["reason"]) for d in out["dispositions"]}, {("rejected", "path-not-in-tree")})
+        self.assertEqual(out["ids"], [])
+
+    def test_a_path_no_file_can_have_is_not_in_the_tree_not_an_error(self):
+        out = self.ingest(dict(tr.CAND, path="d/" + "x" * 200000), tr.CAND)
+        self.assertEqual(reasons(out), [("rejected", "path-not-in-tree"), ("accepted", None)])
+
+    def test_the_chunks_cost_one_ls_tree_per_budget_of_path_bytes_not_one_per_path(self):
+        log = os.path.join(self.tmp, "trace.json")
+        rc, out, err = gitfix.cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp, tr.lines(*self.over()),
+                                  {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        lists = [x for x in tp.starts(log) if "ls-tree" in x]
+        self.assertGreater(len(lists), 1)
+        self.assertLess(len(lists), 2 * len(self.over()) * 4000 // 100000)  # about one per 100000 path bytes, not one per path
+
+
 class Worktree(tr.Base):
     """A worktree target: the pinned tree is a synthetic one built from the checkout at pin time."""
 
