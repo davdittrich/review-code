@@ -49,7 +49,8 @@ class SinceLastTrust(tt.PRWorld):
         with gitfix.isolated(self.tmp):
             ledger.build(out["run"])
         self.assertFalse(os.path.exists(os.path.join(out["run"], "conventions", "REVIEW.md")))
-        led = tt.json.load(open(os.path.join(out["run"], "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(out["run"], "ledger.json"), encoding="utf-8") as f:
+            led = tt.json.load(f)
         self.assertEqual([e for e in led["conventions"] if e["file"] == "REVIEW.md"], [])
         self.assertIn(("REVIEW.md", "head-only"), [(e["file"], e["reason"]) for e in led["ignored"]])
         self.assertEqual(led["target"]["merge_base"], rec["merge_base"])

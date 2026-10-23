@@ -189,7 +189,9 @@ class Phase4Procedure(unittest.TestCase):
             self.assertIn(t, self.flat)
         for t in ("fix.py plan --run <run> --fix-tests", "`test_files`", "test file", "`reverted-weakened`", "`not-covered`", "it does not see a weaker assertion"):
             self.assertIn(t, fix)
-        self.assertIn("--fix-tests", " ".join(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8").read().split()))
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        self.assertIn("--fix-tests", " ".join(readme.split()))
 
     def test_steps_7_and_8_ingest_by_agent_id_with_stdin_as_the_fallback(self):  # gh#8
         for t in ("report.py ingest --run <run> --lane <lane> --agent <agentId>",

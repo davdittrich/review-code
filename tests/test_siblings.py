@@ -291,7 +291,8 @@ class Ingest(tp.Fixture):
         self.assertEqual([d["disposition"] for d in out["dispositions"]], ["accepted", "accepted"], out)
 
     def hint(self):
-        led = json.load(open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as f:
+            led = json.load(f)
         return next(e["how"] for e in led["siblings"] if e["kind"] == "gap")
 
     def test_the_prompt_text_cannot_turn_a_cochange_line_into_a_finding(self):
@@ -314,7 +315,8 @@ class EndToEnd(tn.NitBase):
         cls.feat_files = {"skills/x/SKILL.md": "# x\n"}
 
     def test_a_confirmed_registry_gap_is_in_the_json_report_as_introduced(self):
-        led = json.load(open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as f:
+            led = json.load(f)
         hint = next(e["how"] for e in led["siblings"] if e["kind"] == "gap")
         out = self.lane(gap_finding(hint), {"inspected": ["skills/x/SKILL.md", MKT]})
         self.assertEqual(len(out["ids"]), 1, out)

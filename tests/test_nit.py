@@ -170,7 +170,8 @@ class Tie(NitBase):
 
     def test_a_refused_norm_nit_loses_nothing(self):
         self.lane(self.nit())
-        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        with open(os.path.join(self.run_dir, "counters.json")) as f:
+            c = json.load(f)
         self.assertEqual(c["lost"].get("standards", 0), 0)
 
     def test_a_tie_is_no_majority(self):
@@ -203,7 +204,8 @@ class LeanNitOnly(NitBase):
         self.assertNotIn("nit-only", nit.REFUSED)
         out = self.lane(self.rule_nit(severity="required", category="convention"))
         self.assertEqual([r["check"] for r in out["rejected"]], ["nit-only"])
-        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        with open(os.path.join(self.run_dir, "counters.json")) as f:
+            c = json.load(f)
         self.assertEqual(c["lost"].get("standards"), 1)
         rej = report._rejected(self.run_dir)
         self.assertEqual(rej[0].get("standards"), 1)

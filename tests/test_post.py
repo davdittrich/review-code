@@ -1230,7 +1230,8 @@ class Idempotency(Base):
         mark = post.prior.review_mark(payload["head_sha"], [self.ids[2]])  # a status review: a prior id found fixed, no finding
         payload.update(body="**Verdict:** No blocking findings (advisory)\n\n" + mark, comments=[], in_body=[], skipped=[])
         post.target.write_private(self.payload_path(), json.dumps(payload, sort_keys=True, indent=2))
-        digest = hashlib.sha256(open(self.payload_path(), "rb").read()).hexdigest()
+        with open(self.payload_path(), "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
         rc, out, _ = self.call("submit", "--run", self.run_dir, "--digest", digest)
         self.assertEqual(rc, 0, out)
         writes = len(self.fake.writes())  # the answer of the first submit is lost; the user submits again
