@@ -625,9 +625,10 @@ def _spec_copy(run):
     try:  # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57)
         adr = [x["ref"] for x in target.load_json(run, "ledger.json")["spec"]["sources"] if x.get("kind") == "adr"]
         pin = _Pinned(run, adr, adr)
+        # shortcut: a record named with a hidden character is listed by its escaped ref, finds no row and is not covered
         w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
     except (target.Refuse, KeyError, TypeError, AttributeError):
-        pass  # shortcut: a record named with a hidden character is listed by its escaped ref and is not covered
+        pass  # shortcut: fails open on an unreadable ledger or a failed tree read, like an unreadable spec.md above
     runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
     def copied(s):

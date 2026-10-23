@@ -15,6 +15,7 @@ SCRIPTS = paths.SCRIPTS
 import gitfix  # noqa: E402
 from gitfix import cli, fid, lines, wire  # noqa: E402,F401
 import report  # noqa: E402
+import test_pinned as tp  # noqa: E402
 
 BASE = {"src/calc.py": "def load():\n    return 1\n"}
 FEAT = "def load():\n    return 1\n\ndef add(a, b):\n    return a - b\n"  # lines 3 to 5 are added
@@ -755,6 +756,25 @@ class SpecAdrCite(Base):
         self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec"], []))
         out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="Adders are meant to give whole numbers")
         self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
+    def traced_spec_ingest(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
+        gitfix.commit(repo, dict(BASE, **{"docs/adr/%04d-a.md" % i: "# T%d\nbody %d\n" % (i, i) for i in range(n)}), "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+        gitfix.commit(repo, {"src/calc.py": FEAT}, "feat")
+        rc, out, _ = cli("target.py", ["main"], repo, self.tmp)
+        run = json.loads(out)["run"]
+        self.assertEqual(cli("ledger.py", ["build", "--run", run], repo, self.tmp)[0], 0)
+        log = os.path.join(self.tmp, "trace%d.json" % n)
+        rc, out, err = cli("report.py", ["ingest", "--run", run, "--lane", "spec"], repo, self.tmp,
+                           lines({"inspected": ["src/calc.py"]}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return [a for a in tp.starts(log) if "ls-tree" in a or ("cat-file" in a and "--batch" in a)]
+
+    def test_a_spec_ingest_runs_the_same_tree_reads_for_three_records_and_thirty(self):
+        three, thirty = self.traced_spec_ingest(3), self.traced_spec_ingest(30)
+        self.assertEqual(len(three), len(thirty))
+        self.assertLessEqual(sum(1 for a in thirty if "ls-tree" in a), 2)  # the cite pin, and the one over the indexed records
 
     def test_a_quote_the_record_does_not_hold_is_rejected(self):
         out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
