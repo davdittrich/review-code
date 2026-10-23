@@ -584,6 +584,14 @@ class PostingDocs(unittest.TestCase):
         for s in ("posting comes in a later version", "PR posting and fix mode do not exist yet"):
             self.assertNotIn(s, text)
 
+    def test_the_non_utf8_name_row_names_every_command_that_raises_it(self):  # review-code-1eg4
+        row = [ln for ln in self.read(self.REFS, "posting.md").split("\n") if ln.startswith("| `non-utf8-name` |")][0]
+        for s in ("`ledger.py build`", "`report.py ingest`", "`post.py build`", "`post.py submit`", "title", "trigger"):
+            self.assertIn(s, row)
+        raisers = {m for m in ("ledger.py", "post.py", "report.py")
+                   if '"non-utf8-name"' in self.read(os.path.dirname(self.POST), m)}
+        self.assertEqual(raisers, {"ledger.py", "post.py", "report.py"})  # a new raiser must be added to the row
+
     def test_cleanup_window_is_documented(self):
         """R2-WR-02: GitHub's DELETE has no precondition, so a comment added after cleanup's listing goes with the review."""
         flat = " ".join(self.read(self.REFS, "posting.md").split())
