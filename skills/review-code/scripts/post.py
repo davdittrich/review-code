@@ -689,9 +689,18 @@ def _preview(payload: dict) -> str:
                             "already posted: %d" % len(payload["skipped"])])
 
 
+def _utf8(paths: List[str]) -> None:
+    try:  # a lone surrogate path would reach the forge as a bogus JSON path and sink the whole review
+        for p in paths:
+            p.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refuse("non-utf8-name", "a finding path is not valid UTF-8")
+
+
 def build(run: str) -> dict:
     info = _target(run)
     doc = report.build(run)
+    _utf8([f["path"] for f in doc["findings"]])
     gh = _forge(info)
     head = info["head_sha"]
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head; the refs are read here, then held
@@ -778,6 +787,7 @@ def submit(run: str, digest: str) -> dict:
     info = _target(run)
     if not isinstance(payload, dict) or any(payload.get(k) != info[k] for k in ("forge", "host", "repo", "number", "head_sha")):
         raise Refuse("payload-mismatch")
+    _utf8([c["path"] for c in payload["comments"]])
     _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
     _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (c): before the first write

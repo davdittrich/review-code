@@ -712,6 +712,40 @@ class PositionAcrossHunks(Base):
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
+class NonUtf8Path(Base):
+    def test_a_finding_whose_path_is_not_valid_utf8_refuses_before_any_forge_call(self):  # review-code-lvmu
+        self.review(14)
+        real = post.report.build
+
+        def build(run):
+            doc = real(run)
+            doc["findings"][0]["path"] = os.fsdecode(b"src/d\xffx.py")
+            return doc
+
+        with mock.patch.object(post.report, "build", build):
+            res = self.build()
+        st = res[2]
+        self.assertEqual((res[0], st["reason"]), (1, "non-utf8-name"), res[1])
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_an_edited_payload_with_a_non_utf8_comment_path_and_a_recomputed_digest_refuses_in_submit(self):  # review-code-hq5u
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        self.assertTrue(payload["comments"])
+        payload["comments"][0]["path"] = os.fsdecode(b"src/d\xffx.py")
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()  # ensure_ascii writes the surrogate as an escape
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        self.fake.head_reads = 0
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "non-utf8-name"), out)
+        self.assertEqual(self.fake.calls, [])
+
+
 class EmptyRun(Base):
     def test_zero_verified_findings_refuse_nothing_to_post(self):
         self.review()
