@@ -273,6 +273,12 @@ def _lines(text):
     return rows
 
 
+def _esc(quote):
+    """A lane's quote as the pinned rows hold it (ledger._scan escapes every invisible character): lanes read unchanged files
+    raw from the checkout (gh#52). Done once where a quote enters, so ids, dedupe and the posted text see one form."""
+    return sanitize.escape_for_code(quote)[0] if isinstance(quote, str) else quote
+
+
 def _cite(pin, path, line, end, quote):
     """(the cited lines, None) when path, range and quote all hold in the pinned tree, else (None, the failing check)."""
     p = _norm(path)
@@ -302,7 +308,7 @@ def _from_checkout(pin, path, quote):
         return False
     status, data = target.read_working(os.path.join(top, p), target.MAX_FILE)
     t = ledger._text(data) if status == "ok" else None
-    return t is not None and q in _ws(t)
+    return t is not None and q in _ws(ledger._scan(p, t)[0])  # read as the rows are, so hidden prose is no checkout quote
 
 
 def _relocate(pin, path, line, end, quote):
@@ -652,12 +658,14 @@ def _candidate(o, tree, pin, lane, base, ctx=None, nit_mode=False):
         if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
             return None, "sota-invalid"
         c["sources"] = src
+    raw = c["quote"]
+    c["quote"] = _esc(raw)
     c["rows"], why = _cite(pin, c["path"], c["line"], end, c["quote"])
     alt = None
-    if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and c["quote"].translate(_CONTROL) != c["quote"]:
+    if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and raw.translate(_CONTROL) != raw:
         # a regex or path with a single backslash before b, t, n, f or r parsed as a JSON control character: read it as the
         # written backslash and letter when that reading is what the pinned file holds (the cite check below still decides)
-        fixed = c["quote"].translate(_CONTROL)
+        fixed = _esc(raw.translate(_CONTROL))
         rows, again = _cite(pin, c["path"], c["line"], end, fixed)
         if rows is not None:
             c["quote"], c["rows"], why = fixed, rows, again
@@ -707,7 +715,7 @@ def _lost_id(ln, lane):
     _, o = _parse(ln, _loads)
     if lane == "sota" or not o or not all(isinstance(o.get(k), str) for k in ("path", "category", "quote")):
         return None
-    return _fid(LANE_AXIS[lane], o["path"], o["category"], o["quote"], o.get("severity"))
+    return _fid(LANE_AXIS[lane], o["path"], o["category"], _esc(o["quote"]), o.get("severity"))
 
 
 def _refs(run, shard=None):
@@ -1248,6 +1256,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
             disp.append(_disp(n, _did(o["id"]), "rejected", "unknown-id" if o["id"] not in cand_ids else "duplicate"))
             continue
         ev = o.get("evidence")
+        ev = [dict(e, quote=_esc(e["quote"])) if isinstance(e, dict) and "quote" in e else e for e in ev] if isinstance(ev, list) else ev
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
                  and _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")

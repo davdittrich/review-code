@@ -84,6 +84,36 @@ class Outside(tr.Base):
         self.assertEqual(out["merged"], 0)
 
 
+class Invisible(tr.Base):
+    """gh#52: lanes read unchanged files raw from the checkout, so a quote may carry an invisible character the stored rows
+    hold escaped. The quote is escaped once at the boundary; hidden prose stays uncitable."""
+    base_files = dict(tr.BASE, **{"pkg/zw.py": "x = 1​\n", "docs/note.md": "a\n<!-- hidden note -->\nb\n"})
+
+    def test_a_raw_invisible_character_in_a_quote_matches_and_is_stored_escaped(self):
+        out = self.ingest(dict(tr.CAND, path="pkg/zw.py", line=1, quote="x = 1​"))
+        self.assertEqual(reasons(out), [("accepted", None)])
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual(c["quote"], "x = 1<U+200B>")
+        self.assertEqual(out["ids"], [tr.fid("pkg/zw.py", "bug", "x = 1<U+200B>")])
+
+    def test_a_verdict_cite_with_a_raw_invisible_character_is_stored_escaped(self):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+        (i,) = self.ingest(tr.CAND)["ids"]
+        rc, out = self.rep("verdicts", tr.lines({"id": i, "verdict": "refuted", "reason": "r",
+                                                 "evidence": [{"path": "pkg/zw.py", "line": 1, "quote": "x = 1​"}]}),
+                           extra=["--batch", "1"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(out)["refuted"], [i])
+        with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)[i]["cites"], [{"path": "pkg/zw.py", "line": 1, "quote": "x = 1<U+200B>"}])
+
+    def test_a_quote_of_hidden_prose_is_not_at_the_line_not_from_the_checkout(self):
+        out = self.ingest(dict(tr.CAND, path="docs/note.md", line=2, quote="hidden note"))
+        self.assertEqual(reasons(out), [("rejected", "quote-not-at-line")])
+
+
 class MissingSymbol(tr.Base):
     def test_a_finding_that_calls_a_ledger_symbol_undefined_is_downgraded(self):
         out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"))
