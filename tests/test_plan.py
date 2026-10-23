@@ -1044,6 +1044,22 @@ class PlanProcessCount(tr.Base):
             self.assertEqual(sum(1 for x in argv if "cat-file" in x and "--batch" in x), 1)
 
 
+class ShardsPinnedStat(ShardBase):
+    """review-code-l895: shard sizes and the risk ranking read the pinned blobs, not the checkout."""
+    base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
+    feat_files = {"auth/login.py": PAD + "other = 2\n"}
+
+    def test_a_checkout_edit_after_the_pin_moves_neither_the_shards_nor_their_risk(self):
+        for p in self.base_files:
+            with open(os.path.join(self.repo, p), "a") as fh:
+                fh.write(BIG * 100)  # the checkout now weighs 6010 bytes a file, the pin 10
+        import plan as mod
+        with mock.patch.object(mod, "CHURN_DAYS", 10 ** 5):  # the fixture commits are dated long ago
+            p = self.run_plan(shard_bytes=25)  # pinned: two files share a shard
+        self.assertEqual([(s["files"], s["risk"]) for s in p["shards"]],
+                         [(["auth/login.py"], 3.0), (["docs/guide.md", "util/helpers.py"], 2.0)])
+
+
 class Preview(Fixture):
     def test_deep_preview_states_calls_caps_and_ceilings(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
