@@ -318,7 +318,7 @@ def _from_checkout(pin, path, quote):
     """True when the checkout's file holds `quote` and the pinned file does not: the quote is not of the reviewed content.
     A plain file read under the checkout root, no git process."""
     p, q = _norm(path), isinstance(quote, str) and _ws(quote)
-    if not p or not q or q in _ws(" ".join(pin.rows.get(p) or ())):
+    if not p or not q or ".git" in p.split("/") or q in _ws(" ".join(pin.rows.get(p) or ())):
         return False
     top = os.path.realpath(pin.top)
     up = os.path.realpath(os.path.dirname(os.path.join(top, p)))
@@ -760,6 +760,8 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree")))
     out += "checkout_difference: %s\n" % json.dumps(diff) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
+    hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
+    out += "history: %s\n" % json.dumps(hist) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
