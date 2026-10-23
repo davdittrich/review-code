@@ -290,6 +290,28 @@ class LineBreaks(tt.Base):
                          [b"a = 2\n", b"n = 1\n", b"q = 1\n", b"b.py"])
 
 
+class FileMode(tt.Base):
+    def test_without_core_filemode_the_index_mode_wins_and_new_files_are_not_executable(self):
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        write(self.repo, "x.sh", "x\n")
+        os.chmod(os.path.join(self.repo, "x.sh"), 0o755)
+        gitfix.commit(self.repo, {"p.txt": "p\n"}, "base")
+        self.git("add", "x.sh")
+        self.git("commit", "-q", "-m", "x")
+        self.git("config", "core.fileMode", "false")
+        for n, m in (("x.sh", 0o644), ("p.txt", 0o755)):
+            write(self.repo, n, "edited\n")
+            os.chmod(os.path.join(self.repo, n), m)
+        write(self.repo, "u.sh", "u\n")
+        os.chmod(os.path.join(self.repo, "u.sh"), 0o755)
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tree = load(out["run"])["pinned_tree"]
+        modes = {n: raw(self.repo, "ls-tree", tree, n).split(b" ")[0] for n in ("x.sh", "p.txt", "u.sh")}
+        self.assertEqual(modes, {"x.sh": b"100755", "p.txt": b"100644", "u.sh": b"100644"})
+        self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":x.sh"), b"edited\n")
+
+
 class Symlinks(tt.Base):
     def test_an_edited_symlink_enters_the_tree_as_a_link(self):
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
@@ -331,7 +353,8 @@ class ProcessCount(tt.Base):
             self.assertEqual(sum(1 for a in argv if "hash-object" in a and "--stdin-paths" in a and "--no-filters" in a), 1)
             self.assertEqual(sum(1 for a in argv if "update-index" in a and "--index-info" in a), 1)
             self.assertEqual(sum(1 for a in argv if "ls-files" in a and "--others" in a), 1)
-            self.assertEqual(sum(1 for a in argv if "diff" in a and "--name-status" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "diff" in a and "--raw" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "config" in a and "core.fileMode" in a), 1)
 
 
 class LargeRepo(tt.Base):

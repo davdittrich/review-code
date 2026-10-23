@@ -997,7 +997,7 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
 
 
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
-_NAME_STATUS = ["--name-status", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
+_RAW_DIFF = ["--raw", "--no-abbrev", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
 
 
 def _c_quoted(path: str) -> bytes:
@@ -1015,7 +1015,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     index and its refs are only read. The difference tags each path where the checkout differs from the pinned tree:
     `modified`, `untracked` (in the checkout, not ignored, not in the tree) or `absent-in-checkout`; in place it holds
     only the worktree edits of `staged` (its tree is the index) and files the tree could not take. Its cost follows the
-    change and the drift: one name-status diff, one untracked listing, at most one hash-object and one update-index."""
+    change and the drift: one raw diff, one untracked listing, one config read in place, at most one hash-object and one
+    update-index."""
     idx = os.path.join(run, "index.tmp")
     real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
     if os.path.exists(real):
@@ -1024,8 +1025,9 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     inplace = kind in INPLACE
     tree = None if inplace else git(["rev-parse", "--verify", plan["head"] + "^{tree}"], top).strip()
     # in place: the working tree against the index, the edits the kind pins or leaves; else against the pinned tree
-    f = _split(git_bytes(["diff"] + _NAME_STATUS + ([tree] if tree else []) + ["--"], top, env=env))
-    edits = list(zip(f[0::2], f[1::2]))
+    f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
+    edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
+    imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in ("100644", "100755")}
     other = plan["untracked"] if kind in ("unstaged", "worktree") else _split(
         git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
     tmp = []
@@ -1040,6 +1042,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
             # staged pins the index as it is; every other in-place kind pins the whole checkout, so its difference is empty
             take = [] if kind == "staged" else sorted(paths)
             zero, srcs = "0" * len(plan["head"]), []
+            # core.fileMode=false: the exec bit on disk means nothing, so a tracked file keeps its index mode, a new one 100644
+            trust = git(["config", "--type=bool", "--get", "core.fileMode"], top, check=False).strip() != "false"
             # an unmerged path has no stage-0 entry to pin: the staged tree leaves it out, and it stays in the difference
             unmerged = {p: "0 " + zero for s, p in edits if s == "U"} if kind == "staged" else {}
             recs = dict(unmerged)
@@ -1058,7 +1062,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                     src = os.path.join(run, "hash.%d.tmp" % len(tmp))
                     write_atomic(src, data)
                     tmp.append(src)
-                srcs.append((p, "120000" if link else "100755" if st.st_mode & 0o100 else "100644", src))
+                srcs.append((p, "120000" if link else ("100755" if st.st_mode & 0o100 else "100644") if trust
+                             else imode.get(p, "100644"), src))
             if srcs:
                 oids = git(["hash-object", "-w", "--no-filters", "--stdin-paths"], top,
                            stdin=b"".join(_c_quoted(s) + b"\n" for _, _, s in srcs)).split()
