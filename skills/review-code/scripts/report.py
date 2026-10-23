@@ -753,12 +753,13 @@ def _symbols(base):
         return {}
 
 
-def _handoff(c, run, nonce, packs=(), refs=None):
+def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree")))
+    out += "checkout_difference: %s\n" % json.dumps(diff) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
@@ -1217,8 +1218,9 @@ def _ingest(run, text, lane, shard):
     os.makedirs(hand, mode=0o700, exist_ok=True)
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
+    diff = target.load_json(run, "target.json").get("difference")
     for c in queue:
-        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs))
+        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs, diff))
     _reject(run, key, rejected)
     lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
     _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),

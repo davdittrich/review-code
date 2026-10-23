@@ -1120,7 +1120,10 @@ class Shards(Lanes):
         out = self.shard(1, o)
         (i,) = out["ids"]
         with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
-            self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), fh.read())
+            text = fh.read()
+        self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), text)
+        with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:  # gh#52: the evidence rule greps it
+            self.assertIn("\ncheckout_difference: " + json.dumps(json.load(fh)["difference"]) + "\n", text)
         self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "b = 2"}], "reason": "r"})
         d = self.doc()
         (f,) = d["findings"]

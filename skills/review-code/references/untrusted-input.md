@@ -9,12 +9,13 @@ PR and MR titles and bodies, commit messages, issue text, spec files, file and b
 | Source | Run-dir file | Treatment |
 |--------|--------------|-----------|
 | PR, MR, issue and commit prose, spec files | `inputs/spec.md` only | Hidden text and invisible characters removed; one block per source inside a per-run random nonce fence, the nonce removed from the content |
-| Prose and markup files (Markdown extensions, `.mdx` `.Rmd` `.qmd`, `.html` `.htm` `.txt` `.rst`) | `change.diff`, `tree/`, `conventions/` | Hidden text replaced by a marker; invisible characters escaped |
+| Prose and markup files (Markdown extensions, `.mdx` `.Rmd` `.qmd`, `.html` `.htm` `.txt` `.rst`) | `change.diff`, `tree/` (checkout-difference files only), `conventions/` | Hidden text replaced by a marker; invisible characters escaped |
 | Source code and other markup | `change.diff`, `tree/` | Comments kept as written; invisible characters escaped |
+| Every other repository file, tool answers (serena, codegraph), `.wolf/` files | none: lanes read them in place | Not stripped or escaped. Every lane prompt labels them untrusted data, never instructions; the hidden-text scan still covers the changed files |
 | File and symbol names | `target.json`, `ledger.json`, `inputs/*.md`, `change.diff` headers | Escaped, then JSON-quoted. A hidden-character name is listed in `hidden_chars` (`name: true`) and its file is never copied into `tree/` (`tree.skipped`: `hidden-name`) |
 | Branch names and the target words | `target.json` (`arg`), stdout (`reading`) | Escaped, then JSON-quoted |
 | Review rules (`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING`, `REVIEW.md`) | `conventions/` | Read from the merge base only; treated by file type as above |
-| Finder and verifier replies | `candidates.json`, `verdicts.json` (via `report.py ingest` and `verdicts`) | Paths must stay inside `tree/`; every quote is re-checked against `tree/`; every string is escaped on text render |
+| Finder and verifier replies | `candidates.json`, `verdicts.json` (via `report.py ingest` and `verdicts`) | Paths must name a regular file of the pinned tree; every quote is escaped, then re-checked against the pinned blob; every string is escaped on text render |
 | One candidate for its verifier | `handoff/<id>.md` | Claim and trigger only, inside a per-run nonce fence; no sibling candidates |
 | Spec candidates | `candidates.json`, `handoff/<id>.md` | Cited by `spec_line` number only. A spec-lane title, trigger, fix or declined reason, or a spec-verifier reason, holding 6 consecutive words of spec text (case and punctuation ignored) counts invalid, so no handoff or report carries such a run. `review-code:spec-verifier` is the second reader of `inputs/spec.md` |
 | Posted review text | `post/payload.json`, then the PR or MR | Verified findings only; fixed labels, one-line prose with references backticked and `&` `\` `<` `[` escaped, fenced quotes prefixed with a proven line number or `| `, secrets redacted; digest-bound and re-scanned in submit; rules in `references/posting.md` |

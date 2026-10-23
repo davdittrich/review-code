@@ -217,7 +217,7 @@ NIT_MODE = """The lane may also report `nit` findings, of two kinds.
 - A rule nit: category `convention`, severity `nit`, with `rule` and `rule_source` exactly as for a convention finding.
 - A norm nit: category `norm`, severity `nit`, with `norm_for` (the idiom most lines use), `norm_against` (the idiom the
   quoted line uses; the quote must contain it) and `norm_glob` (a file glob such as `*.py`). All three are literal
-  strings, never patterns. The skill counts lines in tree/ and the finding stands only with at least 20 lines naming
+  strings, never patterns. The skill counts lines in the pinned tree and the finding stands only with at least 20 lines naming
   either idiom and `norm_for` the majority, so do not send a norm you did not see on many lines.
 Changed lines only (a repo or path target: the files under review). Never report what a linter, formatter or CI of the repo enforces. No rule and no counted norm means no finding."""
 NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."

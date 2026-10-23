@@ -65,8 +65,8 @@ Style findings are Required or Suggestions at most, and only when a linter would
 ## Nit mode
 
 `--nit` adds a Nit severity between Suggestions and Noted. It never changes the verdict. A nit is a
-`convention` finding that quotes a repo rule, or a `norm` finding whose counts the skill makes itself
-in `tree/` (at least 20 lines, the other idiom the majority). Diff targets report changed lines only;
+`convention` finding that quotes a repo rule, or a `norm` finding the skill counts itself in the
+pinned tree (at least 20 lines, the other idiom the majority). Diff targets report changed lines only;
 a `--repo` target also reports pre-existing nits. The text report lists at most 15 rules under Nits
 (JSON and SARIF keep every nit). `--fix` and `--fix-tests` ignore nits. `--nit --lean` is the
 nits-only pass. Detail: `references/lanes.md`.

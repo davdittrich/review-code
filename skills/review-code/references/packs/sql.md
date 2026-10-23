@@ -7,7 +7,7 @@ Applies to `*.sql` files and to ORM or raw query call sites. Report a check only
 - A query built by string interpolation or concatenation where a path runs from untrusted input (request field, file content, message) to the query text. Name the source, each hop and the sink. Parameter binding is the fix. (`security`)
 - A related record loaded on first access inside a loop in changed code (one query per item, the ORM's deferred-load default). Name the loop, the access and the eager-loading or join alternative. (`performance`)
 - A query with no `LIMIT` or pagination on a table the code treats as growing, in a request path in the change. At most `inferred` evidence. (`performance`)
-- A filter or join column in a new query with no matching index in the schema files in tree/. At most `inferred` evidence, because a diff does not show table size or the query plan. (`performance`)
+- A filter or join column in a new query with no matching index in the schema files of the repository. At most `inferred` evidence, because a diff does not show table size or the query plan. (`performance`)
 
 ## Do not flag
 
