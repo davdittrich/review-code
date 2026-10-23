@@ -886,7 +886,9 @@ class SpecAdrHiddenName(Base):
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
                            lines({"inspected": []}), {"GIT_TRACE2_EVENT": log})
         self.assertEqual((rc, err), (0, ""), out)
-        return len([a for a in tp.starts(log) if "ls-tree" in a and "-r" in a])
+        with open(log, encoding="utf-8", errors="surrogateescape") as fh:  # a non-UTF-8 name sits raw in the trace
+            argvs = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start"]
+        return len([a for a in argvs if "ls-tree" in a and "-r" in a])
 
     def test_the_whole_tree_listing_for_marked_refs_runs_once_per_run(self):  # review-code-fot3
         self.assertEqual([self.traced_ingest(1), self.traced_ingest(2)], [1, 0])
@@ -913,6 +915,27 @@ class SpecAdrHiddenName(Base):
             fh.write('{"tree": 1')
         self.assertEqual(self.traced_ingest(2), 1)
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
+class SpecAdrHiddenVS(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <VS:n> mark (a run of variation selectors)."""
+    RAW = "docs/adr/0002-ints\ufe00\ufe00.md"
+    SHOWN = "docs/adr/0002-ints<VS:2>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenCodepoint(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <U+XXXX> mark (one invisible character)."""
+    RAW = "docs/adr/0002-ints\u200b.md"
+    SHOWN = "docs/adr/0002-ints<U+200B>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenBytes(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <BYTES:n> mark (a name that is not UTF-8)."""
+    RAW = "docs/adr/0002-ints\udc80.md"
+    SHOWN = "docs/adr/0002-ints<BYTES:1>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
 
 
 class SpecAdrHiddenDecoy(SpecAdrHiddenName):
