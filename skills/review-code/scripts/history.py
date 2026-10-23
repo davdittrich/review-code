@@ -4,7 +4,10 @@ read-only and stripped like other repository text. Agents open a file only when 
 prompt. Added lines have no history and are skipped, and so is a file the filter in `build` drops: one with no old-side
 name, a name or old name holding a hidden character, one that is not a regular file at the base (gitlink, symlink,
 absent), and an unstaged file whose index blob differs from the base's. Costs one blame per modified file and one
-log call in all."""
+log call in all. The base is the diff's old side. On a plain run it is `mb`, the merge base (HEAD for an in-place kind),
+which is gh#53's "taken at the merge base". On a --since-last run it is `diff_base` in target.json, the last reviewed
+head, so blame and `git log -L` line numbers match the diff's old side. That departure is deliberate (PR #60 review
+item C3); gh#53's text is unchanged."""
 import os
 import re
 import shutil

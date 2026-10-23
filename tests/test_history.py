@@ -8,6 +8,7 @@ from unittest import mock
 import paths  # noqa: F401
 
 import gitfix  # noqa: E402
+import history  # noqa: E402
 import ledger  # noqa: E402
 import target  # noqa: E402
 import test_pinned as tp  # noqa: E402
@@ -328,6 +329,13 @@ class Cost(Repo):
     def test_hunk_count_does_not_change_the_git_process_count(self):
         self.assertEqual(self.calls(1, 4), (1, 1))
         self.assertEqual(self.led["history"]["hunks"], 4)
+
+
+class DocstringPin(unittest.TestCase):
+    def test_docstring_states_the_old_side_rule_for_since_last(self):  # review-code-in8j: the rule is documented, not only coded
+        doc = history.__doc__
+        self.assertIn("diff_base", doc)
+        self.assertIn("since-last", doc)
 
 
 if __name__ == "__main__":
