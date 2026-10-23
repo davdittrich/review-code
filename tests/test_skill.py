@@ -481,6 +481,12 @@ class FixDocs(unittest.TestCase):
         self.assertIn("written from the code and `change.diff` only", flat)
         self.assertNotIn("from `tree/` and `change.diff` only", flat)
 
+    def test_a_hidden_named_file_limit_matches_the_skip_rule(self):
+        """review-code-mac9: the evidence rule skips a listed path with no tree/ copy; the limit must not read as a copy."""
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertNotIn("reviewable only through its `change.diff` hunk", flat)
+        self.assertIn("has no `tree/` copy, so the evidence rule's `tree/` read skips it; its content shows only as its escaped `change.diff` hunk", flat)
+
     def test_in_place_reads_state_their_only_defence(self):
         """gh#52: a file whose checkout copy is the reviewed content, changed or not, reaches a lane unstripped. No structural
         barrier exists, so the doc states the limit; the label it relies on is pinned in test_lanes SharedPhrases and
