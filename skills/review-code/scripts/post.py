@@ -833,7 +833,7 @@ def main(argv: List[str]) -> int:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
         if r.detail:
             out["detail"] = r.detail
-    except (OSError, KeyError, ValueError, TypeError) as e:
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     target.emit(out, STDOUT_KEYS)
     return rc

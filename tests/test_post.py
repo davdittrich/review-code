@@ -760,6 +760,31 @@ class NonUtf8Path(Base):
         self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
 
 
+class EditedFieldType(Base):
+    def edit_and_submit(self, key, value):
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        payload["comments"][0][key] = value
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        self.fake.head_reads = 0
+        return self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+
+    def test_an_edited_payload_with_a_non_string_comment_path_refuses_as_a_structured_refusal(self):
+        rc, out, st = self.edit_and_submit("path", 1)
+        self.assertEqual((rc, st["status"], st["reason"], st.get("detail")), (1, "refuse", "internal-error", "AttributeError"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
+    def test_an_edited_payload_with_a_list_comment_body_refuses_as_a_structured_refusal(self):
+        rc, out, st = self.edit_and_submit("body", ["x"])
+        self.assertEqual((rc, st["status"], st["reason"], st.get("detail")), (1, "refuse", "internal-error", "AttributeError"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
+
 class EmptyRun(Base):
     def test_zero_verified_findings_refuse_nothing_to_post(self):
         self.review()
