@@ -214,8 +214,15 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     symbols = symbols[:CAP_SYMBOLS]
 
     callers, capped["callers"] = [], False
+    # one grep for every symbol; a hit goes to each symbol it holds as a whole word (git's word chars: ASCII alnum, _)
+    rxs = {s["name"]: re.compile("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(s["name"])) for s in symbols}
+    found = {n: [] for n in rxs}
+    for h in _grep(repo, rev, list(rxs)) if rxs else ():
+        for n, rx in rxs.items():
+            if rx.search(h[2]):
+                found[n].append(h)
     for s in symbols:
-        every = _grep(repo, rev, [s["name"]])
+        every = found[s["name"]]
         # whole pinned tree, tests and config too, beyond the cap; another file's same-name definition is not a use
         s["refs"] = 0
         for f, _, t in every:
@@ -964,6 +971,18 @@ def _section(head: str, items: List[tuple], nonce: str) -> str:
                              or "none")
 
 
+def _commit_messages(repo: str, commits: List[str]) -> List[str]:
+    """The sanitised message of each commit, in the given order, from one git process (revs on stdin: no argv limit)."""
+    if not commits:  # a bare `git log` would read HEAD
+        return []
+    raw = target.git_bytes(["log", "--no-walk=unsorted", "--stdin", "-z", "--no-show-signature", "--encoding=UTF-8",
+                            "--format=%B"], repo, "".join(c + "\n" for c in commits).encode())
+    parts = raw.split(b"\0")[:-1]  # -z ends every message with NUL
+    if len(parts) != len(commits):
+        raise target.Refuse("internal-error", "git log returned an unexpected number of messages")
+    return [sanitize.sanitize_prose(p.decode("utf-8", "surrogateescape") + "\n") for p in parts]  # +LF: the old per-commit tail
+
+
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
     try:  # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
         run.encode("utf-8")
@@ -989,8 +1008,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     mb_ls = target.tree_listing(mb, repo)
     conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit, mb_ls)
 
-    messages = [sanitize.sanitize_prose(target.git_bytes(["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], repo).decode(
-        "utf-8", "surrogateescape")) for c in tj["commits"]]
+    messages = _commit_messages(repo, tj["commits"])
     tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
     sources, capped["issues"], sections, found_spec, adr_only = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
