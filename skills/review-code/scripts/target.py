@@ -1000,6 +1000,13 @@ INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 _NAME_STATUS = ["--name-status", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
 
 
+def _c_quoted(path: str) -> bytes:
+    """A path as one C-quoted line, which `hash-object --stdin-paths` unquotes: an LF anywhere in it, the repository's
+    and the run directory's parts included, stays inside the line, and a CR before the closing quote is no line end."""
+    b = path.encode("utf-8", "surrogateescape")
+    return b'"' + b.replace(b"\\", b"\\\\").replace(b'"', b'\\"').replace(b"\n", b"\\n") + b'"'
+
+
 def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag}}.
 
@@ -1046,19 +1053,15 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                 src, link = os.path.join(top, p), stat.S_ISLNK(st.st_mode)
                 if not link and (not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE):
                     continue  # a directory, FIFO, socket or oversized file stays as the index has it, and in the difference
-                if link or "\n" in p or "\r" in p:  # --stdin-paths reads lines and follows links: these go by copy
-                    if link:
-                        data = os.fsencode(os.readlink(src))
-                    else:
-                        with open(src, "rb") as fh:
-                            data = fh.read()
+                if link:  # --stdin-paths follows a link: its target string goes by copy
+                    data = os.fsencode(os.readlink(src))
                     src = os.path.join(run, "hash.%d.tmp" % len(tmp))
                     write_atomic(src, data)
                     tmp.append(src)
                 srcs.append((p, "120000" if link else "100755" if st.st_mode & 0o100 else "100644", src))
             if srcs:
                 oids = git(["hash-object", "-w", "--no-filters", "--stdin-paths"], top,
-                           stdin="".join(s + "\n" for _, _, s in srcs).encode("utf-8", "surrogateescape")).split()
+                           stdin=b"".join(_c_quoted(s) + b"\n" for _, _, s in srcs)).split()
                 if len(oids) != len(srcs):
                     raise Refuse("bad-ref", "a git command failed")
                 recs.update((p, "%s %s" % (mode, oid)) for (p, mode, _), oid in zip(srcs, oids))

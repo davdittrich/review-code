@@ -271,6 +271,25 @@ class NoFilterInAnyScript(tfix.Base):
         self.check("target in place and repro with its apply")
 
 
+class LineBreaks(tt.Base):
+    def test_a_repository_path_with_lf_pins_raw_bytes(self):
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "re\npo"))  # the run directory sits under it too
+        os.symlink("a.py", os.path.join(self.repo, "ln"))
+        gitfix.commit(self.repo, {"a.py": "a = 1\n", "b.py": "b = 1\n"}, "base")
+        self.git("add", "ln")
+        self.git("commit", "-q", "-m", "link")
+        write(self.repo, "a.py", "a = 2\n")
+        write(self.repo, "n\nl\r", "n = 1\n")
+        write(self.repo, 'q"b\\s', "q = 1\n")
+        os.remove(os.path.join(self.repo, "ln"))
+        os.symlink("b.py", os.path.join(self.repo, "ln"))
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tree = load(out["run"])["pinned_tree"]
+        self.assertEqual([raw(self.repo, "cat-file", "blob", tree + ":" + n) for n in ("a.py", "n\nl\r", 'q"b\\s', "ln")],
+                         [b"a = 2\n", b"n = 1\n", b"q = 1\n", b"b.py"])
+
+
 class Symlinks(tt.Base):
     def test_an_edited_symlink_enters_the_tree_as_a_link(self):
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
