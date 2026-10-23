@@ -482,9 +482,10 @@ def _have(oid: str, cwd: str) -> bool:
 _NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv"]
 
 
-def read_working(path: str, limit: int) -> Tuple[str, object]:
+def read_working(path: str, limit: int, head: bool = False) -> Tuple[str, object]:
     """("ok", bytes) | ("symlink"|"special"|"missing", None) | ("too-large", size) for a working-copy file. It is
-    opened without following a link or blocking on a FIFO, and judged on the open descriptor."""
+    opened without following a link or blocking on a FIFO, and judged on the open descriptor. With head, a larger
+    file is no error: its first `limit` bytes come back as "ok"."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError as e:
@@ -493,6 +494,8 @@ def read_working(path: str, limit: int) -> Tuple[str, object]:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return "special", None
+        if head:
+            return "ok", fh.read(limit)
         data = fh.read(limit + 1) if st.st_size <= limit else b""
     return ("ok", data) if st.st_size <= limit and len(data) <= limit else ("too-large", max(st.st_size, len(data)))
 

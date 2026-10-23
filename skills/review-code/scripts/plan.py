@@ -151,9 +151,9 @@ def _reviewed(run, repo, p, limit):
         fp = os.path.join(top, p)
         up = os.path.realpath(os.path.dirname(fp))
         if up == top or up.startswith(top + os.sep):
-            status, data = target.read_working(fp, target.MAX_FILE)
+            status, data = target.read_working(fp, limit, head=True)
             if status != "missing":
-                return data[:limit] if status == "ok" else None
+                return data if status == "ok" else None
     return None
 
 
