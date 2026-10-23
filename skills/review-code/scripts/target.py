@@ -81,7 +81,9 @@ NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for bot
 def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None, net: bool = False):
     """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
     SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
-    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
+    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9.
+    Its stderr is /dev/null and returned empty: no net caller reads it, and an ssh ControlPersist master that keeps
+    an inherited stderr pipe open would stall the read to NET_TIMEOUT after a successful call (j8uh)."""
     full = dict(_env(cwd), **(env or {}))
     if not net:
         p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
@@ -89,21 +91,20 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
         return p.returncode, p.stdout, p.stderr
     p = subprocess.Popen(_GIT + list(args), cwd=cwd, env=dict(full, SSH_ASKPASS_REQUIRE="never"),
                          stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
-        out, err = p.communicate(stdin, timeout=NET_TIMEOUT)
+        out, _ =p.communicate(stdin, timeout=NET_TIMEOUT)
     except BaseException as e:  # a timeout, or Ctrl-C, which no longer reaches the new session itself
         try:
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
-        p.stderr.close()  # the pipes open for ever; git itself is dead, so the wait returns
-        p.wait()
+        p.wait()          # the pipe open for ever; git itself is dead, so the wait returns
         if not isinstance(e, subprocess.TimeoutExpired):
             raise
         return -9, b"", b""
-    return p.returncode, out, err
+    return p.returncode, out, b""
 
 
 def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True,
