@@ -9,6 +9,8 @@ from unittest import mock
 import paths  # noqa: F401
 
 import gitfix  # noqa: E402
+import report  # noqa: E402
+import target  # noqa: E402
 import test_pinned as tp  # noqa: E402
 import test_post as tpost  # noqa: E402
 import test_target as tt  # noqa: E402
@@ -191,6 +193,77 @@ class LargeSnapshot(tp.LargeRepo):
         self.assertEqual(snap["knowledge"], {".wolf/locked.md": [7, os.lstat(os.path.join(self.repo, ".wolf/locked.md")).st_mtime_ns]})
         self.assertLess(os.path.getsize(path), 1024)
         self.assertNotIn("secret", open(path, encoding="utf-8").read())
+
+
+class CappedUntracked(tpost.Base):
+    """review-code-71de.15: above UNTRACKED_CAP untracked files the snapshot keeps a count and a digest, not a row each."""
+
+    def setUp(self):
+        super().setUp()
+        for i in range(5):
+            tp.write(self.repo, "bulk/f%d.txt" % i, "x\n")
+        self.make_run()
+        self.review(5)
+        cap = mock.patch.object(target, "UNTRACKED_CAP", 3, create=True)
+        cap.start()
+        self.addCleanup(cap.stop)
+
+    def snap_here(self):
+        snap = json.loads(json.dumps(target.integrity(self.repo)))
+        with open(os.path.join(self.run_dir, "integrity.json"), "w", encoding="utf-8") as fh:
+            json.dump(snap, fh)
+        return snap
+
+    def test_the_snapshot_is_bounded_and_keeps_a_count_and_a_digest(self):
+        snap = self.snap_here()
+        self.assertEqual(snap["dirty"], {})
+        self.assertEqual(snap["untracked"]["count"], 5)
+        self.assertEqual(len(snap["untracked"]["digest"]), 64)
+
+    def test_an_edit_above_the_cap_is_flagged_though_not_itemised(self):
+        snap = self.snap_here()
+        self.assertEqual(target.integrity_changes(self.repo, snap)["untracked"], {"count": 5, "changed": False})
+        tp.write(self.repo, "bulk/f2.txt", "edited, longer\n")
+        got = target.integrity_changes(self.repo, snap)
+        self.assertEqual((got["working_tree"], got["untracked"]), ([], {"count": 5, "changed": True}))
+        self.assertIn("integrity warning: untracked files changed (not fully seen: 5 untracked files, not itemised) " + CAUSE,
+                      report.render(self.run_dir, "text").split("\n"))
+
+    def test_an_unchanged_capped_tree_says_what_it_did_not_see(self):
+        self.snap_here()
+        self.assertIn("integrity: no change to the checkout, index or tool knowledge during the run "
+                      "(not seen: submodule worktrees, nested repositories; not fully seen: 5 untracked files)",
+                      report.render(self.run_dir, "text").split("\n"))
+
+    def test_crossing_the_cap_is_one_flag_not_a_row_per_file(self):
+        with mock.patch.object(target, "UNTRACKED_CAP", 100):
+            snap = self.snap_here()  # itemised: five rows
+        self.assertEqual(len(snap["dirty"]), 5)
+        got = target.integrity_changes(self.repo, snap)  # the cap is 3 again: now has no rows
+        self.assertEqual((got["working_tree"], got["untracked"]), ([], {"count": 5, "changed": True}))
+
+    def test_untracked_tool_knowledge_stays_informational_above_the_cap(self):
+        tp.write(self.repo, ".wolf/memory.md", "one\n")
+        snap = self.snap_here()
+        self.assertEqual(snap["untracked"]["count"], 5)  # not the knowledge file
+        tp.write(self.repo, ".wolf/memory.md", "one, two, three\n")
+        got = target.integrity_changes(self.repo, snap)
+        self.assertEqual((got["working_tree"], got["knowledge"], got["untracked"]["changed"]), ([], [".wolf/memory.md"], False))
+        self.assertNotIn("integrity warning", report.render(self.run_dir, "text"))
+
+    def test_a_tracked_edit_does_not_hide_that_untracked_files_were_not_fully_seen(self):
+        self.snap_here()
+        tp.write(self.repo, "src/calc.py", "edited\n")
+        out = report.render(self.run_dir, "text").split("\n")
+        self.assertIn("integrity warning: src/calc.py (working tree) " + CAUSE, out)
+        self.assertIn("integrity note: not fully seen: 5 untracked files", out)
+
+    def test_the_comparison_leaves_the_snapshot_it_was_given_intact(self):
+        with mock.patch.object(target, "UNTRACKED_CAP", 100):
+            snap = self.snap_here()  # five rows, which the capped comparison drops from its own copy
+        before = json.dumps(snap, sort_keys=True)
+        target.integrity_changes(self.repo, snap)
+        self.assertEqual(json.dumps(snap, sort_keys=True), before)
 
 
 if __name__ == "__main__":
