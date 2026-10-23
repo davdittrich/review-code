@@ -475,6 +475,12 @@ class FixDocs(unittest.TestCase):
         self.assertNotIn("runs only through step 9 of the skill", flat)
         self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
 
+    def test_known_limits_say_what_the_defects_summary_is_written_from(self):
+        """review-code-xuts: finder.md says the summary is written from the code and change.diff."""
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertIn("written from the code and `change.diff` only", flat)
+        self.assertNotIn("from `tree/` and `change.diff` only", flat)
+
     def test_in_place_reads_state_their_only_defence(self):
         """gh#52: a file whose checkout copy is the reviewed content, changed or not, reaches a lane unstripped. No structural
         barrier exists, so the doc states the limit; the label it relies on is pinned in test_lanes SharedPhrases and
