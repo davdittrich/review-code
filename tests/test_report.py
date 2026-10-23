@@ -800,7 +800,18 @@ class SpecAdrCite(Base):
     def test_a_spec_ingest_runs_the_same_tree_reads_for_three_records_and_thirty(self):
         three, thirty = self.traced_spec_ingest(3), self.traced_spec_ingest(30)
         self.assertEqual(len(three), len(thirty))
-        self.assertLessEqual(sum(1 for a in thirty if "ls-tree" in a), 2)  # the cite pin, and the one over the indexed records
+        # review-code-1zqz: the records ride the reply's own pin, so one ls-tree and one cat-file --batch serve cites and records
+        self.assertEqual(len([a for a in thirty if "ls-tree" in a]), 1, thirty)
+        self.assertEqual(len([a for a in thirty if "cat-file" in a]), 1, thirty)
+
+    def test_a_spec_verdicts_call_runs_one_ls_tree_and_one_cat_file_batch(self):  # review-code-1zqz
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        log = os.path.join(self.tmp, "verdicts-trace.json")
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp,
+                           lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        got = [a for a in tp.starts(log) if "ls-tree" in a or ("cat-file" in a and "--batch" in a)]
+        self.assertEqual([("ls-tree" in a) for a in got], [True, False], got)
 
     def test_a_quote_the_record_does_not_hold_is_rejected(self):
         out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
