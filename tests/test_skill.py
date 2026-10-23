@@ -589,11 +589,18 @@ class PostingDocs(unittest.TestCase):
         for s in ("`ledger.py build`", "`report.py ingest`", "`post.py build`", "`post.py submit`", "title", "trigger"):
             self.assertIn(s, row)
         scripts = os.path.dirname(self.POST)
-        raisers = {m for m in sorted(os.listdir(scripts)) if m.endswith(".py") and '"non-utf8-name"' in self.read(scripts, m)}
-        stray = sorted(raisers - {"ledger.py", "post.py", "report.py"})
-        self.assertEqual(raisers, {"ledger.py", "post.py", "report.py"},  # a new raiser must be added to the row
-                         "%s raise non-utf8-name: add each command to the non-utf8-name row in references/posting.md, "
-                         "then add the module to this set" % stray)
+        raise_literal = re.compile(r"""(["'])non-utf8-name\1""")  # either quote style is the same reason
+        raisers = {m for m in sorted(os.listdir(scripts)) if m.endswith(".py") and raise_literal.search(self.read(scripts, m))}
+        known = {"ledger.py", "post.py", "report.py"}
+        clauses = []
+        extra = sorted(raisers - known)
+        missing = sorted(known - raisers)
+        if extra:
+            clauses.append("%s raise non-utf8-name: add the command to the non-utf8-name row in references/posting.md, "
+                           "then add the module to this set" % extra)
+        if missing:
+            clauses.append("%s no longer raise non-utf8-name: remove it from the row and from this set" % missing)
+        self.assertEqual(raisers, known, "; ".join(clauses))
 
     def test_cleanup_window_is_documented(self):
         """R2-WR-02: GitHub's DELETE has no precondition, so a comment added after cleanup's listing goes with the review."""
