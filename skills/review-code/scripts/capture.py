@@ -50,9 +50,11 @@ def keep(ev):
             import target
     except BaseException:
         return
-    rc, out, _ = target._run(["rev-parse", "--git-path", "review-code"], os.getcwd())
-    rel = out.decode("utf-8", "replace").strip()
-    if rc != 0 or not rel:
+    try:
+        rel = target._rev_path("--git-path", os.getcwd(), "review-code")  # lossless: a git dir may hold any byte
+    except target.Refuse:
+        return
+    if not rel:
         return
     base = os.path.join(os.getcwd(), rel)
     try:
