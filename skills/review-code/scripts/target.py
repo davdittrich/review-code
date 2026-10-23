@@ -88,10 +88,10 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return p.returncode, p.stdout, p.stderr
     p = subprocess.Popen(_GIT + list(args), cwd=cwd, env=dict(full, SSH_ASKPASS_REQUIRE="never"),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         start_new_session=True)
+                         stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
-        out, err = p.communicate(timeout=NET_TIMEOUT)
+        out, err = p.communicate(stdin, timeout=NET_TIMEOUT)
     except BaseException as e:  # a timeout, or Ctrl-C, which no longer reaches the new session itself
         try:
             os.killpg(p.pid, signal.SIGKILL)

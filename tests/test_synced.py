@@ -206,6 +206,17 @@ class GateProcessCount(tt.PRWorld):
             self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
 
 
+class NetStdin(tt.Base):
+    """review-code-rio1: no caller passes stdin on the network path, so the private seam is the only route to it; the
+    argument is still honoured there, never dropped."""
+
+    def test_the_net_path_hands_its_stdin_to_git(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        for net in (False, True):
+            rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=net)
+            self.assertEqual((rc, out.strip()), (0, b"8baef1b4abc478178b004d62031cf7fe6db6f903"), net)
+
+
 class FetchMaintenance(tt.PRWorld):
     def test_the_objects_fetch_starts_no_auto_maintenance_in_the_users_repository(self):
         self.git("config", "--unset", "maintenance.auto")  # the user's default: fetch would run maintenance --auto
