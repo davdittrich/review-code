@@ -136,6 +136,13 @@ def _rev_path(flag: str, cwd: str) -> str:
     return out[:-1] if out.endswith("\n") else out
 
 
+def _head_branch(cwd: str) -> Optional[str]:
+    """The checked-out branch name, lossless (surrogateescape) with the one trailing LF dropped; None when detached."""
+    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+    name = out.decode("utf-8", "surrogateescape")
+    return None if rc != 0 else name[:-1] if name.endswith("\n") else name
+
+
 def _no_filters(cwd: str) -> dict:
     """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
     required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
@@ -365,8 +372,8 @@ def _no_argument(cwd: str) -> List[dict]:
     if git(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"], cwd).strip():  # 6xl.68
         return [{"kind": "worktree", "reading": "uncommitted changes against HEAD, untracked files included"}]
     default = default_branch(cwd)
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
-    if default and rc == 0 and out.decode("utf-8", "replace").strip() != default[1]:
+    on = _head_branch(cwd)
+    if default and on is not None and on != default[1]:
         return [{"kind": "branch", "base": default[0], "head": "HEAD",
                  "reading": "changes on HEAD since " + _q(default[0])}]
     raise Refuse("no-target", "name a target to review")
@@ -643,8 +650,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
         raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
     linked = os.path.realpath(_rev_path("--absolute-git-dir", cwd)) != os.path.realpath(
         os.path.join(cwd, _rev_path("--git-common-dir", cwd)))
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
-    on = out.decode("utf-8", "replace").strip() if rc == 0 else None
+    on = _head_branch(cwd)
     synced = _run(["merge-base", "--is-ancestor", tip, "HEAD"], cwd)[0] == 0 if fork else _head_oid(cwd) == tip
     if synced and on == branch and not linked:
         return

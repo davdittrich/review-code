@@ -106,6 +106,13 @@ class Gate(tt.PRWorld):
         self.git("checkout", "-q", "-b", name)
         self.passes()
 
+    def test_a_checked_out_default_branch_ending_in_a_next_line_char_is_synced(self):  # review-code-fuxn
+        name = "main\u0085"
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
+
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
         tp.write(self.repo, "untracked.py", "u = 1\n")
@@ -185,6 +192,11 @@ class RefKinds(tt.Base):
         self.git("add", "a.py")
         rc, out = tt.call(["--staged"], self.repo, self.tmp)
         self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "staged"), out)
+
+    def test_a_head_branch_ending_in_a_next_line_char_is_not_the_default_branch(self):  # review-code-fuxn
+        self.git("checkout", "-q", "-b", "main\u0085")  # .strip() turned it into "main", the default
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out.get("kind")), (0, "branch"), out)
 
     def test_a_branch_head_not_checked_out_is_gated(self):
         self.git("checkout", "-q", "main")
