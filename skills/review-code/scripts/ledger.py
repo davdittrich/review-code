@@ -584,6 +584,11 @@ ARGV_BYTES = 100000  # path bytes per ls-tree call: far under ARG_MAX, which is 
 PATH_MAX = 4096  # no file has a longer path, so a longer name is in no tree and never reaches an argv
 
 
+def too_long(path: str) -> bool:
+    """True when `path` (with its NUL) passes PATH_MAX: ls_tree never looks it up."""
+    return len(os.fsencode(path)) + 1 > PATH_MAX
+
+
 def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> bytes:
     """The NUL-separated `ls-tree` records of exactly `paths` in `tree` (literal pathspecs, never the whole tree). ls-tree takes
     its paths on argv only (no pathspec file, no stdin; cat-file's %(objectmode) needs 2.51), so a list past ARGV_BYTES runs
@@ -592,9 +597,9 @@ def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> b
     head = ["ls-tree", "-z"] + (["-l"] if long else []) + ["--full-tree", tree, "--"]
     chunks, cur, size = [], [], 0
     for p in paths:
-        n = len(os.fsencode(p)) + 1
-        if n > PATH_MAX:
+        if too_long(p):
             continue
+        n = len(os.fsencode(p)) + 1
         if cur and size + n > ARGV_BYTES:
             chunks.append(cur)
             cur, size = [], 0

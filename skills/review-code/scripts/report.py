@@ -150,6 +150,7 @@ REASONS = {
     "declined-invalid:copied-from-spec": "paraphrase the declined why: it holds a run of words copied from the spec",
     "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
     "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
+    "path-too-long": "cite a path of fewer than 4096 bytes: the skill looks up no longer one in the pinned tree",
     "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
     "claims-missing": "the reviewed content has the file the finding calls missing: check it there, then drop or reword the finding",
     "line-out-of-range": "cite a line range inside the file",
@@ -295,6 +296,8 @@ def _cite(pin, path, line, end, quote):
     """(the cited lines, None) when path, range and quote all hold in the pinned tree, else (None, the failing check)."""
     p = _norm(path)
     if p not in pin.files:
+        if p and ledger.too_long(p):
+            return None, "path-too-long"
         return None, "path-not-in-tree"
     if not (_int(line) and _int(end) and 1 <= line <= end):
         return None, "line-out-of-range"

@@ -35,6 +35,12 @@ class Outside(tr.Base):
         out = self.ingest(dict(tr.CAND, path="pkg/gone.py", line=1, quote="x"))
         self.assertEqual(reasons(out), [("rejected", "path-not-in-tree")])
 
+    def test_a_path_too_long_to_look_up_is_rejected_with_its_own_reason(self):  # review-code-df4z
+        for n in (4095, 4096):  # names of 4095 bytes still go to ls-tree (and are absent); 4096 never does
+            path = "/".join(["d" * 254] * 17)[:n]
+            out = self.ingest(dict(tr.CAND, path=path, line=1, quote="x"))
+            self.assertEqual(reasons(out), [("rejected", "path-not-in-tree" if n == 4095 else "path-too-long")], n)
+
     def test_a_quote_only_the_checkout_holds_is_rejected_with_its_own_reason(self):
         tp.write(self.repo, "src/calc.py", tr.FEAT.replace("a - b", "a + b"))  # edited after pinning
         tp.write(self.repo, "src/new.py", "fresh = 1\n")  # untracked: only the checkout has it
@@ -192,9 +198,9 @@ class ArgMax(tr.Base):
         self.assertEqual({(d["disposition"], d["reason"]) for d in out["dispositions"]}, {("rejected", "path-not-in-tree")})
         self.assertEqual(out["ids"], [])
 
-    def test_a_path_no_file_can_have_is_not_in_the_tree_not_an_error(self):
+    def test_a_path_no_file_can_have_is_too_long_not_an_error(self):
         out = self.ingest(dict(tr.CAND, path="d/" + "x" * 200000), tr.CAND)
-        self.assertEqual(reasons(out), [("rejected", "path-not-in-tree"), ("accepted", None)])
+        self.assertEqual(reasons(out), [("rejected", "path-too-long"), ("accepted", None)])
 
     def test_the_chunks_cost_one_ls_tree_per_budget_of_path_bytes_not_one_per_path(self):
         log = os.path.join(self.tmp, "trace.json")
