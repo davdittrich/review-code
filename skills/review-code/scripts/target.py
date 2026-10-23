@@ -468,6 +468,7 @@ def _view_mr(cand: dict, cwd: str) -> dict:
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
     rc, _, _ = _run(["-c", "transfer.fsckObjects=true",  # a tree naming `..` or `.git` is refused
+                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",  # no repack/prune of the user's objects
                      "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
                      "--", remote] + refspecs, cwd)
     if rc != 0:

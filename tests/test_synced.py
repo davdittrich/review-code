@@ -1,5 +1,6 @@
 """The synced-checkout gate (gh#49): a head that is not checked out is reviewed only from the main checkout on the
 live upstream default-branch tip, through the run-directory contract."""
+import json
 import os
 import unittest
 from unittest import mock
@@ -181,6 +182,19 @@ class GateProcessCount(tt.PRWorld):
         self.assertEqual(len(three), len(thirty))
         for argv in (three, thirty):
             self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
+
+
+class FetchMaintenance(tt.PRWorld):
+    def test_the_objects_fetch_starts_no_auto_maintenance_in_the_users_repository(self):
+        self.git("config", "--unset", "maintenance.auto")  # the user's default: fetch would run maintenance --auto
+        log = os.path.join(self.tmp, "fetch.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(log, encoding="utf-8") as fh:  # child_start: a detached maintenance logs its own start too late
+            kids = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "child_start"]
+        self.assertTrue(any("fetch" in a for a in tp.starts(log)))
+        self.assertEqual([a for a in kids if "maintenance" in a or "gc" in a], [])
 
 
 class Docs(unittest.TestCase):
