@@ -151,7 +151,7 @@ REASONS = {
     "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
     "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
     "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
-    "claims-missing": "the reviewed content has the file or symbol the finding calls missing: check it there, then drop or reword the finding",
+    "claims-missing": "the reviewed content has the file the finding calls missing: check it there, then drop or reword the finding",
     "line-out-of-range": "cite a line range inside the file",
     "unreadable": "cite a file that is readable text",
     "quote-not-at-line": "quote text that the file holds at the cited line",
@@ -751,14 +751,6 @@ def _refs(run, shard=None):
         return {}
 
 
-def _symbols(base):
-    """{symbol: defining file} of the ledger at `base` (the run or a shard); {} when unreadable."""
-    try:
-        return {s["name"]: s.get("file") for s in target.load_json(base, "ledger.json")["symbols"]}
-    except (target.Refuse, KeyError, TypeError):
-        return {}
-
-
 def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
@@ -1042,15 +1034,14 @@ def _read_lane(text, lane, run, shard=None):
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
     parsed = list(_objects(text))  # read once: the paths of every line go into one ls-tree and one cat-file
-    cited, named, syms = set(), set(), _symbols(base)
+    cited, named = set(), set()
     for _, o, _ in parsed:
         if o is None:
             continue
         cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
         if isinstance(o.get("inspected"), list):
             named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
-        for name in _claimed(o):
-            named.update((name, syms.get(name)))
+        named.update(_claimed(o))
     pin = _Pinned(run, cited | named, cited)
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
@@ -1098,7 +1089,7 @@ def _read_lane(text, lane, run, shard=None):
             ignored += 1
             disp.append(_disp(n, c["id"], "rejected", "do-not-flag"))
         else:
-            if any(_norm(x) in pin.files for name in _claimed(c) for x in (name, syms.get(name))):
+            if any(_norm(name) in pin.files for name in _claimed(c)):
                 c["downgraded"] = "claims-missing"  # the pinned tree has what the finding calls missing: no verifier call
             disp.append(_disp(n, c["id"], "downgraded" if "downgraded" in c else "accepted", c.get("downgraded", ok)))
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c

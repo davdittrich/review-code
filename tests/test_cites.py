@@ -115,10 +115,14 @@ class Invisible(tr.Base):
 
 
 class MissingSymbol(tr.Base):
-    def test_a_finding_that_calls_a_ledger_symbol_undefined_is_downgraded(self):
-        out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"))
-        self.assertEqual(reasons(out), [("downgraded", "claims-missing")])
-        self.assertEqual(out["ids"], [])
+    """review-code-fr02: a symbol the ledger knows is defined in some file; a finding that calls it undefined or not imported
+    is about the cited file and stays a finding (only a claim that a file is missing is judged against the pinned tree)."""
+
+    def test_a_finding_that_calls_a_ledger_symbol_undefined_in_the_cited_file_is_accepted(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"),
+                          tr.cand("def load():", 1, title="undefined name load", trigger="load is missing from the imports"))
+        self.assertEqual(reasons(out), [("accepted", None), ("accepted", None)])
+        self.assertEqual(len(out["ids"]), 2)
 
 
 class InvisibleEntryPoints(tr.Lanes):
