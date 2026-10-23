@@ -1005,6 +1005,27 @@ class SpecAxis(Base):
         self.rep("discard")  # a lane ingest after verdicts refuses (review-code-edk)
         self.assertEqual(len(self.ingest(dict(CAND, title=copy))["ids"]), 1)  # Defects never reads the spec: no check
 
+    def snapshot(self):
+        out = {}
+        for d, _, names in os.walk(self.run_dir):
+            for n in names:
+                with open(os.path.join(d, n), "rb") as fh:
+                    out[os.path.relpath(os.path.join(d, n), self.run_dir)] = fh.read()
+        return out
+
+    def test_an_unreadable_spec_refuses_the_copy_guard_instead_of_passing_spec_text(self):  # review-code-iawb
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        spec = os.path.join(self.run_dir, "inputs", "spec.md")
+        os.remove(spec)
+        os.mkdir(spec)  # open() fails with an OSError as root too, where chmod 000 would not
+        before = self.snapshot()
+        for sub, reply, extra in (("verdicts", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}, ()),
+                                  ("ingest", {"declined": [{"spec_line": inner, "why": rows[inner - 1]}]}, ["--lane", "spec"])):
+            rc, out = self.rep(sub, lines(reply, {"inspected": []}) if sub == "ingest" else lines(reply), extra=extra)
+            self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
+            self.assertEqual(self.snapshot(), before, sub)
+
     def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
         rows, inner, _, _ = self.spec_rows()
         self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)

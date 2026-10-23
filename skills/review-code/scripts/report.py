@@ -629,8 +629,8 @@ def _spec_copy(run):
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
-    except OSError:
-        w = []
+    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
+        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
     # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57). Fails
     # closed (review-code-27ht): an unreadable ledger or a failed tree read refuses, since nothing proves the reply copies no record
     led = target.load_json(run, "ledger.json")
