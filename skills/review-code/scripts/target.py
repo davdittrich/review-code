@@ -18,6 +18,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Iterator, List, Optional, Tuple
 
@@ -553,14 +554,62 @@ def _last_review_head(info: dict, cwd: str) -> Optional[str]:
         return None
 
 
+def _head_oid(cwd: str) -> Optional[str]:
+    rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd)
+    return out.decode().strip() if rc == 0 else None  # None: an unborn HEAD
+
+
+def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
+    """The repository key of the one the change's base repository was forked from, or None when it is no fork."""
+    host, path = info["key"].split("/", 1)
+    if kind == "pr":
+        j = gh_json(["repo", "view", "https://%s/%s" % (host, path), "--json", "isFork,parent"], cwd)
+        p = j.get("parent") if isinstance(j, dict) else None
+        o = p.get("owner") if isinstance(p, dict) else None
+        name = "%s/%s" % (o.get("login"), p.get("name")) if isinstance(o, dict) and isinstance(o.get("login"), str) \
+            and isinstance(p.get("name"), str) else None
+    else:
+        j = glab_json(["api", "projects/" + urllib.parse.quote(path, safe="")], cwd)
+        p = j.get("forked_from_project") if isinstance(j, dict) else None
+        name = p.get("path_with_namespace") if isinstance(p, dict) else None
+    return _forge_key(host, name) if isinstance(name, str) else None
+
+
+def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
+    """gh#49: a head that is not checked out is reviewed only from the main checkout on the upstream default branch at
+    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
+    if remote is None:
+        raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
+    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd)
+    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
+    branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
+    tip = next((r for r in rows if OID.fullmatch(r)), None)
+    if rc != 0 or not branch or not tip:
+        raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
+    dirs = git(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).splitlines()
+    linked = os.path.realpath(dirs[0]) != os.path.realpath(os.path.join(cwd, dirs[1]))
+    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+    on = out.decode("utf-8", "replace").strip() if rc == 0 else None
+    synced = _run(["merge-base", "--is-ancestor", tip, "HEAD"], cwd)[0] == 0 if fork else _head_oid(cwd) == tip
+    if synced and on == branch and not linked:
+        return
+    rc, out, _ = _run(["rev-list", "--left-right", "--count", tip + "...HEAD"], cwd)
+    n = out.decode().split()
+    dist = "%s behind and %s ahead" % tuple(n) if rc == 0 and len(n) == 2 else "behind by an unknown count"
+    raise Refuse("checkout-not-synced", "%son %s, %s of the upstream tip %s of %s/%s; sync the main checkout first" % (
+        "a linked worktree, " if linked else "", _q(on) if on else "a detached HEAD", dist, tip[:12], _q(remote), _q(branch)))
+
+
 def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
     if cand.get("repo_key") and not any(k == cand["repo_key"] for _, k in _remotes(cwd)):
-        raise Refuse("cross-repo", "the pull request belongs to a repository with no configured remote")
+        raise Refuse("no-upstream-remote", "no configured remote matches the pull request's base repository")
     info = (_view_pr if cand["kind"] == "pr" else _view_mr)(cand, cwd)
     remote = next((n for n, k in _remotes(cwd) if k == info["key"]), None)
     if remote is None:
-        raise Refuse("cross-repo" if cand.get("repo_key") else "no-remote-for-pr-repo",
-                     "no configured remote matches the pull request repository")
+        raise Refuse("no-upstream-remote", "no configured remote matches the pull request's base repository")
+    if info["head"] != _head_oid(cwd):
+        parent = _parent_key(cand["kind"], info, cwd)
+        _gate(next((n for n, k in _remotes(cwd) if k == parent), None) if parent else remote, bool(parent), cwd)
     _fetch(remote, [info["ref"], "refs/heads/" + info["branch"]], cwd)
     if not _have(info["head"], cwd):
         raise Refuse("head-moved", "the pull request head changed after it was read")
@@ -1024,6 +1073,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         plan = _plan_files(candidate.get("paths", []), cwd, top)
     else:
         raise Refuse("bad-ref", "unknown target kind")
+    if kind in ("commit", "branch", "range") and plan["head"] != _head_oid(top):  # forge kinds gate in _plan_forge
+        _gate("origin" if _run(["config", "--get", "remote.origin.url"], top)[0] == 0 else None, False, top)
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",

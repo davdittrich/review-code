@@ -85,7 +85,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
    `--own` with `--external`: stop and say so), and `--since-last` (a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
-   commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
+   commit, append the caret and exclamation mark to the commit id; a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
 
    ```
@@ -101,7 +101,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
      list the readings.
    - `refuse` with `no-target`: ask once (AskUserQuestion) what to review.
    - Any other `skip` or `refuse`: state `reason` and `detail` and stop (`skip` is not an error: closed,
-     merged, draft or empty).
+     merged, draft or empty). User fixes: `checkout-not-synced`, sync the main checkout; `no-upstream-remote`, add an
+     upstream remote; `remote-unreachable`, check access.
    - `ok`: state the `kind`, the pinned refs (`merge_base...head_sha` for diff kinds; `HEAD <sha>` plus
      "working tree" for staged, unstaged and worktree; `HEAD <sha>` for path and repo), the included
      and excluded counts and the `run` path. Do not read `target.json` yet: file names and notes come
@@ -114,7 +115,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
      `references/lanes.md` Triage without python3.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`, adding `--nit` to this and every later build call when step 1 removed it. State the `label` and
    counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
-3. Questions, once per run, before reading any run-dir file. When step 2's
+3. Questions, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`), appending `--flag` so the answer is recorded as flag-supplied (`source` "flag" in later stdout), and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
@@ -134,7 +135,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule). State the new `spec_status`. When it is still `none`, the Spec axis is
    stated as skipped (no spec found).
 4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
-   (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
+   (do not read `target.json` or `ledger.json`). State each `excluded`
    path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a
    checked-out head's CLAUDE.md), the `conventions` copies taken from the base and the `ignored`
    head-only files; `more` counts entries cut by the cap. If `hidden_text`, `hidden_routine` or `hidden_chars` is not empty, report each
@@ -169,7 +170,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `<run>/plan.json`.
 6. Cost gate. When plan.py's `confirm` is true, make one AskUserQuestion showing the `preview` lines
    with options "Run" and "Stop"; on "Stop" or no answer, stop. When headless, print the `preview` and
-   continue: the run stays inside the plan's caps. This question is asked once per run, also after a re-plan in step 7.
+   continue: the run stays inside the plan's caps. A re-plan in step 7 does not ask it again.
 7. Lanes. Use step 5's `calls` (do not read plan.json). Serial mode (`mode` is `serial`, or an Agent call fails with a
    nesting-depth or concurrent-limit error): follow `references/lanes.md` Serial mode instead of the Agent calls of
    steps 7 and 8; it also covers the re-plan after such a failure. Parallel mode (`mode` is `parallel`): take the calls in
@@ -188,7 +189,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> --agent <agentId>
    ```
 
-   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
+   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule):
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> <<'REVIEW_FINDINGS'
@@ -200,10 +201,10 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    or commit text.
 8. Verify. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py status --run <run>` and use its stdout (read-only). When `missing_lanes` is not empty, stop and state them. When `blocked` is `lane-retry-open`, `verify_calls` is empty: a lane still has rejected lines and a try left, so finish step 7's retry first (a verdict stored earlier makes that ingest refuse `late-reply`). Parallel mode: for
    each entry of `verify_calls` make one Agent call, `subagent_type` the entry's `agent` (`review-code:verifier`, or `review-code:spec-verifier` for Spec ids), and the `prompt` is exactly the entry's
-   `prompt` and nothing else; `model` and `effort` come from step 5's `verifier`, or `spec_verifier` for the spec agent. Issue them in waves as in step 7, with the same fan-out rule. After the waves run `status` again; a call whose `batch` is in `missing_batches` is not stored. For each such call run
+   `prompt`; `model` and `effort` come from step 5's `verifier`, or `spec_verifier` for the spec agent. Issue them in waves as in step 7, with the same fan-out rule. After the waves run `status` again; a call whose `batch` is in `missing_batches` is not stored. For each such call run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run> --batch <batch> --agent <agentId>` (the entry's `batch`; the agentId of that Agent launch result). On any `--agent` refusal (as in step 7) pass every reply line that starts with `[`, per Agent call, to the same command without `--agent`, in a
    `REVIEW_VERDICTS` here-document, as in step 7: one verdicts call per entry; the batches add up (`confirmed`, `refuted` and `unverifiable` in stdout are cumulative over all stored batches, as `cumulative` says; `batch_ids` is this call's own), a repeat of a batch replaces only that batch, and ids outside the batch are ignored. The step is done when `missing_batches` and `no_verdict` are empty. For each batch in `rejected_batches` and each id in `no_verdict`, recover as in step 7 with the verifier agent of that batch (ingest its full corrected reply with the same `--batch`); the tries are `attempts` of `batch-<batch>` in `status`; after 2 tries tell the user that moment the exact ids still unverified. Skip this step when `ids` and `spec_ids` are empty.
-9. Reproduce, own code only, never in serial mode. Run this step only when `ledger.py trust get`
+9. Reproduce, never in serial mode. Run this step only when `ledger.py trust get`
    reports `effective` `own`, the `confirmed` of the last `verdicts` call (or of `status`) is not empty, and `ledger.json` lists tests or
    test config. For each confirmed id, write the smallest test that fails the way the finding claims,
    with `REPRO-<id>` in its failure message, at a new relative path. Make one AskUserQuestion that

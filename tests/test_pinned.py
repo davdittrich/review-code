@@ -68,21 +68,22 @@ class PRDifference(tt.PRWorld):
         rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
         tj = load(out["run"])
-        self.assertEqual(difference(out["run"]), {"src/cfg.py": "modified", "src/" + tt.CANARY_NAME + ".py": "absent-in-checkout"})
+        self.assertEqual(difference(out["run"]), {"src/cfg.py": "modified", "src/" + tt.CANARY_NAME + ".py": "absent-in-checkout",
+                                                  "src/other.py": "untracked"})  # main moved on past the PR's base
         self.assertEqual(tj["pinned_tree"], self.git("rev-parse", self.pr + "^{tree}"))
         self.assertEqual((tj["pinned_head"], tj["checkout_head"], tj["difference_count"]),
-                         (self.pr, self.git("rev-parse", "HEAD"), 2))
+                         (self.pr, self.git("rev-parse", "HEAD"), 3))
         self.assertEqual(os.path.dirname(tj["difference"]), out["run"])  # the list lives in the run directory
 
     def test_local_work_joins_the_difference_and_ignored_files_do_not(self):
         write(self.repo, "local.txt", "mine\n")
         write(self.repo, "debug.log", "noise\n")
         write(self.repo, ".git/info/exclude", "*.log\n")
-        gitfix.commit(self.repo, {"notes.py": "n = 1\n"}, "local only")  # tracked here, absent at the PR head
         write(self.repo, "src/" + tt.CANARY_NAME + ".py", "x = 1\n")  # untracked here, at the PR head: present, so not absent
         rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
-        self.assertEqual(difference(out["run"]), {"src/cfg.py": "modified", "local.txt": "untracked", "notes.py": "untracked",
+        self.assertEqual(difference(out["run"]), {"src/cfg.py": "modified", "local.txt": "untracked",
+                                                  "src/other.py": "untracked",  # tracked here, absent at the PR head
                                                   "src/" + tt.CANARY_NAME + ".py": "modified"})
 
 
@@ -184,6 +185,7 @@ class RangeDifference(tt.Base):
         self.git("checkout", "-q", "-b", "feat")
         gitfix.commit(self.repo, {"a.py": "a = 1\n"}, "feat")
         self.git("checkout", "-q", "main")
+        self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
         write(self.repo, "b.py", "b = 1\n")
         write(self.repo, "c.py", "c = 1\n")
         self.git("add", "c.py")
@@ -280,6 +282,7 @@ class LargeRepo(tt.Base):
         self.git("reset", "-q", "--hard", "main")
         self.git("repack", "-adq")
         self.git("prune-packed")
+        self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
 
     def blob_offsets(self):
         pack = [f for f in os.listdir(os.path.join(self.repo, ".git", "objects", "pack")) if f.endswith(".idx")][0]

@@ -1,0 +1,196 @@
+"""The synced-checkout gate (gh#49): a head that is not checked out is reviewed only from the main checkout on the
+live upstream default-branch tip, through the run-directory contract."""
+import os
+import unittest
+from unittest import mock
+
+import paths  # noqa: F401
+
+import gitfix  # noqa: E402
+import test_pinned as tp  # noqa: E402
+import test_target as tt  # noqa: E402
+
+
+class Gate(tt.PRWorld):
+    """The clone sits on main at the live tip of its bare 'GitHub'; PR #7 is not checked out."""
+
+    def refused(self, reason, args=("7",), gh=None, cwd=None):
+        before = tp.snapshot(self.repo)
+        runs = self.run_dirs()
+        rc, out = tt.call(list(args), cwd or self.repo, self.tmp, gh=gh or self.gh())
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", reason), out)
+        self.assertEqual(tp.snapshot(self.repo), before)  # HEAD, refs, index and working tree untouched
+        self.assertEqual(self.run_dirs(), runs)
+        self.assertFalse(self.has_pr_objects(), "the PR was fetched before the gate refused")
+        return out["detail"]
+
+    def passes(self, args=("7",), gh=None):
+        rc, out = tt.call(list(args), self.repo, self.tmp, gh=gh or self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        return out
+
+    def test_on_another_branch(self):
+        self.git("checkout", "-q", "-b", "other")
+        detail = self.refused("checkout-not-synced")
+        self.assertIn("other", detail)
+        self.assertIn("0 behind and 0 ahead", detail)
+
+    def test_behind_the_remote_tip(self):
+        self.git("reset", "-q", "--hard", "HEAD~1")  # the tip object stays in the repository
+        self.assertIn("main, 1 behind and 0 ahead", self.refused("checkout-not-synced"))
+
+    def test_behind_a_tip_the_repository_lacks(self):
+        src = os.path.join(self.tmp, "src")
+        gitfix.commit(src, {"src/later.py": "z = 1\n"}, "remote moves on again")
+        gitfix.run(["git", "push", "-q", self.bare, "main"], src)
+        self.assertIn("main, behind by an unknown count", self.refused("checkout-not-synced"))
+
+    def test_ahead_of_the_remote_tip(self):
+        gitfix.commit(self.repo, {"local.py": "l = 1\n"}, "local only")
+        self.assertIn("main, 0 behind and 1 ahead", self.refused("checkout-not-synced"))
+
+    def test_in_a_linked_worktree(self):
+        self.git("checkout", "-q", "-b", "parking")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", wt, "main")
+        detail = self.refused("checkout-not-synced", cwd=wt)
+        self.assertIn("linked worktree", detail)
+        self.assertIn("main, 0 behind and 0 ahead", detail)
+
+    def test_synced_checkout_with_uncommitted_changes_passes(self):
+        tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
+        tp.write(self.repo, "untracked.py", "u = 1\n")
+        self.passes()
+
+    def test_unreachable_remote(self):
+        self.git("config", "url." + os.path.join(self.tmp, "nope.git") + ".insteadOf", self.URL)
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.refused("remote-unreachable")
+
+    def test_base_repository_with_no_local_remote(self):
+        self.refused("no-upstream-remote", gh=self.gh(url="https://github.com/other/repo/pull/7"))
+
+    def test_a_checked_out_pr_head_is_not_gated(self):
+        self.git("fetch", "-q", "--refmap=", "origin", "+refs/pull/7/head:refs/pr7")
+        self.git("checkout", "-q", "--detach", "refs/pr7")
+        self.git("update-ref", "-d", "refs/pr7")
+        self.passes()
+
+
+class Fork(tt.PRWorld):
+    """The PR's base repository o/r is a fork of u/r; the clone has both as remotes."""
+
+    UP = "https://github.com/u/r.git"
+
+    def setUp(self):
+        super().setUp()
+        self.up = os.path.join(self.tmp, "up.git")
+        gitfix.run(["git", "init", "-q", "--bare", "-b", "main", self.up], self.tmp)
+        gitfix.run(["git", "push", "-q", self.up, self.main + ":refs/heads/main"], self.repo)  # the fork is one ahead
+        self.git("remote", "add", "upstream", self.UP)
+        self.git("config", "url." + self.up + ".insteadOf", self.UP)
+        self.fork_gh = mock.Mock(side_effect=lambda args, cwd: (
+            {"isFork": True, "parent": {"name": "r", "owner": {"login": "u"}}} if args[0] == "repo" else self.payload()))
+
+    def test_fork_with_extra_commits_containing_the_upstream_tip_passes(self):
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+
+    def test_fork_lacking_the_upstream_tip_refuses(self):
+        src = os.path.join(self.tmp, "src")
+        gitfix.run(["git", "fetch", "-q", self.up, "main"], src)
+        gitfix.run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], src)
+        gitfix.commit(src, {"up.py": "u = 1\n"}, "upstream moves on")
+        gitfix.run(["git", "push", "-q", self.up, "HEAD:refs/heads/main"], src)
+        before = tp.snapshot(self.repo)
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)
+        self.assertEqual((rc, out["reason"]), (1, "checkout-not-synced"), out)
+        self.assertEqual(tp.snapshot(self.repo), before)
+
+    def test_fork_whose_parent_has_no_local_remote_refuses(self):
+        self.git("remote", "remove", "upstream")
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
+
+class RefKinds(tt.Base):
+    """A clone of a local bare repository: origin/HEAD names the upstream, feat is checked out."""
+
+    def setUp(self):
+        super().setUp()
+        bare = os.path.join(self.tmp, "bare.git")
+        gitfix.run(["git", "init", "-q", "--bare", "-b", "main", bare], self.tmp)
+        src = gitfix.make_repo(os.path.join(self.tmp, "src"))
+        self.base = gitfix.commit(src, {"a.py": "a = 0\n"}, "base")
+        gitfix.run(["git", "push", "-q", bare, "main"], src)
+        self.repo = os.path.join(self.tmp, "clone")
+        gitfix.run(["git", "clone", "-q", bare, self.repo], self.tmp)
+        self.git("checkout", "-q", "-b", "feat")
+        self.feat = gitfix.commit(self.repo, {"a.py": "a = 1\n", "b.py": "b = 1\n"}, "feat")
+
+    def test_a_feature_branch_no_argument_run_and_staged_target_are_not_gated(self):
+        self.git("remote", "set-url", "origin", os.path.join(self.tmp, "nope.git"))  # any network read would fail
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "branch"), out)
+        tp.write(self.repo, "a.py", "a = 2\n")
+        self.git("add", "a.py")
+        rc, out = tt.call(["--staged"], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "staged"), out)
+
+    def test_a_branch_head_not_checked_out_is_gated(self):
+        self.git("checkout", "-q", "main")
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)  # main is at the live tip
+        self.git("checkout", "-q", "feat")
+        self.git("branch", "-q", "side", self.base)
+        rc, out = tt.call(["side..main"], self.repo, self.tmp)  # head main is not HEAD, and HEAD is on feat
+        self.assertEqual((rc, out["reason"]), (1, "checkout-not-synced"), out)
+        self.assertIn("feat", out["detail"])
+
+    def test_unreachable_origin_refuses_a_gated_head(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "set-url", "origin", os.path.join(self.tmp, "nope.git"))
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
+
+    def test_no_origin_refuses_a_gated_head(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "remove", "origin")
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
+
+class GateProcessCount(tt.PRWorld):
+    def count(self, n):
+        src = os.path.join(self.tmp, "src")
+        gitfix.run(["git", "fetch", "-q", self.bare, "refs/pull/7/head"], src)
+        gitfix.run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], src)
+        gitfix.commit(src, {"g%02d_%d.py" % (i, n): "v = 1\n" for i in range(n)}, "pr %d" % n)
+        gitfix.run(["git", "push", "-q", "--force", self.bare, "HEAD:refs/pull/7/head"], src)
+        head = gitfix.run(["git", "rev-parse", "HEAD"], src).strip()
+        log = os.path.join(self.tmp, "gate%d.json" % n)
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh(headRefOid=head))
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        return tp.starts(log)
+
+    def test_the_gate_adds_one_ls_remote_and_no_per_file_process(self):
+        three = self.count(3)
+        self.setUp()  # a fresh world: the 30-file run inherits no objects of the 3-file run
+        thirty = self.count(30)
+        self.assertEqual(len(three), len(thirty))
+        for argv in (three, thirty):
+            self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
+
+
+class Docs(unittest.TestCase):
+    def test_skill_names_each_gate_reason_as_the_users_fix(self):
+        with open(os.path.join(os.path.dirname(paths.SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
+            flat = " ".join(fh.read().split())
+        self.assertIn("User fixes: `checkout-not-synced`", flat)  # never the model: the review never syncs the checkout
+        for reason in ("`no-upstream-remote`", "`remote-unreachable`"):
+            self.assertIn(reason, flat)
+
+
+if __name__ == "__main__":
+    unittest.main()
