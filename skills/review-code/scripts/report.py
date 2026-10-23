@@ -243,21 +243,15 @@ class _Pinned:
 
     def __init__(self, run, paths, cited=()):
         tj = target.load_json(run, "target.json")
-        self.top, self.files, self.rows, blob = tj["repo"], set(), {}, {}
+        self.top, self.files, self.rows = tj["repo"], set(), {}
         self.tree, self._every = tj.get("pinned_tree"), None
         if not self.tree:  # a run from before the pin (14-day retention) has nothing to judge a cite against
             raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
-        out = ledger.ls_tree(self.tree, want, self.top, long=True)
-        for rec in out.split(b"\0"):
-            meta, tab, name = rec.partition(b"\t")
-            f = meta.split()
-            if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # a link, submodule or directory is no cited file
-                p = name.decode("utf-8", "surrogateescape")
-                self.files.add(p)
-                blob[p] = f[2].decode()
+        blob = {p: oid for p, (_, oid) in ledger.regular_blobs(self.tree, want, self.top).items()}
+        self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
         uniq = sorted(set(need.values()))
         text = {oid: None if data is None else ledger._text(data)

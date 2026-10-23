@@ -611,6 +611,18 @@ def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> b
     return b"".join(out)
 
 
+def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple[int, str]]:
+    """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
+    or a directory is no file whose content can be read."""
+    out = {}
+    for rec in ls_tree(tree, paths, repo, long=True).split(b"\0"):
+        meta, tab, name = rec.partition(b"\t")
+        f = meta.split()
+        if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):
+            out[name.decode("utf-8", "surrogateescape")] = (int(f[3]), f[2].decode())
+    return out
+
+
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
     """path -> (mode, oid) of exactly `paths` in the pinned tree: ls_tree's chunks, literal pathspecs, never the whole tree."""
     out = {}
