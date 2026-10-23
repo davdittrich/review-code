@@ -107,7 +107,7 @@ def _read_config():
 
 # Domain packs. Row: (name, file globs, content regex, content rule applies only to files matching these globs).
 # A file matches by glob (on the path or its base name) or by the regex over its scanned lines: the added lines of
-# change.diff for a change target, the first SCAN_BYTES of its tree/ copy for path and repo targets. Heuristics: a
+# change.diff for a change target, the first SCAN_BYTES of its pinned blob for path and repo targets. Heuristics: a
 # hit loads a pack for the lane to read, it is never a finding. llm-generated-code loads only through the ai flag
 # or the deep tier (ccr-contract: authorship is not knowable from a diff). Names come from this table only.
 RISK_TOKENS = ("auth", "login", "passw", "secret", "token", "crypt", "session", "admin", "payment", "billing",
