@@ -10,6 +10,7 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -1035,6 +1036,64 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
             "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths}
 
 
+KNOWLEDGE = (".wolf", ".codegraph", ".serena")  # tool knowledge directories (gh#51); changes there are informational
+CAUSE = "changed during the run; hooks, index daemons or other sessions may be the cause"
+
+
+def _stat(path: str):
+    try:
+        st = os.lstat(path)
+        return [st.st_size, st.st_mtime_ns]
+    except OSError:
+        return None
+
+
+def integrity(top: str) -> dict:
+    """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, the real index file's SHA-256,
+    each status entry's fields with its (size, mtime_ns) so a second edit to a file already dirty shows, and (size,
+    mtime_ns) of every file under the knowledge directories, walked by stat only. Clean tracked files cost nothing;
+    no file content is read. A failed status or an unreadable index is recorded as it is, never raised."""
+    # shortcut: normal untracked mode collapses a wholly untracked directory to one entry, so an edit to a file already
+    # inside it shows only when the directory's own size or mtime moves; use --untracked-files=all if that must be exact
+    out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=dirty"], top, check=False)
+    dirty, recs = {}, out.decode("utf-8", "surrogateescape").split("\0")
+    skip = False
+    for r in recs:
+        if skip or not r:
+            skip = False
+            continue
+        n = {"1": 8, "2": 9, "u": 10}.get(r[0], 1)  # fields before the path; a rename record's next field is its source
+        f, skip = r.split(" ", n), r[0] == "2"
+        if len(f) > n:
+            dirty[shown(f[n])] = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
+    try:
+        with open(os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip()), "rb") as fh:
+            index = hashlib.sha256(fh.read()).hexdigest()
+    except (OSError, Refuse):
+        index = None
+    know = {}
+    for d in KNOWLEDGE:
+        for root, _, files in os.walk(os.path.join(top, d)):
+            for f in files:
+                p = os.path.join(root, f)
+                know[shown(os.path.relpath(p, top).replace(os.sep, "/"))] = _stat(p)
+    return {"version": 1, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
+
+
+def integrity_changes(top: str, snap: dict) -> dict:
+    """What changed since `snap` (gh#51): working-tree paths and the index are warnings, knowledge paths informational.
+    Paths are stored and returned escaped (shown); a knowledge path the status lists is reported only as knowledge."""
+    now = json.loads(json.dumps(integrity(top)))  # lists, as the stored snapshot holds them
+
+    def moved(key):
+        a, b = snap[key], now[key]
+        return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
+
+    mine = lambda p: any(p == d or p.startswith(d + "/") for d in KNOWLEDGE)  # noqa: E731
+    return {"working_tree": [p for p in moved("dirty") if not mine(p)], "index": snap["index"] != now["index"],
+            "knowledge": moved("knowledge"), "cause": CAUSE}
+
+
 def _checkout_root(top: str, head: str) -> str:
     """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
     held = []
@@ -1089,6 +1148,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
             "%d %s" % (n, r) + (" (%s bytes, over %d)" % (", ".join(sizes), MAX_FILE) if r == "too-large" else "")
             for r, n in sorted(counts.items())))
     run = new_run_dir(cwd)
+    integ = os.path.join(run, "integrity.json")  # gh#51: compared by report.py render, after the verifiers
+    write_private(integ, json.dumps(integrity(top), sort_keys=True))
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
@@ -1100,7 +1161,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2))
     rec = {
         "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
-        "difference": diff_path, "difference_count": len(pt["paths"]),
+        "difference": diff_path, "difference_count": len(pt["paths"]), "integrity": integ,
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],

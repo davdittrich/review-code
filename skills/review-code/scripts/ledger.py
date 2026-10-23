@@ -42,7 +42,7 @@ def _nit_rank(p: str) -> int:
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
-PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count")  # gh#48, from target.json
+PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity")  # gh#48, gh#51
 STDOUT_KEYS = {"status", "difference", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
                "adr_omitted", "source"}

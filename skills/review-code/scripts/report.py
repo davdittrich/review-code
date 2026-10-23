@@ -78,7 +78,8 @@ any path or line in the line is overwritten), quote = the item name, with 1 to 5
 line lists item numbers; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
 lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
-checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. A handoff for a file listed by a plan.json pack
+checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. render adds
+integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause}, or null without a snapshot. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
 """
 import sys
@@ -1573,6 +1574,13 @@ def _text(doc):
     out += ["lost guarantee: " + e(g) for g in doc["lost_guarantees"]]
     out += [basis_line(doc["basis"], "basis: pinned ")] if doc["basis"]["pinned_tree"] else []
     out += ["lost capability: " + e(c) for c in doc["basis"]["lost_capabilities"]]
+    ig = doc.get("integrity")
+    if ig:
+        rows = (["integrity warning: %s (working tree) %s" % (e(p), ig["cause"]) for p in ig["working_tree"]]
+                + (["integrity warning: index " + ig["cause"]] if ig["index"] else [])
+                + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
+        out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
+                if rows else ["integrity: no change to the checkout, index or tool knowledge during the run"])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
@@ -1653,8 +1661,21 @@ def _text(doc):
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
 
+def _integrity(run, tj):
+    """gh#51: what changed in the checkout, its index and tool knowledge since target.py's snapshot, or None when the
+    run has no snapshot or the comparison fails. It reports only: never a refusal, the verdict or a finding."""
+    try:
+        with open(os.path.join(run, "integrity.json"), encoding="utf-8") as fh:
+            snap = json.load(fh)
+        target._NO_FILTERS.update(target._no_filters(tj["repo"]))  # the snapshot's git ran without filters too
+        return target.integrity_changes(tj["repo"], snap)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, target.Refuse):
+        return None
+
+
 def render(run, fmt):
     doc = build(run)
+    doc["integrity"] = _integrity(run, target.load_target(run))  # render only: post.py's build runs no status
     if fmt == "text":
         return _text(doc)
     return json.dumps(_sarif(doc) if fmt == "sarif" else doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
