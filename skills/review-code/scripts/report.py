@@ -1211,6 +1211,15 @@ def _ingest(run, text, lane, shard):
     queue = _queue(cands, doomed)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
+    packs = _packs(run)
+    refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
+    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
+    texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
+    try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
+        for t in texts:
+            t.encode("utf-8")
+    except UnicodeEncodeError:
+        raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
     for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     for n in _rejected(run)[1]:  # their replies are gone (4gj)
@@ -1219,11 +1228,8 @@ def _ingest(run, text, lane, shard):
         os.remove(os.path.join(run, "verdicts.json"))
     hand = os.path.join(run, "handoff")
     os.makedirs(hand, mode=0o700, exist_ok=True)
-    packs = _packs(run)
-    refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
-    for c in queue:
-        target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs, diff))
+    for c, t in zip(queue, texts):
+        target.write_private(os.path.join(hand, c["id"] + ".md"), t)
     _reject(run, key, rejected)
     lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
     _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),

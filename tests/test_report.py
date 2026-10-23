@@ -2376,6 +2376,29 @@ class Dispositions(Lanes):
             report._disp(1, None, "rejected", "not-a-reason")
 
 
+class LoneSurrogate(Base):
+    """A lone surrogate in a lane's path or text cannot be written as UTF-8: refuse before the run changes (3j06)."""
+    base_files = {"src/calc.py": "x = 1\n"}
+    feat_files = {os.fsdecode(b"bad\xff.py"): "def f():\n    return a - b\n", "src/calc.py": FEAT}
+
+    def snap(self):
+        out = {}
+        for r, _, fs in os.walk(self.run_dir):
+            for f in fs:
+                with open(os.path.join(r, f), "rb") as fh:
+                    out[os.path.relpath(os.path.join(r, f), self.run_dir)] = fh.read()
+        return {k: v for k, v in out.items() if not k.startswith(("tree", "history"))}
+
+    def test_a_surrogate_path_or_text_refuses_and_leaves_the_run_alone(self):
+        self.ingest(CAND)
+        before = self.snap()
+        bad = os.fsdecode(b"bad\xff.py")
+        for c in (dict(CAND, path=bad, line=2), dict(CAND, title="t" + "\udcff"), dict(CAND, trigger="x" + "\udcff")):
+            rc, out = self.rep("ingest", lines(c))
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
+            self.assertEqual(self.snap(), before)
+
+
 class NotRunSkips(unittest.TestCase):
     def nr(self, skipped):
         return report._not_run("/nonexistent", {"trust": "own"}, skipped, {}, False, [])
