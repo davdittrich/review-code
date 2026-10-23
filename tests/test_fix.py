@@ -1236,6 +1236,7 @@ class Tamper(Scope):
                  "in_flight mode missing": with_(in_flight={"id": "F-1", "path": "a.py"}),
                  "accepted not an object": with_(accepted=[]),
                  "untracked not a list": with_(untracked="x"),
+                 "side_effects not a list": with_(side_effects="src/other.py"),
                  "deeply nested": lambda st: "[" * 200000}
         run, fid, bg, reset = self.started_once()
         for name, make in cases.items():
