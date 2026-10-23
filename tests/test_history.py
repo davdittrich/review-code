@@ -229,6 +229,28 @@ class Caps(Repo):
         self.assertEqual(self.led["history"]["files"] + cut["files_omitted"], 40)
 
 
+class Header(Repo):
+    """The header of each history file states the limits of its log and blame rows, so an agent does not read them as complete."""
+
+    LIMITS = [
+        "per file, not per hunk",
+        "blame follows renames",
+        "misattributed or dropped when several files are tracked",
+        "no commit window",
+        "lowest to the highest removed line",
+        "gitlink (submodule) paths are skipped",
+    ]
+
+    def test_the_header_states_each_limit_of_the_log_and_blame_rows(self):
+        self.edit({5: "old"}, "touch five")
+        self.feature({5: "new"})
+        self.build()
+        head = " ".join(self.history().split("\n## ")[0].split()).lower()
+        for limit in self.LIMITS:
+            with self.subTest(limit=limit):
+                self.assertIn(limit, head)
+
+
 class Hidden(Repo):
     def test_hidden_characters_in_a_subject_or_author_never_reach_the_file(self):
         zw, tag = chr(0x200B), chr(0xE0041)
