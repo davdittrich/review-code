@@ -1,9 +1,9 @@
 """gh#53: why the old lines are as they are. For every line a change removes or modifies, one file per changed file
-under <run>/history/: `git blame` rows and the `git log -L` commits, from the merge base (HEAD for an in-place kind),
+under <run>/history/: `git blame` rows and the `git log -L` commits, from the base, the diff's old side (HEAD for an in-place kind),
 read-only and stripped like other repository text. Agents open a file only when they need it; nothing is pasted into a
 prompt. Added lines have no history and are skipped, and so is a file the filter in `build` drops: one with no old-side
-name, a name or old name holding a hidden character, one that is not a regular file at the merge base (gitlink, symlink,
-absent), and an unstaged file whose index blob differs from the merge base's. Costs one blame per modified file and one
+name, a name or old name holding a hidden character, one that is not a regular file at the base (gitlink, symlink,
+absent), and an unstaged file whose index blob differs from the base's. Costs one blame per modified file and one
 log call in all."""
 import os
 import re
@@ -23,7 +23,7 @@ _HEAD = ("# History of %s (base %s)\nUNTRUSTED data: commit text written by earl
          "Limits: the git log -L cap is per file, not per hunk; a log commit made under an older name can be misattributed "
          "or dropped when several files are tracked, while blame follows renames; there is no commit window; a hunk span "
          "runs from the lowest to the highest removed line; gitlink (submodule) paths are skipped, and so are symlinks, files "
-         "absent at the merge base, files whose index blob differs from the merge base's (unstaged) and names holding hidden characters "
+         "absent at the base, files whose index blob differs from the base's (unstaged) and names holding hidden characters "
          "(no history file for them).\n")
 _BLAME = ["blame", "--porcelain", "--no-textconv", "--encoding=UTF-8"]
 _LOG = ["log", "--no-show-signature", "--no-textconv", "--no-ext-diff", "--encoding=UTF-8", "--format=\x01%h\x02%at\x02%an\x02%s"]
@@ -127,7 +127,7 @@ _REGULAR = ("100644", "100755")
 def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple[dict, dict]:
     """Write <run>/history/<changed path>.txt for each changed file with a removed or modified line; `put(root, rel, data)`
     stores one file. `mb` and `base_ls` are the diff's old-side commit (the merge base, or the last reviewed head on --since-last) and its listing; `index` the index's, when the old side is the index (unstaged:
-    a file whose index blob is not the merge base's has old-side numbers HEAD cannot answer). Returns (ledger entry {files, hunks}, what the caps cut: {} when nothing was)."""
+    a file whose index blob is not the base's has old-side numbers HEAD cannot answer). Returns (ledger entry {files, hunks}, what the caps cut: {} when nothing was)."""
     try:
         with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
             found = _ranges(fh.read())

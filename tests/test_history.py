@@ -240,8 +240,8 @@ class Header(Repo):
         "lowest to the highest removed line",
         "gitlink (submodule) paths are skipped",
         "and so are symlinks",
-        "files absent at the merge base",
-        "files whose index blob differs from the merge base's",
+        "files absent at the base",
+        "files whose index blob differs from the base's",
         "names holding hidden characters",
     ]
 
