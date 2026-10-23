@@ -361,7 +361,7 @@ _MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\
 
 
 def _claimed(o):
-    """Names a finding's title or trigger calls missing ("x.py is missing", "undefined name f")."""
+    """Names a finding's title or trigger calls missing ("x.py is missing", "missing file x.py")."""
     return {(a or b).rstrip(".") for k in ("title", "trigger") if isinstance(o.get(k), str) for a, b in _MISSING.findall(o[k])}
 
 
