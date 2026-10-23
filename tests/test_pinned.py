@@ -238,6 +238,31 @@ class Filters(tt.Base):
                 self.assertEqual(difference(out["run"]), {"big.dat": "modified"})  # too large to hash: it differs
 
 
+class AmbiguousRef(tt.Base):
+    """The ambiguous-ref decision reads git's message, which gettext translates (review-code-ed7m)."""
+
+    def test_the_decision_does_not_depend_on_the_message_language(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(repo, {"a": "a\n"}, "base")
+        real = subprocess.run
+        seen = []
+
+        def spy(argv, *a, **kw):
+            env = kw.get("env") or {}
+            seen.append((argv, env))
+            if "--verify" in argv:  # a translated git: English only when the call forces the C locale
+                msg = b"fatal: ambiguous argument\n" if env.get("LC_ALL") == "C" else b"fatal: mehrdeutiges Argument\n"
+                return subprocess.CompletedProcess(argv, 128, b"", msg)
+            return real(argv, *a, **kw)
+        with mock.patch.dict(os.environ, {"LC_ALL": "de_DE.UTF-8"}), mock.patch.dict(target._NO_FILTERS, clear=True), \
+                mock.patch.object(target.subprocess, "run", spy):
+            with self.assertRaises(target.Refuse) as cm:
+                target._commit_id("x", repo)
+        self.assertEqual(cm.exception.reason, "ambiguous-ref")
+        cfg = [e for argv, e in seen if "config" in argv]  # the filter config read keeps the caller's locale
+        self.assertTrue(cfg and all(e.get("LC_ALL") == "de_DE.UTF-8" for e in cfg), cfg)
+
+
 class FilterNames(tt.Base):
     """A driver whose name holds a non-UTF-8 byte, a dot or an uppercase letter is blanked too (review-code-215w): in a
     UTF-8 locale git's config regex `.` never matched the 0xff byte, so that driver ran."""

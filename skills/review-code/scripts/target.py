@@ -304,7 +304,7 @@ def _commit_id(rev: str, cwd: str) -> str:
     """Full object id of a commit-ish, exactly as git prints it."""
     if not rev or rev.startswith("-"):
         raise Refuse("bad-ref", "the target is not a commit in this repository")
-    rc, out, err = _run(["rev-parse", "--verify", rev + "^{commit}"], cwd)
+    rc, out, err = _run(["rev-parse", "--verify", rev + "^{commit}"], cwd, env={"LC_ALL": "C"})  # English: err is matched below
     if rc == 0:
         return out.decode("utf-8", "replace").strip()
     if b"ambiguous" in err:
