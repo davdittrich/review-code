@@ -1016,7 +1016,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     `modified`, `untracked` (in the checkout, not ignored, not in the tree) or `absent-in-checkout`; in place it holds
     only the worktree edits of `staged` (its tree is the index) and files the tree could not take. Its cost follows the
     change and the drift: one raw diff, one untracked listing, one config read in place, at most one hash-object and one
-    update-index."""
+    update-index; with a filter driver configured, one ls-files and one check-attr more, and every filtered file read."""
     idx = os.path.join(run, "index.tmp")
     real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
     if os.path.exists(real):
@@ -1039,6 +1039,11 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
         else:
             paths = {p: "absent-in-checkout" if s == "D" else "modified" for s, p in edits}
             paths.update((p, "untracked") for p in other)
+            if kind != "staged" and _NO_FILTERS.get(top):  # a filter is configured: an unedited file's blob is filtered
+                attrs = _split(git_bytes(["check-attr", "-z", "--stdin", "filter"], top,
+                                         stdin=git_bytes(["ls-files", "-z"], top, env=env)))
+                paths.update((p, "modified") for p, v in zip(attrs[0::3], attrs[2::3])
+                             if v not in ("unspecified", "unset") and p not in paths)  # so it is hashed as on disk
             # staged pins the index as it is; every other in-place kind pins the whole checkout, so its difference is empty
             take = [] if kind == "staged" else sorted(paths)
             zero, srcs = "0" * len(plan["head"]), []

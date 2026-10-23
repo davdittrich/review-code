@@ -207,7 +207,11 @@ class Filters(tt.Base):
         self.marker = os.path.join(self.tmp, "filter-ran")
         self.git("config", "filter.spy.clean", "touch '%s'; tr a-z A-Z" % self.marker)
         self.git("config", "filter.spy.smudge", "cat")
-        gitfix.commit(self.repo, {".gitattributes": "*.dat filter=spy text\n", "lib.dat": "abc\n", "keep.py": "k = 1\n"}, "base")
+        gitfix.commit(self.repo, {".gitattributes": "*.dat filter=spy text\n", "lib.dat": "abc\n", "keep.py": "k = 1\n",
+                                  "old.dat": "def\n", "big.dat": "g" * 40 + "\n"}, "base")  # stored: DEF, GGG..
+        for n in ("old.dat", "big.dat"):  # older than the index, so git's racy check never rereads them
+            os.utime(os.path.join(self.repo, n), (1_600_000_000, 1_600_000_000))
+        self.git("update-index", "-q", "--refresh")
         write(self.repo, "lib.dat", b"edited bytes\r\n")
         write(self.repo, "new.dat", b"fresh\n")
         t = os.stat(os.path.join(self.repo, "keep.py")).st_mtime
@@ -222,6 +226,15 @@ class Filters(tt.Base):
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":lib.dat"), b"edited bytes\r\n")
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":new.dat"), b"fresh\n")
         self.assertFalse(os.path.exists(self.marker), "a clean filter ran")
+
+    def test_an_unedited_filtered_file_enters_the_pinned_tree_as_it_is_on_disk(self):
+        for args in (["--unstaged"], [], ["keep.py"], ["--repo"]):
+            with self.subTest(args=args), mock.patch.object(target, "MAX_FILE", 30):  # big.dat is over it
+                rc, out = tt.call(args, self.repo, self.tmp)
+                self.assertEqual((rc, out["status"]), (0, "ok"), out)
+                tree = load(out["run"])["pinned_tree"]
+                self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":old.dat"), b"def\n")  # not the stored DEF
+                self.assertEqual(difference(out["run"]), {"big.dat": "modified"})  # too large to hash: it differs
 
 
 class NoFilterInAnyScript(tfix.Base):
@@ -355,12 +368,16 @@ def starts(path):
 
 
 class ProcessCount(tt.Base):
-    def count(self, n):
-        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d" % n))
-        gitfix.commit(repo, {"m%02d.py" % i: "v = 0\n" for i in range(n)}, "base")
+    def count(self, n, filtered=0):
+        """n edited files; with filtered, a configured driver and that many unedited files it filters."""
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d-%d" % (n, filtered)))
+        if filtered:
+            gitfix.run(["git", "config", "filter.up.clean", "tr a-z A-Z"], repo)
+        files = dict({"m%02d.py" % i: "v = 0\n" for i in range(n)}, **{"f%02d.dat" % i: "f\n" for i in range(filtered)})
+        gitfix.commit(repo, dict(files, **{".gitattributes": "*.dat filter=up\n"} if filtered else {}), "base")
         for i in range(n):
             write(repo, "m%02d.py" % i, "v = 1\n")
-        log = os.path.join(self.tmp, "trace%d.json" % n)
+        log = os.path.join(self.tmp, "trace%d-%d.json" % (n, filtered))
         with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
             rc, out = tt.call([], repo, self.tmp)
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
@@ -375,6 +392,14 @@ class ProcessCount(tt.Base):
             self.assertEqual(sum(1 for a in argv if "ls-files" in a and "--others" in a), 1)
             self.assertEqual(sum(1 for a in argv if "diff" in a and "--raw" in a), 1)
             self.assertEqual(sum(1 for a in argv if "config" in a and "core.fileMode" in a), 1)
+            self.assertEqual([a for a in argv if "check-attr" in a], [])  # no driver configured: no attribute read
+
+    def test_unedited_filtered_files_cost_a_fixed_number_of_git_processes(self):
+        three, thirty = self.count(3, 3), self.count(3, 30)
+        self.assertEqual(len(three), len(thirty))
+        for argv in (three, thirty):
+            self.assertEqual(sum(1 for a in argv if "check-attr" in a and "--stdin" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "hash-object" in a and "--stdin-paths" in a), 1)
 
 
 class LargeRepo(tt.Base):
