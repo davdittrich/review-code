@@ -964,18 +964,28 @@ def _sections(lines: Iterator[str]) -> Iterator[str]:
         yield "".join(x + "\n" for x in cur)
 
 
-def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str) -> Tuple[list, list]:
+def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str,
+                blobs: dict) -> Tuple[list, list]:
     """Strip and escape the change diff file by file into change.diff, so memory holds one file's diff and,
     for a tracked prose file, its whole-file-context diff (6xl.66). Returns (hidden chars, hidden text) with
-    change.diff line numbers."""
+    change.diff line numbers. blobs: pin_tree's {path: "mode oid"} of the files it hashed."""
     def untracked() -> Iterator[str]:
-        if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
-            for u in sorted(set(plan["untracked"]) & set(names)):
-                if not u.endswith("/"):
-                    # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
-                    rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
-                    if rc in (0, 1):
-                        yield "".join(_diff_line(ln) + "\n" for ln in out.split(b"\n")[:-1])
+        # untracked files shown as additions: their pinned blobs, in one tree diffed against the empty tree, so the
+        # cost is four git calls for any number of files and the diff shows the bytes the tree pins
+        want = {u: blobs[u] for u in set(plan["untracked"]) & set(names) if u in blobs}
+        if kind not in ("unstaged", "worktree") or not want:
+            return
+        env = {"GIT_INDEX_FILE": os.path.join(os.path.dirname(path), "untracked.index.tmp")}
+        try:
+            git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=b"".join(
+                ("%s\t" % want[u]).encode() + u.encode("utf-8", "surrogateescape") + b"\0" for u in sorted(want)))
+            tree = git(["write-tree"], top, env=env).strip()
+        finally:
+            if os.path.exists(env["GIT_INDEX_FILE"]):
+                os.remove(env["GIT_INDEX_FILE"])
+        empty = git(["hash-object", "-t", "tree", "--stdin"], top, stdin=b"").strip()
+        # --text (in _DIFF_FLAGS): an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
+        yield from _sections(_diff_lines([["diff-tree", "-r"] + _DIFF_FLAGS + [empty, tree, "--"]], top))
 
     tracked = _sections(_diff_lines(_diff_calls(plan, names, narrow, top), top))
     wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]]) if plan["diff_cmd"] else None
@@ -1010,7 +1020,8 @@ def _c_quoted(path: str) -> bytes:
 
 
 def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
-    """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag}}.
+    """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag},
+    blobs: {path: "mode oid"} of each working file it hashed}.
 
     Ref and PR kinds pin the head commit's tree. In-place kinds pin a tree written from a copy of the index in `run`,
     with the kind's working files hashed raw (no filter runs, the stored bytes are the bytes on disk); the checkout, its
@@ -1032,7 +1043,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in ("100644", "100755")}
     other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
         git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
-    tmp = []
+    tmp, blobs = [], {}
     try:
         if not inplace:
             paths = {p: "absent-in-checkout" if s == "D" else "untracked" if s == "A" else "modified" for s, p in edits}
@@ -1076,7 +1087,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                            stdin=b"".join(_c_quoted(s) + b"\n" for _, _, s in srcs)).split()
                 if len(oids) != len(srcs):
                     raise Refuse("bad-ref", "a git command failed")
-                recs.update((p, "%s %s" % (mode, oid)) for (p, mode, _), oid in zip(srcs, oids))
+                blobs = {p: "%s %s" % (mode, oid) for (p, mode, _), oid in zip(srcs, oids)}
+                recs.update(blobs)
             if recs:
                 git_bytes(["update-index", "-z", "--index-info"], top, env=env,
                           stdin=b"".join(("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
@@ -1088,7 +1100,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                 os.remove(t)
     rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top)
     return {"pinned_tree": tree, "pinned_head": None if inplace else plan["head"],
-            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths}
+            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths, "blobs": blobs}
 
 
 KNOWLEDGE = (".wolf", ".codegraph", ".serena")  # tool knowledge directories (gh#51); changes there are informational
@@ -1209,12 +1221,12 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     run = new_run_dir(cwd)
     integ = os.path.join(run, "integrity.json")  # gh#51: compared by report.py render, after the verifiers
     write_private(integ, json.dumps(integrity(top), sort_keys=True))
-    hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
+    pt = pin_tree(kind, plan, run, top)  # first: change.diff shows the untracked bytes the tree pins, read once
+    hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top, pt["blobs"])
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
-    pt = pin_tree(kind, plan, run, top)
     diff_path = os.path.join(run, "difference.json")
     write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
         {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2,

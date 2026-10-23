@@ -394,6 +394,24 @@ class ProcessCount(tt.Base):
             self.assertEqual(sum(1 for a in argv if "config" in a and "core.fileMode" in a), 1)
             self.assertEqual([a for a in argv if "check-attr" in a], [])  # no driver configured: no attribute read
 
+    def untracked(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "u%d" % n))
+        gitfix.commit(repo, {"t.py": "t = 0\n"}, "base")
+        for i in range(n):
+            write(repo, "u%02d.py" % i, "u = %d\n" % i)
+        log = os.path.join(self.tmp, "trace-u%d.json" % n)
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["--unstaged"], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["untracked_count"]), (0, "ok", n), out)
+        with open(os.path.join(out["run"], "change.diff"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read().count("new file mode"), n)
+        return starts(log)
+
+    def test_untracked_files_reach_the_change_diff_in_a_fixed_number_of_git_processes(self):
+        three, thirty = self.untracked(3), self.untracked(30)
+        self.assertEqual(len(three), len(thirty))
+        self.assertEqual([a for a in three + thirty if "--no-index" in a], [])
+
     def test_a_path_target_lists_untracked_files_once(self):
         repo = gitfix.make_repo(os.path.join(self.tmp, "p"))
         gitfix.commit(repo, {"d/a.py": "a = 0\n", "da.py": "x = 0\n"}, "base")
@@ -417,6 +435,30 @@ class ProcessCount(tt.Base):
         for argv in (three, thirty):
             self.assertEqual(sum(1 for a in argv if "check-attr" in a and "--stdin" in a), 1)
             self.assertEqual(sum(1 for a in argv if "hash-object" in a and "--stdin-paths" in a), 1)
+
+
+class UntrackedDiff(tt.Base):
+    def test_untracked_sections_match_git_diff_no_index(self):
+        """The one diff of pinned blobs prints each kept untracked file as `git diff --no-index /dev/null` does."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"t.py": "t = 0\n"}, "base")
+        write(self.repo, "t.py", "t = 1\n")
+        files = {"exe.sh": "#!/bin/sh\n", "empty.txt": "", "nonl.txt": "no newline", "crlf.txt": "a\r\nb\r\n",
+                 "sp ace.py": "s = 1\n", 't\tq".py': "q = 1\n", "sub/dir/deep.py": "d = 1\n", "a.b": "x\n", "a/c.py": "y\n",
+                 "lock/package-lock.json": "{}\n"}  # the lockfile is excluded: it must not appear
+        for n, d in files.items():
+            write(self.repo, n, d)
+        os.chmod(os.path.join(self.repo, "exe.sh"), 0o755)
+        os.symlink("t.py", os.path.join(self.repo, "link"))
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(os.path.join(out["run"], "change.diff"), "rb") as fh:
+            got = fh.read()
+        want = b"".join(subprocess.run(["git", "diff", "--no-index", "--text"] + target._DIFF_FLAGS + ["--", "/dev/null", n],
+                                       cwd=self.repo, env=gitfix.env(), stdout=subprocess.PIPE).stdout
+                        for n in sorted(set(files) - {"lock/package-lock.json"} | {"link"}))
+        self.assertEqual(got[got.index(b"diff --git", 1):], want)
+        self.assertFalse(os.path.exists(os.path.join(out["run"], "untracked.index.tmp")))
 
 
 class LargeRepo(tt.Base):
