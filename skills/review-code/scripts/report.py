@@ -271,6 +271,8 @@ class _Pinned:
                 meta, tab, name = rec.partition(b"\t")
                 f = meta.split()
                 if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # never a link: its blob is a path, not code
+                    if not f[3].isdigit():  # BAD: the blob is missing (review-code-mjwq)
+                        raise target.Refuse("bad-ref", "a blob of the pinned tree is missing")
                     self._every.append((name.decode("utf-8", "surrogateescape"), int(f[3]), f[2].decode()))
         return self._every
 

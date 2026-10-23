@@ -695,5 +695,33 @@ class PinnedListingArgMax(tt.Base):
         self.assertEqual(cm.exception.reason, "pin-pruned")
 
 
+class MissingBlob(tt.Base):
+    """review-code-mjwq: `ls-tree -l` prints a size of BAD for a regular entry whose blob is missing; int() of it raised
+    ValueError, which main turns into internal-error. Both size parsers refuse bad-ref instead."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"a.py": "a = 1\n"}, "base")
+        gone = subprocess.run(["git", "hash-object", "--stdin"], cwd=self.repo, env=gitfix.env(), input=b"gone\n",
+                              stdout=subprocess.PIPE, check=True).stdout.decode().strip()  # never written: the blob is missing
+        self.tree = subprocess.run(["git", "mktree", "--missing"], cwd=self.repo, env=gitfix.env(), stdout=subprocess.PIPE, check=True,
+                                   input=b"100644 blob %s\tgone.py\n" % gone.encode()).stdout.decode().strip()
+        self.assertIn(b" BAD\t", raw(self.repo, "ls-tree", "-l", self.tree))
+
+    def test_regular_blobs_refuses_bad_ref(self):
+        with self.assertRaises(target.Refuse) as cm:
+            ledger.regular_blobs(self.tree, ["gone.py"], self.repo)
+        self.assertEqual(cm.exception.reason, "bad-ref")
+
+    def test_pinned_every_refuses_bad_ref(self):
+        import report
+        pin = object.__new__(report._Pinned)
+        pin.top, pin.tree, pin._every = self.repo, self.tree, None
+        with self.assertRaises(target.Refuse) as cm:
+            pin.every()
+        self.assertEqual(cm.exception.reason, "bad-ref")
+
+
 if __name__ == "__main__":
     unittest.main()

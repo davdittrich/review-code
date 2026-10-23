@@ -636,6 +636,8 @@ def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple
         meta, tab, name = rec.partition(b"\t")
         f = meta.split()
         if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):
+            if not f[3].isdigit():  # BAD: the blob is missing (review-code-mjwq)
+                raise target.Refuse("bad-ref", "a blob of the pinned tree is missing")
             out[name.decode("utf-8", "surrogateescape")] = (int(f[3]), f[2].decode())
     return out
 
