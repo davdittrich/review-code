@@ -606,7 +606,7 @@ class LaneInputs(tt.Base):
         run = out["run"]
         rc, out, err = cli("ledger.py", ["build", "--run", run], self.repo, self.tmp)
         self.assertEqual(rc, 0, out + err)
-        path = load(run)["difference"]
+        path = load(run)["difference_list"]
         inputs = os.path.join(run, "inputs")
         for name in ("defects.md", "standards.md", "spec.md", "spec-find.md"):
             with self.subTest(name=name), open(os.path.join(inputs, name), encoding="utf-8") as fh:

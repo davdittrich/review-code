@@ -1221,7 +1221,7 @@ def _ingest(run, text, lane, shard):
     os.makedirs(hand, mode=0o700, exist_ok=True)
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = target.load_json(run, "target.json").get("difference")
+    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
     for c in queue:
         target.write_private(os.path.join(hand, c["id"] + ".md"), _handoff(c, run, nonce, packs, refs, diff))
     _reject(run, key, rejected)
