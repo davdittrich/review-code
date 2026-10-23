@@ -146,8 +146,11 @@ def _head_branch(cwd: str) -> Optional[str]:
 def _no_filters(cwd: str) -> dict:
     """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
     required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
-    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"], cwd)
-    keys = sorted({r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0") if r}) if rc == 0 else []
+    # --list, not --get-regexp: in a UTF-8 locale git's regex `.` never matches an invalid byte, so that driver ran (215w)
+    rc, out, _ = _run(["config", "-z", "--list"], cwd)
+    keys = sorted({k for k in (r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0"))
+                   if k.startswith("filter.") and k.rsplit(".", 1)[-1] in ("clean", "smudge", "process")
+                   and len(k.split(".")) > 2}) if rc == 0 else []
     pairs = [(k, "") for k in keys] + [(k, "false") for k in sorted({k.rsplit(".", 1)[0] + ".required" for k in keys})]
     n = os.environ.get("GIT_CONFIG_COUNT", "")
     base = int(n) if n.isdigit() else 0  # entries the caller set stay; ours follow them
