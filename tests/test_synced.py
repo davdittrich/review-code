@@ -66,6 +66,14 @@ class Gate(tt.PRWorld):
         self.assertIn("linked worktree", detail)
         self.assertIn("main, 0 behind and 0 ahead", detail)
 
+    def test_a_main_checkout_whose_path_holds_a_line_separator_is_not_linked(self):  # review-code-21my
+        for i, ch in enumerate("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"):
+            moved = os.path.join(self.tmp, "re%d%spo" % (i, ch))
+            os.rename(self.repo, moved)
+            rc, out = tt.call(["7"], moved, self.tmp, gh=self.gh())
+            self.assertEqual((rc, out["status"]), (0, "ok"), (ch, out))
+            os.rename(moved, self.repo)
+
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
         tp.write(self.repo, "untracked.py", "u = 1\n")
