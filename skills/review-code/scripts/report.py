@@ -755,19 +755,19 @@ def _refs(run, shard=None):
 def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
-        c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
+        c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
-                                                         os.path.join(run, "shards", str(c["shard"]), "tree")))
+                                                         os.path.join(run, "shards", str(c["shard"]), "tree"), ensure_ascii=False))
     out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
-    out += "history: %s\n" % json.dumps(hist) if os.path.isfile(hist) else ""
+    out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
     if c["axis"] == "defects":
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")
     if c["axis"] == "spec":
-        out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md")), c["spec_line"])
+        out += "spec: %s line %d\n" % (json.dumps(os.path.join(run, "inputs", "spec.md"), ensure_ascii=False), c["spec_line"])
     if c["category"] == "lean":  # an unused-code claim needs the whole-repo count, not only what tree/ holds
         n, have = ledger.defined_name(c["quote"]), (refs or {}).get(c.get("shard"), {})
         out += ('references: %s %d outside %s (git grep -w at head_sha)\n' % (json.dumps(n), have[n][1], c["path"])
