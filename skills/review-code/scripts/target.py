@@ -699,12 +699,14 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
     tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    other = _split(git_bytes(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
+    others = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # pin_tree pins them all
+    # a literal pathspec, in Python: the path itself, or a directory above it ("." is the top)
+    other = [n for n in others if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
     present = set(names)
     explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
-            "diff_cmd": None, "commits": [], "explicit": explicit}
+            "others": others, "diff_cmd": None, "commits": [], "explicit": explicit}
 
 
 def _plan_commit(rev: str, cwd: str) -> dict:
@@ -1028,8 +1030,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
     edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
     imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in ("100644", "100755")}
-    other = plan["untracked"] if kind in ("unstaged", "worktree") else _split(
-        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
+    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
+        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
     tmp = []
     try:
         if not inplace:

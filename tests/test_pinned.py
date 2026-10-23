@@ -394,6 +394,23 @@ class ProcessCount(tt.Base):
             self.assertEqual(sum(1 for a in argv if "config" in a and "core.fileMode" in a), 1)
             self.assertEqual([a for a in argv if "check-attr" in a], [])  # no driver configured: no attribute read
 
+    def test_a_path_target_lists_untracked_files_once(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "p"))
+        gitfix.commit(repo, {"d/a.py": "a = 0\n", "da.py": "x = 0\n"}, "base")
+        for n in ("d/new.py", "dz.py", "top.py"):
+            write(repo, n, "n = 1\n")
+        log = os.path.join(self.tmp, "trace-path.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["d"], repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual(sum(1 for a in starts(log) if "ls-files" in a and "--others" in a), 1)
+        tj = load(out["run"])
+        self.assertEqual((tj["included"], tj["untracked"]), (["d/a.py", "d/new.py"], ["d/new.py"]))  # not dz.py
+        names = set(raw(repo, "ls-tree", "-r", "--name-only", tj["pinned_tree"]).decode().split("\n"))
+        self.assertLessEqual({"d/new.py", "dz.py", "top.py"}, names)  # the pin still takes the whole checkout
+        rc, out = tt.call([".."], os.path.join(repo, "d"), self.tmp)  # a path target naming the top: its spec is "."
+        self.assertEqual((out["kind"], load(out["run"])["untracked"]), ("path", ["d/new.py", "dz.py", "top.py"]))
+
     def test_unedited_filtered_files_cost_a_fixed_number_of_git_processes(self):
         three, thirty = self.count(3, 3), self.count(3, 30)
         self.assertEqual(len(three), len(thirty))
