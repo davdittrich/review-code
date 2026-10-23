@@ -739,5 +739,22 @@ class PinnedBlobRead(tt.Base):
         self.assertEqual(pinned.rows, {"big.py": None, "ok.py": ["y = 2"]})
 
 
+class IndexTreeNoRecords(tt.Base):
+    """PR60 N7: an empty record set runs no update-index and still writes the (empty) tree."""
+
+    EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    def test_no_records_run_no_update_index_and_write_the_empty_tree(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        log = os.path.join(self.tmp, "trace.json")
+        env = {"GIT_INDEX_FILE": os.path.join(self.tmp, "x.index")}
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            tree = target._write_index_tree(repo, env, b"")
+        argv = starts(log)
+        self.assertEqual([a for a in argv if "update-index" in a], [])
+        self.assertEqual(sum(1 for a in argv if "write-tree" in a), 1)
+        self.assertEqual(tree, self.EMPTY_TREE)
+
+
 if __name__ == "__main__":
     unittest.main()
