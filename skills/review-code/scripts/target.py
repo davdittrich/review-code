@@ -126,7 +126,7 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 
 def _toplevel(cwd: str) -> str:
     """The repository root, without .strip(): that would also drop a CR the directory name ends in (wb5s)."""
-    out = git(["rev-parse", "--show-toplevel"], cwd)
+    out = git_bytes(["rev-parse", "--show-toplevel"], cwd).decode("utf-8", "surrogateescape")  # lossless: reused as cwd
     return out[:-1] if out.endswith("\n") else out
 
 
@@ -635,7 +635,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:
         raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
-    dirs = git(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).split("\n")  # not splitlines: a path may hold CR, VT, FF, FS-RS, NEL, LS or PS
+    dirs = git_bytes(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).decode("utf-8", "surrogateescape").split("\n")  # not splitlines: a path may hold CR, VT, FF, FS-RS, NEL, LS or PS
     linked = os.path.realpath(dirs[0]) != os.path.realpath(os.path.join(cwd, dirs[1]))
     rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     on = out.decode("utf-8", "replace").strip() if rc == 0 else None

@@ -75,6 +75,13 @@ class Gate(tt.PRWorld):
             self.assertEqual((rc, out["status"]), (0, "ok"), (ch, out))
             os.rename(moved, self.repo)
 
+    def test_a_main_checkout_whose_path_holds_a_non_utf8_byte_is_not_linked(self):  # review-code-6i9x
+        moved = os.path.join(os.fsencode(self.tmp), b"re\xffpo")
+        os.rename(self.repo, moved)
+        rc, out = tt.call(["7"], os.fsdecode(moved), self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        os.rename(moved, self.repo)
+
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
         tp.write(self.repo, "untracked.py", "u = 1\n")
