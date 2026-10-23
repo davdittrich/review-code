@@ -51,19 +51,24 @@ _REF = re.compile(r"[@#!&~%$^](?=\w)[\w./-]*"  # @user #1 !1 &epic ~label %miles
 _NS = re.compile(r"[\w.-]+/[\w.-][\w./-]*>")
 _REF_G = re.compile(_REF.pattern.removesuffix(_NS.pattern) + r"(?<![\w.-])" + _NS.pattern)
 _RUN = re.compile(r"[\w.-]+")
+# `_NS` also rescans a run of [\w./-] from every segment start ('a/a/a/...') when the run does not end in `>`, and then
+# fails from all of them. Such a run holds no match, so `_refs` searches a copy with its `/` turned into `.`: the same
+# class for every other alternative, and no `/` left for `_NS` to start on.
+_NO_GT = re.compile(r"(?<![\w./-])[\w./-]+(?![\w./-]|>)")
 
 
 def _refs(t: str):
-    """The matches `_REF.finditer(t)` yields, in linear time on a long word."""
+    """The matches `_REF.finditer(t)` yields, in linear time on a long word. Spans are the original's; take text from `t`."""
+    s = _NO_GT.sub(lambda r: r.group().replace("/", "."), t)  # same length as t
     at, dead = 0, 0  # dead: the end of a run where _NS is known to fail from `at`
     while True:
-        m = _REF_G.search(t, at)
-        if at and at >= dead and _RUN.match(t, at - 1, at) and (m is None or m.start() > at):
-            n = _NS.match(t, at)
+        m = _REF_G.search(s, at)
+        if at and at >= dead and _RUN.match(s, at - 1, at) and (m is None or m.start() > at):
+            n = _NS.match(s, at)
             if n:
                 m = n
             else:
-                r = _RUN.match(t, at)
+                r = _RUN.match(s, at)
                 dead = r.end() if r else at
         if m is None:
             return
@@ -551,7 +556,7 @@ def _prose(s) -> str:
     t = sanitize.escape_line(s).replace("`", "'")
     out, at = [], 0
     for m in _refs(t):
-        out += [_escape(t[at:m.start()]), "`" + m.group() + "`"]
+        out += [_escape(t[at:m.start()]), "`" + t[m.start():m.end()] + "`"]
         at = m.end()
     return "".join(out + [_escape(t[at:])])
 
@@ -619,7 +624,7 @@ def _guard(text: str) -> None:
             raise Refuse("unsafe-text")
         else:
             bare = _SPAN.sub(r"\1 ", ln)  # a space: a span is a code element, so text around it never joins into a reference
-            if _LOOSE.search(bare) or _REF_G.search(_shown(bare)):
+            if _LOOSE.search(bare) or next(_refs(_shown(bare)), None):
                 raise Refuse("unsafe-text")
     if fence:
         raise Refuse("unsafe-text")
