@@ -555,10 +555,16 @@ class PostingDocs(unittest.TestCase):
         self.assertNotIn("submit or delete that pending review yourself", row)
         self.assertIn("remove the plugin's comments", row)
 
+    def test_step_7_exempts_history_files_from_the_commit_text_ban(self):
+        """review-code-zjyy: serial mode reads lane inputs that name history files, which are commit text (agents say the same)."""
+        flat = " ".join(self.read(SKILL).split())
+        self.assertIn("Never open `inputs/spec.md` or read PR, MR, issue or commit text except history files.", flat)
+        self.assertNotIn("or any PR, MR, issue or commit text", flat)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings at their 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22419)  # gh#52 shrank both; never raise these caps
+        self.assertLessEqual(os.path.getsize(SKILL), 22416)  # gh#52 shrank both; never raise these caps
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15117)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
