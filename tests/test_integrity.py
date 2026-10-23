@@ -47,6 +47,21 @@ class Integrity(tpost.Base):
         self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
         self.assertIn(self.CLEAN, out.split("\n"))
 
+    def test_an_edit_inside_a_submodule_worktree_is_a_blind_spot_the_line_names(self):  # review-code-exrf
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"lib.py": "x = 1\n"}, "sub base")
+        gitfix.run(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor"], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "add submodule"], self.repo)
+        self.make_run()
+        self.review(5)
+        tp.write(self.repo, "vendor/lib.py", "x = 2\n")  # modified content inside the submodule: status =dirty hides it
+        tp.write(self.repo, "vendor/new.py", "y = 1\n")
+        out = self.render()
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
+        self.assertIn(self.CLEAN, out.split("\n"))
+        gitfix.run(["git", "commit", "-q", "-am", "move"], os.path.join(self.repo, "vendor"))
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], ["vendor"])  # the moved pointer is seen
+
     def test_a_tracked_edit_is_a_warning_with_its_path_and_cause(self):
         tp.write(self.repo, "src/calc.py", "edited\n")
         self.assertIn("integrity warning: src/calc.py (working tree) " + CAUSE, self.render().split("\n"))
@@ -95,6 +110,37 @@ class Integrity(tpost.Base):
         led = tp.load(self.run_dir, "ledger.json")["target"]
         self.assertEqual(led["integrity"], os.path.join(self.run_dir, "integrity.json"))
         self.assertEqual(tp.load(self.run_dir)["integrity"], led["integrity"])
+
+
+class DirtyFlag(tpost.Base):
+    """review-code-t177: pin() takes `dirty` from the integrity snapshot's status when that shows a tracked edit; the
+    separate tracked-files status runs only when it cannot (a clean snapshot hides submodule worktree edits)."""
+
+    def pin(self):
+        log = os.path.join(self.tmp, "dirty%d.json" % len(os.listdir(self.tmp)))
+        rc, out, err = cli("target.py", ["main"], self.repo, self.tmp, extra={"GIT_TRACE2_EVENT": log})
+        self.assertEqual(rc, 0, out + err)
+        v1 = sum(1 for a in tp.starts(log) if "status" in a and "--porcelain" in a)
+        return tp.load(json.loads(out)["run"])["dirty"], v1
+
+    def test_a_clean_checkout_is_not_dirty_and_needs_the_tracked_status(self):
+        self.assertEqual(self.pin(), (False, 1))
+
+    def test_a_tracked_edit_is_dirty_from_the_snapshot_alone(self):
+        tp.write(self.repo, "src/calc.py", "edited\n")
+        self.assertEqual(self.pin(), (True, 0))
+
+    def test_an_untracked_file_is_not_dirty(self):
+        tp.write(self.repo, "new.txt", "x\n")
+        self.assertEqual(self.pin(), (False, 1))
+
+    def test_an_edit_only_inside_a_submodule_worktree_is_still_dirty(self):
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"lib.py": "x = 1\n"}, "sub base")
+        gitfix.run(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "vendor"], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "add submodule"], self.repo)
+        tp.write(self.repo, "vendor/lib.py", "x = 2\n")
+        self.assertEqual(self.pin(), (True, 1))  # the snapshot (=dirty) hides it, so the tracked status must still run
 
 
 class RenderProcessCount(tpost.Base):

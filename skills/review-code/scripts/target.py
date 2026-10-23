@@ -81,29 +81,30 @@ NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for bot
 def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None, net: bool = False):
     """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
     SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
-    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
+    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9.
+    Its stderr is /dev/null and returned empty: no net caller reads it, and an ssh ControlPersist master that keeps
+    an inherited stderr pipe open would stall the read to NET_TIMEOUT after a successful call (j8uh)."""
     full = dict(_env(cwd), **(env or {}))
     if not net:
         p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return p.returncode, p.stdout, p.stderr
     p = subprocess.Popen(_GIT + list(args), cwd=cwd, env=dict(full, SSH_ASKPASS_REQUIRE="never"),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         start_new_session=True)
+                         stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
     try:
-        out, err = p.communicate(timeout=NET_TIMEOUT)
+        out, _ =p.communicate(stdin, timeout=NET_TIMEOUT)
     except BaseException as e:  # a timeout, or Ctrl-C, which no longer reaches the new session itself
         try:
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
-        p.stderr.close()  # the pipes open for ever; git itself is dead, so the wait returns
-        p.wait()
+        p.wait()          # the pipe open for ever; git itself is dead, so the wait returns
         if not isinstance(e, subprocess.TimeoutExpired):
             raise
         return -9, b"", b""
-    return p.returncode, out, err
+    return p.returncode, out, b""
 
 
 def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True,
@@ -116,6 +117,12 @@ def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: b
 
 def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True, env: Optional[dict] = None) -> str:
     return git_bytes(args, cwd, stdin, check, env).decode("utf-8", "replace")
+
+
+def _toplevel(cwd: str) -> str:
+    """The repository root, without .strip(): that would also drop a CR the directory name ends in (wb5s)."""
+    out = git(["rev-parse", "--show-toplevel"], cwd)
+    return out[:-1] if out.endswith("\n") else out
 
 
 def _no_filters(cwd: str) -> dict:
@@ -407,7 +414,7 @@ def _classify(arg: str, cwd: str) -> List[dict]:
             return [{"kind": "range", "base": left, "head": right, "reading": "changes on %s since %s" % (right, left)}]
         except Refuse:
             pass  # not a range: may be a path that contains ".."
-    if arg == "." and os.path.realpath(cwd) == os.path.realpath(git(["rev-parse", "--show-toplevel"], cwd).strip()):
+    if arg == "." and os.path.realpath(cwd) == os.path.realpath(_toplevel(cwd)):
         return [{"kind": "repo", "reading": "the whole repository"}]  # elsewhere '.' is a cwd path (6xl.78)
     cands, err = [], None
     if _DIGITS.fullmatch(arg):
@@ -517,10 +524,9 @@ def _have(oid: str, cwd: str) -> bool:
 _NAME_FLAGS = ["-r", "-z", "-M", "--numstat", "--no-ext-diff", "--no-textconv"]
 
 
-def read_working(path: str, limit: int, head: bool = False) -> Tuple[str, object]:
+def read_working(path: str, limit: int) -> Tuple[str, object]:
     """("ok", bytes) | ("symlink"|"special"|"missing", None) | ("too-large", size) for a working-copy file. It is
-    opened without following a link or blocking on a FIFO, and judged on the open descriptor. With head, a larger
-    file is no error: its first `limit` bytes come back as "ok"."""
+    opened without following a link or blocking on a FIFO, and judged on the open descriptor."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError as e:
@@ -529,8 +535,6 @@ def read_working(path: str, limit: int, head: bool = False) -> Tuple[str, object
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return "special", None
-        if head:
-            return "ok", fh.read(limit)
         data = fh.read(limit + 1) if st.st_size <= limit else b""
     return ("ok", data) if st.st_size <= limit and len(data) <= limit else ("too-large", max(st.st_size, len(data)))
 
@@ -620,7 +624,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
-    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd, net=True)
+    rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
     rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
@@ -1172,7 +1176,7 @@ def _checkout_root(top: str, head: str) -> str:
 
 
 def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
-    top = git(["rev-parse", "--show-toplevel"], cwd).strip()
+    top = _toplevel(cwd)
     kind = candidate["kind"]
     if since_last and kind != "pr":
         raise Refuse("since-last-unsupported", "--since-last works on GitHub pull requests only")
@@ -1220,7 +1224,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
             for r, n in sorted(counts.items())))
     run = new_run_dir(cwd)
     integ = os.path.join(run, "integrity.json")  # gh#51: compared by report.py render, after the verifiers
-    write_private(integ, json.dumps(integrity(top), sort_keys=True))
+    snap = integrity(top)
+    write_private(integ, json.dumps(snap, sort_keys=True))
     pt = pin_tree(kind, plan, run, top)  # first: change.diff shows the untracked bytes the tree pins, read once
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top, pt["blobs"])
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
@@ -1238,7 +1243,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "diff_base": plan.get("diff_base"),
-        "dirty": plan.get("dirty") or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
+        # a tracked entry in the snapshot's status is dirty already; only a clean one needs --ignore-submodules=none
+        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
         "untracked": sorted(shown(n) for n in plan["untracked"]),

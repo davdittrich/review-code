@@ -206,6 +206,27 @@ class GateProcessCount(tt.PRWorld):
             self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
 
 
+class GateRemoteIsOperand(tt.PRWorld):
+    def test_the_gates_ls_remote_ends_options_before_the_remote_name(self):  # review-code-j2os
+        log = os.path.join(self.tmp, "ls.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        (argv,) = [a for a in tp.starts(log) if "ls-remote" in a]
+        self.assertEqual(argv[argv.index("ls-remote"):], ["ls-remote", "--symref", "--", "origin", "HEAD"])
+
+
+class NetStdin(tt.Base):
+    """review-code-rio1: no caller passes stdin on the network path, so the private seam is the only route to it; the
+    argument is still honoured there, never dropped."""
+
+    def test_the_net_path_hands_its_stdin_to_git(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        for net in (False, True):
+            rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=net)
+            self.assertEqual((rc, out.strip()), (0, b"8baef1b4abc478178b004d62031cf7fe6db6f903"), net)
+
+
 class FetchMaintenance(tt.PRWorld):
     def test_the_objects_fetch_starts_no_auto_maintenance_in_the_users_repository(self):
         self.git("config", "--unset", "maintenance.auto")  # the user's default: fetch would run maintenance --auto
@@ -334,6 +355,56 @@ class BlackholeEscaped(Blackhole):
     pipes it holds."""
 
     ESCAPE = True
+
+
+SERVING_SSH = """#!%s
+import os, subprocess, sys
+kid = subprocess.Popen(["sleep", "1000"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+with open(%r, "a") as fh:  # an ssh ControlPersist master: it outlives the call and keeps only stderr open
+    fh.write("%%d\\n" %% kid.pid)
+os.execvp("sh", ["sh", "-c", sys.argv[-1].replace("git-upload-pack", "git upload-pack", 1)])  # serves the bare repository
+"""
+
+
+class StderrHeldOpen(tt.PRWorld):
+    """review-code-j8uh: ssh answers at once but a grandchild keeps git's stderr open; no real network is used."""
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        self.kids = os.path.join(self.tmp, "kids")
+        ssh = os.path.join(bin_dir, "ssh")
+        with open(ssh, "w", encoding="utf-8") as fh:
+            fh.write(SERVING_SSH % (sys.executable, self.kids))
+        os.chmod(ssh, 0o755)
+        env = dict((k, v) for k, v in os.environ.items() if k not in ("GIT_SSH", "GIT_SSH_COMMAND"))
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        timeout = mock.patch.object(tt.target, "NET_TIMEOUT", 15)  # far above a local ls-remote, far below the 300 s default
+        timeout.start()
+        self.addCleanup(timeout.stop)
+        self.addCleanup(self.reap)
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.git("config", "url.ssh://served.invalid" + self.bare + ".insteadOf", self.URL)
+
+    def reap(self):
+        if os.path.exists(self.kids):
+            with open(self.kids, encoding="utf-8") as fh:
+                for pid in fh.read().split():
+                    try:
+                        os.kill(int(pid), 9)
+                    except ProcessLookupError:
+                        pass
+
+    def test_a_served_gate_and_fetch_pass_whoever_holds_stderr_open(self):
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertTrue(self.has_pr_objects())
+        with open(self.kids, encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().split()), 2)  # the gate's ls-remote and the objects fetch, each served
 
 
 if __name__ == "__main__":

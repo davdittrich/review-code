@@ -947,9 +947,9 @@ class ScanHead(Fixture):
         self.assertEqual(owasp["files"], ["near.txt"])
 
 
-class ReadWorkingHead(unittest.TestCase):
-    """review-code-axql: read_working(head=True) returns the first `limit` bytes of a larger regular file, and still refuses a
-    link and a FIFO; without head the same file is too large."""
+class ReadWorking(unittest.TestCase):
+    """read_working reads a regular file whole up to `limit`, calls a larger one too large, and refuses a link, a FIFO
+    and a missing file."""
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -961,18 +961,17 @@ class ReadWorkingHead(unittest.TestCase):
             fh.write(data)
         return os.path.join(self.d, name)
 
-    def test_a_file_over_the_limit_gives_its_head_and_a_smaller_one_whole(self):
+    def test_a_file_over_the_limit_is_too_large_and_a_smaller_one_whole(self):
         big, small = self.put("big", b"0123456789"), self.put("small", b"0123")
-        self.assertEqual(target.read_working(big, 4, head=True), ("ok", b"0123"))
-        self.assertEqual(target.read_working(small, 4, head=True), ("ok", b"0123"))
+        self.assertEqual(target.read_working(small, 4), ("ok", b"0123"))
         self.assertEqual(target.read_working(big, 4), ("too-large", 10))
 
-    def test_a_link_and_a_fifo_are_no_file_even_for_a_head_read(self):
+    def test_a_link_a_fifo_and_a_missing_file_are_no_file(self):
         os.symlink(self.put("real", b"abcdef"), os.path.join(self.d, "link"))
         os.mkfifo(os.path.join(self.d, "fifo"))
-        self.assertEqual(target.read_working(os.path.join(self.d, "link"), 4, head=True)[0], "symlink")
-        self.assertEqual(target.read_working(os.path.join(self.d, "fifo"), 4, head=True)[0], "special")
-        self.assertEqual(target.read_working(os.path.join(self.d, "gone"), 4, head=True)[0], "missing")
+        self.assertEqual(target.read_working(os.path.join(self.d, "link"), 4)[0], "symlink")
+        self.assertEqual(target.read_working(os.path.join(self.d, "fifo"), 4)[0], "special")
+        self.assertEqual(target.read_working(os.path.join(self.d, "gone"), 4)[0], "missing")
 
 
 class PinnedContent(Fixture):
