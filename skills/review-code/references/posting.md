@@ -108,7 +108,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `pending-drafts-exist` | You already have draft notes on this MR (the publish call would send them too; never deleted) | Publish or delete them, then re-run |
 | `too-large` | A body is over 60000 characters | Review a smaller change |
 | `preview-too-large` | The preview is over 25000 characters. Claude Code saves Bash output over 30000 characters (its default `BASH_MAX_OUTPUT_LENGTH`) to a file, so you would confirm text you never saw | Review a smaller change; nothing was written |
-| `non-utf8-name` | `ledger.py build` (the run directory path) or `post.py build` (a finding's path) holds a byte that is not valid UTF-8; no file is written and no forge call is made | Review a checkout whose names are valid UTF-8 |
+| `non-utf8-name` | `ledger.py build` (the run directory path), `report.py ingest` (a path, title or trigger in a lane reply; the whole reply is refused, not the one line), `post.py build` (a finding's path) or `post.py submit` (a payload comment path) holds a byte that is not valid UTF-8; no file is written and no forge call is made | Review a checkout whose names are valid UTF-8 |
 | `unsafe-text` | A body holds a CR, or a line would run as a command or hide as markup | Report it; nothing was posted |
 | `secret-found` | A secret rule matches in an outgoing body: at submit time, or at build time in text the per-field redaction did not cover (a path) | At submit: re-run build, which redacts. At build: report it; nothing was posted |
 | `scan-failed` | The secret scanner raised | Report it; nothing was posted |

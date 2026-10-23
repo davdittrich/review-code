@@ -584,6 +584,24 @@ class PostingDocs(unittest.TestCase):
         for s in ("posting comes in a later version", "PR posting and fix mode do not exist yet"):
             self.assertNotIn(s, text)
 
+    def test_the_non_utf8_name_row_names_every_command_that_raises_it(self):  # review-code-1eg4
+        row = [ln for ln in self.read(self.REFS, "posting.md").split("\n") if ln.startswith("| `non-utf8-name` |")][0]
+        for s in ("`ledger.py build`", "`report.py ingest`", "`post.py build`", "`post.py submit`", "title", "trigger"):
+            self.assertIn(s, row)
+        scripts = os.path.dirname(self.POST)
+        raise_literal = re.compile(r"""(["'])non-utf8-name\1""")  # either quote style is the same reason
+        raisers = {m for m in sorted(os.listdir(scripts)) if m.endswith(".py") and raise_literal.search(self.read(scripts, m))}
+        known = {"ledger.py", "post.py", "report.py"}
+        clauses = []
+        extra = sorted(raisers - known)
+        missing = sorted(known - raisers)
+        if extra:
+            clauses.append("%s raise non-utf8-name: add the command to the non-utf8-name row in references/posting.md, "
+                           "then add the module to this set" % extra)
+        if missing:
+            clauses.append("%s no longer raise non-utf8-name: remove it from the row and from this set" % missing)
+        self.assertEqual(raisers, known, "; ".join(clauses))
+
     def test_cleanup_window_is_documented(self):
         """R2-WR-02: GitHub's DELETE has no precondition, so a comment added after cleanup's listing goes with the review."""
         flat = " ".join(self.read(self.REFS, "posting.md").split())
@@ -605,7 +623,7 @@ class PostingDocs(unittest.TestCase):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings at their 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
         self.assertLessEqual(os.path.getsize(SKILL), 22416)  # gh#52 shrank both; never raise these caps
-        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15117)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
         """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""
