@@ -43,7 +43,7 @@ def _ranges(diff: str) -> Dict[Tuple[str, str], List[List[int]]]:
     return out
 
 
-def _say(x: object) -> str:
+def _escaped_text(x: object) -> str:
     return sanitize.escape_line(sanitize.sanitize_prose(str(x)))
 
 
@@ -66,7 +66,7 @@ def _blame(out: bytes) -> Tuple[Dict[int, str], Dict[str, str], Dict[str, int]]:
             k, _, v = ln.partition(" ")
             if k in ("author", "author-time", "summary"):
                 meta.setdefault(cur, {})[k] = v
-    said = {c: "%s %s: %s" % (_day(m.get("author-time")), _say(m.get("author", "")), _say(m.get("summary", "")))
+    said = {c: "%s %s: %s" % (_day(m.get("author-time")), _escaped_text(m.get("author", "")), _escaped_text(m.get("summary", "")))
             for c, m in meta.items()}
     return rows, said, {c: int(m["author-time"]) if m.get("author-time", "").isdigit() else 0 for c, m in meta.items()}
 
@@ -106,7 +106,7 @@ def _log(repo: str, mb: str, ranges: dict) -> Tuple[Dict[str, List[str]], bool]:
     for block in out.split("\x01")[1:]:
         head, _, patch = block.partition("\n")
         sha, at, author, subject = (head.split("\x02") + [""] * 4)[:4]
-        row = "%s %s %s: %s" % (sha[:8], _day(at), _say(author), _say(subject))
+        row = "%s %s %s: %s" % (sha[:8], _day(at), _escaped_text(author), _escaped_text(subject))
         names = set()
         for p, o in sorted({(p, o) for _, p, t, _, _, _, o in sanitize.walk(patch) if t == "@"}, key=str):
             name = alias.get(p) or alias.get(o)
@@ -152,7 +152,7 @@ def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple
         raw, ok_blame = _run(_BLAME + ["-L%d,%d" % (a, b) for a, b in spans] + [mb, "--", old], repo)
         failed += not ok_blame
         rows, said, when = _blame(raw)
-        out = [_HEAD % (_say(name), mb[:8])]
+        out = [_HEAD % (_escaped_text(name), mb[:8])]
         for a, b in spans:
             lines, older = _hunk([a, b], rows, said, when)
             cut_hunks += older > 0
