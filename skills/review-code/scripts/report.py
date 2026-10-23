@@ -251,8 +251,12 @@ class _Pinned:
         if not want:
             return
         # shortcut: the paths go on one argv (ls-tree reads no pathspec file); a reply naming ~100k paths would pass ARG_MAX
-        out = target.git_bytes(["ls-tree", "-z", "-l", "--full-tree", tj["pinned_tree"], "--"] + want, self.top,
-                               env={"GIT_LITERAL_PATHSPECS": "1"})
+        rc, out, _ = target._run(["ls-tree", "-z", "-l", "--full-tree", tj["pinned_tree"], "--"] + want, self.top,
+                                 env={"GIT_LITERAL_PATHSPECS": "1"})
+        if rc != 0:  # asked only on failure, and by object, never by git's localised message
+            if target._run(["cat-file", "-e", tj["pinned_tree"]], self.top)[0] != 0:
+                raise target.Refuse("pin-pruned", "the pinned tree is gone (a gc pruned it): review again")
+            raise target.Refuse("bad-ref", "a git command failed")
         for rec in out.split(b"\0"):
             meta, tab, name = rec.partition(b"\t")
             f = meta.split()

@@ -163,6 +163,20 @@ class Worktree(tr.Base):
         out = self.ingest(tr.cand("return a * a", 8), tr.cand("return a * b", 8))
         self.assertEqual(reasons(out), [("accepted", None), ("rejected", "quote-from-checkout")])
 
+    # review-code-omyf: the synthetic tree of an in-place pin is unreferenced, so a gc that prunes now removes it mid-run
+    def test_a_pruned_pinned_tree_refuses_with_its_own_reason(self):
+        self.git("gc", "-q", "--prune=now")
+        rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "pin-pruned"}))
+
+    def test_a_failing_ls_tree_with_the_root_tree_present_stays_bad_ref(self):
+        sub = self.git("rev-parse", tp.load(self.run_dir)["pinned_tree"] + ":src")  # a subtree the listing must read: damage it
+        loose = os.path.join(self.repo, ".git", "objects", sub[:2], sub[2:])
+        os.chmod(loose, 0o600)
+        os.remove(loose)
+        rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ref"}))
+
 
 class ProcessCount(tr.Base):
     """One ls-tree and one cat-file --batch per call, whatever the number of cites."""
