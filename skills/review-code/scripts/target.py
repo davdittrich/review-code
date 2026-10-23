@@ -626,7 +626,8 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
         return
     rc, out, _ = _run(["rev-list", "--left-right", "--count", tip + "...HEAD"], cwd)
     n = out.decode().split()
-    dist = "%s behind and %s ahead" % tuple(n) if rc == 0 and len(n) == 2 else "behind by an unknown count"
+    dist = "%s behind and %s ahead" % tuple(n) if rc == 0 and len(n) == 2 else "behind by an unknown count" + (
+        "" if _have(tip, cwd) else " (this repository lacks the tip)")  # no fetch to count: the gate writes nothing
     raise Refuse("checkout-not-synced", "%son %s, %s of the upstream tip %s of %s/%s; sync the main checkout first" % (
         "a linked worktree, " if linked else "", _q(on) if on else "a detached HEAD", dist, tip[:12], _q(remote), _q(branch)))
 

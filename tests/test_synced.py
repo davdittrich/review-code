@@ -45,7 +45,14 @@ class Gate(tt.PRWorld):
         src = os.path.join(self.tmp, "src")
         gitfix.commit(src, {"src/later.py": "z = 1\n"}, "remote moves on again")
         gitfix.run(["git", "push", "-q", self.bare, "main"], src)
-        self.assertIn("main, behind by an unknown count", self.refused("checkout-not-synced"))
+        self.assertIn("main, behind by an unknown count (this repository lacks the tip)",
+                      self.refused("checkout-not-synced"))  # the review never fetches to count
+
+    def test_an_unborn_head_never_claims_the_tip_is_missing(self):
+        self.git("checkout", "-q", "--orphan", "fresh")
+        detail = self.refused("checkout-not-synced")
+        self.assertIn("fresh, behind by an unknown count", detail)
+        self.assertNotIn("lacks", detail)
 
     def test_ahead_of_the_remote_tip(self):
         gitfix.commit(self.repo, {"local.py": "l = 1\n"}, "local only")
