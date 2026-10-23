@@ -600,7 +600,8 @@ def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
         name = "%s/%s" % (o.get("login"), p.get("name")) if isinstance(o, dict) and isinstance(o.get("login"), str) \
             and isinstance(p.get("name"), str) else None
     else:
-        j = glab_json(["api", "projects/" + urllib.parse.quote(path, safe="")], cwd)
+        web = MR_URL.fullmatch(info["url"]).group(1)  # web host with its port; one argv, so no dash reads as a flag
+        j = glab_json(["api", "--hostname=" + web, "projects/" + urllib.parse.quote(path, safe="")], cwd)
         p = j.get("forked_from_project") if isinstance(j, dict) else None
         name = p.get("path_with_namespace") if isinstance(p, dict) else None
     return _forge_key(host, name) if isinstance(name, str) else None

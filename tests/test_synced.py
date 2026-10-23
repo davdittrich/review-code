@@ -273,6 +273,39 @@ class Blackhole(tt.PRWorld):
         self.assertEqual([(c["sid"] == os.getsid(0), c["askpass"]) for c in self.calls()], [(False, "never")])
 
 
+FAKE_GLAB = """#!%s
+import json, sys
+with open(%r, "a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+print(json.dumps(%r if sys.argv[1] == "mr" else {"path_with_namespace": "g/r", "forked_from_project": None}))
+"""
+
+
+class SelfHostedMR(tt.PRWorld):
+    """A merge request on a self-hosted GitLab with a web port; a fake glab first on PATH answers and records argv.
+    Not covered: a live glab's own host matching, auth and the real `forked_from_project` shape."""
+
+    URL = "https://gitlab.example:8443/g/r.git"
+    MR = "https://gitlab.example:8443/g/r/-/merge_requests/5"
+
+    def test_fork_detection_asks_the_merge_requests_own_host(self):
+        gitfix.run(["git", "update-ref", "refs/merge-requests/5/head", self.pr], self.bare)
+        bin_dir, log = os.path.join(self.tmp, "bin"), os.path.join(self.tmp, "glab.log")
+        os.mkdir(bin_dir)
+        mr = {"iid": 5, "state": "opened", "draft": False, "target_branch": "main", "web_url": self.MR,
+              "diff_refs": {"base_sha": self.main, "head_sha": self.pr, "start_sha": self.main}}
+        with open(os.path.join(bin_dir, "glab"), "w", encoding="utf-8") as fh:
+            fh.write(FAKE_GLAB % (sys.executable, log, mr))
+        os.chmod(os.path.join(bin_dir, "glab"), 0o755)
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}):
+            rc, out = tt.call([self.MR], self.repo, self.tmp, glab=tt.target.glab_json)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(log, encoding="utf-8") as fh:
+            calls = [json.loads(line) for line in fh]
+        self.assertEqual([c for c in calls if c[0] == "api"],
+                         [["api", "--hostname=gitlab.example:8443", "projects/g%2Fr"]])
+
+
 class Docs(unittest.TestCase):
     def test_skill_names_each_gate_reason_as_the_users_fix(self):
         with open(os.path.join(os.path.dirname(paths.SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
