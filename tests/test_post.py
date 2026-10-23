@@ -2044,7 +2044,7 @@ class ProseRepeatedPrefixLinear(_SpyMixin, unittest.TestCase):
 
     def families(self):
         for k in (0, 1, 2, 3, 7, 40):
-            for unit in ("a/", "[", "[[", "GH-1/", "@a/b", "x/", "a//"):
+            for unit in ("a/", "[", "[[", "GH-1/", "@a/b", "x/", "a//", "[issue:", "[work_item:", "[issue:x[", "[[issue:"):
                 yield unit * k
                 for tail in (">", " x/y>", "x]]", "]", "]]", "`", " [issue:1]", "[issue:1]", "[[x]]", ">c/d>", "b>", "@u", "GH-2"):
                     yield unit * k + tail
@@ -2058,6 +2058,8 @@ class ProseRepeatedPrefixLinear(_SpyMixin, unittest.TestCase):
             t = sanitize.escape_line(text).replace("`", "'")
             self.assertEqual(bool(list(post._refs(t))), _OLD_REF.search(t) is not None, repr(text))
             self.assertEqual([m.span() for m in post._refs(t)], [m.span() for m in _OLD_REF.finditer(t)], repr(text))
+            raw = sanitize.escape_line(text)  # no backtick swap: `_refs` is also exact on a run that ends at a backtick
+            self.assertEqual([m.span() for m in post._refs(raw)], [m.span() for m in _OLD_REF.finditer(raw)], repr(text))
 
 
 _NOT_CLOSER = re.compile(r"[^\]`]*")
@@ -2082,6 +2084,39 @@ class ProseRepeatedBracketLinear(_SpyMixin, unittest.TestCase):
             seen = self.seen(text)
             self.assertTrue(seen, text[-6:])
             self.assertEqual(sum(_wiki_wasted(t) for t in seen), 0, text[-6:])
+
+
+_KIND = re.compile(r"\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):")
+
+
+def _kind_wasted(t):
+    """Characters `[issue:..]` would read for nothing in `t`: its scan from every `[kind:` to the end of a run that does
+    not reach `]`."""
+    w = 0
+    for m in _KIND.finditer(t):
+        e = _NOT_CLOSER.match(t, m.end()).end()
+        w += 0 if t.startswith("]", e) else e - m.start()
+    return w
+
+
+class ProseRepeatedKindLinear(_SpyMixin, unittest.TestCase):
+    """review-code-twed: '[issue:' repeated made the kind-list alternative read to the end of the run from every `[kind:`,
+    though the run never reaches `]`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        for text in ("[issue:" * 2000, "[work_item:x" * 1500, "[issue:" * 2000 + "`]", "[issue:" * 2000 + " x"):
+            self.assertGreater(_kind_wasted(text), 1000000, text[-6:])  # the raw text is the bad case: the measure is not vacuous
+            seen = self.seen(text)
+            self.assertTrue(seen, text[-6:])
+            self.assertEqual(sum(_kind_wasted(t) for t in seen), 0, text[-6:])
+
+    def test_the_guard_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "**Fix:** " + "\\[issue:" * 2000  # a payload edited after build, `[` escaped as `_prose` does: `_shown` undoes it
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._guard(text)
+        self.assertTrue(spy.seen)
+        self.assertEqual(sum(_kind_wasted(t) for t in spy.seen), 0)
 
 
 class HiddenNameInline(Base):
