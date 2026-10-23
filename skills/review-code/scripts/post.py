@@ -116,7 +116,7 @@ def _changed(run: str, last: Optional[str], head: str) -> Optional[set]:
     if not last:
         return None
     rc, out, _ = target._run(["diff", "--name-only", "--no-renames", "-z", last, head], target.load_target(run)["repo"])
-    return set(out.decode("utf-8", "replace").split("\0")) - {""} if rc == 0 else None
+    return set(out.decode("utf-8", "surrogateescape").split("\0")) - {""} if rc == 0 else None  # exact names, like every listing
 
 
 def _target(run: str) -> dict:
@@ -170,7 +170,7 @@ class GitHub:
         rc, out, _ = _cli("gh", ["pr", "diff", self.i["url"], "--color", "never"], self.i["run"])
         if rc != 0:
             raise Refuse("diff-unavailable")
-        return out.decode("utf-8", "replace")
+        return "\n".join(target._diff_line(ln) for ln in out.split(b"\n"))  # header lines name files: exact; content: lossy
 
     def me(self) -> str:
         try:

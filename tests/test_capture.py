@@ -82,6 +82,17 @@ class Capture(unittest.TestCase):
             self.assertIn("core.hooksPath=/dev/null", a)
             self.assertIn("core.fsmonitor=false", a)
 
+    def test_a_git_dir_with_a_non_utf8_byte_is_found(self):  # review-code-6gfy
+        gdir = os.path.join(self.tmp, "g\udcffd")
+        repo = os.path.join(self.tmp, "sep")
+        os.mkdir(repo)
+        subprocess.run([b"git", b"init", b"-q", b"--separate-git-dir", os.fsencode(gdir), os.fsencode(repo)],
+                       env=gitfix.env(), check=True)
+        os.makedirs(os.path.join(gdir, "review-code"))
+        self.fire(stop(), cwd=repo)
+        with open(os.path.join(gdir, "review-code", "captures", AID + ".stop.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["message"], MSG)
+
     def test_no_filter_driver_runs_in_the_hook(self):  # review-code-9f4v
         os.makedirs(self.state)
         marker = os.path.join(self.tmp, "filter-ran")

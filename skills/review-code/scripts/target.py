@@ -304,7 +304,7 @@ def _commit_id(rev: str, cwd: str) -> str:
     """Full object id of a commit-ish, exactly as git prints it."""
     if not rev or rev.startswith("-"):
         raise Refuse("bad-ref", "the target is not a commit in this repository")
-    rc, out, err = _run(["rev-parse", "--verify", rev + "^{commit}"], cwd)
+    rc, out, err = _run(["rev-parse", "--verify", rev + "^{commit}"], cwd, env={"LC_ALL": "C"})  # English: err is matched below
     if rc == 0:
         return out.decode("utf-8", "replace").strip()
     if b"ambiguous" in err:
@@ -1191,7 +1191,7 @@ def integrity_changes(top: str, snap: dict) -> dict:
 def _checkout_root(top: str, head: str) -> str:
     """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
     held = []
-    for blk in git(["worktree", "list", "--porcelain"], top, check=False).split("\n\n"):
+    for blk in git_bytes(["worktree", "list", "--porcelain"], top, check=False).decode("utf-8", "surrogateescape").split("\n\n"):
         f = {k: v for k, _, v in (ln.partition(" ") for ln in blk.split("\n"))}
         if f.get("HEAD") == head and "bare" not in f and "prunable" not in f and os.path.isdir(f.get("worktree", "")):
             held.append(os.path.realpath(f["worktree"]))
