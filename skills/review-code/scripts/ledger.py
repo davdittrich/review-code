@@ -342,15 +342,20 @@ def _gaps(repo: str, rev: Optional[str], new: str, sibs: List[str], by_dir: bool
 
 def _cochange(repo: str, mb: str, mb_ls: dict, files: set, included: List[str]) -> List[dict]:
     """Hints from one bounded git log: a changed file that usually changes with another unchanged file at head."""
-    raw = target.git(["log", "--no-merges", "--no-renames", "--name-only", "--format=@@%H", "-n", "1000",
-                      "--since=%d.days" % SIB_DAYS, mb, "--"], repo, check=False)
+    raw = target.git_bytes(["log", "--no-merges", "--no-renames", "--name-only", "-z", "--format=@@%H", "-n", "1000",
+                            "--since=%d.days" % SIB_DAYS, mb, "--"], repo, check=False)
     commits, cur = [], None
-    for ln in raw.splitlines():
-        if ln.startswith("@@"):
-            cur = set()
+    after_header = False
+    for rec in _dec(raw).split("\0"):  # -z: NUL after each name; git puts one LF after a header, before its first name
+        if re.fullmatch(r"@@[0-9a-f]{40,64}", rec):
+            cur, after_header = set(), True
             commits.append(cur)
-        elif ln and cur is not None and not ln.startswith('"'):
-            cur.add(ln)
+            continue
+        if after_header and rec.startswith("\n"):
+            rec = rec[1:]
+        after_header = False
+        if rec and cur is not None:
+            cur.add(rec)
     commits = [c for c in commits if len(c) <= 30]
     inc, out = set(included), []
     for c in sorted(p for p in inc if p in mb_ls):

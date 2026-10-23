@@ -260,13 +260,13 @@ class CoChange(Sib):
 
     def test_git_failure_is_never_fatal(self):
         history(self.repo, 3, 0)
-        real = target.git
+        real = target.git_bytes
 
         def boom(args, cwd, *a, **kw):
             if args and args[0] == "log":
-                return ""
+                return b""
             return real(args, cwd, *a, **kw)
-        with mock.patch.object(target, "git", boom):
+        with mock.patch.object(target, "git_bytes", boom):
             _, led = self.edit()
         self.assertEqual(led["siblings"], [])
 
