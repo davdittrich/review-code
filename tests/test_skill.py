@@ -497,6 +497,14 @@ class FixDocs(unittest.TestCase):
             self.assertIn(s, flat)
         self.assertNotIn("stripped copies of the included and referenced files", flat)
 
+    def test_pin_fidelity_limits_are_stated(self):  # iwgh: the owner declined five pin-fidelity tickets and accepted these limits
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertIn("a filter set in the user's `GIT_CONFIG_PARAMETERS` may override the filter blank", flat)
+        self.assertIn("a filter driver defined only under an `includeIf` that matches the new worktree's gitdir is not seen before `worktree add`", flat)
+        self.assertIn("`eol`, `autocrlf`, `text`, `working-tree-encoding` and `ident` conversions are not handled", flat)
+        self.assertIn("the `staged` kind pins the index as it is, so an unedited filtered file keeps its cleaned blob", flat)
+        self.assertIn("every in-place review reads each filtered file up to `MAX_FILE`", flat)
+
 
 class PostingDocs(unittest.TestCase):
     """05-04: posting.md names every refusal post.py can emit; the pointers and the README caveats exist."""
