@@ -2415,12 +2415,22 @@ class LoneSurrogate(Base):
             self.assertEqual(self.snap(), before)
 
 
+    def test_a_surrogate_in_a_downgraded_candidate_refuses_too(self):  # review-code-71de.1: a claims-missing one is never queued
+        miss = dict(CAND, title="src/calc.py is missing", trigger="x")
+        self.assertEqual(self.ingest(miss)["dispositions"][0]["disposition"], "downgraded")  # the precondition
+        before = self.snap()
+        for c in (dict(miss, trigger="x" + "\udcff"), dict(miss, title="\udcff src/calc.py is missing")):
+            rc, out = self.rep("ingest", lines(c))
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
+            self.assertEqual(self.snap(), before)
+
+
 class LoneSurrogateSkips(unittest.TestCase):  # review-code-iz9u
     def test_a_file_system_that_refuses_the_name_skips_not_errors(self):
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(LoneSurrogate)
         with mock.patch.object(LoneSurrogate, "make_bad_name", side_effect=OSError("Illegal byte sequence")):
             res = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
-        self.assertEqual((len(res.skipped), res.errors, res.failures), (1, [], []))
+        self.assertEqual((len(res.skipped), res.errors, res.failures), (suite.countTestCases(), [], []))
         self.assertIn("refuses a non-UTF-8 file name", res.skipped[0][1])
 
 

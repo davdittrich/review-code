@@ -1216,7 +1216,7 @@ def _ingest(run, text, lane, shard):
     diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
     texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
     try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
-        for t in texts:
+        for t in texts + [json.dumps(every, ensure_ascii=False)]:  # every stored candidate, a downgraded one included: candidates.json would escape it into render
             t.encode("utf-8")
     except UnicodeEncodeError:
         raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
