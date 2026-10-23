@@ -692,6 +692,11 @@ def _preview(payload: dict) -> str:
 def build(run: str) -> dict:
     info = _target(run)
     doc = report.build(run)
+    try:  # a lone surrogate path would reach the forge as a bogus JSON path and sink the whole review
+        for f in doc["findings"]:
+            f["path"].encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refuse("non-utf8-name", "a finding path is not valid UTF-8")
     gh = _forge(info)
     head = info["head_sha"]
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head; the refs are read here, then held

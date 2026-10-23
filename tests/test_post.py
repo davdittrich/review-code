@@ -712,6 +712,24 @@ class PositionAcrossHunks(Base):
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
+class NonUtf8Path(Base):
+    def test_a_finding_whose_path_is_not_valid_utf8_refuses_before_any_forge_call(self):  # review-code-lvmu
+        self.review(14)
+        real = post.report.build
+
+        def build(run):
+            doc = real(run)
+            doc["findings"][0]["path"] = os.fsdecode(b"src/d\xffx.py")
+            return doc
+
+        with mock.patch.object(post.report, "build", build):
+            res = self.build()
+        st = res[2]
+        self.assertEqual((res[0], st["reason"]), (1, "non-utf8-name"), res[1])
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+
 class EmptyRun(Base):
     def test_zero_verified_findings_refuse_nothing_to_post(self):
         self.review()
