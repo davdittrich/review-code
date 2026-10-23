@@ -588,9 +588,12 @@ class PostingDocs(unittest.TestCase):
         row = [ln for ln in self.read(self.REFS, "posting.md").split("\n") if ln.startswith("| `non-utf8-name` |")][0]
         for s in ("`ledger.py build`", "`report.py ingest`", "`post.py build`", "`post.py submit`", "title", "trigger"):
             self.assertIn(s, row)
-        raisers = {m for m in ("ledger.py", "post.py", "report.py")
-                   if '"non-utf8-name"' in self.read(os.path.dirname(self.POST), m)}
-        self.assertEqual(raisers, {"ledger.py", "post.py", "report.py"})  # a new raiser must be added to the row
+        scripts = os.path.dirname(self.POST)
+        raisers = {m for m in sorted(os.listdir(scripts)) if m.endswith(".py") and '"non-utf8-name"' in self.read(scripts, m)}
+        stray = sorted(raisers - {"ledger.py", "post.py", "report.py"})
+        self.assertEqual(raisers, {"ledger.py", "post.py", "report.py"},  # a new raiser must be added to the row
+                         "%s raise non-utf8-name: add each command to the non-utf8-name row in references/posting.md, "
+                         "then add the module to this set" % stray)
 
     def test_cleanup_window_is_documented(self):
         """R2-WR-02: GitHub's DELETE has no precondition, so a comment added after cleanup's listing goes with the review."""
