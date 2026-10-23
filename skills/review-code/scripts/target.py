@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -66,10 +67,35 @@ def _env() -> dict:
     return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS)  # no prompt, no index write
 
 
-def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None):
-    p = subprocess.run(_GIT + list(args), cwd=cwd, env=dict(_env(), **(env or {})), input=stdin,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout, p.stderr
+NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for both, split it if large fetches hit it
+
+
+def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None, net: bool = False):
+    """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
+    SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
+    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
+    full = dict(_env(), **(env or {}))
+    if not net:
+        p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return p.returncode, p.stdout, p.stderr
+    p = subprocess.Popen(_GIT + list(args), cwd=cwd, env=dict(full, SSH_ASKPASS_REQUIRE="never"),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=NET_TIMEOUT)
+    except BaseException as e:  # a timeout, or Ctrl-C, which no longer reaches the new session itself
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
+        p.stderr.close()  # the pipes open for ever; git itself is dead, so the wait returns
+        p.wait()
+        if not isinstance(e, subprocess.TimeoutExpired):
+            raise
+        return -9, b"", b""
+    return p.returncode, out, err
 
 
 def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True,
@@ -470,7 +496,7 @@ def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     rc, _, _ = _run(["-c", "transfer.fsckObjects=true",  # a tree naming `..` or `.git` is refused
                      "-c", "maintenance.auto=false", "-c", "gc.auto=0",  # no repack/prune of the user's objects
                      "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
-                     "--", remote] + refspecs, cwd)
+                     "--", remote] + refspecs, cwd, net=True)
     if rc != 0:
         raise Refuse("fetch-failed", "git could not fetch the pull request objects")
 
@@ -585,7 +611,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
-    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd)
+    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd, net=True)
     rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)

@@ -2,6 +2,7 @@
 live upstream default-branch tip, through the run-directory contract."""
 import json
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -197,6 +198,74 @@ class FetchMaintenance(tt.PRWorld):
         self.assertEqual([a for a in kids if "maintenance" in a or "gc" in a], [])
 
 
+HANG_SSH = """#!%s
+import json, os, subprocess, sys, time
+with open(%r, "a") as fh:  # what a prompt would need: the caller's session (its terminal) and askpass
+    fh.write(json.dumps({"sid": os.getsid(0), "askpass": os.environ.get("SSH_ASKPASS_REQUIRE")}) + "\\n")
+kid = subprocess.Popen(["sleep", "1000"], start_new_session=%s)  # a grandchild holding git's stdout and stderr
+with open(%r, "a") as fh:
+    fh.write("%%d\\n" %% kid.pid)
+time.sleep(1000)  # a blackholed host: the connection never completes
+"""
+
+
+class Blackhole(tt.PRWorld):
+    """origin's host swallows packets: the fake ssh first on PATH never answers, and no real network is used."""
+
+    ESCAPE = False  # the grandchild stays in the process group
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        self.log = os.path.join(self.tmp, "ssh.log")
+        ssh = os.path.join(bin_dir, "ssh")
+        with open(ssh, "w", encoding="utf-8") as fh:
+            fh.write(HANG_SSH % (sys.executable, self.log, self.ESCAPE, self.log + ".kids"))
+        os.chmod(ssh, 0o755)
+        env = dict((k, v) for k, v in os.environ.items() if k not in ("GIT_SSH", "GIT_SSH_COMMAND"))
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        timeout = mock.patch.object(tt.target, "NET_TIMEOUT", 1)
+        timeout.start()
+        self.addCleanup(timeout.stop)
+        self.addCleanup(self.reap)
+
+    def reap(self):
+        if os.path.exists(self.log + ".kids"):
+            with open(self.log + ".kids", encoding="utf-8") as fh:
+                for pid in fh.read().split():
+                    try:
+                        os.kill(int(pid), 9)
+                    except ProcessLookupError:
+                        pass
+
+    def blackhole(self):
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.git("config", "url.ssh://blackhole.invalid/o/r.git.insteadOf", self.URL)
+
+    def calls(self):
+        with open(self.log, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh]
+
+    def test_the_gate_refuses_remote_unreachable_without_a_prompt(self):
+        self.blackhole()
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
+        self.assertEqual([(c["sid"] == os.getsid(0), c["askpass"]) for c in self.calls()], [(False, "never")])
+
+    def test_the_objects_fetch_refuses_when_it_is_the_first_contact(self):
+        self.git("fetch", "-q", "--refmap=", "origin", "+refs/pull/7/head:refs/pr7")
+        self.git("checkout", "-q", "--detach", "refs/pr7")  # a checked-out head: no gate, so no ls-remote
+        self.git("update-ref", "-d", "refs/pr7")
+        self.blackhole()
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["reason"]), (1, "fetch-failed"), out)
+        self.assertEqual([(c["sid"] == os.getsid(0), c["askpass"]) for c in self.calls()], [(False, "never")])
+
+
 class Docs(unittest.TestCase):
     def test_skill_names_each_gate_reason_as_the_users_fix(self):
         with open(os.path.join(os.path.dirname(paths.SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
@@ -204,6 +273,13 @@ class Docs(unittest.TestCase):
         self.assertIn("User fixes: `checkout-not-synced`", flat)  # never the model: the review never syncs the checkout
         for reason in ("`no-upstream-remote`", "`remote-unreachable`"):
             self.assertIn(reason, flat)
+
+
+class BlackholeEscaped(Blackhole):
+    """The grandchild leaves the group (setsid, an ssh ControlPersist master): killing the group cannot close the
+    pipes it holds."""
+
+    ESCAPE = True
 
 
 if __name__ == "__main__":
