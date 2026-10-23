@@ -267,11 +267,10 @@ class _Pinned:
         for a norm candidate, whose sample is the reviewed content (gh#52), not tree/."""
         if self._every is None:
             self._every = []
-            for rec in target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top).split(b"\0"):
-                meta, tab, name = rec.partition(b"\t")
-                f = meta.split()
-                if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # never a link: its blob is a path, not code
-                    self._every.append((name.decode("utf-8", "surrogateescape"), int(f[3]), f[2].decode()))
+            for mode, oid, name, size in ledger.ls_records(
+                    target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top), True):
+                if mode in ("100644", "100755"):  # never a link: its blob is a path, not code
+                    self._every.append((name, int(size), oid))
         return self._every
 
     def blobs(self, oids):
@@ -1040,9 +1039,12 @@ def _read_lane(text, lane, run, shard=None):
     for _, o, _ in parsed:
         if o is None:
             continue
-        cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
+        p = ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path")
+        if isinstance(p, str):  # a list or dict path is unhashable: _candidate rejects that one line as bad-type
+            cited.add(p)
         if isinstance(o.get("inspected"), list):
-            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
+            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"]
+                         if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named, cited)
     for n, (ln, o, fixed) in enumerate(parsed, 1):
@@ -1342,7 +1344,8 @@ def _verdicts(run, text, batch, agent=None):
                 replies.append((k, list(_objects(fh.read(), [INGEST_STEPS]))))  # (one hostile batch starves no other)
     # every stored batch is judged again, so all their cites share one ls-tree and one cat-file
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
-                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"] if isinstance(e, dict)}
+                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
+                                   if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited, cited)
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
