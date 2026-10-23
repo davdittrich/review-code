@@ -196,6 +196,17 @@ class RefKinds(tt.Base):
         self.git("checkout", "-q", "-b", "feat")
         self.feat = gitfix.commit(self.repo, {"a.py": "a = 1\n", "b.py": "b = 1\n"}, "feat")
 
+    def test_an_origin_head_naming_a_non_utf8_byte_or_ending_in_next_line_is_the_base(self):  # review-code-iw9p
+        self.git("branch", "-q", "-D", "main")  # no main or master to fall back on, and no origin/main the strip() hits
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        for name in (os.fsdecode(b"ma\xffin"), "main\u0085"):
+            with self.subTest(name=name):
+                gitfix.run(["git", "update-ref", "refs/remotes/origin/" + name, self.base], self.repo)
+                gitfix.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + name], self.repo)
+                rc, out = tt.call([], self.repo, self.tmp)  # replace or strip() lost the name: no default, no target
+                self.assertEqual((rc, out.get("kind"), out.get("base_sha")), (0, "branch", self.base), out)
+                gitfix.run(["git", "update-ref", "-d", "refs/remotes/origin/" + name], self.repo)
+
     def test_a_feature_branch_no_argument_run_and_staged_target_are_not_gated(self):
         self.git("remote", "set-url", "origin", os.path.join(self.tmp, "nope.git"))  # any network read would fail
         rc, out = tt.call([], self.repo, self.tmp)

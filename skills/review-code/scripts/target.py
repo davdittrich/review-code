@@ -364,7 +364,8 @@ def default_branch(cwd: str) -> Optional[tuple]:
     """(ref usable in git, local branch name) of the default branch, or None."""
     rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
     if rc == 0:
-        ref = out.decode("utf-8", "replace").strip()[len("refs/remotes/"):]
+        ref = out.decode("utf-8", "surrogateescape")  # lossless, the one trailing LF dropped, as _head_branch (iw9p)
+        ref = (ref[:-1] if ref.endswith("\n") else ref)[len("refs/remotes/"):]
         if _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)[0] == 0:
             return ref, ref.split("/", 1)[-1]
     for name in ("main", "master"):
