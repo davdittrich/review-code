@@ -485,7 +485,7 @@ class FixDocs(unittest.TestCase):
         """review-code-mac9: the evidence rule skips a listed path with no tree/ copy; the limit must not read as a copy."""
         flat = self.flat(self.REFS, "untrusted-input.md")
         self.assertNotIn("reviewable only through its `change.diff` hunk", flat)
-        self.assertIn("has no `tree/` copy, so the evidence rule's `tree/` read skips it; its content shows only as its escaped `change.diff` hunk", flat)
+        self.assertIn("has no `tree/` copy and its escaped name opens no file, so its content shows only as its escaped `change.diff` hunk", flat)
 
     def test_in_place_reads_state_their_only_defence(self):
         """gh#52: a file whose checkout copy is the reviewed content, changed or not, reaches a lane unstripped. No structural

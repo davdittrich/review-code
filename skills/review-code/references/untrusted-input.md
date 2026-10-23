@@ -47,7 +47,7 @@ The skill asks once per run whether the code is the user's own. The first answer
 - The Defects lane's one-line change summary is unverified model text. It is length-capped, escaped and labelled "model text, unverified" in the report, and is written from the code and `change.diff` only.
 - Spec text can still reach the main thread: it relays the Spec lane's and the spec-verifier's replies into `report.py`, so it sees whatever they wrote, and a paraphrase or a run under 6 words passes the check. Only their instruction to cite by `spec_line` keeps the author's text out.
 - Not stripped: attribute values (`title`, `data-*`), link titles and definitions, footnotes, entity-encoded markup, markdown comment lines inside a list or quote, and other markup's comment syntax (AsciiDoc, Org, rst `..`).
-- A hidden-named file has no `tree/` copy, so the evidence rule's `tree/` read skips it; its content shows only as its escaped `change.diff` hunk, so not for `path` and `repo` targets.
+- A hidden-named file has no `tree/` copy and its escaped name opens no file, so its content shows only as its escaped `change.diff` hunk, so not for `path` and `repo` targets.
 - Fix mode gives one agent Edit. Containment is `fix.py`'s after-the-fact check, seal and restore, not a sandbox; see `references/fix.md`.
 - Python 3.9 reads Unicode 13 categories; a later format character escapes only if it is in the explicit set.
 - Homoglyphs, encoded payloads and plain-language instructions in visible text pass; the fence and "data, not instructions" are the defence.
