@@ -11,14 +11,21 @@ SCRIPT = os.path.join(ROOT, "scripts", "check-package.sh")
 
 @unittest.skipUnless(all(shutil.which(t) for t in ("git", "jq", "claude", "tar")), "package gate tools missing")
 class GateMutations(unittest.TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
+        # the gate runs on the committed HEAD, not the working tree: an uncommitted edit shows only after it is committed
+        cls._base = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._base.cleanup)
+        cls.pristine = os.path.join(cls._base.name, "tree")
+        os.mkdir(cls.pristine)
+        tar = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE, check=True)
+        subprocess.run(["tar", "-x", "-C", cls.pristine], input=tar.stdout, check=True)
+
+    def setUp(self):  # the tests only read the pristine tree; each mutates its own copy
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
         self.tree = os.path.join(self._td.name, "tree")
-        os.mkdir(self.tree)
-        # the gate runs on the committed HEAD, not the working tree: an uncommitted edit shows only after it is committed
-        tar = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE, check=True)
-        subprocess.run(["tar", "-x", "-C", self.tree], input=tar.stdout, check=True)
+        shutil.copytree(self.pristine, self.tree, symlinks=True)
 
     def gate(self):
         p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -93,15 +100,18 @@ class GateMutations(unittest.TestCase):
         self.assertIn("FAIL - agent-finder-tools", out)
 
     def test_gate_rejects_beads_database_files(self):  # review-code-9kt
-        for rel in (".dolt/noms/x", "sub/.dolt/x", "state.db", "a/.beads-credential-key", ".beads-credential-key"):
+        rels = (".dolt/noms/x", "sub/.dolt/x", "state.db", "a/.beads-credential-key", ".beads-credential-key")
+        for rel in rels:  # all at once: the gate lists every banned file it finds, so one run proves each pattern
             path = os.path.join(self.tree, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("x\n")
-            rc, out = self.gate()
-            self.assertEqual(rc, 1, rel)
-            self.assertIn("FAIL - hygiene-tracked", out, rel)
-            os.remove(path)
+        rc, out = self.gate()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL - hygiene-tracked", out)
+        hits = next(l for l in out.splitlines() if l.startswith("FAIL - hygiene-tracked")).split()
+        for rel in rels:
+            self.assertIn(rel, hits, rel)
 
     def test_gate_fails_when_listing_fails(self):
         # WR-06: a failing `find` must reach `bad hygiene-tracked`, not print ok
