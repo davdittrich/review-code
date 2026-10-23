@@ -227,7 +227,7 @@ class Tracer(Fixture):
                 self.assertIn({"file": shown, "name": True, "codepoints": ["TAGS:5"]}, tj["hidden_chars"])
                 with open(os.path.join(run, "ledger.json"), encoding="utf-8") as fh:
                     led = json.load(fh)
-                for n in (shown, shown2):  # never copied: listed, and its diff hunk stays reviewable
+                for n in (shown, shown2):  # never copied: listed; change.diff still shows its hunk, but a lane's cite under the shown name is rejected (test_cites.HiddenName)
                     self.assertIn({"path": n, "reason": "hidden-name"}, led["tree"]["skipped"])
                 with open(os.path.join(run, "inputs", "defects.md"), encoding="utf-8") as fh:
                     defects = fh.read()

@@ -185,6 +185,19 @@ class OldRun(tr.Base):
         self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
 
 
+class HiddenName(tr.Base):
+    """review-code-s9zi: a file whose name holds a hidden character is never copied or scanned (hidden-name). A cite under its raw
+    name is accepted (the pinned blob holds it); one under the escaped name the lanes are shown is rejected."""
+    RAW = "src/x" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+    base_files = tr.BASE
+    feat_files = {"src/calc.py": tr.FEAT, RAW: "y = 1\n"}
+
+    def test_a_cite_on_a_hidden_named_file_is_accepted_under_the_raw_name_and_rejected_under_the_shown_one(self):
+        shown = "src/x<TAGS:5>.py"
+        out = self.ingest(*(dict(tr.CAND, path=p, line=1, quote="y = 1") for p in (self.RAW, shown)))
+        self.assertEqual(reasons(out), [("accepted", None), ("rejected", "path-not-in-tree")])
+
+
 class ArgMax(tr.Base):
     """review-code-eixz: the cited paths go on one ls-tree argv, so a reply naming more path bytes than the kernel's ARG_MAX
     killed ingest. ls-tree reads no paths from a file or stdin, so they now run in chunks: one process per budget of path bytes."""
