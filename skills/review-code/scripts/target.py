@@ -57,25 +57,43 @@ class Refuse(Exception):
         self.detail = detail
 
 
+_NO_FILTERS: dict = {}  # GIT_CONFIG_* entries main sets per run (_no_filters); module state, so every git call gets them
+
+
 def _env() -> dict:
-    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")  # no prompt, no index write
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS)  # no prompt, no index write
 
 
-def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None):
-    p = subprocess.run(_GIT + list(args), cwd=cwd, env=_env(), input=stdin,
+def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None):
+    p = subprocess.run(_GIT + list(args), cwd=cwd, env=dict(_env(), **(env or {})), input=stdin,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return p.returncode, p.stdout, p.stderr
 
 
-def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True) -> bytes:
-    rc, out, _ = _run(args, cwd, stdin)
+def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True,
+              env: Optional[dict] = None) -> bytes:
+    rc, out, _ = _run(args, cwd, stdin, env)
     if check and rc != 0:
         raise Refuse("bad-ref", "a git command failed")
     return out if rc == 0 else b""
 
 
-def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True) -> str:
-    return git_bytes(args, cwd, stdin, check).decode("utf-8", "replace")
+def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True, env: Optional[dict] = None) -> str:
+    return git_bytes(args, cwd, stdin, check, env).decode("utf-8", "replace")
+
+
+def _no_filters(cwd: str) -> dict:
+    """GIT_CONFIG_* entries that blank every clean and process filter the config defines and mark it not required, so
+    no filter program runs while git reads the working tree (gh#48): the review reads the bytes on disk."""
+    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|process)$"], cwd)
+    keys = sorted({r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0") if r}) if rc == 0 else []
+    pairs = [(k, "") for k in keys] + [(k, "false") for k in sorted({k.rsplit(".", 1)[0] + ".required" for k in keys})]
+    n = os.environ.get("GIT_CONFIG_COUNT", "")
+    base = int(n) if n.isdigit() else 0  # entries the caller set stay; ours follow them
+    env = {}
+    for i, (k, v) in enumerate(pairs, base):
+        env["GIT_CONFIG_KEY_%d" % i], env["GIT_CONFIG_VALUE_%d" % i] = k, v
+    return dict(env, GIT_CONFIG_COUNT=str(base + len(pairs))) if pairs else {}
 
 
 CLI_TIMEOUT = 120  # seconds per gh or glab call
@@ -888,6 +906,86 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
     return hidden, stripped
 
 
+INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
+_NAME_STATUS = ["--name-status", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
+
+
+def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
+    """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag}}.
+
+    Ref and PR kinds pin the head commit's tree. In-place kinds pin a tree written from a copy of the index in `run`,
+    with the kind's working files hashed raw (no filter runs, the stored bytes are the bytes on disk); the checkout, its
+    index and its refs are only read. The difference tags each path where the checkout differs from the pinned tree:
+    `modified`, `untracked` (in the checkout, not ignored, not in the tree) or `absent-in-checkout`; in place it holds
+    only the worktree edits of `staged` (its tree is the index) and files the tree could not take. Its cost follows the
+    change and the drift: one name-status diff, one untracked listing, at most one hash-object and one update-index."""
+    idx = os.path.join(run, "index.tmp")
+    real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
+    if os.path.exists(real):
+        shutil.copy2(real, idx)  # keeps the mtime git judges racy entries by; a refresh writes the copy, never the index
+    env = {"GIT_INDEX_FILE": idx}
+    inplace = kind in INPLACE
+    tree = None if inplace else git(["rev-parse", "--verify", plan["head"] + "^{tree}"], top).strip()
+    # in place: the working tree against the index, the edits the kind pins or leaves; else against the pinned tree
+    f = _split(git_bytes(["diff"] + _NAME_STATUS + ([tree] if tree else []) + ["--"], top, env=env))
+    edits = list(zip(f[0::2], f[1::2]))
+    other = plan["untracked"] if kind in ("unstaged", "worktree") else _split(
+        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
+    tmp = []
+    try:
+        if not inplace:
+            paths = {p: "absent-in-checkout" if s == "D" else "untracked" if s == "A" else "modified" for s, p in edits}
+            # shortcut: an untracked file at a pinned path is tagged modified unread; compare blobs if a tag must be exact
+            paths.update((p, "modified" if p in paths else "untracked") for p in other)
+        else:
+            paths = {p: "absent-in-checkout" if s == "D" else "modified" for s, p in edits}
+            paths.update((p, "untracked") for p in other)
+            # staged pins the index as it is; every other in-place kind pins the whole checkout, so its difference is empty
+            take = [] if kind == "staged" else sorted(paths)
+            zero, srcs = "0" * len(plan["head"]), []
+            # an unmerged path has no stage-0 entry to pin: the staged tree leaves it out, and it stays in the difference
+            unmerged = {p: "0 " + zero for s, p in edits if s == "U"} if kind == "staged" else {}
+            recs = dict(unmerged)
+            for p in take:
+                try:
+                    st = os.lstat(os.path.join(top, p))
+                except OSError:
+                    if paths[p] != "untracked":
+                        recs[p] = "0 " + zero  # gone from the working tree: gone from the pinned tree
+                    continue
+                src, link = os.path.join(top, p), stat.S_ISLNK(st.st_mode)
+                if not link and (not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE):
+                    continue  # a directory, FIFO, socket or oversized file stays as the index has it, and in the difference
+                if link or "\n" in p or "\r" in p:  # --stdin-paths reads lines and follows links: these go by copy
+                    if link:
+                        data = os.fsencode(os.readlink(src))
+                    else:
+                        with open(src, "rb") as fh:
+                            data = fh.read()
+                    src = os.path.join(run, "hash.%d.tmp" % len(tmp))
+                    write_atomic(src, data)
+                    tmp.append(src)
+                srcs.append((p, "120000" if link else "100755" if st.st_mode & 0o100 else "100644", src))
+            if srcs:
+                oids = git(["hash-object", "-w", "--no-filters", "--stdin-paths"], top,
+                           stdin="".join(s + "\n" for _, _, s in srcs).encode("utf-8", "surrogateescape")).split()
+                if len(oids) != len(srcs):
+                    raise Refuse("bad-ref", "a git command failed")
+                recs.update((p, "%s %s" % (mode, oid)) for (p, mode, _), oid in zip(srcs, oids))
+            if recs:
+                git_bytes(["update-index", "-z", "--index-info"], top, env=env,
+                          stdin=b"".join(("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
+            tree = git(["write-tree"], top, env=env).strip()
+            paths = {p: t for p, t in paths.items() if p not in recs or p in unmerged}
+    finally:
+        for t in tmp + [idx]:
+            if os.path.exists(t):
+                os.remove(t)
+    rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top)
+    return {"pinned_tree": tree, "pinned_head": None if inplace else plan["head"],
+            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths}
+
+
 def _checkout_root(top: str, head: str) -> str:
     """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
     held = []
@@ -945,7 +1043,13 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
+    pt = pin_tree(kind, plan, run, top)
+    diff_path = os.path.join(run, "difference.json")
+    write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
+        {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2))
     rec = {
+        "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
+        "difference": diff_path, "difference_count": len(pt["paths"]),
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
@@ -986,6 +1090,8 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             git(["rev-parse", "--show-toplevel"], cwd)
         except Refuse:
             raise Refuse("not-a-git-repo", "run inside a git repository")
+        _NO_FILTERS.clear()
+        _NO_FILTERS.update(_no_filters(cwd))
         if "--stdin" in argv:  # WR-08: words as data, one per line, so no shell layer parses them
             argv = [a for a in argv if a != "--stdin"] + [w for w in sys.stdin.read().split("\n") if w]
         since_last = "--since-last" in argv

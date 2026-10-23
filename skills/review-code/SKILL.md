@@ -84,7 +84,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
-   `--own` with `--external`: stop and say so), and `--since-last` (a fixed literal passed to target.py before `<<`: a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
+   `--own` with `--external`: stop and say so), and `--since-last` (a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
 
@@ -131,8 +131,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `subagent_type` `review-code:spec-finder`, `model` `haiku`, `effort` `low`, `prompt` exactly
    `Spec finder. Input: <run>/inputs/spec-find.md`, and a short `description`. It names spec files by content.
    Re-run the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --found -` with the `path`
-   value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule); the script
-   keeps tracked files only and drops the rest. State the new `spec_status`. When it is still `none`, the Spec axis is
+   value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule). State the new `spec_status`. When it is still `none`, the Spec axis is
    stated as skipped (no spec found).
 4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
    (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
@@ -144,7 +143,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (`assistant`, `encoded`, `url`, `markup`, `long`); `provenance` (`added` by the change, `touched` for a changed file with no diff) is kept apart and does not list a span singly. All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
-   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag. The plugin settings go on
+   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag, and `--tool codegraph` and `--tool serena` for each such MCP tool the session has. The plugin settings go on
    stdin, one `key=value` line each:
 
    ```

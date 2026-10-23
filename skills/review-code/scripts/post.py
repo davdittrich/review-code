@@ -34,6 +34,8 @@ REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
 REVIEW_RE = prior.REVIEW  # also the carried fixed= and outdated= lists, nothing else
 NOT_RUN_LINE = re.compile(r"\*\*Not run:\*\* (?:%s)(?:, (?:%s))*" % ((report.NOT_RUN_ITEM,) * 2))
+BASIS_LINE = re.compile(r"\*\*Pinned:\*\* (?:head|tree) [0-9a-f]{40}(?:[0-9a-f]{24})?, checkout difference [0-9]+ paths?"
+                        r"(?:; lost capability: [a-z]+: [a-z ]+)*")  # report.basis_line plus plan.py's fixed capability text
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab path holding one could forge a diff header
 # Every reference GitHub or GitLab (docs.gitlab.com/user/markdown, "GitLab-specific references") links or pings. The
 # forges match rendered text, so escaping cannot defuse one; a code span can. Commit SHAs and bare URLs are not covered.
@@ -585,8 +587,8 @@ def _guard(text: str) -> None:
                 raise Refuse("unsafe-text")
         elif re.fullmatch(r"`{3,}text", ln):
             fence = ln[:-4]
-        elif marker or ln in ("", "---") or prior.PRIOR_LINE.fullmatch(ln) or prior.STATE_LINE.fullmatch(ln) or NOT_RUN_LINE.fullmatch(ln):
-            continue  # the last three are exact shapes of ids, counts and closed words: no repository text can ride in them
+        elif marker or ln in ("", "---") or prior.PRIOR_LINE.fullmatch(ln) or prior.STATE_LINE.fullmatch(ln) or NOT_RUN_LINE.fullmatch(ln) or BASIS_LINE.fullmatch(ln):
+            continue  # the last four are exact shapes of ids, counts and closed words: no repository text can ride in them
         elif not _SHAPE.match(ln):
             raise Refuse("unsafe-text")
         else:
@@ -669,6 +671,13 @@ def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable
     return text + "\n\n" + (mark or REVIEW_MARK % head)
 
 
+def _basis(b: dict) -> Optional[str]:
+    """The `**Pinned:**` line (gh#48): pinned head or tree, difference size, each lost capability; None for an older run."""
+    if not b["pinned_tree"]:
+        return None
+    return "; ".join([report.basis_line(b, "**Pinned:** ")] + ["lost capability: " + c for c in b["lost_capabilities"]])
+
+
 def _preview(payload: dict) -> str:
     out = ["review-code post preview: %s %s head %s" % (payload["forge"], _prose(payload["url"]), payload["head_sha"]),
            "== review body ==", payload["body"]]
@@ -728,7 +737,8 @@ def build(run: str) -> dict:
                "number": info["number"], "url": info["url"], "head_sha": head,
                "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head, doc["inspected"]["areas"],
                              prior.review_mark(head, d["fixed_out"], d["outdated_out"]),
-                             tuple(x for x in (prior.render(d), "**Not run:** " + ", ".join(doc["not_run"]) if doc["not_run"] else None) if x)),
+                             tuple(x for x in (prior.render(d), "**Not run:** " + ", ".join(doc["not_run"]) if doc["not_run"] else None,
+                                               _basis(doc["basis"])) if x)),
                "comments": comments,
                "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
                "skipped": [f["id"] for f in doc["findings"] if f["id"] in skip]}

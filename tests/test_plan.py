@@ -355,7 +355,7 @@ class Serial(Fixture):
 
 class Tracer(Fixture):
     KEYS = {"version", "agent_prefix", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
-            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
+            "skipped", "lost_guarantees", "tools", "lost_capabilities", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
 
     def test_standard_tier_without_spec(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "standard")

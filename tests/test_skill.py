@@ -523,6 +523,14 @@ class PostingDocs(unittest.TestCase):
 
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
+        # gh#48: byte ceilings at their 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
+        self.assertLessEqual(os.path.getsize(SKILL), 22451)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15265)
+
+    def test_plan_step_passes_the_session_code_navigation_tools(self):
+        """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""
+        flat = " ".join(self.read(SKILL).split())
+        self.assertIn("`--tool codegraph` and `--tool serena` for each such MCP tool the session has", flat)
 
     def test_verify_reads_the_live_diff(self):
         """`gh pr diff` returns the current head's diff; posting.md and post.py must not say it is the pinned head's."""

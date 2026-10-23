@@ -42,7 +42,8 @@ def _nit_rank(p: str) -> int:
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
-STDOUT_KEYS = {"status", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
+PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count")  # gh#48, from target.json
+STDOUT_KEYS = {"status", "difference", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
                "adr_omitted", "source"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
@@ -949,7 +950,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
 
     led = {
         "version": 1,
-        "target": {k: tj[k] for k in ("kind", "base_sha", "head_sha", "merge_base")},
+        "target": {k: tj.get(k) for k in ("kind", "base_sha", "head_sha", "merge_base") + PIN_KEYS},
         "trust": "unset", "trust_asked": False,
         "symbols": found["symbols"], "callers": found["callers"], "tests": found["tests"],
         "fixtures": found["fixtures"], "config": found["config"], "ci": found["ci"], "docs": found["docs"], "siblings": [],
@@ -984,7 +985,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
 
     nonce = secrets.token_hex(8)
     pin = "kind: %s\nbase_sha: %s\nhead_sha: %s\nmerge_base: %s\n" % (
-        tj["kind"], tj["base_sha"], tj["head_sha"], tj["merge_base"])
+        tj["kind"], tj["base_sha"], tj["head_sha"], tj["merge_base"]) + _basis(tj)
     diff = os.path.join(run, "change.diff")
     write(os.path.join(run, "inputs", "spec.md"),
            "# Spec input\n\n" + pin + "change_diff: %s\n\n" % diff +
@@ -1096,6 +1097,16 @@ def trust_gate(run: str, cmd: List[str]) -> dict:
     return {"status": "confirm", "command": shlex.join(cmd)}
 
 
+def _basis(tj: dict) -> str:
+    """The pin lines every lane input carries: the pinned tree and head, and the difference file by path, never its
+    paths (gh#48). Empty for a run pinned before the difference existed."""
+    if "difference" not in tj:
+        return ""
+    n = tj["difference_count"]
+    return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj["difference"], n, "" if n == 1 else "s")
+
+
 def context(run: str) -> dict:
     """What SKILL step 4 states to the user, capped; refuses until trust is recorded (target.json holds change-derived names)."""
     led = target.load_json(run, "ledger.json")
@@ -1103,11 +1114,13 @@ def context(run: str) -> dict:
         raise target.Refuse("trust-unset", "the trust answer is not recorded")
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
+    n = tj.get("difference_count")
+    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj["difference"])] if n is not None else []
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
-             "notes": led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
+             "notes": seen + led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
              "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}
     out = {k: v[:CAP_FILES] for k, v in lists.items()}
-    return dict(out, status="ok", more={k: len(v) - CAP_FILES for k, v in lists.items() if len(v) > CAP_FILES})
+    return dict(out, status="ok", **({"difference": n} if n is not None else {}), more={k: len(v) - CAP_FILES for k, v in lists.items() if len(v) > CAP_FILES})
 
 
 def _trust_cli(argv: List[str]) -> dict:

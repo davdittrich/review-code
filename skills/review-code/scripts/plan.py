@@ -28,7 +28,7 @@ import report
 import sanitize
 import target
 
-STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview",
+STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "lost_capabilities", "confirm", "preview",
                "wave_size", "verifier", "spec_verifier"}
 DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: evals/ holds a harness but no baseline has been recorded to tune them against. The quick verifier
@@ -470,6 +470,9 @@ SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing 
                "Spec axis skipped: the main thread never opens inputs/spec.md",
                "SOTA skipped: no isolated web lane"]
 HEURISTIC = "(heuristic: settings env may not reach this script)"
+# Code-navigation MCP tools the skill passes with --tool (the main thread's list: a plugin agent gets one only when the session
+# has it) and what a lane loses without each (gh#48). Fixed text, never repository text.
+TOOLS = {"codegraph": "callers and blast radius", "serena": "symbol and reference lookup"}
 
 
 def _env_lost():
@@ -481,7 +484,7 @@ def _env_lost():
     return lost
 
 
-def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False):
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=()):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
     spec = led.get("spec")
@@ -567,7 +570,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
            "caps": dict(caps, wave_size=WAVE_SIZE),
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
-           "shards": shards, "skipped": skipped, "lost_guarantees": lost,
+           "shards": shards, "skipped": skipped, "lost_guarantees": lost, "tools": sorted(tools),
+           "lost_capabilities": ["%s: %s" % (t, TOOLS[t]) for t in sorted(TOOLS) if t not in tools],
            "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
@@ -581,12 +585,13 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
             "calls": [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard", "input") if k != "input" or serial}
                       for c in calls],  # SKILL steps 7 and 8 read these instead of plan.json
             "wave_size": WAVE_SIZE, "verifier": doc["verifier"], "spec_verifier": doc["spec_verifier"], "skipped": skipped,
-            "lost_guarantees": lost, "confirm": doc["confirm"], "preview": doc["preview"]}
+            "lost_guarantees": lost, "lost_capabilities": doc["lost_capabilities"], "confirm": doc["confirm"],
+            "preview": doc["preview"]}
 
 
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai] [--nit]")
+                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--tool codegraph|serena ...]")
 
 
 def _parse(argv):
@@ -597,6 +602,9 @@ def _parse(argv):
         a = argv[i]
         if a == "--tier" and "tier" not in opts and i + 1 < len(argv) and argv[i + 1] in TIERS:
             opts["tier"] = argv[i + 1]
+            i += 2
+        elif a == "--tool" and i + 1 < len(argv) and argv[i + 1] in TOOLS and argv[i + 1] not in opts.get("tools", ()):
+            opts.setdefault("tools", []).append(argv[i + 1])
             i += 2
         elif a in BOOL_FLAGS and BOOL_FLAGS[a][0] not in opts:
             opts[BOOL_FLAGS[a][0]] = BOOL_FLAGS[a][1]
@@ -612,7 +620,7 @@ def main(argv):
         cfg = _read_config()
         tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
         out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
-                       opts.get("ai", False), opts.get("nit", False)), 0
+                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ())), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback

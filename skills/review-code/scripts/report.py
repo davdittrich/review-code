@@ -77,7 +77,8 @@ and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (
 any path or line in the line is overwritten), quote = the item name, with 1 to 5 https `sources`, and its inspected
 line lists item numbers; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
-lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}. A handoff for a file listed by a plan.json pack
+lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
+checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
 """
 import sys
@@ -1394,6 +1395,9 @@ def _build(run):
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
             if isinstance(plan.get("lost_guarantees"), list) else [],
+            "basis": {"pinned_head": tj.get("pinned_head"), "pinned_tree": tj.get("pinned_tree"), "difference": tj.get("difference_count"),
+                      "lost_capabilities": [x for x in plan.get("lost_capabilities", []) if isinstance(x, str)]
+                      if isinstance(plan.get("lost_capabilities"), list) else []},
             "lanes": lanes, "merged": cand.get("merged", 0),
             "lean_lines": sum(i["end_line"] - i["line"] + 1 for i in findings if i["category"] == "lean"),  # an estimate
             "inspected": {"files": tj["included"], "areas": areas,
@@ -1447,6 +1451,14 @@ def _sarif(doc):
         "properties": {"inspectedAreas": areas[:MAX_AREAS], "inspectedAreasOmitted": max(0, len(areas) - MAX_AREAS)}}]}
 
 
+def basis_line(b, lead):
+    """What the review was judged against (gh#48): the pinned head, or the pinned tree for an in-place target, and the
+    checkout difference size. Object ids and a count only, so the line holds no repository text."""
+    n = b["difference"]
+    return "%s%s, checkout difference %d path%s" % (lead, ("head " + b["pinned_head"]) if b["pinned_head"] else (
+        "tree " + b["pinned_tree"]), n, "" if n == 1 else "s")
+
+
 def _text(doc):
     e = sanitize.escape_line  # repo and LLM text reaches the terminal only through here; one line each, so no CR overwrite
 
@@ -1467,6 +1479,8 @@ def _text(doc):
         out.append("Target is not a change: whole-file findings")
     out += ["mode: " + doc["mode"]] + (["tier: " + e(doc["tier"])] if doc["tier"] else [])
     out += ["lost guarantee: " + e(g) for g in doc["lost_guarantees"]]
+    out += [basis_line(doc["basis"], "basis: pinned ")] if doc["basis"]["pinned_tree"] else []
+    out += ["lost capability: " + e(c) for c in doc["basis"]["lost_capabilities"]]
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]

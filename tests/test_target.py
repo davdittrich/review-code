@@ -370,7 +370,7 @@ class TestKinds(Local):
         a, b = load(o1["run"]), load(o2["run"])
         self.assertNotEqual(a["run"], b["run"])
         for d in (a, b):
-            d.pop("run"), d.pop("created")
+            d.pop("run"), d.pop("created"), d.pop("difference")  # each names its own run directory
         self.assertEqual(a, b)
         self.assertEqual(a["included"], sorted(a["included"]))
         self.assertEqual(a["included"][:2], ["B.py", "a.py"])  # code point order: upper case first
