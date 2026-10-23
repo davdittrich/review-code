@@ -866,6 +866,7 @@ class Tree(Base):
         self.assertEqual((led["tree"]["source"], led["tree"]["skipped"]), ("working copy", [{"path": "leak", "reason": "symlink"}]))
         self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
+        self.assertIn("Never read a path listed under Skipped, in the repository or anywhere else", self.read("inputs/defects.md"))  # vzhs
         with open(os.path.join(self.repo, "a.txt"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "x\nbad %s\n" % rlo)
 

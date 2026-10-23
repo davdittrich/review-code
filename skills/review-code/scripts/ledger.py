@@ -1054,7 +1054,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                "\n".join("- " + json.dumps(p) for p in tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\ntree/ holds the pinned copy of each checkout-difference file (hidden text stripped from "
            "prose and markup files, hidden characters escaped in all); read every other file from the repository. A file under "
-           "Skipped has no readable copy.\n\n## Skipped\n\n%s\n" % (
+           "Skipped has no readable copy. Never read a path listed under Skipped, in the repository or anywhere else: it may be a link into the host.\n\n## Skipped\n\n%s\n" % (
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
            "\n## Context ledger counts\n\n%s\n" % "\n".join(
