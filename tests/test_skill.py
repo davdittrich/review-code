@@ -638,6 +638,11 @@ class ReviewFixesPR60(unittest.TestCase):
         self.assertNotIn("none for a review of what is checked out", t)
         self.assertIn("a staged review lists the worktree edits on top of the index", t)
 
+    def test_a_drop_with_a_remaining_writer_is_not_exempt(self):  # review-code-g5qv.2 (C2)
+        t = self.flat("skills", "review-code", "references", "packs", "data-migrations.md")
+        self.assertIn("A drop of a column or table whose name a search of the repository finds in no code that reads or writes it.", t)
+        self.assertNotIn("shows no code in the repository reads", t)
+
 
 if __name__ == "__main__":
     unittest.main()
