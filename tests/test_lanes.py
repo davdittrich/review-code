@@ -568,6 +568,21 @@ class CcrKeepRules(unittest.TestCase):
             rows = {r.split("|")[1].strip(): r.split("|")[3].strip() for r in f if r.startswith(("| L96 ", "| L108 "))}
         self.assertEqual(rows, {"L96": "drop", "L108": "drop"})
 
+    def test_only_sota_lane_states_never_offer_options(self):
+        """review-code-ib3j: L136 credits only the sota lane with 'never offer options'; reader prompts omit it on purpose (#57)."""
+        agents = os.path.join(ROOT, "agents")
+        stating = []
+        for name in sorted(os.listdir(agents)):
+            with open(os.path.join(agents, name), encoding="utf-8") as f:
+                if "never offer options" in f.read():
+                    stating.append(name)
+        self.assertEqual(stating, ["sota.md"])
+        with open(os.path.join(ROOT, "docs", "ccr-contract.md"), encoding="utf-8") as f:
+            row = next(r for r in f if r.startswith("| L136 "))
+        rationale = row.split("|")[4]
+        self.assertIn("sota", rationale)
+        self.assertNotIn("Lane subagents", rationale)
+
 
 class ModelFacingTextCitesNoIds(unittest.TestCase):
     """review-code-ru3, review-code-ebq: the reason itself, not a planning ID or a path that never ships."""
