@@ -1265,8 +1265,11 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
         {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2,
         ensure_ascii=False))  # lanes Grep it for a path as written (gh#52); shown() leaves no lone surrogate
+    list_path = os.path.join(run, "difference.txt")  # what lanes Grep: one path per line, so ^path$ anchors and no JSON escape hides a name
+    write_private(list_path, "".join(p + "\n" for p in sorted(
+        shown(p).replace("\n", "<U+000A>").replace("\r", "<U+000D>") for p in pt["paths"])))
     rec = {
-        "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
+        "difference_list": list_path, "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
         "difference": diff_path, "difference_count": len(pt["paths"]), "integrity": integ,
         "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85

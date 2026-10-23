@@ -1163,7 +1163,7 @@ class Shards(Lanes):
             text = fh.read()
         self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), text)
         with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:  # gh#52: the evidence rule greps it
-            self.assertIn("\ncheckout_difference: " + json.dumps(json.load(fh)["difference"]) + "\n", text)
+            self.assertIn("\ncheckout_difference: " + json.dumps(json.load(fh)["difference_list"]) + "\n", text)
         self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "b = 2"}], "reason": "r"})
         d = self.doc()
         (f,) = d["findings"]
@@ -2374,6 +2374,29 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+
+class LoneSurrogate(Base):
+    """A lone surrogate in a lane's path or text cannot be written as UTF-8: refuse before the run changes (3j06)."""
+    base_files = {"src/calc.py": "x = 1\n"}
+    feat_files = {os.fsdecode(b"bad\xff.py"): "def f():\n    return a - b\n", "src/calc.py": FEAT}
+
+    def snap(self):
+        out = {}
+        for r, _, fs in os.walk(self.run_dir):
+            for f in fs:
+                with open(os.path.join(r, f), "rb") as fh:
+                    out[os.path.relpath(os.path.join(r, f), self.run_dir)] = fh.read()
+        return {k: v for k, v in out.items() if not k.startswith(("tree", "history"))}
+
+    def test_a_surrogate_path_or_text_refuses_and_leaves_the_run_alone(self):
+        self.ingest(CAND)
+        before = self.snap()
+        bad = os.fsdecode(b"bad\xff.py")
+        for c in (dict(CAND, path=bad, line=2), dict(CAND, title="t" + "\udcff"), dict(CAND, trigger="x" + "\udcff")):
+            rc, out = self.rep("ingest", lines(c))
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
+            self.assertEqual(self.snap(), before)
 
 
 class NotRunSkips(unittest.TestCase):

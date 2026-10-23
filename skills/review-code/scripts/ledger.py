@@ -43,7 +43,7 @@ def _nit_rank(p: str) -> int:
 _REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
-PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity")  # gh#48, gh#51
+PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_list", "difference_count", "integrity")  # gh#48, gh#51
 STDOUT_KEYS = {"status", "difference", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
                "adr_omitted", "source"}
@@ -1165,7 +1165,7 @@ def _basis(tj: dict) -> str:
         return ""
     n = tj["difference_count"]
     return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
-        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj["difference"], n, "" if n == 1 else "s")
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj.get("difference_list", tj["difference"]), n, "" if n == 1 else "s")
 
 
 def context(run: str) -> dict:
@@ -1176,7 +1176,7 @@ def context(run: str) -> dict:
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     n = tj.get("difference_count")
-    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj["difference"])] if n is not None else []
+    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj.get("difference_list", tj["difference"]))] if n is not None else []
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": seen + led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
              "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}
