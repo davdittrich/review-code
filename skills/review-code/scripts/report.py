@@ -758,7 +758,7 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree")))
-    out += "checkout_difference: %s\n" % json.dumps(diff) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
+    out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)

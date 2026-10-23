@@ -131,5 +131,24 @@ class ShardDifference(tpl.ShardBase):
         self.assertEqual(tr.json.loads(out)["dropped"]["invalid"], 0)
 
 
+class NonAsciiRun(tt.Base):
+    """review-code-98hy: the handoff's `checkout_difference:` line names a run-directory file; under a non-ASCII repository
+    path it holds the path as written (a \\u escape names no file a lane could open)."""
+
+    def test_the_handoff_line_holds_a_non_ascii_run_path_as_written(self):
+        import report
+        repo = gitfix.make_repo(os.path.join(self.tmp, "répo"))
+        gitfix.commit(repo, {"a.py": "a = 1\n"}, "base")
+        tp.write(repo, "a.py", "a = 2\n")
+        tp.raw(repo, "add", "a.py")
+        rc, out = tt.call(["--staged"], repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        diff = tp.load(out["run"])["difference"]
+        c = dict(tr.CAND, path="a.py", line=1, id="d1", title="t", trigger="g", axis="defects", end_line=1)
+        body = report._handoff(c, out["run"], "nonce", (), {}, diff)
+        self.assertIn("\ncheckout_difference: " + json.dumps(diff, ensure_ascii=False) + "\n", body)
+        self.assertIn("répo", body)
+
+
 if __name__ == "__main__":
     unittest.main()
