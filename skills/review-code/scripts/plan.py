@@ -148,8 +148,7 @@ def _heads(tj, blobs):
     `cat-file --batch`: the reviewed content, whatever the checkout holds now (review-code-zcrc, l895). A blob over MAX_FILE
     gives neither."""
     uniq = sorted({oid for _, oid in blobs.values()})
-    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))
-            for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], tj["repo"], True, target.MAX_FILE))}
+    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n")) for oid, data in ledger._blobs(tj["repo"], uniq).items()}
     have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
     return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
 

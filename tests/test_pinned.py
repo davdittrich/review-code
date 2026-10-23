@@ -13,6 +13,7 @@ import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import ledger  # noqa: E402
+import report  # noqa: E402
 import target  # noqa: E402
 import test_fix as tfix  # noqa: E402
 import test_post as tpost  # noqa: E402  (module imports: their test classes are not collected twice)
@@ -721,6 +722,21 @@ class LsRecords(unittest.TestCase):
         with mock.patch.object(ledger, "ls_tree", return_value=short):
             self.assertEqual(ledger._pinned_listing("r", "t", ["x"]),
                              {"x.py": ("100644", self.OID), "l": ("120000", self.OID)})
+
+
+class PinnedBlobRead(tt.Base):
+    """PR60 N8: report._Pinned reads its cited blobs through ledger._blobs, which caps each read at MAX_FILE."""
+
+    def test_a_cited_blob_over_the_cap_has_no_rows_and_a_small_one_has_its_lines(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        gitfix.commit(repo, {"big.py": "x = 1\n" * 50, "ok.py": "y = 2\n"}, "base")
+        run = os.path.join(self.tmp, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump({"repo": repo, "pinned_tree": self.git("rev-parse", "HEAD^{tree}", cwd=repo)}, fh)
+        with mock.patch.object(target, "MAX_FILE", 100):
+            pinned = report._Pinned(run, ["big.py", "ok.py"], ["big.py", "ok.py"])
+        self.assertEqual(pinned.rows, {"big.py": None, "ok.py": ["y = 2"]})
 
 
 if __name__ == "__main__":

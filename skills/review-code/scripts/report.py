@@ -255,8 +255,7 @@ class _Pinned:
         self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
         uniq = sorted(set(need.values()))
-        text = {oid: None if data is None else ledger._text(data)
-                for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], self.top, True, target.MAX_FILE))}
+        text = {oid: None if data is None else ledger._text(data) for oid, data in ledger._blobs(self.top, uniq).items()}
         for p, oid in need.items():
             t = text.get(oid)
             self.rows[p] = None if t is None else _lines(ledger._scan(p, t)[0])
@@ -275,7 +274,7 @@ class _Pinned:
 
     def blobs(self, oids):
         """{blob id: bytes, or None over MAX_FILE} from one `cat-file --batch`."""
-        return {o: data for o, (_, data) in zip(oids, target.cat_batch([o.encode() for o in oids], self.top, True, target.MAX_FILE))}
+        return ledger._blobs(self.top, oids)
 
 
 def _lines(text):
