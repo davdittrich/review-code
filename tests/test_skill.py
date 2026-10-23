@@ -475,6 +475,16 @@ class FixDocs(unittest.TestCase):
         self.assertNotIn("runs only through step 9 of the skill", flat)
         self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
 
+    def test_in_place_reads_state_their_only_defence(self):
+        """gh#52: a file whose checkout copy is the reviewed content, changed or not, reaches a lane unstripped. No structural
+        barrier exists, so the doc states the limit; the label it relies on is pinned in test_lanes SharedPhrases and
+        test_serial_mode_states_the_evidence_rule_and_keeps_the_lost_guarantees."""
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        for s in ("changed files included", "only the untrusted label", "detection, not stripping",
+                  "Unchanged and excluded files are never scanned", "bias findings"):
+            self.assertIn(s, flat)
+        self.assertNotIn("stripped copies of the included and referenced files", flat)
+
 
 class PostingDocs(unittest.TestCase):
     """05-04: posting.md names every refusal post.py can emit; the pointers and the README caveats exist."""
