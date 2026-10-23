@@ -252,6 +252,7 @@ class PlanGates(Base):
     def test_head_held_by_another_worktree(self):
         self.git("checkout", "-q", "main")
         self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         wt = os.path.join(self.tmp, "wt")
         self.git("worktree", "add", "-q", wt, "feat")
         run, stale = self.pin("main...feat"), self.pin("main...feat")
@@ -280,6 +281,7 @@ class PlanGates(Base):
         self.assertIn("git diff before committing", out)
         self.git("checkout", "-q", "main")
         self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         wt = os.path.join(self.tmp, "wt")
         self.git("worktree", "add", "-q", wt, "feat")
         run = self.pin("main...feat")

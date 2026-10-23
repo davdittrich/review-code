@@ -472,6 +472,7 @@ class TestAmbiguity(Local):
     def test_ambiguity_descendant_ref(self):
         self.git("checkout", "-q", "main")
         self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         c = self.ask("feat")
         self.assertEqual([x["reading"] for x in c], ["changes on HEAD since feat", "changes on feat since main"])
         rc, out = self.pin("feat", "--choice", "2")

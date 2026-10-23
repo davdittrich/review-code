@@ -162,6 +162,20 @@ class RefKinds(tt.Base):
         rc, out = tt.call(["main..feat"], self.repo, self.tmp)
         self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
 
+    def test_origin_without_origin_head_refuses_a_gated_head(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "set-head", "origin", "-d")  # gh#49: the upstream is the remote behind origin/HEAD
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
+    def test_origin_head_without_an_origin_url_never_reads_a_path_named_origin(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "remove", "origin")
+        gitfix.run(["git", "clone", "-q", "--bare", self.repo, os.path.join(self.repo, "origin")], self.tmp)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # a path could forge the tip
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
     def test_no_origin_refuses_a_gated_head(self):
         self.git("checkout", "-q", "main")
         self.git("remote", "remove", "origin")

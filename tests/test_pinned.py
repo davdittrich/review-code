@@ -186,6 +186,7 @@ class RangeDifference(tt.Base):
         gitfix.commit(self.repo, {"a.py": "a = 1\n"}, "feat")
         self.git("checkout", "-q", "main")
         self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         write(self.repo, "b.py", "b = 1\n")
         write(self.repo, "c.py", "c = 1\n")
         self.git("add", "c.py")
@@ -283,6 +284,7 @@ class LargeRepo(tt.Base):
         self.git("repack", "-adq")
         self.git("prune-packed")
         self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
 
     def blob_offsets(self):
         pack = [f for f in os.listdir(os.path.join(self.repo, ".git", "objects", "pack")) if f.endswith(".idx")][0]
