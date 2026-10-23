@@ -55,7 +55,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
   so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
   the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
-  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
+  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -1523,8 +1523,6 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
-    if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
-        doc["adr_omitted"] = led["capped"]["adr"]
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
            "signal": h["signal"], **({"provenance": h["provenance"]} if h.get("provenance") else {})} for h in flagged]
@@ -1681,9 +1679,7 @@ def _text(doc):
                 ", ".join("%s %d" % (k, n) for k, n in sorted(r["kinds"].items()))) + (
                 ", %d of them added by the change" % r["added"] if r.get("added") else "")
                 for r in doc.get("hidden_routine", [])])
-    out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
-                   + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
-                      if doc.get("adr_omitted") else []))
+    out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]])
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
 

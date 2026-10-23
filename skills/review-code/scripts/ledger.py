@@ -46,7 +46,7 @@ _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # t
 PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity")  # gh#48, gh#51
 STDOUT_KEYS = {"status", "difference", "reason", "detail", "run", "label", "spec_status", "counts", "trust", "asked", "effective", "command",
                "excluded", "notes", "conventions", "ignored", "hidden_text", "hidden_routine", "hidden_chars", "more", "adr_only",
-               "adr_omitted", "source"}
+               "source"}
 _ISSUE = re.compile(r"(?<![\w/&])#([0-9]{1,9})\b")  # nine digits at most: int() of a longer run is attacker-sized
 _MR_REF = re.compile(r"(?<![\w/&])!([0-9]{1,9})\b")
 _HOST = r"[A-Za-z0-9][\w.-]*"
@@ -64,7 +64,7 @@ _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
-CAP_ADR, CAP_ADR_BYTES = 30, 400000  # the decision-record set has its own caps: tickets and spec files never share them
+ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, so spec.md's length never follows it
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -756,37 +756,46 @@ def _bd_show(repo: str, ref: str) -> Optional[str]:
         return None
 
 
-def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=()) -> tuple:
-    """path -> text of the decision records: prose files under an adr, adrs, decisions or architecture-decisions
-    directory at any depth, and under a directory the spec finder named. Each record is its own spec entry.
-    Returns (path -> text, number of records left out). Records the change names come first: `hay` (change text) holds
-    the record's path or number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names; the rest follow in path order."""
+def _is_record(p: str) -> bool:
+    return p.lower().endswith(_PROSE_EXT) and bool(_ADR_DIRS & set(p.lower().split("/")[:-1]))
+
+
+def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=(), toks=()) -> dict:
+    """path -> (size in bytes, title, why) of the decision records: prose files under an adr, adrs, decisions or
+    architecture-decisions directory at any depth, and under a directory the spec finder named. Every record is listed and
+    none is read into spec.md. Records the change names come first: `hay` (change text) holds the record's path or
+    number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names, or its file name
+    holds a token of the branch; the rest follow in path order. A record that is not text (a NUL byte, or over MAX_FILE) is listed
+    with no title."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
-
-    def record(p: str) -> bool:
-        return p.lower().endswith(_PROSE_EXT) and (
-            bool(_ADR_DIRS & set(p.lower().split("/")[:-1])) or any(p.startswith(d + "/") for d in dirs))
-    cand = sorted(p for p in reg if record(p) and p not in taken and p not in skip)
-    blobs = _blobs(repo, [reg[p] for p in cand])
+    cand = sorted(p for p in reg if p not in taken and p not in skip and (_is_record(p) or (
+        p.lower().endswith(_PROSE_EXT) and any(p.startswith(d + "/") for d in dirs))))
+    oids = sorted({reg[p] for p in cand})
+    got = {f[0].decode(): (int(f[2]), d) for f, d in target.cat_batch([o.encode() for o in oids], repo, True, target.MAX_FILE)
+           if len(f) == 3 and f[1] == b"blob"}
     hay = hay.lower()
     issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
-
-    def score(p: str) -> int:
+    info = {}
+    for p in cand:
+        size, data = got.get(reg[p], (0, None))
+        text = _text(data) if data is not None else None
         n = re.match(r"[0-9]+", posixpath.basename(p))
-        text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
         low = text.lower() if text else ""
-        return (p.lower() in hay) + bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay)) + (
-            bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
-    rank = {p: score(p) for p in cand}
-    want = sorted(cand, key=lambda p: (-rank[p], p))
-    out, used = {}, 0
-    for p in want:
-        text = _text(blobs[reg[p]]) if blobs.get(reg[p]) is not None else None
-        if len(out) < CAP_ADR and text is not None and used + len(text) <= CAP_ADR_BYTES:
-            out[p], used = text, used + len(text)
-    return out, len(cand) - len(out)
+        why = [w for w, hit in (
+            ("path named", p.lower() in hay),
+            ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
+            ("names a changed file or issue", bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text))))),
+            ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
+        first = next((ln.strip().lstrip("#").strip() for ln in (text or "").split("\n") if ln.strip()), "")
+        info[p] = (size, sanitize.sanitize_prose(first[:100]) if text is not None else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE,
+                   why)
+    out = {}
+    for p in sorted(cand, key=lambda p: (-len(info[p][2]), p)):
+        size, title, why = info[p]
+        out[p] = (size, title, ", ".join(why + ["record directory" if _is_record(p) else "named directory"]))
+    return out
 
 
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
@@ -795,7 +804,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
-    want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and (every or any(t in posixpath.basename(p).lower()
+    want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
                                                                                          for t in toks)))[:CAP_SPEC_FILES]
     blobs = _blobs(repo, [reg[p] for p in want])
     out = {}
@@ -889,10 +898,10 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
 
     files = _spec_files(tj["repo"], head_ls, spec, toks, every=kind == "repo", skip=set(tj["included"]) if kind == "path" else (), found=found)
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
-    adrs, adr_omitted = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
-                                   "\n".join(prose + tj["included"]), tj["included"])
+    adrs = _adr_files(tj["repo"], head_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
+                      "\n".join(prose + tj["included"]), tj["included"], toks)
     sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
-    sections = {"adr_omitted": adr_omitted, "adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(adrs[p])) for p in sorted(adrs)],
+    sections = {"adrs": [(json.dumps(sanitize.escape_for_code(p)[0]), adrs[p]) for p in adrs],
                 "pr": pr_blocks, "issues": [("issue #%d" % n, texts[n]) for n in sorted(texts)] +
                 [("issue " + r, xtexts[r]) for r in sorted(xtexts)] + [("ticket " + r, tickets[r]) for r in sorted(tickets)],
                 "files": [(json.dumps(sanitize.escape_for_code(p)[0]), sanitize.sanitize_prose(files[p]))
@@ -939,8 +948,6 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     tree_ls = head_ls if head_ls is not None else target.tree_listing(head, repo)
     sources, capped["issues"], sections, found_spec, adr_only = _gather_spec(tj, spec, tree_ls, messages, spec_paths)
     spec_status = "found" if found_spec else "none"
-    if sections["adr_omitted"]:
-        capped["adr"] = sections["adr_omitted"]
 
     led = {
         "version": 1,
@@ -988,9 +995,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                       _section("Commit messages", [("commit " + c, m) for c, m in zip(tj["commits"], messages)], nonce),
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
-                      _section("Decision records", sections["adrs"], nonce) +
-                      ("\n%d decision records omitted by the cap, not shown here: the absence of a record is not a finding.\n"
-                       % sections["adr_omitted"] if sections["adr_omitted"] else ""))) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
+                      "## Decision records\n" + ("\n\n".join(
+                          "### %s (%0*d bytes): %s\n%s" % (lab, ADR_WIDTH, size, why, block(title, nonce))
+                          for lab, (size, title, why) in sections["adrs"]) or "none") + "\n")) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
                    if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
@@ -1026,8 +1033,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + sib_sec)
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
-            "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {}),
-            **({"adr_omitted": capped["adr"]} if "adr" in capped else {})}
+            "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {})}
 
 
 TRUST_VALUES = ("own", "external")
