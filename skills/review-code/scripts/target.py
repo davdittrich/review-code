@@ -1161,7 +1161,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     pt = pin_tree(kind, plan, run, top)
     diff_path = os.path.join(run, "difference.json")
     write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
-        {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2))
+        {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2,
+        ensure_ascii=False))  # lanes Grep it for a path as written (gh#52); shown() leaves no lone surrogate
     rec = {
         "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
         "difference": diff_path, "difference_count": len(pt["paths"]), "integrity": integ,

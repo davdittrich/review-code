@@ -89,6 +89,22 @@ class Context(tr.Base):
             self.assertEqual(json.load(fh)[i]["cites"], [helper])
 
 
+class Greppable(tt.Base):
+    """The evidence rule greps difference.json for a path, so a non-ASCII name is stored as UTF-8, not as a \\u escape."""
+
+    def test_a_non_ascii_difference_path_is_stored_as_written(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(repo, {"a.py": "a = 1\n", "café.py": "x = 1\n"}, "base")
+        tp.write(repo, "a.py", "a = 2\n")
+        tp.raw(repo, "add", "a.py")
+        tp.write(repo, "café.py", "x = 2\n")
+        rc, out = tt.call(["--staged"], repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual(tp.difference(out["run"]), {"café.py": "modified"})
+        with open(tp.load(out["run"])["difference"], "rb") as fh:
+            self.assertIn('"café.py"'.encode("utf-8"), fh.read())
+
+
 class ShardDifference(tpl.ShardBase):
     """A path target whose difference is not empty: a tracked file the pin could not hash (over MAX_FILE on disk) keeps
     its committed blob in the pinned tree. Every shard's tree holds the whole difference."""

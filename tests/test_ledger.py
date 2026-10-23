@@ -701,6 +701,13 @@ class Tree(Base):
                 self.assertNotIn(tags.encode("utf-8"), data, n)
                 self.assertNotIn(b"\\udb40", data, n)
 
+    def test_a_changed_hidden_named_file_in_the_difference_is_skipped_once(self):  # gh#52: raw included, escaped listed
+        evil = "src/use" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+        self.base({"src/cfg.py": "a = 1\n", evil: "b = 1\n"})
+        self.branch({evil: "b = 2\n"})
+        _, led = self.build(difference=["src/use<TAGS:5>.py"])
+        self.assertEqual(led["tree"]["skipped"], [{"path": "src/use<TAGS:5>.py", "reason": "hidden-name"}])
+
     def test_tree_hidden_hits_listed_for_changed_files_only(self):
         # 6xl.46: difference-only copies are stripped and escaped, but their hits are not change defects
         rlo = chr(0x202E)

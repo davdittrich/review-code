@@ -658,7 +658,8 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
                 skipped.append({"path": p, "reason": "too-large"})
             else:
                 emit(p, data)
-    skipped.sort(key=lambda k: k["path"])  # blobs arrive in id order; keep the lists in path order
+    # a changed hidden-named file is skipped by its raw name and again by its escaped difference entry: one row
+    skipped = sorted({(k["path"], k["reason"]): k for k in skipped}.values(), key=lambda k: k["path"])
     hidden.sort(key=lambda h: h["file"])  # stable: per-file line order kept
     hidden_text.sort(key=lambda h: h["file"])
     return {"path": tree, "source": source, "skipped": skipped}, hidden, hidden_text
