@@ -134,7 +134,7 @@ class MissingSymbol(tr.Base):
 class MissingSymbolNamedLikeAFile(tr.Base):
     """review-code-1luq: a claim about an undefined symbol is no claim that a file is missing, even when a pinned file
     has the symbol's name (an extensionless `load` or `Makefile`)."""
-    base_files = dict(tr.BASE, load="#!/bin/sh\n")
+    base_files = dict(tr.BASE, load="#!/bin/sh\n", **{"os.path": "x\n"})
 
     def test_an_undefined_symbol_claim_stays_a_finding_when_a_pinned_file_has_its_name(self):
         out = self.ingest(tr.cand("return a - b", 5, title="undefined name load", trigger="NameError at call time"),
@@ -152,6 +152,17 @@ class MissingSymbolNamedLikeAFile(tr.Base):
                           tr.cand("def load():", 1, title="bug", trigger="`load` is missing from scope."),
                           tr.cand("def add(a, b):", 4, title="load is missing in the module namespace", trigger="NameError"))
         self.assertEqual(reasons(out), [("accepted", None)] * 3)
+
+    def test_a_dotted_symbol_missing_from_the_imports_stays_a_finding_when_a_pinned_file_has_its_name(self):  # review-code-zpmi
+        out = self.ingest(tr.cand("return a - b", 5, title="os.path is missing from the imports", trigger="NameError"),
+                          tr.cand("def load():", 1, title="bug", trigger="`os.path` is missing from scope."))
+        self.assertEqual(reasons(out), [("accepted", None)] * 2)
+
+    def test_a_dotted_file_claim_still_downgrades(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="missing file os.path", trigger="x"),
+                          tr.cand("def load():", 1, title="os.path is missing", trigger="x"),
+                          tr.cand("def add(a, b):", 4, title="src/calc.py is missing from the imports", trigger="x"))
+        self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 3)
 
     def test_a_file_missing_from_the_imports_or_the_repo_still_downgrades(self):
         out = self.ingest(tr.cand("return a - b", 5, title="src/calc.py is missing from the imports", trigger="x"),
