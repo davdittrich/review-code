@@ -633,6 +633,11 @@ class ReviewFixesPR60(unittest.TestCase):
         self.assertIn("Each shard copies the checkout difference into its own `tree/`; every other file is read from the repository.", t)
         self.assertNotIn("takes more disk", t)
 
+    def test_readme_names_the_staged_worktree_edits_in_the_checkout_difference(self):  # review-code-g5qv.7 (D1)
+        t = self.flat("README.md")
+        self.assertNotIn("none for a review of what is checked out", t)
+        self.assertIn("a staged review lists the worktree edits on top of the index", t)
+
 
 if __name__ == "__main__":
     unittest.main()
