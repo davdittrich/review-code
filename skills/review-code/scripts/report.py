@@ -1040,9 +1040,12 @@ def _read_lane(text, lane, run, shard=None):
     for _, o, _ in parsed:
         if o is None:
             continue
-        cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
+        p = ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path")
+        if isinstance(p, str):  # a list or dict path is unhashable: _candidate rejects that one line as bad-type
+            cited.add(p)
         if isinstance(o.get("inspected"), list):
-            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
+            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"]
+                         if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named, cited)
     for n, (ln, o, fixed) in enumerate(parsed, 1):
@@ -1342,7 +1345,8 @@ def _verdicts(run, text, batch, agent=None):
                 replies.append((k, list(_objects(fh.read(), [INGEST_STEPS]))))  # (one hostile batch starves no other)
     # every stored batch is judged again, so all their cites share one ls-tree and one cat-file
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
-                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"] if isinstance(e, dict)}
+                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
+                                   if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited, cited)
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)

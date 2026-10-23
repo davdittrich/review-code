@@ -131,6 +131,20 @@ class Derivation(Base):
         self.assertEqual((un[n]["reason"], un[n]["evidence_class"]), ("no-valid-cite", "speculative"))
         self.assertEqual((un[o]["reason"], un[o]["evidence_class"], un[o]["score"]), ("no-verdict", "speculative", 25))
 
+    def test_a_list_or_dict_path_rejects_that_line_only(self):  # PR60 C4: unhashable paths never fail the whole ingest
+        good = cand(Q_ADD, 8)
+        out = self.ingest(dict(good, path=[1, 2]), dict(good, path={"a": 1}), good, {"inspected": [["x"], {"y": 1}, "src/calc.py"]})
+        self.assertEqual([r["check"] for r in out["rejected"]], ["bad-type", "bad-type"])
+        self.assertEqual(len(out["ids"]), 1)
+
+    def test_a_list_evidence_path_in_verdicts_is_no_valid_cite(self):  # PR60 C4: same filter as ingest
+        self.ingest(cand(Q_ADD, 8), cand(Q_MUL, 11), {"inspected": ["src/calc.py"]})
+        a, m = (fid("src/calc.py", "bug", q) for q in (Q_ADD, Q_MUL))
+        ok = verdict((Q_MUL, 11), "confirmed")
+        bad = verdict((Q_ADD, 8), "confirmed", evidence=[{"path": [1], "line": 8, "quote": Q_ADD}])
+        v = self.verdicts(bad, ok)
+        self.assertEqual((v["confirmed"], v["unverifiable"]), ([m], [a]))
+
     def test_confirmed_finding_shows_the_verifier_reason_as_impact(self):  # review-code-d14.4
         self.ingest(cand(Q_ADD, 8), {"inspected": ["src/calc.py"]})
         self.verdicts(verdict((Q_ADD, 8), reason="data loss on retry"))
