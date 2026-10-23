@@ -1238,6 +1238,15 @@ class SpecAxis(Base):
             self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
             self.assertEqual(self.snapshot(), before, sub)
 
+    def test_a_verdict_reason_copying_a_spec_line_is_dropped(self):  # review-code-flwv
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]})
+        self.assertEqual(([(d["disposition"], d["reason"]) for d in out["dispositions"]], out["no_verdict"]),
+                         ([("rejected", "copied-from-spec")], [sid]))
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
+
     def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
         _, inner, _, _ = self.spec_rows()
         (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
