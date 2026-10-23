@@ -1,7 +1,10 @@
 """gh#53: why the old lines are as they are. For every line a change removes or modifies, one file per changed file
 under <run>/history/: `git blame` rows and the `git log -L` commits, from the merge base (HEAD for an in-place kind),
 read-only and stripped like other repository text. Agents open a file only when they need it; nothing is pasted into a
-prompt. Added lines have no history and are skipped. Costs one blame per modified file and one log call in all."""
+prompt. Added lines have no history and are skipped, and so is a file the filter in `build` drops: one with no old-side
+name, a name or old name holding a hidden character, one that is not a regular file at the merge base (gitlink, symlink,
+absent), and an unstaged file whose index blob differs from the merge base's. Costs one blame per modified file and one
+log call in all."""
 import os
 import re
 import shutil
@@ -132,10 +135,12 @@ def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple
         found = {}
     root = os.path.join(run, "history")
     shutil.rmtree(root, ignore_errors=True)
-    # a name with a hidden character is neither read nor written, as for tree/
+    # skipped here: a range with no old-side name, and a name or old name with a hidden character (neither read nor written,
+    # as for tree/). The next filter skips the rest: non-regular files at the base and unstaged files whose index differs
     ranges = {name: (old, spans) for (name, old), spans in sorted(found.items(), key=str)
               if old and target.shown(name) == name and target.shown(old) == old}
-    # a gitlink, symlink or file the base lacks has no blame, and one such range makes the log call fail for every file
+    # skipped here: a gitlink, symlink or file the base lacks has no blame, and one such range makes the log call fail for
+    # every file; an unstaged file whose index blob differs from the base's has old-side numbers HEAD cannot answer
     live = {n: v for n, v in ranges.items()
             if base_ls.get(v[0], ("",))[0] in _REGULAR and (index is None or index.get(v[0]) == base_ls[v[0]])}
     failed = len(ranges) - len(live)

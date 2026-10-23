@@ -497,6 +497,14 @@ class FixDocs(unittest.TestCase):
             self.assertIn(s, flat)
         self.assertNotIn("stripped copies of the included and referenced files", flat)
 
+    def test_pin_fidelity_limits_are_stated(self):  # iwgh: the owner declined five pin-fidelity tickets and accepted these limits
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertIn("a filter set in the user's `GIT_CONFIG_PARAMETERS` may override the filter blank", flat)
+        self.assertIn("a filter driver defined only under an `includeIf` that matches the new worktree's gitdir is not seen before `worktree add`", flat)
+        self.assertIn("`eol`, `autocrlf`, `text`, `working-tree-encoding` and `ident` conversions are not handled", flat)
+        self.assertIn("the `staged` kind pins the index as it is, so an unedited filtered file keeps its cleaned blob", flat)
+        self.assertIn("every in-place review reads each filtered file up to `MAX_FILE`", flat)
+
 
 class PostingDocs(unittest.TestCase):
     """05-04: posting.md names every refusal post.py can emit; the pointers and the README caveats exist."""
@@ -530,6 +538,30 @@ class PostingDocs(unittest.TestCase):
         self.assertGreater(len(found), 30, found)  # the walk found the Refuse calls
         missing = sorted(r for r in found if "`%s`" % r not in doc)
         self.assertEqual(missing, [], "posting.md has no backticked entry for these refusal reasons")
+
+    # report._Pinned (called by post.py build) and the helpers its reads go through; each named function must exist
+    PINNED = {"report.py": ("_Pinned",), "ledger.py": ("regular_blobs", "ls_tree"), "target.py": ("cat_batch",)}
+
+    def pinned_reasons(self):
+        """8ggd: the literal Refuse reasons on the _Pinned path: in the class, and in the helpers it calls (ls_tree raises
+        pin-pruned and bad-ref, cat_batch bad-ref). A rename of a walked function fails here, so the walk cannot go empty."""
+        found = set()
+        for module, names in self.PINNED.items():
+            tree = ast.parse(self.read(os.path.dirname(self.POST), module))
+            defs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+            for name in names:
+                self.assertIn(name, defs, "%s has no %s" % (module, name))
+                for node in ast.walk(defs[name]):
+                    if isinstance(node, ast.Call) and node.args and getattr(node.func, "attr", getattr(node.func, "id", None)) == "Refuse":
+                        if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                            found.add(node.args[0].value)
+        return found
+
+    def test_every_pinned_path_reason_has_a_posting_table_row(self):  # 8ggd
+        found = self.pinned_reasons()
+        self.assertLessEqual({"no-pin", "pin-pruned"}, found, found)  # the walk reached the two reasons the ticket names
+        rows = [ln.split("|")[1].strip(" `") for ln in self.read(self.REFS, "posting.md").splitlines() if ln.startswith("| `")]
+        self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
     def test_pointers(self):
         self.assertIn("references/posting.md", self.read(SKILL))

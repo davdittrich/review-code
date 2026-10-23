@@ -58,3 +58,5 @@ The skill asks once per run whether the code is the user's own. The first answer
 - The verifier's isolation from sibling candidates is instruction-level only: its task text is one handoff path and it is told never to open other handoff files, `candidates.json` or `verdicts.json`, but its Read and Glob tools could reach them.
 - Reproduction has no network or filesystem isolation: the test can read host files by absolute path. Dependencies are not installed in the fresh worktree, and user-site packages and HOME-based configuration are not visible.
 - In-place targets reproduce against HEAD plus the tracked diff; untracked files are not carried.
+
+Accepted limits of the pinned bytes: a filter set in the user's `GIT_CONFIG_PARAMETERS` may override the filter blank; a filter driver defined only under an `includeIf` that matches the new worktree's gitdir is not seen before `worktree add`; `eol`, `autocrlf`, `text`, `working-tree-encoding` and `ident` conversions are not handled; the `staged` kind pins the index as it is, so an unedited filtered file keeps its cleaned blob; every in-place review reads each filtered file up to `MAX_FILE`.

@@ -83,6 +83,9 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `python-too-old` | Python below 3.9 | Use Python 3.9 or later |
 | `internal-error` | An unexpected file or data error (`detail` is the exception type) | Re-run the review; report it if it repeats |
 | `no-target` | `target.json` is missing or unreadable | Re-run the review from step 1 |
+| `no-pin` | `target.json` has no `pinned_tree`: the run predates the pin | Review again |
+| `pin-pruned` | The pinned tree is gone (a `git gc` pruned the synthetic tree of an in-place pin) | Review again |
+| `bad-ref` | A git command that reads the pinned tree failed (`ls-tree` or `cat-file`) | Re-run; report it if it repeats |
 | `not-a-forge-target` | The target is not a PR or MR | Run without `--comment` |
 | `bad-target-url` | The URL, host, repository, number or head in `target.json` is malformed | Re-run the review |
 | `gh-missing` | `gh` is not installed | Install `gh` |
