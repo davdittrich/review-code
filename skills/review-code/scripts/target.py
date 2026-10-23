@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -66,10 +67,35 @@ def _env() -> dict:
     return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS)  # no prompt, no index write
 
 
-def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None):
-    p = subprocess.run(_GIT + list(args), cwd=cwd, env=dict(_env(), **(env or {})), input=stdin,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return p.returncode, p.stdout, p.stderr
+NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for both, split it if large fetches hit it
+
+
+def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional[dict] = None, net: bool = False):
+    """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
+    SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
+    kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
+    full = dict(_env(), **(env or {}))
+    if not net:
+        p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return p.returncode, p.stdout, p.stderr
+    p = subprocess.Popen(_GIT + list(args), cwd=cwd, env=dict(full, SSH_ASKPASS_REQUIRE="never"),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=NET_TIMEOUT)
+    except BaseException as e:  # a timeout, or Ctrl-C, which no longer reaches the new session itself
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
+        p.stderr.close()  # the pipes open for ever; git itself is dead, so the wait returns
+        p.wait()
+        if not isinstance(e, subprocess.TimeoutExpired):
+            raise
+        return -9, b"", b""
+    return p.returncode, out, err
 
 
 def git_bytes(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = True,
@@ -468,8 +494,9 @@ def _view_mr(cand: dict, cwd: str) -> dict:
 def _fetch(remote: str, refspecs: List[str], cwd: str) -> None:
     """Objects only: no destination, no FETCH_HEAD, no opportunistic ref update (empty --refmap=)."""
     rc, _, _ = _run(["-c", "transfer.fsckObjects=true",  # a tree naming `..` or `.git` is refused
+                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",  # no repack/prune of the user's objects
                      "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--refmap=",
-                     "--", remote] + refspecs, cwd)
+                     "--", remote] + refspecs, cwd, net=True)
     if rc != 0:
         raise Refuse("fetch-failed", "git could not fetch the pull request objects")
 
@@ -573,7 +600,8 @@ def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
         name = "%s/%s" % (o.get("login"), p.get("name")) if isinstance(o, dict) and isinstance(o.get("login"), str) \
             and isinstance(p.get("name"), str) else None
     else:
-        j = glab_json(["api", "projects/" + urllib.parse.quote(path, safe="")], cwd)
+        web = MR_URL.fullmatch(info["url"]).group(1)  # web host with its port; one argv, so no dash reads as a flag
+        j = glab_json(["api", "--hostname=" + web, "projects/" + urllib.parse.quote(path, safe="")], cwd)
         p = j.get("forked_from_project") if isinstance(j, dict) else None
         name = p.get("path_with_namespace") if isinstance(p, dict) else None
     return _forge_key(host, name) if isinstance(name, str) else None
@@ -584,7 +612,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip."""
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
-    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd)
+    rc, out, _ = _run(["ls-remote", "--symref", remote, "HEAD"], cwd, net=True)
     rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
@@ -599,7 +627,8 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
         return
     rc, out, _ = _run(["rev-list", "--left-right", "--count", tip + "...HEAD"], cwd)
     n = out.decode().split()
-    dist = "%s behind and %s ahead" % tuple(n) if rc == 0 and len(n) == 2 else "behind by an unknown count"
+    dist = "%s behind and %s ahead" % tuple(n) if rc == 0 and len(n) == 2 else "behind by an unknown count" + (
+        "" if _have(tip, cwd) else " (this repository lacks the tip)")  # no fetch to count: the gate writes nothing
     raise Refuse("checkout-not-synced", "%son %s, %s of the upstream tip %s of %s/%s; sync the main checkout first" % (
         "a linked worktree, " if linked else "", _q(on) if on else "a detached HEAD", dist, tip[:12], _q(remote), _q(branch)))
 
@@ -1136,7 +1165,11 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     else:
         raise Refuse("bad-ref", "unknown target kind")
     if kind in ("commit", "branch", "range") and plan["head"] != _head_oid(top):  # forge kinds gate in _plan_forge
-        _gate("origin" if _run(["config", "--get", "remote.origin.url"], top)[0] == 0 else None, False, top)
+        if _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], top)[0] != 0 or \
+                _run(["config", "--get", "remote.origin.url"], top)[0] != 0:  # no url: ls-remote reads a path `origin`
+            raise Refuse("no-upstream-remote", "the upstream is the remote behind origin/HEAD, and there is none "
+                                               "(`git remote set-head origin --auto` sets it)")  # gh#49
+        _gate("origin", False, top)
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",

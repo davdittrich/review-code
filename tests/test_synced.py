@@ -1,6 +1,8 @@
 """The synced-checkout gate (gh#49): a head that is not checked out is reviewed only from the main checkout on the
 live upstream default-branch tip, through the run-directory contract."""
+import json
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -43,7 +45,14 @@ class Gate(tt.PRWorld):
         src = os.path.join(self.tmp, "src")
         gitfix.commit(src, {"src/later.py": "z = 1\n"}, "remote moves on again")
         gitfix.run(["git", "push", "-q", self.bare, "main"], src)
-        self.assertIn("main, behind by an unknown count", self.refused("checkout-not-synced"))
+        self.assertIn("main, behind by an unknown count (this repository lacks the tip)",
+                      self.refused("checkout-not-synced"))  # the review never fetches to count
+
+    def test_an_unborn_head_never_claims_the_tip_is_missing(self):
+        self.git("checkout", "-q", "--orphan", "fresh")
+        detail = self.refused("checkout-not-synced")
+        self.assertIn("fresh, behind by an unknown count", detail)
+        self.assertNotIn("lacks", detail)
 
     def test_ahead_of_the_remote_tip(self):
         gitfix.commit(self.repo, {"local.py": "l = 1\n"}, "local only")
@@ -153,6 +162,20 @@ class RefKinds(tt.Base):
         rc, out = tt.call(["main..feat"], self.repo, self.tmp)
         self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
 
+    def test_origin_without_origin_head_refuses_a_gated_head(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "set-head", "origin", "-d")  # gh#49: the upstream is the remote behind origin/HEAD
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
+    def test_origin_head_without_an_origin_url_never_reads_a_path_named_origin(self):
+        self.git("checkout", "-q", "main")
+        self.git("remote", "remove", "origin")
+        gitfix.run(["git", "clone", "-q", "--bare", self.repo, os.path.join(self.repo, "origin")], self.tmp)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # a path could forge the tip
+        rc, out = tt.call(["main..feat"], self.repo, self.tmp)
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"), out)
+
     def test_no_origin_refuses_a_gated_head(self):
         self.git("checkout", "-q", "main")
         self.git("remote", "remove", "origin")
@@ -183,6 +206,120 @@ class GateProcessCount(tt.PRWorld):
             self.assertEqual(sum(1 for a in argv if "ls-remote" in a), 1)
 
 
+class FetchMaintenance(tt.PRWorld):
+    def test_the_objects_fetch_starts_no_auto_maintenance_in_the_users_repository(self):
+        self.git("config", "--unset", "maintenance.auto")  # the user's default: fetch would run maintenance --auto
+        log = os.path.join(self.tmp, "fetch.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(log, encoding="utf-8") as fh:  # child_start: a detached maintenance logs its own start too late
+            kids = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "child_start"]
+        self.assertTrue(any("fetch" in a for a in tp.starts(log)))
+        self.assertEqual([a for a in kids if "maintenance" in a or "gc" in a], [])
+
+
+HANG_SSH = """#!%s
+import json, os, subprocess, sys, time
+with open(%r, "a") as fh:  # what a prompt would need: the caller's session (its terminal) and askpass
+    fh.write(json.dumps({"sid": os.getsid(0), "askpass": os.environ.get("SSH_ASKPASS_REQUIRE")}) + "\\n")
+kid = subprocess.Popen(["sleep", "1000"], start_new_session=%s)  # a grandchild holding git's stdout and stderr
+with open(%r, "a") as fh:
+    fh.write("%%d\\n" %% kid.pid)
+time.sleep(1000)  # a blackholed host: the connection never completes
+"""
+
+
+class Blackhole(tt.PRWorld):
+    """origin's host swallows packets: the fake ssh first on PATH never answers, and no real network is used."""
+
+    ESCAPE = False  # the grandchild stays in the process group
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = os.path.join(self.tmp, "bin")
+        os.mkdir(bin_dir)
+        self.log = os.path.join(self.tmp, "ssh.log")
+        ssh = os.path.join(bin_dir, "ssh")
+        with open(ssh, "w", encoding="utf-8") as fh:
+            fh.write(HANG_SSH % (sys.executable, self.log, self.ESCAPE, self.log + ".kids"))
+        os.chmod(ssh, 0o755)
+        env = dict((k, v) for k, v in os.environ.items() if k not in ("GIT_SSH", "GIT_SSH_COMMAND"))
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        timeout = mock.patch.object(tt.target, "NET_TIMEOUT", 1)
+        timeout.start()
+        self.addCleanup(timeout.stop)
+        self.addCleanup(self.reap)
+
+    def reap(self):
+        if os.path.exists(self.log + ".kids"):
+            with open(self.log + ".kids", encoding="utf-8") as fh:
+                for pid in fh.read().split():
+                    try:
+                        os.kill(int(pid), 9)
+                    except ProcessLookupError:
+                        pass
+
+    def blackhole(self):
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.git("config", "url.ssh://blackhole.invalid/o/r.git.insteadOf", self.URL)
+
+    def calls(self):
+        with open(self.log, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh]
+
+    def test_the_gate_refuses_remote_unreachable_without_a_prompt(self):
+        self.blackhole()
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
+        self.assertEqual([(c["sid"] == os.getsid(0), c["askpass"]) for c in self.calls()], [(False, "never")])
+
+    def test_the_objects_fetch_refuses_when_it_is_the_first_contact(self):
+        self.git("fetch", "-q", "--refmap=", "origin", "+refs/pull/7/head:refs/pr7")
+        self.git("checkout", "-q", "--detach", "refs/pr7")  # a checked-out head: no gate, so no ls-remote
+        self.git("update-ref", "-d", "refs/pr7")
+        self.blackhole()
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["reason"]), (1, "fetch-failed"), out)
+        self.assertEqual([(c["sid"] == os.getsid(0), c["askpass"]) for c in self.calls()], [(False, "never")])
+
+
+FAKE_GLAB = """#!%s
+import json, sys
+with open(%r, "a") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+print(json.dumps(%r if sys.argv[1] == "mr" else {"path_with_namespace": "g/r", "forked_from_project": None}))
+"""
+
+
+class SelfHostedMR(tt.PRWorld):
+    """A merge request on a self-hosted GitLab with a web port; a fake glab first on PATH answers and records argv.
+    Not covered: a live glab's own host matching, auth and the real `forked_from_project` shape."""
+
+    URL = "https://gitlab.example:8443/g/r.git"
+    MR = "https://gitlab.example:8443/g/r/-/merge_requests/5"
+
+    def test_fork_detection_asks_the_merge_requests_own_host(self):
+        gitfix.run(["git", "update-ref", "refs/merge-requests/5/head", self.pr], self.bare)
+        bin_dir, log = os.path.join(self.tmp, "bin"), os.path.join(self.tmp, "glab.log")
+        os.mkdir(bin_dir)
+        mr = {"iid": 5, "state": "opened", "draft": False, "target_branch": "main", "web_url": self.MR,
+              "diff_refs": {"base_sha": self.main, "head_sha": self.pr, "start_sha": self.main}}
+        with open(os.path.join(bin_dir, "glab"), "w", encoding="utf-8") as fh:
+            fh.write(FAKE_GLAB % (sys.executable, log, mr))
+        os.chmod(os.path.join(bin_dir, "glab"), 0o755)
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}):
+            rc, out = tt.call([self.MR], self.repo, self.tmp, glab=tt.target.glab_json)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(log, encoding="utf-8") as fh:
+            calls = [json.loads(line) for line in fh]
+        self.assertEqual([c for c in calls if c[0] == "api"],
+                         [["api", "--hostname=gitlab.example:8443", "projects/g%2Fr"]])
+
+
 class Docs(unittest.TestCase):
     def test_skill_names_each_gate_reason_as_the_users_fix(self):
         with open(os.path.join(os.path.dirname(paths.SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
@@ -190,6 +327,13 @@ class Docs(unittest.TestCase):
         self.assertIn("User fixes: `checkout-not-synced`", flat)  # never the model: the review never syncs the checkout
         for reason in ("`no-upstream-remote`", "`remote-unreachable`"):
             self.assertIn(reason, flat)
+
+
+class BlackholeEscaped(Blackhole):
+    """The grandchild leaves the group (setsid, an ssh ControlPersist master): killing the group cannot close the
+    pipes it holds."""
+
+    ESCAPE = True
 
 
 if __name__ == "__main__":
