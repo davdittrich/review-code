@@ -1131,9 +1131,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
         for t in tmp + [idx]:
             if os.path.exists(t):
                 os.remove(t)
-    rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top)
     return {"pinned_tree": tree, "pinned_head": None if inplace else plan["head"],
-            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths, "blobs": blobs}
+            "checkout_head": _head_oid(top), "paths": paths, "blobs": blobs}
 
 
 KNOWLEDGE = (".wolf", ".codegraph", ".serena")  # tool knowledge directories (gh#51); changes there are informational
