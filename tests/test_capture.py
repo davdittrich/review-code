@@ -82,7 +82,7 @@ class Capture(unittest.TestCase):
             self.assertIn("core.hooksPath=/dev/null", a)
             self.assertIn("core.fsmonitor=false", a)
 
-    def test_the_one_git_process_runs_no_filter_driver(self):  # review-code-9f4v
+    def test_no_filter_driver_runs_in_the_hook(self):  # review-code-9f4v
         os.makedirs(self.state)
         marker = os.path.join(self.tmp, "filter-ran")
         for key in ("clean", "smudge", "process"):
