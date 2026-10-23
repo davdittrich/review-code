@@ -108,6 +108,8 @@ class RenderProcessCount(tpost.Base):
 class LargeSnapshot(tp.LargeRepo):
     """10k tracked files: the snapshot records stat data and digests, never file content, from one status call."""
 
+    test_a_three_file_change_records_three_paths_and_reads_no_other_blob = None  # runs in test_pinned
+
     def test_the_snapshot_reads_no_content_and_runs_one_status(self):
         tp.write(self.repo, ".wolf/locked.md", "secret\n")
         os.chmod(os.path.join(self.repo, ".wolf/locked.md"), 0)  # stat works, a read would fail
