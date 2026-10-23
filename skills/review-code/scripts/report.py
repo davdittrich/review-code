@@ -615,13 +615,19 @@ def _words(s):
 
 def _spec_copy(run):
     """Predicate: True when a string holds SPEC_RUN consecutive words (case and punctuation ignored) of the text inside
-    the UNTRUSTED blocks of inputs/spec.md. The text stays inside this closure (CTX-03)."""
+    the UNTRUSTED blocks of inputs/spec.md and of the indexed decision records. The text stays inside this closure (CTX-03)."""
     inside = _spec_lines(run)
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
     except OSError:
         w = []
+    try:  # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57)
+        adr = [x["ref"] for x in target.load_json(run, "ledger.json")["spec"]["sources"] if x.get("kind") == "adr"]
+        pin = _Pinned(run, adr, adr)
+        w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
+    except (target.Refuse, KeyError, TypeError, AttributeError):
+        pass  # shortcut: a record named with a hidden character is listed by its escaped ref and is not covered
     runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
     def copied(s):

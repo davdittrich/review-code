@@ -750,6 +750,12 @@ class SpecAdrCite(Base):
         with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
             self.assertNotIn("MUST-RETURN-INT", fh.read())
 
+    def test_a_title_copying_six_words_of_a_record_body_is_rejected_a_paraphrase_passes(self):
+        out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="The adder MUST-RETURN-INT Calls pass ints")
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec"], []))
+        out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="Adders are meant to give whole numbers")
+        self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
     def test_a_quote_the_record_does_not_hold_is_rejected(self):
         out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
         self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["quote-not-at-line"], []))
