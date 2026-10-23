@@ -271,10 +271,10 @@ def _groups(files, size):
 
 def _churn(repo, names):
     """{path: lines added + deleted over CHURN_DAYS} from one git log call; empty when git fails."""
-    out = target.git(["-c", "core.quotepath=off", "log", "--numstat", "--format=", "--no-renames",
-                      "--since=%d.days" % CHURN_DAYS, "--max-count=%d" % CHURN_COMMITS], repo, check=False)
+    out = target.git_bytes(["-c", "core.quotepath=off", "log", "--numstat", "--format=", "--no-renames",
+                            "--since=%d.days" % CHURN_DAYS, "--max-count=%d" % CHURN_COMMITS], repo, check=False)
     churn = {}
-    for ln in out.splitlines():
+    for ln in out.decode("utf-8", "surrogateescape").splitlines():  # exact names, as every other listing
         added, _, rest = ln.partition("\t")
         deleted, _, path = rest.partition("\t")
         if path in names and added.isdigit() and deleted.isdigit():

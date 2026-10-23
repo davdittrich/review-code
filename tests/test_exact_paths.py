@@ -6,8 +6,11 @@ from unittest import mock
 
 import paths  # noqa: F401
 
+import fix  # noqa: E402
 import gitfix  # noqa: E402
+import plan  # noqa: E402
 import post  # noqa: E402
+import target  # noqa: E402
 
 NAME = os.fsdecode(b"d\xffx.py")  # byte 0xff on disk, lone surrogate in a str
 
@@ -32,6 +35,52 @@ class ForgeDiff(unittest.TestCase):
         self.assertIn("+++ b/" + NAME + "\n", text)
         self.assertIn("+new \ufffd\n", text)
         self.assertEqual(post._anchors(text)[(NAME, 1)][0], "+")
+
+
+class GitCallers(unittest.TestCase):
+    """review-code-51ru: every target.git() caller that carries a path or ref name reads it exactly."""
+
+    def repo(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.tmp = os.path.realpath(td.name)
+        r = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        gitfix.commit(r, {"a": "1\n"}, "base")
+        return r
+
+    def test_the_ref_digest_tells_two_non_utf8_branch_names_apart(self):  # fix._refs
+        r = self.repo()
+        gitfix.run(["git", "branch", os.fsdecode(b"x\xfe")], r)
+        before = fix._refs(r)
+        gitfix.run(["git", "branch", "-m", os.fsdecode(b"x\xfe"), os.fsdecode(b"x\xff")], r)
+        self.assertNotEqual(fix._refs(r), before)  # both names are U+FFFD under errors=replace
+
+    def test_churn_counts_a_non_utf8_path(self):  # plan._churn
+        r = self.repo()
+        gitfix.commit(r, {NAME: "1\n2\n"}, "add")
+        with mock.patch.object(plan, "CHURN_DAYS", 100000):
+            self.assertEqual(plan._churn(r, {NAME}), {NAME: 2})
+
+    def test_checkout_root_finds_a_worktree_whose_path_is_non_utf8(self):  # target._checkout_root
+        r = self.repo()
+        head = gitfix.run(["git", "rev-parse", "HEAD"], r).strip()
+        w = os.path.join(self.tmp, os.fsdecode(b"w\xffd"))
+        gitfix.run(["git", "worktree", "add", "-q", "--detach", w, head], r)
+        gitfix.run(["git", "checkout", "-q", "--detach", gitfix.commit(r, {"b": "2\n"}, "moved")], r)
+        self.assertEqual(target._checkout_root(r, head), os.path.realpath(w))
+
+
+class SeparateGitDir(gitfix.FeatureRepo):
+    """A repository whose git directory name holds byte 0xff: `rev-parse --git-path` prints it absolute."""
+    base_files, feat_files = {"a": "1\n"}, {"b": "2\n"}
+
+    def test_git_files_exist(self):  # fix._git_files; the run-directory flow cannot reach fix.baseline here (ledger write)
+        gd = os.path.join(self.tmp, os.fsdecode(b"gd\xff"))
+        gitfix.run(["git", "init", "-q", "--separate-git-dir", gd, self.repo], self.repo)
+        files = fix._git_files(self.repo)
+        self.assertEqual(len(files), 3)
+        self.assertTrue(all(f.startswith(gd) for f in files), files)
+        self.assertTrue(os.path.exists(files[0]), files)
 
 
 if __name__ == "__main__":

@@ -1191,7 +1191,7 @@ def integrity_changes(top: str, snap: dict) -> dict:
 def _checkout_root(top: str, head: str) -> str:
     """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
     held = []
-    for blk in git(["worktree", "list", "--porcelain"], top, check=False).split("\n\n"):
+    for blk in git_bytes(["worktree", "list", "--porcelain"], top, check=False).decode("utf-8", "surrogateescape").split("\n\n"):
         f = {k: v for k, _, v in (ln.partition(" ") for ln in blk.split("\n"))}
         if f.get("HEAD") == head and "bare" not in f and "prunable" not in f and os.path.isdir(f.get("worktree", "")):
             held.append(os.path.realpath(f["worktree"]))
