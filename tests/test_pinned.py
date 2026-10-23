@@ -312,6 +312,26 @@ class FileMode(tt.Base):
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":x.sh"), b"edited\n")
 
 
+class RacyIndex(tt.Base):
+    def test_an_edit_racily_clean_against_the_index_enters_the_pinned_tree(self):
+        """Same size, mtime and inode as its index entry, which is as new as the index file: only git's racy check,
+        keyed on the index file's mtime, finds the edit, so the index copy must keep that mtime (jd4i)."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        self.git("config", "core.trustctime", "false")  # rewriting the file moves ctime, which would flag it anyway
+        a, t = os.path.join(self.repo, "a.py"), 1_600_000_000_123_456_789
+        write(self.repo, "a.py", "a = 1\n")
+        os.utime(a, ns=(t, t))
+        gitfix.commit(self.repo, {"b.py": "b = 1\n"}, "base")
+        self.git("add", "a.py")
+        self.git("commit", "-q", "-m", "a")
+        write(self.repo, "a.py", "a = 2\n")  # in place: the inode stays
+        os.utime(a, ns=(t, t))
+        os.utime(os.path.join(self.repo, ".git", "index"), ns=(t, t))  # last: no git call may rewrite the index after it
+        rc, out = tt.call(["--unstaged"], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual(raw(self.repo, "cat-file", "blob", load(out["run"])["pinned_tree"] + ":a.py"), b"a = 2\n")
+
+
 class Symlinks(tt.Base):
     def test_an_edited_symlink_enters_the_tree_as_a_link(self):
         self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
