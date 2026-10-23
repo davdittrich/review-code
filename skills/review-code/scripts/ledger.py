@@ -905,7 +905,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     body = forge["body"] if forge else ""
     branch = forge["branch"] if forge else ""
     if kind in ("branch", "worktree", "path", "repo"):
-        branch = target.git(["symbolic-ref", "--short", "-q", "HEAD"], tj["repo"], check=False).strip()
+        branch = target._head_branch(tj["repo"]) or ""
     toks = _tokens(branch)
     if kind == "path":
         toks |= _tokens(" ".join(tj["included"]))

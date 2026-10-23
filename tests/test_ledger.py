@@ -982,6 +982,13 @@ class Spec(Base):
         self.assertIn("abs.md", [s["ref"] for s in led["spec"]["sources"]])
         self.assertIn("ABS-TEXT", self.read("inputs/spec.md"))
 
+    def test_a_branch_name_ending_in_a_next_line_char_is_not_its_stripped_name(self):  # review-code-1hmb
+        self.base({"README.md": "r\n", "docs/widgetry.md": "WIDGET-TEXT\n"})
+        self.g("checkout", "-q", "-b", "feat-widgetry\u0085")  # .strip() dropped the NEL and matched docs/widgetry.md
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        _, led = self.build()
+        self.assertEqual(led["spec"]["sources"], [])
+
     def test_repo_target_takes_every_spec_dir_file(self):  # review-code-jwv
         self.base({"README.md": "r\n", "docs/design.md": "DESIGN-TEXT\n", "specs/x.md": "X-TEXT\n", "src/a.py": "a = 1\n"})
         out, led = self.build(kind="repo", included=["README.md", "docs/design.md", "specs/x.md", "src/a.py"])
