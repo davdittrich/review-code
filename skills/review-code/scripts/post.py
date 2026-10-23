@@ -170,7 +170,7 @@ class GitHub:
         rc, out, _ = _cli("gh", ["pr", "diff", self.i["url"], "--color", "never"], self.i["run"])
         if rc != 0:
             raise Refuse("diff-unavailable")
-        return out.decode("utf-8", "replace")
+        return "\n".join(target._diff_line(ln) for ln in out.split(b"\n"))  # header lines name files: exact; content: lossy
 
     def me(self) -> str:
         try:
