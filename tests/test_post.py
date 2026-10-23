@@ -2060,6 +2060,30 @@ class ProseRepeatedPrefixLinear(_SpyMixin, unittest.TestCase):
             self.assertEqual([m.span() for m in post._refs(t)], [m.span() for m in _OLD_REF.finditer(t)], repr(text))
 
 
+_NOT_CLOSER = re.compile(r"[^\]`]*")
+
+
+def _wiki_wasted(t):
+    """Characters `[[..]]` would read for nothing in `t`: its scan from every `[[` of a run that never reaches `]]`."""
+    w = 0
+    for m in re.finditer(r"\[(?=\[)", t):
+        e = _NOT_CLOSER.match(t, m.start() + 2).end()
+        w += 0 if t.startswith("]]", e) else e - m.start()
+    return w
+
+
+class ProseRepeatedBracketLinear(_SpyMixin, unittest.TestCase):
+    """review-code-gaeo: '[' repeated made the wiki-link alternative read to the end of the run from every `[[`, though
+    the run never reaches `]]`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        for text in ("[" * 2000, "[[" * 2000, "[[x[" * 1000, "[" * 2000 + "]", "[" * 2000 + "`]]", "[" * 2000 + "] x]]"):
+            self.assertGreater(_wiki_wasted(text), 1000000, text[-6:])  # the raw text is the bad case: the measure is not vacuous
+            seen = self.seen(text)
+            self.assertTrue(seen, text[-6:])
+            self.assertEqual(sum(_wiki_wasted(t) for t in seen), 0, text[-6:])
+
+
 class HiddenNameInline(Base):
     """review-code-avhn: a cite under a file's raw hidden-character name is accepted, so the finding's path is raw. The forge
     needs that raw name to anchor an inline comment; no outgoing text may carry it, only its escaped form."""
