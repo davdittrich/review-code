@@ -121,6 +121,32 @@ class MissingSymbol(tr.Base):
         self.assertEqual(out["ids"], [])
 
 
+class InvisibleEntryPoints(tr.Lanes):
+    """review-code-kiq3: every other place a lane's raw quote enters (a repaired control character, a lost line's id) reads
+    it through report._esc as well, so an invisible character matches the escaped rows and a retry recovers the line."""
+    base_files = dict(tr.MBASE, **{"pkg/re.py": 'pat = r"\\bx\u200b"\n', "pkg/zw.py": "x = 1\u200b\n",
+                                   "REVIEW.md": tr.RULE_REVIEW + "\n"})
+    feat_files = {"src/calc.py": tr.MFEAT["src/calc.py"]}
+
+    def test_a_quote_read_back_after_a_control_character_repair_is_escaped_too(self):
+        out = self.lane("defects", dict(tr.CAND, path="pkg/re.py", line=1, end_line=1, quote='pat = r"\x08x\u200b"'))
+        self.assertEqual((len(out["ids"]), out["dropped"]["invalid"]), (1, 0), out)
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            (c,) = json.load(fh)["candidates"]
+        self.assertEqual(c["quote"], 'pat = r"\\bx<U+200B>"')
+
+    def test_a_lost_line_with_a_raw_invisible_quote_is_recovered_by_the_retry_that_carries_its_finding(self):
+        conv = dict(tr.CAND, path="pkg/zw.py", line=1, end_line=1, quote="x = 1\u200b", category="convention",
+                    rule_source="conventions/REVIEW.md")
+        ins = {"inspected": ["pkg/zw.py"]}
+        out = self.lane("standards", dict(conv, rule="Always subtract where the name says add."), ins)
+        self.assertEqual([r["check"] for r in out["rejected"]], ["rule-not-in-conventions"])
+        self.assertEqual(self.doc()["lost"], {"standards": 1})
+        self.lane("standards", dict(conv, rule=tr.RULE_REVIEW), ins)
+        d = self.doc()
+        self.assertEqual((d.get("lost"), d["recovered"]), (None, {"standards": 1}))
+
+
 class OldRun(tr.Base):
     """review-code-1kf3: a run directory older than the pin (14-day retention) has no pinned_tree to judge a cite against."""
 
