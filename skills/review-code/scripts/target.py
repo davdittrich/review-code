@@ -99,6 +99,11 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        if p.stdin:
+            try:
+                p.stdin.close()
+            except OSError:  # its flush met the dead reader; the descriptor is closed regardless
+                pass
         p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
         p.wait()          # the pipe open for ever; git itself is dead, so the wait returns
         if not isinstance(e, subprocess.TimeoutExpired):
@@ -630,7 +635,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:
         raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
-    dirs = git(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).splitlines()
+    dirs = git(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).split("\n")  # not splitlines: a path may hold CR, VT, FF, FS-RS, NEL, LS or PS
     linked = os.path.realpath(dirs[0]) != os.path.realpath(os.path.join(cwd, dirs[1]))
     rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     on = out.decode("utf-8", "replace").strip() if rc == 0 else None

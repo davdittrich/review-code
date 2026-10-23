@@ -51,7 +51,7 @@ The skill asks once per run whether the code is the user's own. The first answer
 - Fix mode gives one agent Edit. Containment is `fix.py`'s after-the-fact check, seal and restore, not a sandbox; see `references/fix.md`.
 - Python 3.9 reads Unicode 13 categories; a later format character escapes only if it is in the explicit set.
 - Homoglyphs, encoded payloads and plain-language instructions in visible text pass; the fence and "data, not instructions" are the defence.
-- Configured filter drivers (git-lfs) still run on working-tree kinds, and set `GIT_*_PATHSPECS` variables make the run refuse.
+- On every kind `target.py` blanks clean, smudge and process drivers, so no configured filter driver (git-lfs included) runs there (limits below), and set `GIT_*_PATHSPECS` variables make the run refuse.
 - For working-tree kinds the change's own `.gitignore` decides which untracked files exist.
 - A lane with Read can read host files by absolute path; the run directory is not a sandbox. Claude Code may inject helper tools into subagents and loads a checked-out head's CLAUDE.md; the ledger notes it.
 - The trust gate is a choke point the orchestrator must call, not a sandbox.

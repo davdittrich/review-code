@@ -2,6 +2,7 @@
 live upstream default-branch tip, through the run-directory contract."""
 import json
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -65,6 +66,14 @@ class Gate(tt.PRWorld):
         detail = self.refused("checkout-not-synced", cwd=wt)
         self.assertIn("linked worktree", detail)
         self.assertIn("main, 0 behind and 0 ahead", detail)
+
+    def test_a_main_checkout_whose_path_holds_a_line_separator_is_not_linked(self):  # review-code-21my
+        for i, ch in enumerate("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"):
+            moved = os.path.join(self.tmp, "re%d%spo" % (i, ch))
+            os.rename(self.repo, moved)
+            rc, out = tt.call(["7"], moved, self.tmp, gh=self.gh())
+            self.assertEqual((rc, out["status"]), (0, "ok"), (ch, out))
+            os.rename(moved, self.repo)
 
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
@@ -226,6 +235,24 @@ class NetStdin(tt.Base):
             rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=net)
             self.assertEqual((rc, out.strip()), (0, b"8baef1b4abc478178b004d62031cf7fe6db6f903"), net)
 
+    def test_a_timed_out_net_call_closes_the_stdin_pipe_it_made(self):  # review-code-5m2d
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        tt.target._env(repo)  # the filter read runs first, unspied
+        made = []
+
+        class Spy(subprocess.Popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+            def communicate(self, *a, **kw):
+                raise subprocess.TimeoutExpired("git", 1)
+
+        with mock.patch.object(tt.target.subprocess, "Popen", Spy):
+            rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=True)
+        self.assertEqual((rc, out), (-9, b""))
+        self.assertEqual([p.stdin.closed for p in made], [True])
+
 
 class FetchMaintenance(tt.PRWorld):
     def test_the_objects_fetch_starts_no_auto_maintenance_in_the_users_repository(self):
@@ -348,6 +375,12 @@ class Docs(unittest.TestCase):
         self.assertIn("User fixes: `checkout-not-synced`", flat)  # never the model: the review never syncs the checkout
         for reason in ("`no-upstream-remote`", "`remote-unreachable`"):
             self.assertIn(reason, flat)
+
+    def test_untrusted_input_does_not_claim_filter_drivers_run(self):  # review-code-2rkq: test_pinned.Filters shows none runs
+        with open(os.path.join(os.path.dirname(paths.SCRIPTS), "references", "untrusted-input.md"), encoding="utf-8") as fh:
+            flat = " ".join(fh.read().split())
+        self.assertNotIn("filter drivers (git-lfs) still run", flat)
+        self.assertIn("no configured filter driver (git-lfs included) runs", flat)
 
 
 class BlackholeEscaped(Blackhole):

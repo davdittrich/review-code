@@ -82,6 +82,15 @@ class Capture(unittest.TestCase):
             self.assertIn("core.hooksPath=/dev/null", a)
             self.assertIn("core.fsmonitor=false", a)
 
+    def test_no_filter_driver_runs_in_the_hook(self):  # review-code-9f4v
+        os.makedirs(self.state)
+        marker = os.path.join(self.tmp, "filter-ran")
+        for key in ("clean", "smudge", "process"):
+            gitfix.run(["git", "config", "filter.spy." + key, "touch '%s'; cat" % marker], self.repo)
+        self.fire(stop())
+        self.assertEqual(self.stored("stop")["message"], MSG)
+        self.assertFalse(os.path.exists(marker))
+
     def test_a_hook_without_its_sibling_module_still_exits_silent(self):  # review-code-u1tn
         os.makedirs(self.state)
         alone = os.path.join(self.tmp, "alone")
