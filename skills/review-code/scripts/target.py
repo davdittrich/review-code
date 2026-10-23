@@ -60,11 +60,19 @@ class Refuse(Exception):
         self.detail = detail
 
 
-_NO_FILTERS: dict = {}  # GIT_CONFIG_* entries main sets per run (_no_filters); module state, so every git call gets them
+_NO_FILTERS: dict = {}  # cwd -> its GIT_CONFIG_* entries (_no_filters); cleared after an outside command (repro._execute)
 
 
-def _env() -> dict:
-    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS)  # no prompt, no index write
+def _env(cwd: str) -> dict:
+    """The env of every git call: no prompt, no index write and no filter program, whichever script calls (rooc)."""
+    if cwd not in _NO_FILTERS:
+        _NO_FILTERS[cwd] = {}  # the config read itself runs with none: reading config runs no filter
+        try:
+            _NO_FILTERS[cwd] = _no_filters(cwd)
+        except BaseException:
+            del _NO_FILTERS[cwd]
+            raise
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS[cwd])
 
 
 NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for both, split it if large fetches hit it
@@ -74,7 +82,7 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
     """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
     SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
     kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
-    full = dict(_env(), **(env or {}))
+    full = dict(_env(cwd), **(env or {}))
     if not net:
         p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -111,9 +119,9 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 
 
 def _no_filters(cwd: str) -> dict:
-    """GIT_CONFIG_* entries that blank every clean and process filter the config defines and mark it not required, so
-    no filter program runs while git reads the working tree (gh#48): the review reads the bytes on disk."""
-    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|process)$"], cwd)
+    """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
+    required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
+    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"], cwd)
     keys = sorted({r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0") if r}) if rc == 0 else []
     pairs = [(k, "") for k in keys] + [(k, "false") for k in sorted({k.rsplit(".", 1)[0] + ".required" for k in keys})]
     n = os.environ.get("GIT_CONFIG_COUNT", "")
@@ -735,7 +743,7 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool,
     with tempfile.TemporaryFile() as fh:
         fh.write(b"".join(ln + b"\n" for ln in lines))
         fh.seek(0)
-        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(), stdin=fh,
+        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(cwd), stdin=fh,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         finished = False
         try:
@@ -926,7 +934,7 @@ def _diff_line(raw: bytes) -> str:
 def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
     """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
     for args in calls:
-        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(top), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             for raw in p.stdout:
                 yield _diff_line(raw.rstrip(b"\n"))
@@ -1239,8 +1247,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             git(["rev-parse", "--show-toplevel"], cwd)
         except Refuse:
             raise Refuse("not-a-git-repo", "run inside a git repository")
-        _NO_FILTERS.clear()
-        _NO_FILTERS.update(_no_filters(cwd))
+        _NO_FILTERS.clear()  # read the filter config afresh each run, as an in-process caller may have changed it
         if "--stdin" in argv:  # WR-08: words as data, one per line, so no shell layer parses them
             argv = [a for a in argv if a != "--stdin"] + [w for w in sys.stdin.read().split("\n") if w]
         since_last = "--since-last" in argv

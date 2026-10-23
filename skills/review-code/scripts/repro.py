@@ -61,6 +61,8 @@ def _execute(cmd: List[str], cwd: str, env: dict, fid: Optional[str], timeout: O
     except BaseException:
         _kill(p)
         raise
+    finally:
+        target._NO_FILTERS.clear()  # the command may have defined a filter: the next git call reads the config afresh
     text = out.decode("utf-8", "replace")
     hit = p.returncode == 0 if fid is None else p.returncode != 0 and SENTINEL + fid in text  # fid None: base mode, exit 0 is the claim
     outcome = "reproduced" if hit else "not-reproduced"

@@ -3,6 +3,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,6 +13,7 @@ import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import target  # noqa: E402
+import test_fix as tfix  # noqa: E402
 import test_post as tpost  # noqa: E402  (module imports: their test classes are not collected twice)
 import test_target as tt  # noqa: E402
 
@@ -220,6 +222,53 @@ class Filters(tt.Base):
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":lib.dat"), b"edited bytes\r\n")
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":new.dat"), b"fresh\n")
         self.assertFalse(os.path.exists(self.marker), "a clean filter ran")
+
+
+class NoFilterInAnyScript(tfix.Base):
+    """Clean-only, smudge-only and process-only spy drivers, configured after the commits, on stat-dirty files: no
+    script runs one (rooc), the in-place apply, the head checkout and the restore from HEAD included."""
+    base_files = dict(tfix.BASE, **{".gitattributes": "*.c filter=c\n*.s filter=s\n*.p filter=p\n",
+                                    "x.c": "c\n", "x.s": "s\n", "x.p": "p\n"})
+    feat_files = {"src/calc.py": tfix.FEAT, "x.c": "c 2\n", "x.s": "s 2\n", "x.p": "p 2\n"}
+
+    def setUp(self):
+        super().setUp()
+        self.marks = {k: os.path.join(self.tmp, "ran-" + k) for k in ("clean", "smudge", "process", "late")}
+        for drv, key, tail in (("c", "clean", "cat"), ("s", "smudge", "cat"), ("p", "process", "exit 1")):
+            self.git("config", "filter.%s.%s" % (drv, key), "touch '%s'; %s" % (self.marks[key], tail))
+        for n in ("x.c", "x.s", "x.p"):
+            t = os.stat(os.path.join(self.repo, n)).st_mtime
+            os.utime(os.path.join(self.repo, n), (t + 7, t + 7))
+
+    def check(self, step):
+        self.assertEqual([k for k, m in sorted(self.marks.items()) if os.path.exists(m)], [], step)
+
+    def test_no_script_runs_a_filter(self):
+        run, fid = self.ready()  # target.py on main..feat, ledger build and trust, report ingest and verdicts
+        self.check("target, ledger, report")
+        late = ("import subprocess; subprocess.run(['git', 'config', 'filter.late.clean', %r]); "
+                "open('.git/info/attributes', 'a').write('x.c filter=late\\n')" % ("touch '%s'; cat" % self.marks["late"]))
+        words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc; open('x.s', 'w').write('t\\n'); "
+                 + late]
+        self.go(run, words)  # the tests change x.s, which fix.py restores from HEAD, and define a filter fix.py must not run
+        self.check("fix plan and baseline")
+        seal = self.begin(run)[2]["seal"]
+        self.edit("src/calc.py", tfix.QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, seal)[2]["outcome"], "fixed")
+        self.report(run)
+        self.assertEqual(cli("report.py", ["render", "--run", run], self.repo, self.tmp)[0], 0)
+        self.check("fix begin, finish and report, report render")
+        src = "import sys\nprint('REPRO-F-0123456789')\nsys.exit(1)\n"
+        rc, out, err = cli("repro.py", ["run", "--run", run, "--id", "F-0123456789", "--test", "t.py", "--",
+                                        sys.executable, "t.py"], self.repo, self.tmp, src.encode())
+        self.assertEqual(json.loads(out)["outcome"], "reproduced", out + err)
+        self.check("repro on the head")
+        write(self.repo, "x.c", "c 3\n")
+        run = self.pin("--unstaged")
+        rc, out, err = cli("repro.py", ["run", "--run", run, "--id", "F-0123456789", "--test", "t.py", "--",
+                                        sys.executable, "t.py"], self.repo, self.tmp, src.encode())
+        self.assertEqual(json.loads(out)["outcome"], "reproduced", out + err)
+        self.check("target in place and repro with its apply")
 
 
 class Symlinks(tt.Base):
