@@ -60,11 +60,19 @@ class Refuse(Exception):
         self.detail = detail
 
 
-_NO_FILTERS: dict = {}  # GIT_CONFIG_* entries main sets per run (_no_filters); module state, so every git call gets them
+_NO_FILTERS: dict = {}  # cwd -> its GIT_CONFIG_* entries (_no_filters); cleared after an outside command (repro._execute)
 
 
-def _env() -> dict:
-    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS)  # no prompt, no index write
+def _env(cwd: str) -> dict:
+    """The env of every git call: no prompt, no index write and no filter program, whichever script calls (rooc)."""
+    if cwd not in _NO_FILTERS:
+        _NO_FILTERS[cwd] = {}  # the config read itself runs with none: reading config runs no filter
+        try:
+            _NO_FILTERS[cwd] = _no_filters(cwd)
+        except BaseException:
+            del _NO_FILTERS[cwd]
+            raise
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", **_NO_FILTERS[cwd])
 
 
 NET_TIMEOUT = 300  # seconds per ls-remote or fetch; shortcut: one bound for both, split it if large fetches hit it
@@ -74,7 +82,7 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
     """net: a call that talks to a remote. It runs in its own session, so ssh has no terminal to prompt on (with
     SSH_ASKPASS_REQUIRE=never, BatchMode without overriding the user's ssh command), and a hang past NET_TIMEOUT
     kills the whole group: killing git alone leaves ssh holding the pipes open. A timeout returns exit code -9."""
-    full = dict(_env(), **(env or {}))
+    full = dict(_env(cwd), **(env or {}))
     if not net:
         p = subprocess.run(_GIT + list(args), cwd=cwd, env=full, input=stdin,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -111,9 +119,9 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 
 
 def _no_filters(cwd: str) -> dict:
-    """GIT_CONFIG_* entries that blank every clean and process filter the config defines and mark it not required, so
-    no filter program runs while git reads the working tree (gh#48): the review reads the bytes on disk."""
-    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|process)$"], cwd)
+    """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
+    required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
+    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"], cwd)
     keys = sorted({r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0") if r}) if rc == 0 else []
     pairs = [(k, "") for k in keys] + [(k, "false") for k in sorted({k.rsplit(".", 1)[0] + ".required" for k in keys})]
     n = os.environ.get("GIT_CONFIG_COUNT", "")
@@ -691,12 +699,14 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
     tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    other = _split(git_bytes(["--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--"] + specs, top))
+    others = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # pin_tree pins them all
+    # a literal pathspec, in Python: the path itself, or a directory above it ("." is the top)
+    other = [n for n in others if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
     present = set(names)
     explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
-            "diff_cmd": None, "commits": [], "explicit": explicit}
+            "others": others, "diff_cmd": None, "commits": [], "explicit": explicit}
 
 
 def _plan_commit(rev: str, cwd: str) -> dict:
@@ -735,7 +745,7 @@ def cat_batch(lines: List[bytes], cwd: str, check: bool,
     with tempfile.TemporaryFile() as fh:
         fh.write(b"".join(ln + b"\n" for ln in lines))
         fh.seek(0)
-        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(), stdin=fh,
+        p = subprocess.Popen(_GIT + ["cat-file", "--batch"], cwd=cwd, env=_env(cwd), stdin=fh,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         finished = False
         try:
@@ -926,7 +936,7 @@ def _diff_line(raw: bytes) -> str:
 def _diff_lines(calls: List[List[str]], top: str) -> Iterator[str]:
     """Output lines (no trailing LF) of each git call in turn, read as git writes them (6xl.66)."""
     for args in calls:
-        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(_GIT + args, cwd=top, env=_env(top), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             for raw in p.stdout:
                 yield _diff_line(raw.rstrip(b"\n"))
@@ -954,18 +964,28 @@ def _sections(lines: Iterator[str]) -> Iterator[str]:
         yield "".join(x + "\n" for x in cur)
 
 
-def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str) -> Tuple[list, list]:
+def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str,
+                blobs: dict) -> Tuple[list, list]:
     """Strip and escape the change diff file by file into change.diff, so memory holds one file's diff and,
     for a tracked prose file, its whole-file-context diff (6xl.66). Returns (hidden chars, hidden text) with
-    change.diff line numbers."""
+    change.diff line numbers. blobs: pin_tree's {path: "mode oid"} of the files it hashed."""
     def untracked() -> Iterator[str]:
-        if kind in ("unstaged", "worktree"):  # untracked files shown as additions; exit status 1 means "differs"
-            for u in sorted(set(plan["untracked"]) & set(names)):
-                if not u.endswith("/"):
-                    # --text: an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
-                    rc, out, _ = _run(["diff", "--no-index", "--text"] + _DIFF_FLAGS + ["--", "/dev/null", u], top)
-                    if rc in (0, 1):
-                        yield "".join(_diff_line(ln) + "\n" for ln in out.split(b"\n")[:-1])
+        # untracked files shown as additions: their pinned blobs, in one tree diffed against the empty tree, so the
+        # cost is four git calls for any number of files and the diff shows the bytes the tree pins
+        want = {u: blobs[u] for u in set(plan["untracked"]) & set(names) if u in blobs}
+        if kind not in ("unstaged", "worktree") or not want:
+            return
+        env = {"GIT_INDEX_FILE": os.path.join(os.path.dirname(path), "untracked.index.tmp")}
+        try:
+            git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=b"".join(
+                ("%s\t" % want[u]).encode() + u.encode("utf-8", "surrogateescape") + b"\0" for u in sorted(want)))
+            tree = git(["write-tree"], top, env=env).strip()
+        finally:
+            if os.path.exists(env["GIT_INDEX_FILE"]):
+                os.remove(env["GIT_INDEX_FILE"])
+        empty = git(["hash-object", "-t", "tree", "--stdin"], top, stdin=b"").strip()
+        # --text (in _DIFF_FLAGS): an untracked `* -diff` must not hide text (6xl.65); NUL-byte files are excluded already
+        yield from _sections(_diff_lines([["diff-tree", "-r"] + _DIFF_FLAGS + [empty, tree, "--"]], top))
 
     tracked = _sections(_diff_lines(_diff_calls(plan, names, narrow, top), top))
     wide = dict(plan, diff_cmd=[_WIDE if a == "--unified=3" else a for a in plan["diff_cmd"]]) if plan["diff_cmd"] else None
@@ -989,18 +1009,27 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
 
 
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
-_NAME_STATUS = ["--name-status", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
+_RAW_DIFF = ["--raw", "--no-abbrev", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
+
+
+def _c_quoted(path: str) -> bytes:
+    """A path as one C-quoted line, which `hash-object --stdin-paths` unquotes: an LF anywhere in it, the repository's
+    and the run directory's parts included, stays inside the line, and a CR before the closing quote is no line end."""
+    b = path.encode("utf-8", "surrogateescape")
+    return b'"' + b.replace(b"\\", b"\\\\").replace(b'"', b'\\"').replace(b"\n", b"\\n") + b'"'
 
 
 def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
-    """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag}}.
+    """The pinned tree and the checkout difference: {pinned_tree, pinned_head, checkout_head, paths: {path: tag},
+    blobs: {path: "mode oid"} of each working file it hashed}.
 
     Ref and PR kinds pin the head commit's tree. In-place kinds pin a tree written from a copy of the index in `run`,
     with the kind's working files hashed raw (no filter runs, the stored bytes are the bytes on disk); the checkout, its
     index and its refs are only read. The difference tags each path where the checkout differs from the pinned tree:
     `modified`, `untracked` (in the checkout, not ignored, not in the tree) or `absent-in-checkout`; in place it holds
     only the worktree edits of `staged` (its tree is the index) and files the tree could not take. Its cost follows the
-    change and the drift: one name-status diff, one untracked listing, at most one hash-object and one update-index."""
+    change and the drift: one raw diff, one untracked listing, one config read in place, at most one hash-object and one
+    update-index; with a filter driver configured, one ls-files and one check-attr more, and every filtered file read."""
     idx = os.path.join(run, "index.tmp")
     real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
     if os.path.exists(real):
@@ -1009,11 +1038,12 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     inplace = kind in INPLACE
     tree = None if inplace else git(["rev-parse", "--verify", plan["head"] + "^{tree}"], top).strip()
     # in place: the working tree against the index, the edits the kind pins or leaves; else against the pinned tree
-    f = _split(git_bytes(["diff"] + _NAME_STATUS + ([tree] if tree else []) + ["--"], top, env=env))
-    edits = list(zip(f[0::2], f[1::2]))
-    other = plan["untracked"] if kind in ("unstaged", "worktree") else _split(
-        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
-    tmp = []
+    f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
+    edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
+    imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in ("100644", "100755")}
+    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
+        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
+    tmp, blobs = [], {}
     try:
         if not inplace:
             paths = {p: "absent-in-checkout" if s == "D" else "untracked" if s == "A" else "modified" for s, p in edits}
@@ -1022,9 +1052,16 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
         else:
             paths = {p: "absent-in-checkout" if s == "D" else "modified" for s, p in edits}
             paths.update((p, "untracked") for p in other)
+            if kind != "staged" and _NO_FILTERS.get(top):  # a filter is configured: an unedited file's blob is filtered
+                attrs = _split(git_bytes(["check-attr", "-z", "--stdin", "filter"], top,
+                                         stdin=git_bytes(["ls-files", "-z"], top, env=env)))
+                paths.update((p, "modified") for p, v in zip(attrs[0::3], attrs[2::3])
+                             if v not in ("unspecified", "unset") and p not in paths)  # so it is hashed as on disk
             # staged pins the index as it is; every other in-place kind pins the whole checkout, so its difference is empty
             take = [] if kind == "staged" else sorted(paths)
             zero, srcs = "0" * len(plan["head"]), []
+            # core.fileMode=false: the exec bit on disk means nothing, so a tracked file keeps its index mode, a new one 100644
+            trust = git(["config", "--type=bool", "--get", "core.fileMode"], top, check=False).strip() != "false"
             # an unmerged path has no stage-0 entry to pin: the staged tree leaves it out, and it stays in the difference
             unmerged = {p: "0 " + zero for s, p in edits if s == "U"} if kind == "staged" else {}
             recs = dict(unmerged)
@@ -1038,22 +1075,20 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                 src, link = os.path.join(top, p), stat.S_ISLNK(st.st_mode)
                 if not link and (not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE):
                     continue  # a directory, FIFO, socket or oversized file stays as the index has it, and in the difference
-                if link or "\n" in p or "\r" in p:  # --stdin-paths reads lines and follows links: these go by copy
-                    if link:
-                        data = os.fsencode(os.readlink(src))
-                    else:
-                        with open(src, "rb") as fh:
-                            data = fh.read()
+                if link:  # --stdin-paths follows a link: its target string goes by copy
+                    data = os.fsencode(os.readlink(src))
                     src = os.path.join(run, "hash.%d.tmp" % len(tmp))
                     write_atomic(src, data)
                     tmp.append(src)
-                srcs.append((p, "120000" if link else "100755" if st.st_mode & 0o100 else "100644", src))
+                srcs.append((p, "120000" if link else ("100755" if st.st_mode & 0o100 else "100644") if trust
+                             else imode.get(p, "100644"), src))
             if srcs:
                 oids = git(["hash-object", "-w", "--no-filters", "--stdin-paths"], top,
-                           stdin="".join(s + "\n" for _, _, s in srcs).encode("utf-8", "surrogateescape")).split()
+                           stdin=b"".join(_c_quoted(s) + b"\n" for _, _, s in srcs)).split()
                 if len(oids) != len(srcs):
                     raise Refuse("bad-ref", "a git command failed")
-                recs.update((p, "%s %s" % (mode, oid)) for (p, mode, _), oid in zip(srcs, oids))
+                blobs = {p: "%s %s" % (mode, oid) for (p, mode, _), oid in zip(srcs, oids)}
+                recs.update(blobs)
             if recs:
                 git_bytes(["update-index", "-z", "--index-info"], top, env=env,
                           stdin=b"".join(("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
@@ -1065,7 +1100,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                 os.remove(t)
     rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top)
     return {"pinned_tree": tree, "pinned_head": None if inplace else plan["head"],
-            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths}
+            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths, "blobs": blobs}
 
 
 KNOWLEDGE = (".wolf", ".codegraph", ".serena")  # tool knowledge directories (gh#51); changes there are informational
@@ -1186,12 +1221,12 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     run = new_run_dir(cwd)
     integ = os.path.join(run, "integrity.json")  # gh#51: compared by report.py render, after the verifiers
     write_private(integ, json.dumps(integrity(top), sort_keys=True))
-    hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top)
+    pt = pin_tree(kind, plan, run, top)  # first: change.diff shows the untracked bytes the tree pins, read once
+    hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top, pt["blobs"])
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
     named = [{"file": esc, "name": True, "codepoints": [c for h in hits for c in h["codepoints"]]}
              for (esc, hits), _ in marks if hits]
-    pt = pin_tree(kind, plan, run, top)
     diff_path = os.path.join(run, "difference.json")
     write_private(diff_path, json.dumps({"version": 1, "pinned_tree": pt["pinned_tree"], "paths": [
         {"path": shown(p), "tag": pt["paths"][p]} for p in sorted(pt["paths"])]}, sort_keys=True, indent=2,
@@ -1239,8 +1274,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             git(["rev-parse", "--show-toplevel"], cwd)
         except Refuse:
             raise Refuse("not-a-git-repo", "run inside a git repository")
-        _NO_FILTERS.clear()
-        _NO_FILTERS.update(_no_filters(cwd))
+        _NO_FILTERS.clear()  # read the filter config afresh each run, as an in-process caller may have changed it
         if "--stdin" in argv:  # WR-08: words as data, one per line, so no shell layer parses them
             argv = [a for a in argv if a != "--stdin"] + [w for w in sys.stdin.read().split("\n") if w]
         since_last = "--since-last" in argv

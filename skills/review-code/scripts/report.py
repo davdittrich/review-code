@@ -1706,7 +1706,6 @@ def _integrity(run, tj):
     try:
         with open(os.path.join(run, "integrity.json"), encoding="utf-8") as fh:
             snap = json.load(fh)
-        target._NO_FILTERS.update(target._no_filters(tj["repo"]))  # the snapshot's git ran without filters too
         return target.integrity_changes(tj["repo"], snap)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, target.Refuse):
         return None

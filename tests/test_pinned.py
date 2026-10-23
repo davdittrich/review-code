@@ -3,6 +3,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -13,6 +14,7 @@ import paths  # noqa: F401
 import gitfix  # noqa: E402
 import ledger  # noqa: E402
 import target  # noqa: E402
+import test_fix as tfix  # noqa: E402
 import test_post as tpost  # noqa: E402  (module imports: their test classes are not collected twice)
 import test_target as tt  # noqa: E402
 
@@ -206,7 +208,11 @@ class Filters(tt.Base):
         self.marker = os.path.join(self.tmp, "filter-ran")
         self.git("config", "filter.spy.clean", "touch '%s'; tr a-z A-Z" % self.marker)
         self.git("config", "filter.spy.smudge", "cat")
-        gitfix.commit(self.repo, {".gitattributes": "*.dat filter=spy text\n", "lib.dat": "abc\n", "keep.py": "k = 1\n"}, "base")
+        gitfix.commit(self.repo, {".gitattributes": "*.dat filter=spy text\n", "lib.dat": "abc\n", "keep.py": "k = 1\n",
+                                  "old.dat": "def\n", "big.dat": "g" * 40 + "\n"}, "base")  # stored: DEF, GGG..
+        for n in ("old.dat", "big.dat"):  # older than the index, so git's racy check never rereads them
+            os.utime(os.path.join(self.repo, n), (1_600_000_000, 1_600_000_000))
+        self.git("update-index", "-q", "--refresh")
         write(self.repo, "lib.dat", b"edited bytes\r\n")
         write(self.repo, "new.dat", b"fresh\n")
         t = os.stat(os.path.join(self.repo, "keep.py")).st_mtime
@@ -221,6 +227,123 @@ class Filters(tt.Base):
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":lib.dat"), b"edited bytes\r\n")
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":new.dat"), b"fresh\n")
         self.assertFalse(os.path.exists(self.marker), "a clean filter ran")
+
+    def test_an_unedited_filtered_file_enters_the_pinned_tree_as_it_is_on_disk(self):
+        for args in (["--unstaged"], [], ["keep.py"], ["--repo"]):
+            with self.subTest(args=args), mock.patch.object(target, "MAX_FILE", 30):  # big.dat is over it
+                rc, out = tt.call(args, self.repo, self.tmp)
+                self.assertEqual((rc, out["status"]), (0, "ok"), out)
+                tree = load(out["run"])["pinned_tree"]
+                self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":old.dat"), b"def\n")  # not the stored DEF
+                self.assertEqual(difference(out["run"]), {"big.dat": "modified"})  # too large to hash: it differs
+
+
+class NoFilterInAnyScript(tfix.Base):
+    """Clean-only, smudge-only and process-only spy drivers, configured after the commits, on stat-dirty files: no
+    script runs one (rooc), the in-place apply, the head checkout and the restore from HEAD included."""
+    base_files = dict(tfix.BASE, **{".gitattributes": "*.c filter=c\n*.s filter=s\n*.p filter=p\n",
+                                    "x.c": "c\n", "x.s": "s\n", "x.p": "p\n"})
+    feat_files = {"src/calc.py": tfix.FEAT, "x.c": "c 2\n", "x.s": "s 2\n", "x.p": "p 2\n"}
+
+    def setUp(self):
+        super().setUp()
+        self.marks = {k: os.path.join(self.tmp, "ran-" + k) for k in ("clean", "smudge", "process", "late")}
+        for drv, key, tail in (("c", "clean", "cat"), ("s", "smudge", "cat"), ("p", "process", "exit 1")):
+            self.git("config", "filter.%s.%s" % (drv, key), "touch '%s'; %s" % (self.marks[key], tail))
+        for n in ("x.c", "x.s", "x.p"):
+            t = os.stat(os.path.join(self.repo, n)).st_mtime
+            os.utime(os.path.join(self.repo, n), (t + 7, t + 7))
+
+    def check(self, step):
+        self.assertEqual([k for k, m in sorted(self.marks.items()) if os.path.exists(m)], [], step)
+
+    def test_no_script_runs_a_filter(self):
+        run, fid = self.ready()  # target.py on main..feat, ledger build and trust, report ingest and verdicts
+        self.check("target, ledger, report")
+        late = ("import subprocess; subprocess.run(['git', 'config', 'filter.late.clean', %r]); "
+                "open('.git/info/attributes', 'a').write('x.c filter=late\\n')" % ("touch '%s'; cat" % self.marks["late"]))
+        words = [sys.executable, "-B", "-c", "import sys; sys.path.insert(0, 'src'); import calc; open('x.s', 'w').write('t\\n'); "
+                 + late]
+        self.go(run, words)  # the tests change x.s, which fix.py restores from HEAD, and define a filter fix.py must not run
+        self.check("fix plan and baseline")
+        seal = self.begin(run)[2]["seal"]
+        self.edit("src/calc.py", tfix.QUOTE, "return a + b")
+        self.assertEqual(self.finish(run, seal)[2]["outcome"], "fixed")
+        self.report(run)
+        self.assertEqual(cli("report.py", ["render", "--run", run], self.repo, self.tmp)[0], 0)
+        self.check("fix begin, finish and report, report render")
+        src = "import sys\nprint('REPRO-F-0123456789')\nsys.exit(1)\n"
+        rc, out, err = cli("repro.py", ["run", "--run", run, "--id", "F-0123456789", "--test", "t.py", "--",
+                                        sys.executable, "t.py"], self.repo, self.tmp, src.encode())
+        self.assertEqual(json.loads(out)["outcome"], "reproduced", out + err)
+        self.check("repro on the head")
+        write(self.repo, "x.c", "c 3\n")
+        run = self.pin("--unstaged")
+        rc, out, err = cli("repro.py", ["run", "--run", run, "--id", "F-0123456789", "--test", "t.py", "--",
+                                        sys.executable, "t.py"], self.repo, self.tmp, src.encode())
+        self.assertEqual(json.loads(out)["outcome"], "reproduced", out + err)
+        self.check("target in place and repro with its apply")
+
+
+class LineBreaks(tt.Base):
+    def test_a_repository_path_with_lf_pins_raw_bytes(self):
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "re\npo"))  # the run directory sits under it too
+        os.symlink("a.py", os.path.join(self.repo, "ln"))
+        gitfix.commit(self.repo, {"a.py": "a = 1\n", "b.py": "b = 1\n"}, "base")
+        self.git("add", "ln")
+        self.git("commit", "-q", "-m", "link")
+        write(self.repo, "a.py", "a = 2\n")
+        write(self.repo, "n\nl\r", "n = 1\n")
+        write(self.repo, 'q"b\\s', "q = 1\n")
+        os.remove(os.path.join(self.repo, "ln"))
+        os.symlink("b.py", os.path.join(self.repo, "ln"))
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tree = load(out["run"])["pinned_tree"]
+        self.assertEqual([raw(self.repo, "cat-file", "blob", tree + ":" + n) for n in ("a.py", "n\nl\r", 'q"b\\s', "ln")],
+                         [b"a = 2\n", b"n = 1\n", b"q = 1\n", b"b.py"])
+
+
+class FileMode(tt.Base):
+    def test_without_core_filemode_the_index_mode_wins_and_new_files_are_not_executable(self):
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        write(self.repo, "x.sh", "x\n")
+        os.chmod(os.path.join(self.repo, "x.sh"), 0o755)
+        gitfix.commit(self.repo, {"p.txt": "p\n"}, "base")
+        self.git("add", "x.sh")
+        self.git("commit", "-q", "-m", "x")
+        self.git("config", "core.fileMode", "false")
+        for n, m in (("x.sh", 0o644), ("p.txt", 0o755)):
+            write(self.repo, n, "edited\n")
+            os.chmod(os.path.join(self.repo, n), m)
+        write(self.repo, "u.sh", "u\n")
+        os.chmod(os.path.join(self.repo, "u.sh"), 0o755)
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tree = load(out["run"])["pinned_tree"]
+        modes = {n: raw(self.repo, "ls-tree", tree, n).split(b" ")[0] for n in ("x.sh", "p.txt", "u.sh")}
+        self.assertEqual(modes, {"x.sh": b"100755", "p.txt": b"100644", "u.sh": b"100644"})
+        self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":x.sh"), b"edited\n")
+
+
+class RacyIndex(tt.Base):
+    def test_an_edit_racily_clean_against_the_index_enters_the_pinned_tree(self):
+        """Same size, mtime and inode as its index entry, which is as new as the index file: only git's racy check,
+        keyed on the index file's mtime, finds the edit, so the index copy must keep that mtime (jd4i)."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        self.git("config", "core.trustctime", "false")  # rewriting the file moves ctime, which would flag it anyway
+        a, t = os.path.join(self.repo, "a.py"), 1_600_000_000_123_456_789
+        write(self.repo, "a.py", "a = 1\n")
+        os.utime(a, ns=(t, t))
+        gitfix.commit(self.repo, {"b.py": "b = 1\n"}, "base")
+        self.git("add", "a.py")
+        self.git("commit", "-q", "-m", "a")
+        write(self.repo, "a.py", "a = 2\n")  # in place: the inode stays
+        os.utime(a, ns=(t, t))
+        os.utime(os.path.join(self.repo, ".git", "index"), ns=(t, t))  # last: no git call may rewrite the index after it
+        rc, out = tt.call(["--unstaged"], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual(raw(self.repo, "cat-file", "blob", load(out["run"])["pinned_tree"] + ":a.py"), b"a = 2\n")
 
 
 class Symlinks(tt.Base):
@@ -246,12 +369,16 @@ def starts(path):
 
 
 class ProcessCount(tt.Base):
-    def count(self, n):
-        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d" % n))
-        gitfix.commit(repo, {"m%02d.py" % i: "v = 0\n" for i in range(n)}, "base")
+    def count(self, n, filtered=0):
+        """n edited files; with filtered, a configured driver and that many unedited files it filters."""
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d-%d" % (n, filtered)))
+        if filtered:
+            gitfix.run(["git", "config", "filter.up.clean", "tr a-z A-Z"], repo)
+        files = dict({"m%02d.py" % i: "v = 0\n" for i in range(n)}, **{"f%02d.dat" % i: "f\n" for i in range(filtered)})
+        gitfix.commit(repo, dict(files, **{".gitattributes": "*.dat filter=up\n"} if filtered else {}), "base")
         for i in range(n):
             write(repo, "m%02d.py" % i, "v = 1\n")
-        log = os.path.join(self.tmp, "trace%d.json" % n)
+        log = os.path.join(self.tmp, "trace%d-%d.json" % (n, filtered))
         with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
             rc, out = tt.call([], repo, self.tmp)
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
@@ -264,7 +391,75 @@ class ProcessCount(tt.Base):
             self.assertEqual(sum(1 for a in argv if "hash-object" in a and "--stdin-paths" in a and "--no-filters" in a), 1)
             self.assertEqual(sum(1 for a in argv if "update-index" in a and "--index-info" in a), 1)
             self.assertEqual(sum(1 for a in argv if "ls-files" in a and "--others" in a), 1)
-            self.assertEqual(sum(1 for a in argv if "diff" in a and "--name-status" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "diff" in a and "--raw" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "config" in a and "core.fileMode" in a), 1)
+            self.assertEqual([a for a in argv if "check-attr" in a], [])  # no driver configured: no attribute read
+
+    def untracked(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "u%d" % n))
+        gitfix.commit(repo, {"t.py": "t = 0\n"}, "base")
+        for i in range(n):
+            write(repo, "u%02d.py" % i, "u = %d\n" % i)
+        log = os.path.join(self.tmp, "trace-u%d.json" % n)
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["--unstaged"], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["untracked_count"]), (0, "ok", n), out)
+        with open(os.path.join(out["run"], "change.diff"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read().count("new file mode"), n)
+        return starts(log)
+
+    def test_untracked_files_reach_the_change_diff_in_a_fixed_number_of_git_processes(self):
+        three, thirty = self.untracked(3), self.untracked(30)
+        self.assertEqual(len(three), len(thirty))
+        self.assertEqual([a for a in three + thirty if "--no-index" in a], [])
+
+    def test_a_path_target_lists_untracked_files_once(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "p"))
+        gitfix.commit(repo, {"d/a.py": "a = 0\n", "da.py": "x = 0\n"}, "base")
+        for n in ("d/new.py", "dz.py", "top.py"):
+            write(repo, n, "n = 1\n")
+        log = os.path.join(self.tmp, "trace-path.json")
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["d"], repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        self.assertEqual(sum(1 for a in starts(log) if "ls-files" in a and "--others" in a), 1)
+        tj = load(out["run"])
+        self.assertEqual((tj["included"], tj["untracked"]), (["d/a.py", "d/new.py"], ["d/new.py"]))  # not dz.py
+        names = set(raw(repo, "ls-tree", "-r", "--name-only", tj["pinned_tree"]).decode().split("\n"))
+        self.assertLessEqual({"d/new.py", "dz.py", "top.py"}, names)  # the pin still takes the whole checkout
+        rc, out = tt.call([".."], os.path.join(repo, "d"), self.tmp)  # a path target naming the top: its spec is "."
+        self.assertEqual((out["kind"], load(out["run"])["untracked"]), ("path", ["d/new.py", "dz.py", "top.py"]))
+
+    def test_unedited_filtered_files_cost_a_fixed_number_of_git_processes(self):
+        three, thirty = self.count(3, 3), self.count(3, 30)
+        self.assertEqual(len(three), len(thirty))
+        for argv in (three, thirty):
+            self.assertEqual(sum(1 for a in argv if "check-attr" in a and "--stdin" in a), 1)
+            self.assertEqual(sum(1 for a in argv if "hash-object" in a and "--stdin-paths" in a), 1)
+
+
+class UntrackedDiff(tt.Base):
+    def test_untracked_sections_match_git_diff_no_index(self):
+        """The one diff of pinned blobs prints each kept untracked file as `git diff --no-index /dev/null` does."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"t.py": "t = 0\n"}, "base")
+        write(self.repo, "t.py", "t = 1\n")
+        files = {"exe.sh": "#!/bin/sh\n", "empty.txt": "", "nonl.txt": "no newline", "crlf.txt": "a\r\nb\r\n",
+                 "sp ace.py": "s = 1\n", 't\tq".py': "q = 1\n", "sub/dir/deep.py": "d = 1\n", "a.b": "x\n", "a/c.py": "y\n",
+                 "lock/package-lock.json": "{}\n"}  # the lockfile is excluded: it must not appear
+        for n, d in files.items():
+            write(self.repo, n, d)
+        os.chmod(os.path.join(self.repo, "exe.sh"), 0o755)
+        os.symlink("t.py", os.path.join(self.repo, "link"))
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        with open(os.path.join(out["run"], "change.diff"), "rb") as fh:
+            got = fh.read()
+        want = b"".join(subprocess.run(["git", "diff", "--no-index", "--text"] + target._DIFF_FLAGS + ["--", "/dev/null", n],
+                                       cwd=self.repo, env=gitfix.env(), stdout=subprocess.PIPE).stdout
+                        for n in sorted(set(files) - {"lock/package-lock.json"} | {"link"}))
+        self.assertEqual(got[got.index(b"diff --git", 1):], want)
+        self.assertFalse(os.path.exists(os.path.join(out["run"], "untracked.index.tmp")))
 
 
 class LargeRepo(tt.Base):
