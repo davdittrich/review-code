@@ -77,6 +77,13 @@ class Outside(tr.Base):
         self.assertNotIn("downgraded", items["pkg/far.py is missing"])
 
 
+    def test_a_downgraded_neighbour_never_absorbs_a_real_finding(self):
+        gone = tr.cand("return a - b", 5, title="pkg/far.py is missing", severity="blocking")
+        out = self.ingest(gone, tr.cand("def add(a, b):", 4))
+        self.assertEqual(out["ids"], [tr.fid("src/calc.py", "bug", "def add(a, b):")])
+        self.assertEqual(out["merged"], 0)
+
+
 class MissingSymbol(tr.Base):
     def test_a_finding_that_calls_a_ledger_symbol_undefined_is_downgraded(self):
         out = self.ingest(tr.cand("return a - b", 5, title="function load is not defined", trigger="NameError: name load"))

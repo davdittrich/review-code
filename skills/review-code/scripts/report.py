@@ -1177,7 +1177,10 @@ def _ingest(run, text, lane, shard):
                             "lane with an incomplete one: send the full corrected reply, the inspected line included")
     lanes[key] = new  # a re-ingest replaces only that lane
     rejected, repaired, disp = lanes[key].pop("rejected"), lanes[key].pop("repaired"), lanes[key].pop("dispositions")
-    cands, merged = _dedupe([c for n in sorted(lanes) for c in lanes[n]["candidates"]])
+    every = [c for n in sorted(lanes) for c in lanes[n]["candidates"]]
+    cands, merged = _dedupe([c for c in every if "downgraded" not in c])  # a claims-missing one never absorbs a real one
+    down = {c["id"]: c for c in every if "downgraded" in c and c["id"] not in {x["id"] for x in cands}}
+    cands = sorted(cands + list(down.values()), key=lambda c: c["id"])
     doomed = _doomed(run, cands)
     queue = _queue(cands, doomed)
     queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
