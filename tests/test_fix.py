@@ -1237,6 +1237,7 @@ class Tamper(Scope):
                  "accepted not an object": with_(accepted=[]),
                  "untracked not a list": with_(untracked="x"),
                  "side_effects not a list": with_(side_effects="src/other.py"),
+                 "git_files not a list": with_(git_files="x"),
                  "deeply nested": lambda st: "[" * 200000}
         run, fid, bg, reset = self.started_once()
         for name, make in cases.items():
