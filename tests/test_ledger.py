@@ -1157,6 +1157,10 @@ class Spec(Base):
         self.assertIn("(%07d bytes)" % len(big), spec)
         self.assertNotIn("Big title", spec)
 
+    def test_the_index_says_none_when_no_record_is_listed(self):  # review-code-dd1m: found unpinned by mutation
+        self.adr_build({"docs/notes.txt": "n\n"})
+        self.assertIn("## Decision records\nnone\n", self.read("inputs/spec.md"))
+
     def test_adr_name_matching_the_branch_is_an_index_row_not_a_pasted_file(self):
         self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "# Parser\nADR-P\n"})
         self.g("checkout", "-q", "-b", "feat-parser")
