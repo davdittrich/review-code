@@ -472,6 +472,32 @@ class Renders(Base):
         self.assertEqual(self.doc()["adr_omitted"], 3)
         self.assertIn("3 ADR files omitted by the cap", self.rep("render")[1])
 
+    def capped_history(self, cut):
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            led = json.load(fh)
+        led.setdefault("capped", {})["history"] = cut
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+
+    def test_history_cut_by_the_caps_is_surfaced_in_json_and_text(self):  # review-code-v6xs
+        self.seed()
+        self.assertNotIn("history_cut", self.doc())
+        cut = {"hunks": 2, "logs": 1, "bytes": True, "files_omitted": 4, "unread": 3, "log_failed": True}
+        self.capped_history(cut)
+        self.assertEqual(self.doc()["history_cut"], cut)
+        text = self.rep("render")[1]
+        self.assertIn("- change history cut: 2 hunks with older commits not shown, 1 log with older commits not shown, "
+                      "byte cap reached (4 files without history), 3 files without blame, log call failed", text)
+
+    def test_a_malformed_history_cut_is_dropped_not_rendered(self):  # review-code-v6xs
+        self.seed()
+        self.capped_history({"hunks": "x\x1b[31m", "logs": -1, "unread": True, "other": 5})
+        self.assertNotIn("history_cut", self.doc())
+        self.capped_history("not a dict")
+        self.assertNotIn("history_cut", self.doc())
+        self.assertNotIn("change history cut", self.rep("render")[1])
+
     def test_text_sections_and_escape(self):
         self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")
         rc, out = self.rep("render")

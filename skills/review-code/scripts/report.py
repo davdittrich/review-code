@@ -55,7 +55,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
   so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
   the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
-  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw.
+  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw. history_cut (the ledger's capped.history, only when non-empty): what the history caps left out, {hunks, logs, files_omitted, unread: counts, bytes, log_failed: true}. Additive keys keep schema_version 1.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output).
@@ -1510,6 +1510,9 @@ def _build(run):
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
     if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
         doc["adr_omitted"] = led["capped"]["adr"]
+    cut = _history_cut(led)
+    if cut:  # what history.build's caps left out of the files lanes were told to read
+        doc["history_cut"] = cut
     flagged, routine = ledger.hidden_notes(led["hidden_text"])  # signalled spans singly, the rest as a count per file
     hc = [{"file": h.get("path", h["file"]), "line": h["line"], "kind": h["kind"], "length": h["length"], "name": False,
            "signal": h["signal"], **({"provenance": h["provenance"]} if h.get("provenance") else {})} for h in flagged]
@@ -1529,6 +1532,29 @@ def _build(run):
     if routine:
         doc.update(hidden_routine=routine)
     return doc
+
+
+def _history_cut(led):
+    """The ledger's capped.history ({hunks, logs, files_omitted, unread: positive counts; bytes, log_failed: true}) with
+    every other key or value dropped, or None: a hand-edited ledger never reaches the report as free text."""
+    cut = led.get("capped", {}).get("history")
+    if not isinstance(cut, dict):
+        return None
+    out = {k: cut[k] for k in ("hunks", "logs", "files_omitted", "unread") if type(cut.get(k)) is int and cut[k] > 0}
+    out.update((k, True) for k in ("bytes", "log_failed") if cut.get(k) is True)
+    return out or None
+
+
+def _cut_text(cut):
+    """The one report row for a history cut, from fixed words and counts."""
+    def n(k, noun):
+        return "%d %s%s" % (cut[k], noun, "" if cut[k] == 1 else "s")
+    parts = ([n("hunks", "hunk") + " with older commits not shown"] if "hunks" in cut else []) + (
+        [n("logs", "log") + " with older commits not shown"] if "logs" in cut else [])
+    if "bytes" in cut:
+        parts.append("byte cap reached (%s without history)" % (n("files_omitted", "file") if "files_omitted" in cut else "0 files"))
+    parts += [n("unread", "file") + " without blame"] if "unread" in cut else []
+    return "- change history cut: " + ", ".join(parts + (["log call failed"] if "log_failed" in cut else []))
 
 
 _LEVEL = {"blocking": "error", "required": "warning", "suggestion": "note", "nit": "note", "noted": "note"}
@@ -1668,7 +1694,8 @@ def _text(doc):
                 for r in doc.get("hidden_routine", [])])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
                    + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
-                      if doc.get("adr_omitted") else []))
+                      if doc.get("adr_omitted") else [])
+                   + ([_cut_text(doc["history_cut"])] if doc.get("history_cut") else []))
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
 
