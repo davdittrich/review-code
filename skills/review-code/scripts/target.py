@@ -335,9 +335,11 @@ def _forge_key(host: str, path: str) -> str:
 def _remotes(cwd: str) -> List[tuple]:
     """(name, repo key) from the raw remote URLs; `git remote get-url` would expand insteadOf."""
     rows = []
-    for rec in git(["config", "-z", "--get-regexp", r"^remote\..*\.url$"], cwd, check=False).split("\0"):
+    # --list, not --get-regexp: in a UTF-8 locale git's regex `.` never matches an invalid byte, so a remote named with one vanished
+    raw = git_bytes(["config", "-z", "--list"], cwd, check=False)
+    for rec in raw.decode("utf-8", "surrogateescape").split("\0"):
         parts = rec.split("\n", 1)  # -z: NUL ends a record, LF ends the key; splitlines would cut at NEL, LS, PS in a value
-        if len(parts) == 2:
+        if len(parts) == 2 and parts[0].startswith("remote.") and parts[0].endswith(".url"):
             name = parts[0][len("remote."):-len(".url")]
             key = _repo_key(parts[1])
             if key and name and not name.startswith("-"):
