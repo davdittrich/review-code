@@ -1075,6 +1075,7 @@ def _read_lane(text, lane, run, shard=None):
     summary = None
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
+    spec_text = _spec_copy(run) if lane == "spec" else None  # before _spec_refs, which may write marks.json
     adr = _spec_refs(run) if lane == "spec" else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
@@ -1092,7 +1093,7 @@ def _read_lane(text, lane, run, shard=None):
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named | set(adr), cited | set(adr))
-    copied = _spec_copy(run)(pin, adr) if lane == "spec" else None
+    copied = spec_text(pin, adr) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
@@ -1364,8 +1365,8 @@ def _verdicts(run, text, batch, agent=None):
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
+    spec_text = _spec_copy(run) if spec else None  # before any write below, marks.json in _spec_refs included
     adr = _spec_refs(run) if spec else []
-    spec_text = _spec_copy(run) if spec else None  # before any write below
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
     if batch is None and calls and _plan(run).get("mode") == "parallel":  # it would replace every stored batch (review-code-3k5)
         raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
