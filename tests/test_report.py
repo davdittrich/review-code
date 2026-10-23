@@ -880,6 +880,41 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
 
 
+    def traced_ingest(self, n):
+        """git process starts of one spec ingest; the whole-tree listing is the one `ls-tree -r`."""
+        log = os.path.join(self.tmp, "marks%d.json" % n)
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
+                           lines({"inspected": []}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return len([a for a in tp.starts(log) if "ls-tree" in a and "-r" in a])
+
+    def test_the_whole_tree_listing_for_marked_refs_runs_once_per_run(self):  # review-code-fot3
+        self.assertEqual([self.traced_ingest(1), self.traced_ingest(2)], [1, 0])
+
+    def test_a_changed_pin_or_ledger_lists_again(self):  # review-code-fot3: the cache cannot go stale
+        self.assertEqual(self.traced_ingest(1), 1)
+        gitfix.commit(self.repo, {"extra.txt": "x\n"}, "later")
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = gitfix.run(["git", "rev-parse", "HEAD^{tree}"], self.repo).strip()
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        self.assertEqual(self.traced_ingest(2), 1)  # another pinned tree
+        path = os.path.join(self.run_dir, "ledger.json")
+        led = tp.load(self.run_dir, "ledger.json")
+        led["spec"]["sources"].append({"kind": "adr", "ref": "docs/adr/0003-none<U+0041>.md"})
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        self.assertEqual(self.traced_ingest(3), 1)  # another marked ref
+        self.assertEqual(self.traced_ingest(4), 0)
+
+    def test_a_corrupt_marks_file_is_listed_again_not_trusted(self):  # review-code-fot3
+        self.assertEqual(self.traced_ingest(1), 1)
+        with open(os.path.join(self.run_dir, "marks.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"tree": 1')
+        self.assertEqual(self.traced_ingest(2), 1)
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
 class SpecAdrHiddenDecoy(SpecAdrHiddenName):
     """The look-alike file named as the escaped ref resolves the ref without a miss: the hidden-named record must still count."""
     base_files = dict(BASE, **{SpecAdrHiddenName.RAW: SpecAdrHiddenName.BODY, SpecAdrHiddenName.SHOWN: "# Decoy\n\nnothing here\n"})

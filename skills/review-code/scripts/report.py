@@ -635,7 +635,28 @@ def _spec_refs(run):
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
     shown = {p for p in adr if _ESCAPED.search(p)}
-    return adr + ([n for n, _, _ in _Pinned(run, ()).every() if sanitize.escape_for_code(n)[0] in shown] if shown else [])
+    return adr + (_hidden_names(run, shown) if shown else [])
+
+
+def _hidden_names(run, shown):
+    """Every name of the pinned tree that escapes to a ref in `shown`. The whole-tree listing runs once per run, not once per
+    call (review-code-fot3): marks.json keeps the answer, keyed by the pinned tree and the marked refs, both read live, so a
+    changed pin or ledger lists again. Ascii-escaped, so no raw hidden byte lands in a file a lane may read. The names still
+    pass through the pin's exact-path ls-tree: a forged entry adds no file the tree lacks, it can only hide one."""
+    pin = _Pinned(run, ())
+    key = {"tree": pin.tree, "shown": sorted(shown)}
+    path = os.path.join(run, "marks.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+        if (isinstance(got, dict) and all(got.get(k) == v for k, v in key.items())
+                and isinstance(got.get("names"), list) and all(isinstance(n, str) for n in got["names"])):
+            return got["names"]
+    except (OSError, ValueError):
+        pass
+    names = [n for n, _, _ in pin.every() if sanitize.escape_for_code(n)[0] in shown]
+    _put(path, json.dumps(dict(key, names=names)))
+    return names
 
 
 def _spec_copy(run, pin, adr):
