@@ -1839,7 +1839,7 @@ def main(argv):
         shard, batch = (int(opts[k]) if k in opts else None for k in ("--shard", "--batch"))
         out = ingest(run, text, lane, shard, agent) if sub == "ingest" else verdicts(run, text, batch, agent)
     except target.Refuse as r:
-        out, rc = {"status": "refuse", "reason": r.reason}, 1
+        out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1  # as plan.py; json.dumps escapes it
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:

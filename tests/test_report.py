@@ -27,6 +27,13 @@ CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "b
 CITE = {"path": "src/calc.py", "line": 5, "quote": "return a - b"}
 
 
+def refusal(out):
+    """A report.py refusal line without its detail (review-code-2i1e prints it), after checking the detail is text."""
+    got = json.loads(out) if isinstance(out, str) else dict(out)
+    assert isinstance(got.pop("detail", None), str), got
+    return got
+
+
 class Base(gitfix.FeatureRepo):
     pin_args = ["main"]
     base_files, feat_files = BASE, {"src/calc.py": FEAT}
@@ -848,7 +855,7 @@ class SpecAdrCite(Base):
         before = {n: open(os.path.join(self.run_dir, n), "rb").read() for n in ("candidates.json",)
                   if os.path.exists(os.path.join(self.run_dir, n))}
         rc, out = self.rep(sub, reply, extra=extra)
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": reason}))
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": reason}))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected", "spec.txt")))
         self.assertEqual(before, {n: open(os.path.join(self.run_dir, n), "rb").read() for n in before})
 
@@ -912,7 +919,7 @@ class SpecAdrHiddenName(Base):
         os.remove(spec)
         os.mkdir(spec)  # open() fails with an OSError as root too
         rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "spec"])
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "marks.json")))
 
     def traced_ingest(self, n):
@@ -1235,7 +1242,7 @@ class SpecAxis(Base):
         for sub, reply, extra in (("verdicts", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}, ()),
                                   ("ingest", {"declined": [{"spec_line": inner, "why": rows[inner - 1]}]}, ["--lane", "spec"])):
             rc, out = self.rep(sub, lines(reply, {"inspected": []}) if sub == "ingest" else lines(reply), extra=extra)
-            self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
+            self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
             self.assertEqual(self.snapshot(), before, sub)
 
     def test_a_verdict_reason_copying_a_spec_line_is_dropped(self):  # review-code-flwv
@@ -1498,7 +1505,7 @@ class Shards(Lanes):
         for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):
             rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "defects", "--shard", bad],
                                self.repo, self.tmp, lines(mc(3)))
-            self.assertEqual((rc, json.loads(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
+            self.assertEqual((rc, refusal(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
 
     def test_shard_without_plan_refuses(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
@@ -2359,7 +2366,7 @@ class Gate(Base):
                 fh.write(junk)
             for sub, text, extra in (("ingest", lines(self.GOOD), ()), ("verdicts", lines({"id": i, "verdict": "confirmed"}), ())):
                 rc, out = self.rep(sub, text, extra)
-                self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
+                self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), junk)
 
@@ -2439,7 +2446,7 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.agent_ingest()["ids"], [QID])
 
     def test_no_capture_refuses_and_stores_nothing(self):
-        self.assertEqual(self.agent_ingest(rc=1), {"reason": "no-capture", "status": "refuse"})
+        self.assertEqual(refusal(self.agent_ingest(rc=1)), {"reason": "no-capture", "status": "refuse"})
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")
@@ -2540,7 +2547,7 @@ class AgentReply(Captured, Base):
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
-        self.assertEqual((rc, json.loads(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
+        self.assertEqual((rc, refusal(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
     def test_discard_leaves_the_captures_alone(self):  # they belong to the repository, not to this run
@@ -2585,10 +2592,16 @@ class AgentReply(Captured, Base):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
     def test_no_capture_detail_says_to_rerun_on_stdin(self):
-        with self.assertRaises(report.target.Refuse) as cm:  # the CLI prints the reason only, so read the detail in-process
+        with self.assertRaises(report.target.Refuse) as cm:
             report._take(self.run_dir, AID, "review-code:finder", True)
         self.assertEqual((cm.exception.reason, cm.exception.detail),
                          ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
+
+    def test_the_cli_prints_the_refusal_detail_with_its_retry_hint(self):  # review-code-2i1e
+        rc, out = self.rep("ingest", extra=["--agent", AID])
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-capture", "detail": report.REASONS["no-capture"]}))
+        rc, out = self.rep("ingest", extra=["--shard", "x"])
+        self.assertEqual(json.loads(out)["detail"], "--shard is not a positive integer")
 
     def status(self):
         rc, out = self.rep("status")

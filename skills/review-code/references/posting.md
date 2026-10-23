@@ -75,7 +75,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 
 ## Refusals
 
-`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. `plan.py`, a `report.py ingest --lane spec` and a `report.py verdicts` call on spec findings also raise `no-ledger` and `bad-ledger`; the two `report.py` calls also raise `record-unreadable`. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
+`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. `plan.py`, a `report.py ingest --lane spec` and a `report.py verdicts` call on spec findings also raise `no-ledger` and `bad-ledger`; the two `report.py` calls also raise `record-unreadable`. On a refusal `status` is `refuse` and `reason` is one of these, with a `detail`: from `build` and `submit` it carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text; from `report.py` it is the cause or retry hint the script words (no reply, record or forge text), as `plan.py` prints its own.
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
