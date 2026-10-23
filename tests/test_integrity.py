@@ -32,20 +32,27 @@ class Integrity(tpost.Base):
         return json.loads(out) if fmt else out
 
     CLEAN = ("integrity: no change to the checkout, index or tool knowledge during the run "
-             "(not seen: files inside untracked directories, submodule worktrees)")
+             "(not seen: submodule worktrees, nested repositories)")
 
     def test_a_clean_run_reports_no_change_in_either_tier(self):
         self.assertIn(self.CLEAN, self.render().split("\n"))
         self.assertEqual(self.render("json")["integrity"], {"working_tree": [], "index": False, "knowledge": [], "cause": CAUSE})
 
-    def test_an_edit_inside_an_untracked_directory_is_a_blind_spot_the_line_names(self):  # review-code-8434
-        tp.write(self.repo, "scratch/notes.txt", "one\n")  # status collapses the wholly untracked directory to one entry
+    def test_an_edit_inside_an_untracked_directory_is_seen(self):  # review-code-71de.2 (was the 8434 blind spot)
+        tp.write(self.repo, "scratch/notes.txt", "one\n")  # normal mode collapsed the wholly untracked directory to one entry
         self.make_run()
         self.review(5)
         tp.write(self.repo, "scratch/notes.txt", "one, two, three, four\n")
-        out = self.render()
+        self.assertEqual(self.render("json")["integrity"]["working_tree"], ["scratch/notes.txt"])
+
+    def test_an_edit_inside_a_nested_repository_is_a_blind_spot_the_line_names(self):  # -uall still lists it as one entry
+        gitfix.make_repo(os.path.join(self.repo, "nested"))
+        tp.write(self.repo, "nested/a.txt", "one\n")
+        self.make_run()
+        self.review(5)
+        tp.write(self.repo, "nested/a.txt", "one, two, three, four\n")
         self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
-        self.assertIn(self.CLEAN, out.split("\n"))
+        self.assertIn(self.CLEAN, self.render().split("\n"))
 
     def test_an_edit_inside_a_submodule_worktree_is_a_blind_spot_the_line_names(self):  # review-code-exrf
         sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
@@ -152,7 +159,7 @@ class RenderProcessCount(tpost.Base):
         log = os.path.join(self.tmp, "render%d.json" % n)
         rc, out, err = cli("report.py", ["render", "--run", self.run_dir], self.repo, self.tmp, extra={"GIT_TRACE2_EVENT": log})
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("integrity warning: new/ (working tree) " + CAUSE, out.split("\n"))
+        self.assertIn("integrity warning: new/f00.txt (working tree) " + CAUSE, out.split("\n"))
         return tp.starts(log)
 
     def test_the_comparison_runs_one_status_and_no_per_file_process(self):
@@ -180,7 +187,7 @@ class LargeSnapshot(tp.LargeRepo):
         path = os.path.join(out["run"], "integrity.json")
         snap = tp.load(out["run"], "integrity.json")
         self.assertEqual(sorted(snap), ["dirty", "index", "knowledge", "status", "version"])
-        self.assertEqual(set(snap["dirty"]), {".wolf/"})  # only the drift: no entry for any clean tracked file
+        self.assertEqual(set(snap["dirty"]), {".wolf/locked.md"})  # only the drift: no entry for any clean tracked file
         self.assertEqual(snap["knowledge"], {".wolf/locked.md": [7, os.lstat(os.path.join(self.repo, ".wolf/locked.md")).st_mtime_ns]})
         self.assertLess(os.path.getsize(path), 1024)
         self.assertNotIn("secret", open(path, encoding="utf-8").read())

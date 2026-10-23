@@ -1155,10 +1155,9 @@ def integrity(top: str) -> dict:
     """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, the real index file's SHA-256,
     each status entry's fields with its (size, mtime_ns) so a second edit to a file already dirty shows, and (size,
     mtime_ns) of every file under the knowledge directories, walked by stat only. Clean tracked files cost nothing;
-    no file content is read. A failed status or an unreadable index is recorded as it is, never raised."""
-    # shortcut: normal untracked mode collapses a wholly untracked directory to one entry, so an edit to a file already
-    # inside it shows only when the directory's own size or mtime moves; use --untracked-files=all if that must be exact
-    out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=dirty"], top, check=False)
+    no file content is read. Untracked files are listed one by one (--untracked-files=all), so an edit inside an untracked directory shows; the cost is one lstat
+    per untracked, non-ignored file. A failed status or an unreadable index is recorded as it is, never raised."""
+    out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"], top, check=False)
     dirty, recs = {}, out.decode("utf-8", "surrogateescape").split("\0")
     skip = False
     for r in recs:

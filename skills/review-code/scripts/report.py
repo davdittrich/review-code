@@ -1215,7 +1215,7 @@ def _ingest(run, text, lane, shard):
     diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
     texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
     try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
-        for t in texts:
+        for t in texts + [json.dumps(every, ensure_ascii=False)]:  # every stored candidate, a downgraded one included: candidates.json would escape it into render
             t.encode("utf-8")
     except UnicodeEncodeError:
         raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
@@ -1640,7 +1640,7 @@ def _text(doc):
                 + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
         out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
                 if rows else ["integrity: no change to the checkout, index or tool knowledge during the run "
-                              "(not seen: files inside untracked directories, submodule worktrees)"])
+                              "(not seen: submodule worktrees, nested repositories)"])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
