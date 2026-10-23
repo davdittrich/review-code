@@ -126,7 +126,13 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 
 def _toplevel(cwd: str) -> str:
     """The repository root, without .strip(): that would also drop a CR the directory name ends in (wb5s)."""
-    out = git_bytes(["rev-parse", "--show-toplevel"], cwd).decode("utf-8", "surrogateescape")  # lossless: reused as cwd
+    return _rev_path("--show-toplevel", cwd)
+
+
+def _rev_path(flag: str, cwd: str) -> str:
+    """One rev-parse path, lossless (surrogateescape) with the one trailing LF dropped. One flag per call: git echoes -z
+    back instead of NUL-separating, so two LF-joined paths are ambiguous when either holds an LF."""
+    out = git_bytes(["rev-parse", flag], cwd).decode("utf-8", "surrogateescape")
     return out[:-1] if out.endswith("\n") else out
 
 
@@ -635,8 +641,8 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:
         raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
-    dirs = git_bytes(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).decode("utf-8", "surrogateescape").split("\n")  # not splitlines: a path may hold CR, VT, FF, FS-RS, NEL, LS or PS
-    linked = os.path.realpath(dirs[0]) != os.path.realpath(os.path.join(cwd, dirs[1]))
+    linked = os.path.realpath(_rev_path("--absolute-git-dir", cwd)) != os.path.realpath(
+        os.path.join(cwd, _rev_path("--git-common-dir", cwd)))
     rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
     on = out.decode("utf-8", "replace").strip() if rc == 0 else None
     synced = _run(["merge-base", "--is-ancestor", tip, "HEAD"], cwd)[0] == 0 if fork else _head_oid(cwd) == tip

@@ -82,6 +82,19 @@ class Gate(tt.PRWorld):
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
         os.rename(moved, self.repo)
 
+    def test_a_main_checkout_whose_path_holds_a_newline_is_not_linked(self):  # review-code-kzvu
+        moved = os.path.join(self.tmp, "re\npo")
+        os.rename(self.repo, moved)
+        rc, out = tt.call(["7"], moved, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        os.rename(moved, self.repo)
+
+    def test_a_linked_worktree_whose_path_holds_a_newline_is_still_linked(self):  # review-code-kzvu
+        self.git("checkout", "-q", "-b", "parking")
+        wt = os.path.join(self.tmp, "w\nt")
+        self.git("worktree", "add", "-q", wt, "main")
+        self.assertIn("linked worktree", self.refused("checkout-not-synced", cwd=wt))
+
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
         tp.write(self.repo, "untracked.py", "u = 1\n")
