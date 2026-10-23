@@ -238,6 +238,27 @@ class Filters(tt.Base):
                 self.assertEqual(difference(out["run"]), {"big.dat": "modified"})  # too large to hash: it differs
 
 
+def _c_utf8():
+    try:
+        out = subprocess.run(["locale", "-a"], stdout=subprocess.PIPE, check=True).stdout.decode("ascii", "replace")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return any(n.lower().replace("-", "") == "c.utf8" for n in out.split())
+
+
+def spied_runs(repo):
+    """argv/env of every git subprocess target._env(repo) starts, with a fresh filter cache."""
+    calls = []
+    real = subprocess.run
+
+    def spy(argv, *a, **kw):
+        calls.append((argv, kw.get("env") or {}))
+        return real(argv, *a, **kw)
+    with mock.patch.dict(target._NO_FILTERS, clear=True), mock.patch.object(target.subprocess, "run", spy):
+        target._env(repo)
+    return calls
+
+
 class AmbiguousRef(tt.Base):
     """The ambiguous-ref decision reads git's message, which gettext translates (review-code-ed7m)."""
 
@@ -263,6 +284,21 @@ class AmbiguousRef(tt.Base):
         self.assertTrue(cfg and all(e.get("LC_ALL") == "de_DE.UTF-8" for e in cfg), cfg)
 
 
+class FilterRead(tt.Base):
+    """Locale-free pin of review-code-215w: the filter config is listed, never matched by a regex (git's `.` skips an
+    invalid byte in a UTF-8 locale)."""
+
+    def test_the_config_read_lists_and_does_not_match_a_regex(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        argvs = [argv for argv, _ in spied_runs(repo) if "config" in argv]
+        self.assertEqual(len(argvs), 1, argvs)
+        self.assertIn("--list", argvs[0])
+        self.assertNotIn("--get-regexp", argvs[0])
+
+
+@unittest.skipUnless(_c_utf8(), "no C.UTF-8 locale in `locale -a`: git falls back to C there, where the regex `.` "
+                                "matches the 0xff byte, so this test cannot tell the old --get-regexp read from --list "
+                                "(FilterRead discriminates without a locale)")
 class FilterNames(tt.Base):
     """A driver whose name holds a non-UTF-8 byte, a dot or an uppercase letter is blanked too (review-code-215w): in a
     UTF-8 locale git's config regex `.` never matched the 0xff byte, so that driver ran."""
