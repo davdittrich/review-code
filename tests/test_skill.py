@@ -334,7 +334,7 @@ class SerialModeNotice(unittest.TestCase):
 
     def test_serial_mode_states_the_evidence_rule_and_keeps_the_lost_guarantees(self):  # gh#52
         t = self.serial()
-        for w in ("Grep the input's `checkout_difference` file for a regex-escaped path, never read it whole",
+        for w in ("Grep the input's `checkout_difference` file for ^regex-escaped path$, never read it whole",
                   "read a listed path from `tree/` (absent: skip it; tool answers on it are pointers)", "any other from the repository (tool answers are evidence)",
                   "`codegraph_explore` first (source and callers in one call), then Read offset/limit",
                   "Quote paths are repository-relative and checked against the pinned tree",
