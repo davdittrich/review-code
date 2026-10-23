@@ -806,6 +806,46 @@ class SpecAdrCite(Base):
         out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
         self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["quote-not-at-line"], []))
 
+    def refuses(self, sub, reply, extra, reason):
+        before = {n: open(os.path.join(self.run_dir, n), "rb").read() for n in ("candidates.json",)
+                  if os.path.exists(os.path.join(self.run_dir, n))}
+        rc, out = self.rep(sub, reply, extra=extra)
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": reason}))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected", "spec.txt")))
+        self.assertEqual(before, {n: open(os.path.join(self.run_dir, n), "rb").read() for n in before})
+
+    def test_an_unreadable_ledger_refuses_the_copy_guard_instead_of_skipping_the_records(self):  # review-code-27ht
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            good = fh.read()
+        for body, reason in ((None, "no-ledger"), ("[]", "bad-ledger"), ('{"spec": {}}', "bad-ledger"),
+                             ('{"spec": {"sources": [{"kind": "adr", "ref": 5}]}}', "bad-ledger"),
+                             ('{"spec": {"sources": [{"kind": "adr", "ref": "../x.md"}]}}', "bad-ledger")):
+            os.remove(path)
+            if body is not None:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            self.refuses("ingest", lines({"inspected": ["src/calc.py"]}), ["--lane", "spec"], reason)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(good)
+
+    def test_an_unreadable_ledger_refuses_spec_verdicts_too(self):  # review-code-27ht: the second caller
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        self.refuses("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), (), "bad-ledger")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
+    def test_a_failed_tree_read_refuses_a_declined_why_that_no_other_read_would_check(self):  # review-code-27ht
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = "0" * 40  # no such object: the record read fails, and the reply cites nothing else to read
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        why = "The adder MUST-RETURN-INT Calls pass ints"
+        self.refuses("ingest", lines({"declined": [{"spec_line": row, "why": why}]}, {"inspected": []}), ["--lane", "spec"], "pin-pruned")
+
 
 class SpecAxis(Base):
     """Spec lines cite inputs/spec.md by line number only; no spec text reaches any output."""
