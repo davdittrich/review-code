@@ -376,6 +376,12 @@ class Docs(unittest.TestCase):
         for reason in ("`no-upstream-remote`", "`remote-unreachable`"):
             self.assertIn(reason, flat)
 
+    def test_untrusted_input_does_not_claim_filter_drivers_run(self):  # review-code-2rkq: test_pinned.Filters shows none runs
+        with open(os.path.join(os.path.dirname(paths.SCRIPTS), "references", "untrusted-input.md"), encoding="utf-8") as fh:
+            flat = " ".join(fh.read().split())
+        self.assertNotIn("filter drivers (git-lfs) still run", flat)
+        self.assertIn("no configured filter driver (git-lfs included) runs", flat)
+
 
 class BlackholeEscaped(Blackhole):
     """The grandchild leaves the group (setsid, an ssh ControlPersist master): killing the group cannot close the
