@@ -328,8 +328,8 @@ def _forge_key(host: str, path: str) -> str:
 def _remotes(cwd: str) -> List[tuple]:
     """(name, repo key) from the raw remote URLs; `git remote get-url` would expand insteadOf."""
     rows = []
-    for line in git(["config", "--get-regexp", r"^remote\..*\.url$"], cwd, check=False).splitlines():
-        parts = line.split(None, 1)
+    for rec in git(["config", "-z", "--get-regexp", r"^remote\..*\.url$"], cwd, check=False).split("\0"):
+        parts = rec.split("\n", 1)  # -z: NUL ends a record, LF ends the key; splitlines would cut at NEL, LS, PS in a value
         if len(parts) == 2:
             name = parts[0][len("remote."):-len(".url")]
             key = _repo_key(parts[1])
@@ -636,7 +636,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
-    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
+    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").split("\n")]  # a ref name holds no LF, but may hold NEL, LS or PS
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:

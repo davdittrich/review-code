@@ -95,6 +95,17 @@ class Gate(tt.PRWorld):
         self.git("worktree", "add", "-q", wt, "main")
         self.assertIn("linked worktree", self.refused("checkout-not-synced", cwd=wt))
 
+    def test_a_remote_url_holding_a_unicode_line_separator_stays_one_remote(self):  # review-code-vz3k
+        self.git("remote", "add", "decoy", "https://example.com/x remote.up.url https://github.com/z/q")
+        self.refused("no-upstream-remote", gh=self.gh(url="https://github.com/z/q/pull/7"))
+
+    def test_a_default_branch_whose_name_holds_a_next_line_char_is_read_whole(self):  # review-code-vz3k
+        name = "ma\u0085in"
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
+
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
         tp.write(self.repo, "untracked.py", "u = 1\n")
