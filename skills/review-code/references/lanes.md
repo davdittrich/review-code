@@ -2,8 +2,6 @@
 
 Load this when you need to know which lanes a run has, what a tier changes, what a cap cuts, what serial mode loses and how to run it, or how to triage when python3 is missing. The numbers below are copied from `scripts/plan.py` (`TIERS`, `MAX_TURNS`, `WAVE_SIZE`, `PACKS`); if they differ, `plan.py` and the run's `plan.json` are right.
 
-Contents: Tiers; Lanes and axes; Domain packs; Caps and turn ceilings; Cost preview and headless runs; Serial mode; Triage without python3; Shards.
-
 ## Tiers
 
 `--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: `evals/` holds a harness but no baseline has been recorded to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
@@ -93,7 +91,7 @@ Lanes (replaces step 7's Agent calls). For each of step 5's `calls`: read its `i
 
 Verify (replaces step 8's Agent calls). Self-score all `ids` and `spec_ids` in one batch: read each handoff file with one Read call per file (never a shell loop or other compound command) and the cited lines, and write one verdict line per id in the format of `agents/verifier.md`, trying to refute each claim (`unverifiable` when unsure). Pass the lines to `report.py verdicts` without `--batch` in ONE call: each such call replaces all earlier verdicts.
 
-Refusals. In serial mode no finding is verified (a self-score caps each at `inferred`), so `post.py build` refuses `nothing-to-post` and `fix.py plan` refuses `nothing-to-fix`. When `reason` is `nothing-to-post` or `nothing-to-fix`, state that serial mode is the cause and that posting or fixing needs a review run in parallel mode (Agent tool available, no `--serial`). Other reasons (dirty-tree, trust-* and others) can refuse first and are not serial mode's doing.
+Refusals. In serial mode no finding is verified (a self-score caps each at `inferred`), so `post.py build` refuses `nothing-to-post` and `fix.py plan` refuses `nothing-to-fix`. When `reason` is `nothing-to-post` or `nothing-to-fix`, state that serial mode is the cause and that posting or fixing needs a review run in parallel mode (Agent tool available, no `--serial`). Other reasons can refuse first and are not serial mode's doing; `no-pin`, `pin-pruned` and `bad-ref` (also from `plan`, `ingest` and `verdicts`) mean review again, see the Refusals table in `posting.md`.
 
 Lost guarantees, stated in the report as `mode: serial`:
 

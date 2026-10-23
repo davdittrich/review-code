@@ -565,6 +565,12 @@ class PostingDocs(unittest.TestCase):
         rows = [ln.split("|")[1].strip(" `") for ln in self.read(self.REFS, "posting.md").splitlines() if ln.startswith("| `")]
         self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
+    def test_the_pin_reasons_are_explained_where_plan_ingest_and_verdicts_refuse_too(self):  # review-code-lbum
+        posting = " ".join(self.read(self.REFS, "posting.md").split())
+        self.assertRegex(posting, r"`plan\.py`, `report\.py ingest` and `report\.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too")
+        lanes = " ".join(self.read(self.REFS, "lanes.md").split())
+        self.assertRegex(lanes, r"`no-pin`.*`pin-pruned`.*`bad-ref`.*`posting\.md`")
+
     def test_pointers(self):
         self.assertIn("references/posting.md", self.read(SKILL))
         untrusted = self.read(self.REFS, "untrusted-input.md")

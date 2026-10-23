@@ -75,7 +75,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 
 ## Refusals
 
-`build` and `submit` print one JSON line. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
+`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
