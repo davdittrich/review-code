@@ -1006,9 +1006,13 @@ class SpecAdrNotText(_SpecAdrUnreadable):
     base_files = dict(BASE, **{_SpecAdrUnreadable.ADR: "\0" + _SpecAdrUnreadable.BODY})
 
     def test_a_record_that_is_not_text_refuses_spec_ingest(self):
+        before = SpecAxis.snapshot(self)
         rc, out = self.rep("ingest", lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []}),
                            extra=["--lane", "spec"])
         self.assertEqual((rc, json.loads(out)["reason"]), (1, "record-unreadable"))
+        after = SpecAxis.snapshot(self)
+        self.assertEqual(after.pop(".lock"), b"")  # the run lock, created empty by the first locked call
+        self.assertEqual(after, before)  # no write, counters.json included: the refusal costs no try
 
 
 class SpecAdrInPlace(Base):
