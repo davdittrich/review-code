@@ -214,6 +214,19 @@ class HiddenName(tr.Base):
         out = self.ingest(*(dict(tr.CAND, path=p, line=1, quote="y = 1") for p in (self.RAW, shown)))
         self.assertEqual(reasons(out), [("accepted", None), ("rejected", "path-not-in-tree")])
 
+    def test_render_json_keeps_the_raw_name_on_finding_and_evidence_while_text_shows_it_escaped(self):  # review-code-vfyu
+        out = self.ingest(dict(tr.CAND, path=self.RAW, line=1, quote="y = 1"), {"inspected": ["src/calc.py"]})
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "reason": "r",
+                       "evidence": [{"path": self.RAW, "line": 1, "quote": "y = 1"}]})
+        d = self.doc()
+        self.assertEqual(len(d["findings"]), 1)
+        f = d["findings"][0]
+        self.assertEqual((f["path"], [e["path"] for e in f["evidence"]]), (self.RAW, [self.RAW]))
+        rc, text = self.rep("render")
+        self.assertEqual(rc, 0, text)
+        self.assertIn("src/x<TAGS:5>.py:1", text)
+        self.assertNotIn(self.RAW, text)
+
 
 class ArgMax(tr.Base):
     """review-code-eixz: the cited paths go on one ls-tree argv, so a reply naming more path bytes than the kernel's ARG_MAX
