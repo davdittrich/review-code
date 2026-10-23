@@ -907,6 +907,14 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
 
 
+    def test_an_unreadable_spec_refuses_before_the_marks_file_is_written(self):  # review-code-iawb with a marked ref
+        spec = os.path.join(self.run_dir, "inputs", "spec.md")
+        os.remove(spec)
+        os.mkdir(spec)  # open() fails with an OSError as root too
+        rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "marks.json")))
+
     def traced_ingest(self, n):
         """git process starts of one spec ingest; the whole-tree listing is the one `ls-tree -r`."""
         log = os.path.join(self.tmp, "marks%d.json" % n)
