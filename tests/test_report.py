@@ -847,6 +847,36 @@ class SpecAdrCite(Base):
         self.refuses("ingest", lines({"declined": [{"spec_line": row, "why": why}]}, {"inspected": []}), ["--lane", "spec"], "pin-pruned")
 
 
+class SpecAdrHiddenName(Base):
+    """review-code-ktry: a decision record whose name holds a hidden character is listed by its escaped ref (raw names stay
+    out of ledger.json); the copy guard still reads its words, and a file literally named as the escaped ref hides nothing."""
+    RAW = "docs/adr/0002-ints" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".md"
+    SHOWN = "docs/adr/0002-ints<TAGS:5>.md"
+    BODY = "# Hidden ints\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"
+    base_files = dict(BASE, **{RAW: BODY})
+
+    def lane(self, title):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": title}]}, {"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        return [r["check"] for r in json.loads(out)["rejected"]]
+
+    def test_a_why_copying_a_hidden_named_record_is_rejected(self):
+        refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
+        self.assertEqual(refs, [self.SHOWN])
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+        self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
+
+
+class SpecAdrHiddenDecoy(SpecAdrHiddenName):
+    """The look-alike file named as the escaped ref resolves the ref without a miss: the hidden-named record must still count."""
+    base_files = dict(BASE, **{SpecAdrHiddenName.RAW: SpecAdrHiddenName.BODY, SpecAdrHiddenName.SHOWN: "# Decoy\n\nnothing here\n"})
+
+    def test_a_why_copying_a_hidden_named_record_is_rejected(self):
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
 class SpecAxis(Base):
     """Spec lines cite inputs/spec.md by line number only; no spec text reaches any output."""
     spec_text = "The adder must " + CANARY + " add its operands.\n"

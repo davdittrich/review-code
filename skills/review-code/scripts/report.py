@@ -614,6 +614,7 @@ def _spec_lines(run):
     return ok
 
 
+_ESCAPED = re.compile(r"<(?:U\+[0-9A-F]{4,6}|(?:VS|TAGS|BYTES):\d+)>")  # a mark sanitize.escape_for_code writes for a hidden character
 SPEC_RUN = 6  # consecutive words; a shorter shared run is ordinary phrasing, not a copy
 
 
@@ -639,8 +640,11 @@ def _spec_copy(run):
         adr = None
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
+    # a record named with a hidden character is listed by its escaped ref (lanes read ledger.json, so no raw name goes there):
+    # read every tree name that escapes to such a ref, a file literally named as the escaped form included (review-code-ktry)
+    shown = {p for p in adr if _ESCAPED.search(p)}
+    adr += [n for n, _, _ in _Pinned(run, ()).every() if sanitize.escape_for_code(n)[0] in shown] if shown else []
     pin = _Pinned(run, adr, adr)
-    # shortcut: a record named with a hidden character is listed by its escaped ref, finds no row and is not covered
     w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
     runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
