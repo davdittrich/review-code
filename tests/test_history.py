@@ -239,6 +239,10 @@ class Header(Repo):
         "no commit window",
         "lowest to the highest removed line",
         "gitlink (submodule) paths are skipped",
+        "and so are symlinks",
+        "files absent at the merge base",
+        "files whose index blob differs from the merge base's",
+        "names holding hidden characters",
     ]
 
     def test_the_header_states_each_limit_of_the_log_and_blame_rows(self):

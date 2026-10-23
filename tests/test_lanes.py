@@ -462,7 +462,7 @@ class SharedPhrases(unittest.TestCase):
     # The six reader prompts measured 34,905 bytes before gh#52 (whole files; gh#52's "30,585" matches no measurement of
     # them): the rule is paid for by the tree/ wording it replaced, so the total never grows. The cap is the real total:
     # slack would let a clause in unpaid.
-    READER_BYTES = 34870
+    READER_BYTES = 34815
 
     def text(self, name):
         return "\n".join(parts(name)[1])
@@ -479,6 +479,13 @@ class SharedPhrases(unittest.TestCase):
     def test_a_verifier_may_open_the_one_history_file_its_handoff_names(self):
         for name in VERIFIERS:
             self.assertIn("a history file one names", self.text(name), name)
+
+    def test_a_verifier_handoff_list_names_the_checkout_difference_line_its_evidence_rule_greps(self):
+        """review-code-aniq: report._handoff writes `checkout_difference:` and the evidence rule greps it, so the list names it."""
+        for name in VERIFIERS:
+            flat = " ".join(self.text(name).split())
+            self.assertRegex(flat, r"the trigger, tree/,? (and )?checkout_difference\b", name)  # written whenever the run has a difference.json
+            self.assertNotIn("tree/ directory", flat, name)
 
     def test_the_reader_prompts_do_not_grow(self):
         self.assertLessEqual(sum(os.path.getsize(os.path.join(ROOT, "agents", n + ".md")) for n in self.READERS), self.READER_BYTES)

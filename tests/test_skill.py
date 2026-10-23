@@ -475,6 +475,18 @@ class FixDocs(unittest.TestCase):
         self.assertNotIn("runs only through step 9 of the skill", flat)
         self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
 
+    def test_known_limits_say_what_the_defects_summary_is_written_from(self):
+        """review-code-xuts: finder.md says the summary is written from the code and change.diff."""
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertIn("written from the code and `change.diff` only", flat)
+        self.assertNotIn("from `tree/` and `change.diff` only", flat)
+
+    def test_a_hidden_named_file_limit_matches_the_skip_rule(self):
+        """review-code-mac9: the evidence rule skips a listed path with no tree/ copy; the limit must not read as a copy."""
+        flat = self.flat(self.REFS, "untrusted-input.md")
+        self.assertNotIn("reviewable only through its `change.diff` hunk", flat)
+        self.assertIn("has no `tree/` copy and its escaped name opens no file, so its content shows only as its escaped `change.diff` hunk", flat)
+
     def test_in_place_reads_state_their_only_defence(self):
         """gh#52: a file whose checkout copy is the reviewed content, changed or not, reaches a lane unstripped. No structural
         barrier exists, so the doc states the limit; the label it relies on is pinned in test_lanes SharedPhrases and
@@ -543,10 +555,16 @@ class PostingDocs(unittest.TestCase):
         self.assertNotIn("submit or delete that pending review yourself", row)
         self.assertIn("remove the plugin's comments", row)
 
+    def test_step_7_exempts_history_files_from_the_commit_text_ban(self):
+        """review-code-zjyy: serial mode reads lane inputs that name history files, which are commit text (agents say the same)."""
+        flat = " ".join(self.read(SKILL).split())
+        self.assertIn("Never open `inputs/spec.md` or read PR, MR, issue or commit text except history files.", flat)
+        self.assertNotIn("or any PR, MR, issue or commit text", flat)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings at their 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22419)  # gh#52 shrank both; never raise these caps
+        self.assertLessEqual(os.path.getsize(SKILL), 22416)  # gh#52 shrank both; never raise these caps
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15117)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
