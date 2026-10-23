@@ -645,7 +645,7 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
-    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").split("\n")]  # a ref name holds no LF, but may hold NEL, LS or PS
+    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "surrogateescape").split("\n")]  # a ref name holds no LF, but may hold NEL, LS or PS
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:

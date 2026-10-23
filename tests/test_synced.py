@@ -107,6 +107,13 @@ class Gate(tt.PRWorld):
         self.git("checkout", "-q", "-b", name)
         self.passes()
 
+    def test_a_checked_out_default_branch_holding_a_non_utf8_byte_is_synced(self):  # review-code-fuxn follow-up
+        name = os.fsdecode(b"ma\xffin")
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
+
     def test_a_remote_name_holding_a_non_utf8_byte_is_the_ls_remote_operand(self):  # review-code-g7my
         self.git("remote", "rename", "origin", os.fsdecode(b"o\xffo"))
         self.passes()
