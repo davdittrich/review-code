@@ -477,6 +477,10 @@ class FixDocs(unittest.TestCase):
         self.assertNotIn("runs only through step 9 of the skill", flat)
         self.assertIn("fix/", self.read(self.REFS, "untrusted-input.md"))
 
+    def test_the_decision_record_index_clauses_are_pinned(self):  # review-code-dd1m: found unpinned by mutation
+        self.assertIn("each indexed in spec.md by path, title and size, never pasted", self.flat(ROOT, "skills", "review-code", "SKILL.md"))
+        self.assertIn("decision-record text included", self.flat(self.REFS, "untrusted-input.md"))
+
     def test_known_limits_say_what_the_defects_summary_is_written_from(self):
         """review-code-xuts: finder.md says the summary is written from the code and change.diff."""
         flat = self.flat(self.REFS, "untrusted-input.md")

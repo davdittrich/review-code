@@ -1145,6 +1145,18 @@ class Spec(Base):
         self.adr_build({"docs/adr/0001-a.md": b"\0\1binary", "docs/adr/0002-b.md": "# B\n"})
         self.assertEqual(sorted(self.index_rows()), ["docs/adr/0001-a.md", "docs/adr/0002-b.md"])
 
+    def test_a_record_over_max_file_is_listed_with_its_size_and_no_title(self):  # review-code-dd1m
+        big = "# Big title\n" + "x" * 60
+        with mock.patch.object(target, "MAX_FILE", 40):
+            _, led = self.adr_build({"docs/adr/0001-big.md": big, "docs/adr/0002-b.md": "# B\n"})
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["docs/adr/0001-big.md", "docs/adr/0002-b.md"])
+        spec = self.read("inputs/spec.md")
+        found, _ = blocks(spec)
+        self.assertIn("(not text: a NUL byte or over 40 bytes)", [c for _, c in found])
+        self.assertIn("B", [c for _, c in found])
+        self.assertIn("(%07d bytes)" % len(big), spec)
+        self.assertNotIn("Big title", spec)
+
     def test_adr_name_matching_the_branch_is_an_index_row_not_a_pasted_file(self):
         self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "# Parser\nADR-P\n"})
         self.g("checkout", "-q", "-b", "feat-parser")
