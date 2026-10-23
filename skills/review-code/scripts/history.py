@@ -66,7 +66,7 @@ def _blame(out: bytes) -> Tuple[Dict[int, str], Dict[str, str], Dict[str, int]]:
 def _hunk(span: List[int], rows: Dict[int, str], said: Dict[str, str], when: Dict[str, int]) -> Tuple[List[str], int]:
     """Rows of one hunk, only its CAP_COMMITS newest commits; with the count of older commits left out."""
     lines = [(n, rows[n]) for n in range(span[0], span[1] + 1) if n in rows]
-    order = sorted({c for _, c in lines}, key=lambda c: -when.get(c, 0))
+    order = sorted(dict.fromkeys(c for _, c in lines), key=lambda c: -when.get(c, 0))  # newest first; ties keep line order
     keep, out = set(order[:CAP_COMMITS]), []
     for n, c in lines:
         if c not in keep:
@@ -78,33 +78,48 @@ def _hunk(span: List[int], rows: Dict[int, str], said: Dict[str, str], when: Dic
     return ["L%d%s %s %s" % (a, "" if a == b else "-%d" % b, c[:8], said.get(c, "")) for a, b, c in out], max(0, len(order) - CAP_COMMITS)
 
 
-def _log(repo: str, mb: str, ranges: dict) -> Dict[str, List[str]]:
+def _run(args: List[str], repo: str) -> Tuple[bytes, bool]:
+    rc, out, _ = target._run(args, repo)
+    return out, rc == 0
+
+
+def _log(repo: str, mb: str, ranges: dict) -> Tuple[Dict[str, List[str]], bool]:
     """name -> `git log -L` commit rows, newest first, from ONE call for every range of every file. Git follows renames,
-    so an older commit names the file as it was then: every name seen for a tracked file joins its aliases."""
+    so an older commit names the file as it was then: a rename commit that shows the range teaches both names."""
     if not ranges:
-        return {}
+        return {}, True
     args, alias = list(_LOG), {}
     for name, (old, spans) in ranges.items():
         alias[old] = alias[name] = name
         args += ["-L%d,%d:%s" % (a, b, old) for a, b in spans]
-    out = target.git_bytes(args + [mb], repo, check=False).decode("utf-8", "surrogateescape")
+    raw, ok = _run(args + [mb], repo)
+    out = raw.decode("utf-8", "surrogateescape")
     rows: Dict[str, List[str]] = {}
     for block in out.split("\x01")[1:]:
         head, _, patch = block.partition("\n")
         sha, at, author, subject = (head.split("\x02") + [""] * 4)[:4]
         row = "%s %s %s: %s" % (sha[:8], _day(at), _say(author), _say(subject))
+        names = set()
         for p, o in sorted({(p, o) for _, p, t, _, _, _, o in sanitize.walk(patch) if t == "@"}, key=str):
             name = alias.get(p) or alias.get(o)
             if name:
                 alias[p] = alias[o] = name
-                if row not in rows.setdefault(name, []):
-                    rows[name].append(row)
-    return rows
+                names.add(name)
+        if not names and len(ranges) == 1:  # shortcut: git followed a rename, and with one tracked file only it can be meant;
+            names = set(ranges)  # with several, a block under a name never seen is dropped
+        for name in names:
+            if row not in rows.setdefault(name, []):
+                rows[name].append(row)
+    return rows, ok
 
 
-def build(run: str, repo: str, mb: str, put) -> Tuple[dict, dict]:
+_REGULAR = ("100644", "100755")
+
+
+def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple[dict, dict]:
     """Write <run>/history/<changed path>.txt for each changed file with a removed or modified line; `put(root, rel, data)`
-    stores one file. Returns (ledger entry {files, hunks}, what the caps cut: {} when nothing was)."""
+    stores one file. `base_ls` is the merge base's listing; `index` the index's, when the old side is the index (unstaged:
+    a file whose index blob is not the merge base's has old-side numbers HEAD cannot answer). Returns (ledger entry {files, hunks}, what the caps cut: {} when nothing was)."""
     try:
         with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
             found = _ranges(fh.read())
@@ -115,11 +130,18 @@ def build(run: str, repo: str, mb: str, put) -> Tuple[dict, dict]:
     # a name with a hidden character is neither read nor written, as for tree/
     ranges = {name: (old, spans) for (name, old), spans in sorted(found.items(), key=str)
               if old and target.shown(name) == name and target.shown(old) == old}
-    logs = _log(repo, mb, ranges)
+    # a gitlink, symlink or file the base lacks has no blame, and one such range makes the log call fail for every file
+    live = {n: v for n, v in ranges.items()
+            if base_ls.get(v[0], ("",))[0] in _REGULAR and (index is None or index.get(v[0]) == base_ls[v[0]])}
+    failed = len(ranges) - len(live)
+    ranges = live
+    logs, ok = _log(repo, mb, ranges)
     files, hunks, cut_hunks, cut_logs, over = 0, 0, 0, 0, 0
     used, full = 0, False
     for name, (old, spans) in ranges.items():
-        rows, said, when = _blame(target.git_bytes(_BLAME + ["-L%d,%d" % (a, b) for a, b in spans] + [mb, "--", old], repo, check=False))
+        raw, ok_blame = _run(_BLAME + ["-L%d,%d" % (a, b) for a, b in spans] + [mb, "--", old], repo)
+        failed += not ok_blame
+        rows, said, when = _blame(raw)
         out = [_HEAD % (_say(name), mb[:8])]
         for a, b in spans:
             lines, older = _hunk([a, b], rows, said, when)
@@ -142,4 +164,8 @@ def build(run: str, repo: str, mb: str, put) -> Tuple[dict, dict]:
     cut = {k: v for k, v in (("hunks", cut_hunks), ("logs", cut_logs)) if v}
     if full:
         cut.update(bytes=True, files_omitted=over)
+    if failed:
+        cut["unread"] = failed  # files left out or blamed in vain: not regular at the base, index differs, or the call failed
+    if not ok:
+        cut["log_failed"] = True
     return {"files": files, "hunks": hunks}, cut

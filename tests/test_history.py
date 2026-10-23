@@ -8,6 +8,8 @@ from unittest import mock
 import paths  # noqa: F401
 
 import gitfix  # noqa: E402
+import ledger  # noqa: E402
+import target  # noqa: E402
 import test_pinned as tp  # noqa: E402
 import test_report as tr  # noqa: E402
 import test_target as tt  # noqa: E402
@@ -109,6 +111,85 @@ class Ranges(Repo):
         self.assertIn("five before the move", self.history("src/moved.py"))
 
 
+class Unreadable(Repo):
+    """A range git cannot blame must not erase the log of every other file."""
+
+    def test_a_gitlink_bump_leaves_the_other_files_their_log(self):
+        self.edit({5: "old"}, "five before")
+        one, two = "1" * 40, "2" * 40
+        gitfix.run(["git", "update-index", "--add", "--cacheinfo", "160000,%s,sub" % one], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "add the submodule"], self.repo)
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        gitfix.run(["git", "update-index", "--cacheinfo", "160000,%s,sub" % two], self.repo)
+        self.edit({5: "new"}, "feat")
+        self.build()
+        self.assertEqual(self.files(), [FILE + ".txt"])
+        self.assertIn("five before", self.history().split("## log")[1])
+        self.assertEqual(self.led["capped"]["history"], {"unread": 1})
+
+    def test_an_unstaged_file_whose_index_differs_from_head_is_left_out_not_misread(self):
+        gitfix.commit(self.repo, {"src/other.py": text({})}, "other")
+        self.edit({5: "committed"}, "five at head")
+        longer = text({}) + "".join("tail%d = 1\n" % n for n in range(10))
+        tp.write(self.repo, FILE, longer)
+        gitfix.run(["git", "add", "--", FILE], self.repo)  # the index holds 40 lines, HEAD 30
+        tp.write(self.repo, FILE, longer.replace("tail5 = 1", "tail5 = 2"))  # an unstaged edit at index line 36
+        tp.write(self.repo, "src/other.py", text({5: "edited"}))
+        self.build(["--unstaged"])
+        self.assertEqual(self.files(), ["src/other.py.txt"])
+        self.assertEqual(self.led["capped"]["history"], {"unread": 1})
+
+
+class Moved(Repo):
+    def test_the_log_follows_a_rename_made_before_the_branch_point(self):
+        self.edit({5: "old"}, "five before the move")
+        gitfix.run(["git", "mv", FILE, "src/moved.py"], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "move"], self.repo)
+        self.edit({5: "mid"}, "five after the move", path="src/moved.py")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        self.edit({5: "new"}, "feat", path="src/moved.py")
+        self.build()
+        log = self.history("src/moved.py").split("## log")[1]
+        self.assertIn("five after the move", log)
+        self.assertIn("five before the move", log)
+
+
+class Failed(Repo):
+    def test_a_failed_blame_or_log_is_recorded_not_silent(self):
+        self.edit({5: "w"}, "five")
+        self.feature({5: "z"})
+        self.build()
+        real = target._run
+
+        def flaky(args, cwd, stdin=None, env=None):
+            if args[0] in ("log", "blame") and any(a.startswith("-L") for a in args):
+                return 128, b"", b""
+            return real(args, cwd, stdin, env)
+
+        with gitfix.isolated(self.tmp), mock.patch.object(target, "_run", flaky):
+            ledger.build(self.run_dir)
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["capped"]["history"], {"unread": 1, "log_failed": True})
+
+
+class Renamed(Repo):
+    def test_a_rename_that_also_edits_the_range_teaches_the_log_the_old_name(self):
+        gitfix.commit(self.repo, {"src/other.py": text({})}, "other")
+        self.edit({5: "old"}, "five before the move")
+        gitfix.run(["git", "mv", FILE, "src/moved.py"], self.repo)
+        self.rows[5] = "mid"
+        tp.write(self.repo, "src/moved.py", text(self.rows))
+        gitfix.run(["git", "add", "-A"], self.repo)
+        gitfix.run(["git", "commit", "-q", "-m", "move and edit five"], self.repo)
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        self.edit({5: "new"}, "feat", path="src/moved.py")
+        gitfix.commit(self.repo, {"src/other.py": text({5: "new"})}, "feat other")  # two files: no single-file fallback
+        self.build()
+        log = self.history("src/moved.py").split("## log")[1]
+        self.assertIn("move and edit five", log)
+        self.assertIn("five before the move", log)
+
+
 class Caps(Repo):
     def test_a_hunk_blamed_on_more_than_five_commits_keeps_five_and_records_the_cut(self):
         for n in range(10, 18):  # eight consecutive lines, each last written by its own commit
@@ -117,7 +198,7 @@ class Caps(Repo):
         self.build()
         got = self.history()
         shown = set(re.findall(r"line (1\d)", got.split("## log")[0]))
-        self.assertEqual(len(shown), 5)
+        self.assertEqual(shown, {"10", "11", "12", "13", "14"})  # equal commit times: the first lines win, on every run
         self.assertEqual(self.led["capped"]["history"]["hunks"], 1)
         self.assertIn("3 older commits not shown", got)
 
