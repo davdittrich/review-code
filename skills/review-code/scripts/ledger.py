@@ -640,11 +640,21 @@ def ls_records(raw: bytes, long: bool = False) -> List[Tuple[str, str, str, byte
     return out
 
 
+def regular_records(raw: bytes) -> List[Tuple[str, int, str]]:
+    """[(name, size, blob id)] of the regular files (100644, 100755) of one `ls-tree -z -l`: a link's blob is a path, not code."""
+    out = []
+    for mode, oid, name, size in ls_records(raw, True):
+        if mode in ("100644", "100755"):
+            if not size.isdigit():  # BAD: the blob is missing (review-code-mjwq)
+                raise target.Refuse("bad-ref", "a blob of the pinned tree is missing")
+            out.append((name, int(size), oid))
+    return out
+
+
 def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple[int, str]]:
     """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
     or a directory is no file whose content can be read."""
-    return {n: (int(size), oid) for mode, oid, n, size in ls_records(ls_tree(tree, paths, repo, long=True), True)
-            if mode in ("100644", "100755")}
+    return {n: (size, oid) for n, size, oid in regular_records(ls_tree(tree, paths, repo, long=True))}
 
 
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:

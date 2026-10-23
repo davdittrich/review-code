@@ -179,6 +179,8 @@ REASONS = {
     "capture-incomplete": "only the agent's closing message is captured: wait for its completion notification, or pass the reply on stdin",
     "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
+    "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
+    "bad-ledger": "ledger.json or inputs/spec.md cannot be read: run ledger.py build again, or review again",
 }
 
 
@@ -266,11 +268,8 @@ class _Pinned:
         """[(path, size, blob id)] of every regular file of the pinned tree: one `ls-tree -r -l`, run once per call and only
         for a norm candidate, whose sample is the reviewed content (gh#52), not tree/."""
         if self._every is None:
-            self._every = []
-            for mode, oid, name, size in ledger.ls_records(
-                    target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top), True):
-                if mode in ("100644", "100755"):  # never a link: its blob is a path, not code
-                    self._every.append((name, int(size), oid))
+            self._every = ledger.regular_records(
+                target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top))
         return self._every
 
     def blobs(self, oids):
@@ -628,8 +627,8 @@ def _spec_copy(run):
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
-    except OSError:
-        w = []
+    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
+        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
     # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57). Fails
     # closed (review-code-27ht): an unreadable ledger or a failed tree read refuses, since nothing proves the reply copies no record
     led = target.load_json(run, "ledger.json")
