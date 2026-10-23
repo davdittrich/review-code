@@ -126,15 +126,31 @@ def git(args: List[str], cwd: str, stdin: Optional[bytes] = None, check: bool = 
 
 def _toplevel(cwd: str) -> str:
     """The repository root, without .strip(): that would also drop a CR the directory name ends in (wb5s)."""
-    out = git(["rev-parse", "--show-toplevel"], cwd)
+    return _rev_path("--show-toplevel", cwd)
+
+
+def _rev_path(flag: str, cwd: str, *operand: str) -> str:
+    """One rev-parse path, lossless (surrogateescape) with the one trailing LF dropped. One flag per call: git echoes -z
+    back instead of NUL-separating, so two LF-joined paths are ambiguous when either holds an LF."""
+    out = git_bytes(["rev-parse", flag, *operand], cwd).decode("utf-8", "surrogateescape")
     return out[:-1] if out.endswith("\n") else out
+
+
+def _head_branch(cwd: str) -> Optional[str]:
+    """The checked-out branch name, lossless (surrogateescape) with the one trailing LF dropped; None when detached."""
+    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
+    name = out.decode("utf-8", "surrogateescape")
+    return None if rc != 0 else name[:-1] if name.endswith("\n") else name
 
 
 def _no_filters(cwd: str) -> dict:
     """GIT_CONFIG_* entries that blank every clean, smudge and process filter the config defines and mark it not
     required, so no filter program runs while git reads or writes a working tree (gh#48): the bytes stay as stored."""
-    rc, out, _ = _run(["config", "-z", "--get-regexp", r"^filter\..+\.(clean|smudge|process)$"], cwd)
-    keys = sorted({r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0") if r}) if rc == 0 else []
+    # --list, not --get-regexp: in a UTF-8 locale git's regex `.` never matches an invalid byte, so that driver ran (215w)
+    rc, out, _ = _run(["config", "-z", "--list"], cwd)
+    keys = sorted({k for k in (r.split("\n", 1)[0] for r in out.decode("utf-8", "surrogateescape").split("\0"))
+                   if k.startswith("filter.") and k.rsplit(".", 1)[-1] in ("clean", "smudge", "process")
+                   and len(k.split(".")) > 2}) if rc == 0 else []
     pairs = [(k, "") for k in keys] + [(k, "false") for k in sorted({k.rsplit(".", 1)[0] + ".required" for k in keys})]
     n = os.environ.get("GIT_CONFIG_COUNT", "")
     base = int(n) if n.isdigit() else 0  # entries the caller set stay; ours follow them
@@ -272,7 +288,7 @@ def _prune(base: str) -> None:
 
 def new_run_dir(cwd: str) -> str:
     """Mode 0700 directory under the git dir: a read-only lane cannot read $TMPDIR (probe A3)."""
-    base = git(["rev-parse", "--git-path", "review-code"], cwd).strip()
+    base = _rev_path("--git-path", cwd, "review-code")
     base = os.path.join(cwd, base)
     os.makedirs(base, mode=0o700, exist_ok=True)
     _prune(base)
@@ -322,9 +338,11 @@ def _forge_key(host: str, path: str) -> str:
 def _remotes(cwd: str) -> List[tuple]:
     """(name, repo key) from the raw remote URLs; `git remote get-url` would expand insteadOf."""
     rows = []
-    for line in git(["config", "--get-regexp", r"^remote\..*\.url$"], cwd, check=False).splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2:
+    # --list, not --get-regexp: in a UTF-8 locale git's regex `.` never matches an invalid byte, so a remote named with one vanished
+    raw = git_bytes(["config", "-z", "--list"], cwd, check=False)
+    for rec in raw.decode("utf-8", "surrogateescape").split("\0"):
+        parts = rec.split("\n", 1)  # -z: NUL ends a record, LF ends the key; splitlines would cut at NEL, LS, PS in a value
+        if len(parts) == 2 and parts[0].startswith("remote.") and parts[0].endswith(".url"):
             name = parts[0][len("remote."):-len(".url")]
             key = _repo_key(parts[1])
             if key and name and not name.startswith("-"):
@@ -346,7 +364,8 @@ def default_branch(cwd: str) -> Optional[tuple]:
     """(ref usable in git, local branch name) of the default branch, or None."""
     rc, out, _ = _run(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd)
     if rc == 0:
-        ref = out.decode("utf-8", "replace").strip()[len("refs/remotes/"):]
+        ref = out.decode("utf-8", "surrogateescape")  # lossless, the one trailing LF dropped, as _head_branch (iw9p)
+        ref = (ref[:-1] if ref.endswith("\n") else ref)[len("refs/remotes/"):]
         if _run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], cwd)[0] == 0:
             return ref, ref.split("/", 1)[-1]
     for name in ("main", "master"):
@@ -359,8 +378,8 @@ def _no_argument(cwd: str) -> List[dict]:
     if git(["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"], cwd).strip():  # 6xl.68
         return [{"kind": "worktree", "reading": "uncommitted changes against HEAD, untracked files included"}]
     default = default_branch(cwd)
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
-    if default and rc == 0 and out.decode("utf-8", "replace").strip() != default[1]:
+    on = _head_branch(cwd)
+    if default and on is not None and on != default[1]:
         return [{"kind": "branch", "base": default[0], "head": "HEAD",
                  "reading": "changes on HEAD since " + _q(default[0])}]
     raise Refuse("no-target", "name a target to review")
@@ -630,15 +649,14 @@ def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
     if remote is None:
         raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
-    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "replace").splitlines()]
+    rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "surrogateescape").split("\n")]  # a ref name holds no LF, but may hold NEL, LS or PS
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:
         raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
-    dirs = git(["rev-parse", "--absolute-git-dir", "--git-common-dir"], cwd).split("\n")  # not splitlines: a path may hold CR, VT, FF, FS-RS, NEL, LS or PS
-    linked = os.path.realpath(dirs[0]) != os.path.realpath(os.path.join(cwd, dirs[1]))
-    rc, out, _ = _run(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd)
-    on = out.decode("utf-8", "replace").strip() if rc == 0 else None
+    linked = os.path.realpath(_rev_path("--absolute-git-dir", cwd)) != os.path.realpath(
+        os.path.join(cwd, _rev_path("--git-common-dir", cwd)))
+    on = _head_branch(cwd)
     synced = _run(["merge-base", "--is-ancestor", tip, "HEAD"], cwd)[0] == 0 if fork else _head_oid(cwd) == tip
     if synced and on == branch and not linked:
         return
@@ -1040,7 +1058,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     change and the drift: one raw diff, one untracked listing, one config read in place, at most one hash-object and one
     update-index; with a filter driver configured, one ls-files and one check-attr more, and every filtered file read."""
     idx = os.path.join(run, "index.tmp")
-    real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
+    real = os.path.join(top, _rev_path("--git-path", top, "index"))
     if os.path.exists(real):
         shutil.copy2(real, idx)  # keeps the mtime git judges racy entries by; a refresh writes the copy, never the index
     env = {"GIT_INDEX_FILE": idx}
@@ -1143,7 +1161,7 @@ def integrity(top: str) -> dict:
         if len(f) > n:
             dirty[shown(f[n])] = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
     try:
-        with open(os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip()), "rb") as fh:
+        with open(os.path.join(top, _rev_path("--git-path", top, "index")), "rb") as fh:
             index = hashlib.sha256(fh.read()).hexdigest()
     except (OSError, Refuse):
         index = None

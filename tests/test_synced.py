@@ -11,6 +11,7 @@ import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import test_pinned as tp  # noqa: E402
+import target  # noqa: E402
 import test_target as tt  # noqa: E402
 
 
@@ -74,6 +75,55 @@ class Gate(tt.PRWorld):
             rc, out = tt.call(["7"], moved, self.tmp, gh=self.gh())
             self.assertEqual((rc, out["status"]), (0, "ok"), (ch, out))
             os.rename(moved, self.repo)
+
+    def test_a_main_checkout_whose_path_holds_a_non_utf8_byte_is_not_linked(self):  # review-code-6i9x
+        moved = os.path.join(os.fsencode(self.tmp), b"re\xffpo")
+        os.rename(self.repo, moved)
+        rc, out = tt.call(["7"], os.fsdecode(moved), self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        os.rename(moved, self.repo)
+
+    def test_a_main_checkout_whose_path_holds_a_newline_is_not_linked(self):  # review-code-kzvu
+        moved = os.path.join(self.tmp, "re\npo")
+        os.rename(self.repo, moved)
+        rc, out = tt.call(["7"], moved, self.tmp, gh=self.gh())
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        os.rename(moved, self.repo)
+
+    def test_a_linked_worktree_whose_path_holds_a_newline_is_still_linked(self):  # review-code-kzvu
+        self.git("checkout", "-q", "-b", "parking")
+        wt = os.path.join(self.tmp, "w\nt")
+        self.git("worktree", "add", "-q", wt, "main")
+        self.assertIn("linked worktree", self.refused("checkout-not-synced", cwd=wt))
+
+    def test_a_remote_url_holding_a_unicode_line_separator_stays_one_remote(self):  # review-code-vz3k
+        self.git("remote", "add", "decoy", "https://example.com/x remote.up.url https://github.com/z/q")
+        self.refused("no-upstream-remote", gh=self.gh(url="https://github.com/z/q/pull/7"))
+
+    def test_a_default_branch_whose_name_holds_a_next_line_char_is_read_whole(self):  # review-code-vz3k
+        name = "ma\u0085in"
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
+
+    def test_a_checked_out_default_branch_holding_a_non_utf8_byte_is_synced(self):  # review-code-fuxn follow-up
+        name = os.fsdecode(b"ma\xffin")
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
+
+    def test_a_remote_name_holding_a_non_utf8_byte_is_the_ls_remote_operand(self):  # review-code-g7my
+        self.git("remote", "rename", "origin", os.fsdecode(b"o\xffo"))
+        self.passes()
+
+    def test_a_checked_out_default_branch_ending_in_a_next_line_char_is_synced(self):  # review-code-fuxn
+        name = "main\u0085"
+        gitfix.run(["git", "branch", name, "main"], self.bare)
+        gitfix.run(["git", "symbolic-ref", "HEAD", "refs/heads/" + name], self.bare)
+        self.git("checkout", "-q", "-b", name)
+        self.passes()
 
     def test_synced_checkout_with_uncommitted_changes_passes(self):
         tp.write(self.repo, "src/cfg.py", "def load():\n    return 9\n")
@@ -146,6 +196,17 @@ class RefKinds(tt.Base):
         self.git("checkout", "-q", "-b", "feat")
         self.feat = gitfix.commit(self.repo, {"a.py": "a = 1\n", "b.py": "b = 1\n"}, "feat")
 
+    def test_an_origin_head_naming_a_non_utf8_byte_or_ending_in_next_line_is_the_base(self):  # review-code-iw9p
+        self.git("branch", "-q", "-D", "main")  # no main or master to fall back on, and no origin/main the strip() hits
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        for name in (os.fsdecode(b"ma\xffin"), "main\u0085"):
+            with self.subTest(name=name):
+                gitfix.run(["git", "update-ref", "refs/remotes/origin/" + name, self.base], self.repo)
+                gitfix.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + name], self.repo)
+                rc, out = tt.call([], self.repo, self.tmp)  # replace or strip() lost the name: no default, no target
+                self.assertEqual((rc, out.get("kind"), out.get("base_sha")), (0, "branch", self.base), out)
+                gitfix.run(["git", "update-ref", "-d", "refs/remotes/origin/" + name], self.repo)
+
     def test_a_feature_branch_no_argument_run_and_staged_target_are_not_gated(self):
         self.git("remote", "set-url", "origin", os.path.join(self.tmp, "nope.git"))  # any network read would fail
         rc, out = tt.call([], self.repo, self.tmp)
@@ -154,6 +215,11 @@ class RefKinds(tt.Base):
         self.git("add", "a.py")
         rc, out = tt.call(["--staged"], self.repo, self.tmp)
         self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "staged"), out)
+
+    def test_a_head_branch_ending_in_a_next_line_char_is_not_the_default_branch(self):  # review-code-fuxn
+        self.git("checkout", "-q", "-b", "main\u0085")  # .strip() turned it into "main", the default
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out.get("kind")), (0, "branch"), out)
 
     def test_a_branch_head_not_checked_out_is_gated(self):
         self.git("checkout", "-q", "main")
@@ -438,6 +504,30 @@ class StderrHeldOpen(tt.PRWorld):
         self.assertTrue(self.has_pr_objects())
         with open(self.kids, encoding="utf-8") as fh:
             self.assertEqual(len(fh.read().split()), 2)  # the gate's ls-remote and the objects fetch, each served
+
+
+class NonUtf8GitDir(tt.Base):
+    """A repository whose separate git directory name holds byte 0xff: `rev-parse --git-path` returns it absolute."""
+
+    def setUp(self):
+        super().setUp()
+        self.gd = os.path.join(self.tmp, os.fsdecode(b"gd\xff"))
+        self.repo = os.path.join(self.tmp, "work")
+        os.makedirs(self.repo)
+        gitfix.run(["git", "init", "-q", "-b", "main", "--separate-git-dir", self.gd, self.repo], self.tmp)
+        gitfix.commit(self.repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "base")
+        tp.write(self.repo, "a.py", "a = 1\n")
+
+    def test_the_run_directory_is_made_inside_the_real_git_dir(self):  # review-code-v9fi, target.new_run_dir
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out.get("kind")), (0, "worktree"), out)
+        self.assertEqual(len(os.listdir(os.path.join(self.gd, "review-code"))), 1)
+        self.assertEqual([n for n in os.listdir(self.tmp) if "�" in n], [])
+        tree = gitfix.run(["git", "ls-tree", "--name-only", tt.load(out["run"])["pinned_tree"]], self.repo)
+        self.assertEqual(tree.split(), ["a.py", "b.py"])  # without the copied index b.py, unchanged, drops out
+
+    def test_the_index_is_read_from_the_real_git_dir(self):  # review-code-v9fi, target.integrity
+        self.assertIsNotNone(target.integrity(self.repo)["index"])
 
 
 if __name__ == "__main__":

@@ -238,6 +238,37 @@ class Filters(tt.Base):
                 self.assertEqual(difference(out["run"]), {"big.dat": "modified"})  # too large to hash: it differs
 
 
+class FilterNames(tt.Base):
+    """A driver whose name holds a non-UTF-8 byte, a dot or an uppercase letter is blanked too (review-code-215w): in a
+    UTF-8 locale git's config regex `.` never matched the 0xff byte, so that driver ran."""
+
+    def test_no_driver_runs_whatever_its_name(self):
+        for name in (b"d\xffx", b"Up.Dot"):
+            for kind, tail in (("clean", "cat"), ("smudge", "cat"), ("process", "exit 1")):
+                with self.subTest(name=name, kind=kind), mock.patch.dict(os.environ, {"LC_ALL": "C.UTF-8"}):
+                    tmp = tempfile.mkdtemp(dir=self.tmp)
+                    repo = gitfix.make_repo(os.path.join(tmp, "repo"))
+                    gitfix.commit(repo, {".gitattributes": b"*.dat filter=" + name + b"\n", "a.dat": "a\n", "b.dat": "b\n"},
+                                  "base")
+                    gitfix.commit(repo, {"a.dat": "a 2\n"}, "two")
+                    write(repo, "a.dat", b"staged\n")
+                    gitfix.run(["git", "add", "a.dat"], repo)  # before the driver exists: --staged has a change
+                    marker = os.path.join(tmp, "ran")
+                    subprocess.run([b"git", b"config", b"filter." + name + b"." + kind.encode(),
+                                    ("touch '%s'; %s" % (marker, tail)).encode()], cwd=repo, env=gitfix.env(), check=True)
+                    write(repo, "a.dat", b"edited\n")
+                    t = os.stat(os.path.join(repo, "b.dat")).st_mtime
+                    os.utime(os.path.join(repo, "b.dat"), (t + 7, t + 7))  # stat-dirty: git rereads it through the filter
+                    for args in ([], ["--unstaged"], ["--staged"], ["--repo"], ["a.dat"], ["HEAD~1"]):
+                        rc, out = tt.call(args, repo, tmp)
+                        self.assertEqual((rc, out["status"]), (0, "ok"), (args, out))
+                        self.assertFalse(os.path.exists(marker), "a %s driver ran on %s" % (kind, args))
+                    os.remove(os.path.join(repo, "b.dat"))
+                    with gitfix.isolated(tmp):
+                        target._run(["checkout", "--", "b.dat"], repo)  # the smudge path: git writes a working file
+                    self.assertFalse(os.path.exists(marker), "a %s driver ran on checkout" % kind)
+
+
 class NoFilterInAnyScript(tfix.Base):
     """Clean-only, smudge-only and process-only spy drivers, configured after the commits, on stat-dirty files: no
     script runs one (rooc), the in-place apply, the head checkout and the restore from HEAD included."""
