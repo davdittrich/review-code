@@ -1989,6 +1989,101 @@ class ProseLinear(unittest.TestCase):
         self.assertEqual(post._REF.pattern, _OLD_REF.pattern)
 
 
+class _Spy:
+    """Stands in for `_REF_G` and keeps every text the reference search is handed."""
+    def __init__(self, rx):
+        self.rx, self.seen = rx, []
+
+    def search(self, t, *a):
+        self.seen.append(t)
+        return self.rx.search(t, *a)
+
+
+_W_RUN = re.compile(r"[\w./-]*")
+
+
+def _ns_wasted(t):
+    """Characters `_NS` (`ns/proj>`) would read for nothing in `t`: its tail scan from every word segment of a run of
+    [\\w./-] that never reaches `>`. CPython `re` has no step counter, so this is the work model; it is 0 exactly when
+    no such scan can start."""
+    w = 0
+    for m in re.finditer(r"(?<![\w.-])(?=[\w.-]+/[\w.-])", t):
+        e = _W_RUN.match(t, m.start()).end()
+        w += 0 if t.startswith(">", e) else e - m.start()
+    return w
+
+
+class _SpyMixin:
+    def seen(self, text):
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._prose(text)
+            with contextlib.suppress(post.Refuse):
+                post._guard("**Fix:** " + post._prose(text))
+        return spy.seen
+
+
+class ProseRepeatedPrefixLinear(_SpyMixin, unittest.TestCase):
+    """review-code-c9ks: 'a/' repeated made `_NS` read the rest of the run from every segment, though the run never
+    reaches `>`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "a/" * 2000
+        self.assertGreater(_ns_wasted(text), 1000000)  # the raw text is the bad case: the measure is not vacuous
+        seen = self.seen(text)
+        self.assertTrue(seen)
+        self.assertEqual(sum(_ns_wasted(t) for t in seen), 0)
+
+    def test_the_guard_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "**Fix:** " + "a/" * 2000  # a payload edited after build: no `_prose` ran over it
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._guard(text)
+        self.assertTrue(spy.seen)
+        self.assertEqual(sum(_ns_wasted(t) for t in spy.seen), 0)
+
+    def families(self):
+        for k in (0, 1, 2, 3, 7, 40):
+            for unit in ("a/", "[", "[[", "GH-1/", "@a/b", "x/", "a//"):
+                yield unit * k
+                for tail in (">", " x/y>", "x]]", "]", "]]", "`", " [issue:1]", "[issue:1]", "[[x]]", ">c/d>", "b>", "@u", "GH-2"):
+                    yield unit * k + tail
+                    yield tail + unit * k
+                    yield "@a/b" + unit * k + tail
+        yield from ("[[issue:1]", "[[[issue:1]]", "[[a [[b]] c", "[[a`[[b]]", "a/b>" + "a/" * 9, "a/" * 9 + "b>c/d>")
+
+    def test_output_and_verdict_are_the_old_implementations(self):
+        for text in self.families():
+            self.assertEqual(post._prose(text), _old_prose(text), repr(text))
+            t = sanitize.escape_line(text).replace("`", "'")
+            self.assertEqual(bool(list(post._refs(t))), _OLD_REF.search(t) is not None, repr(text))
+            self.assertEqual([m.span() for m in post._refs(t)], [m.span() for m in _OLD_REF.finditer(t)], repr(text))
+
+
+_NOT_CLOSER = re.compile(r"[^\]`]*")
+
+
+def _wiki_wasted(t):
+    """Characters `[[..]]` would read for nothing in `t`: its scan from every `[[` of a run that never reaches `]]`."""
+    w = 0
+    for m in re.finditer(r"\[(?=\[)", t):
+        e = _NOT_CLOSER.match(t, m.start() + 2).end()
+        w += 0 if t.startswith("]]", e) else e - m.start()
+    return w
+
+
+class ProseRepeatedBracketLinear(_SpyMixin, unittest.TestCase):
+    """review-code-gaeo: '[' repeated made the wiki-link alternative read to the end of the run from every `[[`, though
+    the run never reaches `]]`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        for text in ("[" * 2000, "[[" * 2000, "[[x[" * 1000, "[" * 2000 + "]", "[" * 2000 + "`]]", "[" * 2000 + "] x]]"):
+            self.assertGreater(_wiki_wasted(text), 1000000, text[-6:])  # the raw text is the bad case: the measure is not vacuous
+            seen = self.seen(text)
+            self.assertTrue(seen, text[-6:])
+            self.assertEqual(sum(_wiki_wasted(t) for t in seen), 0, text[-6:])
+
+
 class HiddenNameInline(Base):
     """review-code-avhn: a cite under a file's raw hidden-character name is accepted, so the finding's path is raw. The forge
     needs that raw name to anchor an inline comment; no outgoing text may carry it, only its escaped form."""
