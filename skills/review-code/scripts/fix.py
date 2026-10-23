@@ -78,7 +78,9 @@ def _typed(st) -> bool:
     if not isinstance(st, dict) or any(k not in st for k in STATE_KEYS):
         return False
     cur = st["in_flight"]
-    return (all(isinstance(st[k], dict) for k in ("done", "accepted"))
+    return (all(isinstance(st[k], str) for k in ("digest", "refs")) and isinstance(st["version"], int)
+            and (st["halted"] is None or isinstance(st["halted"], str))  # baseline writes None or a reason
+            and all(isinstance(st[k], dict) for k in ("done", "accepted"))
             and all(isinstance(v, dict) for v in st["done"].values())
             and all(isinstance(st[k], list) for k in ("untracked", "side_effects", "git_files"))
             and (cur is None or (isinstance(cur, dict) and isinstance(cur.get("id"), str)
