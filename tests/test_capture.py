@@ -82,14 +82,6 @@ class Capture(unittest.TestCase):
             self.assertIn("core.hooksPath=/dev/null", a)
             self.assertIn("core.fsmonitor=false", a)
 
-    def test_one_git_process_per_firing(self):  # review-code-9f4v
-        os.makedirs(self.state)
-        log = os.path.join(self.tmp, "trace.json")
-        gitfix.cli("capture.py", [], self.repo, self.tmp, json.dumps(stop()), extra={"GIT_TRACE2_EVENT": log})
-        with open(log, encoding="utf-8") as fh:
-            argvs = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start" and os.path.basename(e["argv"][0]) == "git"]
-        self.assertEqual(len(argvs), 1, argvs)
-
     def test_the_one_git_process_runs_no_filter_driver(self):  # review-code-9f4v
         os.makedirs(self.state)
         marker = os.path.join(self.tmp, "filter-ran")

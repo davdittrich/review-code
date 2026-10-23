@@ -6,7 +6,7 @@ plugin's lane and verifier agents, only under a strict agent_id, and only when t
 directory (`git rev-parse --git-path review-code`, as target.py names it) already exists: this script never makes it.
 It imports target only for its git seam (target._run: the fixed -c options and env of every git call): it calls none of
 target's run-directory code, which makes directories, because the hook must never create the state directory, and it
-stays fail-silent (it imports target inside keep, and a failed import keeps nothing). The one git call is rev-parse, which runs no filter, so the seam skips its filter-config read (one git process).
+stays fail-silent (it imports target inside keep, and a failed import keeps nothing). The seam adds one git config read per firing.
 It writes <state>/captures/<agent_id>.<handback|stop>.json = {agent_type, message}, mode 0600, through a temp file and
 os.replace, and always exits 0 and prints nothing, so it can never block the agent. Stdlib only; keep the syntax
 Python 3.9 safe. A custom agent_prefix plugin setting is not captured (the hook cannot read it: an unset option
@@ -50,7 +50,6 @@ def keep(ev):
             import target
     except BaseException:
         return
-    target._NO_FILTERS.setdefault(os.getcwd(), {})  # rev-parse --git-path runs no filter: skip the config read, one git process
     rc, out, _ = target._run(["rev-parse", "--git-path", "review-code"], os.getcwd())
     rel = out.decode("utf-8", "replace").strip()
     if rc != 0 or not rel:
