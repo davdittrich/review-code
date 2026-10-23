@@ -147,6 +147,17 @@ class MissingSymbolNamedLikeAFile(tr.Base):
                           tr.cand("def load():", 1, title="load is missing", trigger="open fails"))
         self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 2)
 
+    def test_a_symbol_missing_from_the_imports_or_scope_stays_a_finding(self):  # review-code-8suk
+        out = self.ingest(tr.cand("return a - b", 5, title="load is missing from the imports", trigger="NameError"),
+                          tr.cand("def load():", 1, title="bug", trigger="`load` is missing from scope."),
+                          tr.cand("def add(a, b):", 4, title="load is missing in the module namespace", trigger="NameError"))
+        self.assertEqual(reasons(out), [("accepted", None)] * 3)
+
+    def test_a_file_missing_from_the_imports_or_the_repo_still_downgrades(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="src/calc.py is missing from the imports", trigger="x"),
+                          tr.cand("def load():", 1, title="load is missing from the repo", trigger="x"))
+        self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 2)
+
 
 class InvisibleEntryPoints(tr.Lanes):
     """review-code-kiq3: every other place a lane's raw quote enters (a repaired control character, a lost line's id) reads
