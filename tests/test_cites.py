@@ -121,6 +121,34 @@ class MissingSymbol(tr.Base):
         self.assertEqual(out["ids"], [])
 
 
+class OldRun(tr.Base):
+    """review-code-1kf3: a run directory older than the pin (14-day retention) has no pinned_tree to judge a cite against."""
+
+    def age(self):
+        tj = tp.load(self.run_dir)
+        for k in ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_count", "integrity"):
+            tj.pop(k, None)
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+
+    def refused(self, sub, text, extra=()):
+        rc, out, err = gitfix.cli("report.py", [sub, "--run", self.run_dir] + list(extra), self.repo, self.tmp, text)
+        self.assertEqual((rc, err, out.count("\n")), (1, "", 1), out)
+        return json.loads(out)
+
+    def test_ingest_refuses_with_one_json_line_naming_the_old_run(self):
+        self.age()
+        self.assertEqual(self.refused("ingest", tr.lines(tr.CAND)), {"status": "refuse", "reason": "no-pin"})
+
+    def test_verdicts_refuse_with_one_json_line_naming_the_old_run(self):
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+        (i,) = self.ingest(tr.CAND)["ids"]
+        self.age()
+        out = self.refused("verdicts", tr.lines({"id": i, "verdict": "confirmed", "evidence": [], "reason": "r"}), ["--batch", "1"])
+        self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
+
+
 class Worktree(tr.Base):
     """A worktree target: the pinned tree is a synthetic one built from the checkout at pin time."""
 

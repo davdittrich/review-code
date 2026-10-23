@@ -244,7 +244,9 @@ class _Pinned:
     def __init__(self, run, paths, cited=()):
         tj = target.load_json(run, "target.json")
         self.top, self.files, self.rows, blob = tj["repo"], set(), {}, {}
-        self.tree, self._every = tj["pinned_tree"], None
+        self.tree, self._every = tj.get("pinned_tree"), None
+        if not self.tree:  # a run from before the pin (14-day retention) has nothing to judge a cite against
+            raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
