@@ -1059,6 +1059,18 @@ class ShardsPinnedStat(ShardBase):
                          [(["auth/login.py"], 3.0), (["docs/guide.md", "util/helpers.py"], 2.0)])
 
 
+class ShardsUncountedFile(ShardBase):
+    """review-code-jv4h: a blob over MAX_FILE has no line count, so its churn must not be divided by a count of 0."""
+    base_files = {"a/big.py": PAD * 40, "b/small.py": PAD}
+    feat_files = {"b/small.py": PAD + "z = 2\n"}
+
+    def test_an_over_cap_file_adds_neither_its_churn_nor_its_lines_to_the_risk(self):
+        import plan as mod
+        with mock.patch.object(mod, "CHURN_DAYS", 10 ** 5), mock.patch.object(target, "MAX_FILE", 100):  # big.py is 400 bytes
+            p = self.run_plan(shard_bytes=300)
+        self.assertEqual([(s["files"], s["risk"]) for s in p["shards"]], [(["b/small.py"], 2.0), (["a/big.py"], 1.0)])
+
+
 class Preview(Fixture):
     def test_deep_preview_states_calls_caps_and_ceilings(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")

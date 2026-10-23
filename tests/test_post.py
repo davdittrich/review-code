@@ -1831,5 +1831,42 @@ class EventConstant(unittest.TestCase):
                 self.assertIsNone(re.search(r"/(?:un)?approve\b|/merge\b", n.value), n.value)
 
 
+class HiddenNameInline(Base):
+    """review-code-avhn: a cite under a file's raw hidden-character name is accepted, so the finding's path is raw. The forge
+    needs that raw name to anchor an inline comment; no outgoing text may carry it, only its escaped form."""
+    RAW = "src/x" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"src/calc.py": source(False, 0)}, "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        gitfix.commit(self.repo, {"src/calc.py": source(True, 0, None), self.RAW: "y = 1\n"}, "feat")
+        self.make_run()
+
+    def test_the_comment_path_is_raw_and_every_outgoing_text_shows_the_escaped_name(self):
+        cand = {"path": self.RAW, "line": 1, "severity": "required", "category": "bug", "title": "t", "trigger": "tr",
+                "quote": "y = 1", "fix": "f"}
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp, lines(cand, {"inspected": ["src/calc.py"]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        ev = {"path": self.RAW, "line": 1, "quote": "y = 1"}
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp,
+                           lines({"id": fid(self.RAW, "bug", "y = 1"), "verdict": "confirmed", "reason": "r", "evidence": [ev]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        self.retarget(kind="pr", url=PR_URL, number=7)
+        self.fake = FakeGitHub(self.run_dir)
+        self.fake.diff = ("diff --git a/{0} b/{0}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{0}\n"
+                          "@@ -0,0 +1 @@\n+y = 1\n").format(self.RAW)  # the forge's diff names the file raw
+        rc, out, _ = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        self.assertEqual([c["path"] for c in payload["comments"]], [self.RAW])
+        for text in [payload["body"], out] + [c["body"] for c in payload["comments"]]:
+            self.assertFalse(any(0xE0000 <= ord(ch) <= 0xE007F for ch in text), ascii(text))
+        self.assertIn("src/x&lt;TAGS:5>.py:1", out)
+
+
 if __name__ == "__main__":
     unittest.main()
