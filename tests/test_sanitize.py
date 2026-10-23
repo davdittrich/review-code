@@ -579,6 +579,115 @@ class HiddenSignals(unittest.TestCase):
         _, hits = sanitize.strip_hidden_diff(d)
         self.assertEqual([(h.get("signal"), h.get("provenance")) for h in hits], [(None, "added")])
 
+# --- 55: the invisible scan costs time in proportion to the non-ASCII content ---------------------------------
+# The oracle is the pre-55 implementation, copied verbatim; it must not import from sanitize.
+import random  # noqa: E402
+import unicodedata  # noqa: E402
+from unittest import mock  # noqa: E402
+
+_O_EXTRA = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F), (0x2060, 0x206F),
+            (0x2800, 0x2800), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
+            (0xE0000, 0xE0FFF))
+
+
+def _o_invisible(ch):
+    if ch in "\t\n\r":
+        return False
+    o = ord(ch)
+    return unicodedata.category(ch) in ("Cf", "Cc", "Cs", "Zl", "Zp") or any(a <= o <= b for a, b in _O_EXTRA)
+
+
+def _o_run_kind(ch):
+    o = ord(ch)
+    if 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF or 0x180B <= o <= 0x180D or o == 0x180F:
+        return "VS"
+    if 0xE0000 <= o <= 0xE0FFF:
+        return "TAGS"
+    if 0xD800 <= o <= 0xDFFF:
+        return "BYTES"
+    return None
+
+
+def _o_strip_invisible(text):
+    return "".join(c for c in text if not _o_invisible(c))
+
+
+def _o_escape_for_code(text):
+    out, hits = [], []
+    for n, line in enumerate(text.split("\n"), 1):
+        cps, buf, i = [], [], 0
+        while i < len(line):
+            c, kind = line[i], _o_run_kind(line[i])
+            j = i + 1
+            while kind and j < len(line) and _o_run_kind(line[j]) == kind:
+                j += 1
+            emoji = c == "\ufe0f" and j == i + 1 and i > 0 and unicodedata.category(line[i - 1]) == "So"
+            if kind and not emoji:
+                cps.append("%s:%d" % (kind, j - i))
+            elif not kind and _o_invisible(c):
+                cps.append("U+%04X" % ord(c))
+            else:
+                buf.append(line[i:j])
+                i = j
+                continue
+            buf.append("<%s>" % cps[-1])
+            i = j
+        out.append("".join(buf))
+        if cps:
+            hits.append({"line": n, "codepoints": cps})
+    return "\n".join(out), hits
+
+
+_POOL = (["a", "b", " ", "x", "\t", "\n", "\r", "\n"] + [chr(i) for i in (0, 1, 8, 11, 12, 14, 27, 31, 127)]
+         + [chr(0x80), chr(0x9F), chr(0xAD), "\u00e9", "\u20ac", "\u200b", "\u2060", "\u200e", "\u2028", "\u2029", "\u034f",
+            "\u2800", "\u180e", "\u180b", "\u180f", "\ufe00", "\ufe0f", "\ufe0e", "\U0001f600", "\u2764", "\ufeff",
+            chr(0xE0000), chr(0xE0041), chr(0xE0100), chr(0xE01EF), chr(0xE0FFF), "\ud800", "\udce9", "\udfff"])
+
+
+class TestInvisibleScanCost(unittest.TestCase):
+    def test_escape_and_strip_equal_the_pre_55_implementation_on_random_strings(self):
+        rng = random.Random(55)
+        for _ in range(3000):
+            s = "".join(rng.choice(_POOL) for _ in range(rng.randint(0, 40)))
+            self.assertEqual(sanitize.escape_for_code(s), _o_escape_for_code(s), ascii(s))
+            self.assertEqual(sanitize.strip_invisible(s), _o_strip_invisible(s), ascii(s))
+
+    def test_the_ascii_control_set_is_the_old_predicate_over_ascii(self):
+        want = {chr(i) for i in range(128) if _o_invisible(chr(i))}
+        got = {chr(i) for i in range(128) if sanitize.escape_for_code(chr(i))[1]}
+        self.assertEqual(got, want)
+
+    def test_an_ascii_text_of_one_megabyte_never_runs_the_per_character_check(self):
+        line = "abc def\t" + "".join(chr(i) for i in (0, 11, 27, 127)) + " tail ghijklmnop\r"
+        big = "\n".join([line] * (1_000_000 // len(line)))
+        self.assertGreater(len(big), 900_000)
+        with mock.patch.object(sanitize, "_invisible", wraps=sanitize._invisible) as m:
+            out = sanitize.escape_for_code(big)
+            stripped = sanitize.strip_invisible(big)
+        self.assertEqual(m.call_count, 0)
+        self.assertEqual(out, _o_escape_for_code(big))
+        self.assertEqual(stripped, _o_strip_invisible(big))
+
+    def test_a_control_free_ascii_text_is_settled_by_one_regex_pass_per_line(self):
+        class Counting(frozenset):
+            n = 0
+
+            def __contains__(self, x):
+                Counting.n += 1
+                return super().__contains__(x)
+
+        big = "\n".join(["abc def\tghi jklmnop"] * 50_000)
+        with mock.patch.object(sanitize, "_ASCII_CTRL", Counting(sanitize._ASCII_CTRL)):
+            self.assertEqual(sanitize.escape_for_code(big), (big, []))
+        self.assertEqual(Counting.n, 0)
+
+    def test_only_the_non_ascii_characters_of_a_text_run_the_check(self):
+        for reps in (1, 1000):
+            s = ("plain ascii line\n" + "caf\u00e9 \u200b x\x1b\n") * reps
+            with mock.patch.object(sanitize, "_invisible", wraps=sanitize._invisible) as m:
+                self.assertEqual(sanitize.escape_for_code(s), _o_escape_for_code(s))
+            self.assertEqual(m.call_count, 2 * reps)  # the e-acute and the ZWSP only
+
 
 if __name__ == "__main__":
     unittest.main()
