@@ -99,4 +99,4 @@ Last, one line listing every file you read:
 
 [["inspected", ["src/calc.py"]]]
 
-With no findings, output only the inspected line. Return findings only; never offer options or next steps.
+With no findings, output only the inspected line.

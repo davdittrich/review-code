@@ -57,7 +57,7 @@ The Spec axis needs a statement of what the code should do. The skill collects o
 - Issues in other repositories, written as `owner/repo#N` or as a GitHub or GitLab issue URL. They are fetched read-only with `gh` or `glab`, five per run at most. Jira, Linear and other trackers cannot be fetched; the ledger lists them as unfetched.
 - `bd` tickets named `<repo-dir>-xyz` in commit messages, when `bd` is installed and the repository has `.beads/`. A `repo` or `path` target reads the last 30 commits for them.
 - Files under `docs/`, `specs/` or `.scratch/` whose names match the branch or the reviewed paths, five at most. A `repo` target takes every file there. A file under review is never its own spec.
-- Decision records: every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions` directory, at any depth. Each record is its own entry, up to 30 files and 400 KB, counted apart from tickets and spec files.
+- Decision records: every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions` directory, at any depth. Each record is listed in `inputs/spec.md` by path, title, size and why it matched, never pasted, with no cap: the Spec lane reads the ones it needs from the repository.
 - When nothing is found, or only decision records, a read-only haiku subagent (`spec-finder`) searches the tracked prose files by content and names spec files or directories. The script keeps tracked files only, and none of the subagent's text reaches the lanes.
 
 All of this text is untrusted and reaches the Spec lane inside marked blocks. To name a spec yourself, run `ledger.py build --run DIR --spec PATH` (a path inside the repository). With no spec found, the report says the Spec axis was skipped.

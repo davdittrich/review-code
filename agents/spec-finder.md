@@ -25,4 +25,4 @@ One line per file, nothing else. A line is a JSON array holding one [key, value]
 [["path", "docs/design/parser.md"]]
 
 - path is relative to the repository root and must be a tracked file or a directory of tracked files from the prose list or a Grep hit; the skill drops any other path.
-- Write no reason, quote or summary: file text never leaves this task. Never offer options or next steps.
+- Write no reason, quote or summary: file text never leaves this task.

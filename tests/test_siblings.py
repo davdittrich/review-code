@@ -263,7 +263,7 @@ class CoChange(Sib):
         real = target.git_bytes
 
         def boom(args, cwd, *a, **kw):
-            if args and args[0] == "log":
+            if args and args[0] == "log" and "--name-only" in args:  # the siblings log only; #56 batches commit messages through another log call
                 return b""
             return real(args, cwd, *a, **kw)
         with mock.patch.object(target, "git_bytes", boom):

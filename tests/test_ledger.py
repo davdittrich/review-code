@@ -1079,7 +1079,7 @@ class Spec(Base):
         return self.build(**kw)
 
     def test_adr_folder_is_an_independent_spec_set(self):  # review-code-2kz
-        out, led = self.adr_build({"docs/adr/0001-db.md": "ADR-ONE\n", "arch/decisions/0002-q.md": "ADR-TWO\n",
+        out, led = self.adr_build({"docs/adr/0001-db.md": "# DB\nADR-ONE\n", "arch/decisions/0002-q.md": "# Queue\nADR-TWO\n",
                                    "docs/adr/img.png": "x", "docs/adr/notes.py": "x = 1\n"})
         self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]],
                          [("adr", "arch/decisions/0002-q.md"), ("adr", "docs/adr/0001-db.md")])
@@ -1087,9 +1087,10 @@ class Spec(Base):
         spec = self.read("inputs/spec.md")
         self.assertIn("## Decision records", spec)
         found, _ = blocks(spec)
-        self.assertEqual(sorted(c for _, c in found if "ADR-" in c), ["ADR-ONE", "ADR-TWO"])
+        self.assertEqual(sorted(c for _, c in found if c in ("DB", "Queue")), ["DB", "Queue"])  # the title, never the body
+        self.assertNotIn("ADR-ONE", spec)
 
-    def test_adrs_beside_a_ticket_are_both_spec_and_the_ticket_is_not_capped_out(self):
+    def test_adrs_beside_a_ticket_are_both_spec_and_no_record_is_left_out(self):
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
@@ -1097,48 +1098,86 @@ class Spec(Base):
         with mock.patch.object(ledger, "_bd_show", return_value="TICKET-TEXT"):
             out, led = self.build(commits=[sha])
         kinds = [s["kind"] for s in led["spec"]["sources"]]
-        self.assertEqual((kinds.count("adr"), kinds.count("ticket")), (ledger.CAP_ADR, 1))
+        self.assertEqual((kinds.count("adr"), kinds.count("ticket")), (40, 1))
         self.assertNotIn("adr_only", out)
         self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
 
-    def test_adr_cut_keeps_relevant_records_and_reports_the_rest(self):  # issue 24
+    def index_rows(self):
+        """{path: reasons} read from the Decision records headings of inputs/spec.md, in order."""
+        sec = self.read("inputs/spec.md").split("## Decision records\n")[1]
+        return dict(re.findall(r'^### "([^"]+)" \(\d+ bytes\): (.*)$', sec, re.M))
+
+    def test_adr_index_says_why_each_record_matched(self):  # issue 24, now an index row
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         files["docs/adr/0035-d.md"] = "ADR-35 governs src/a.py\n"
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
         sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a, per ADR-37")
         out, led = self.build(commits=[sha])
-        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
-        self.assertEqual(len(refs), ledger.CAP_ADR)
-        self.assertIn("docs/adr/0037-d.md", refs)  # named in the commit message
-        self.assertIn("docs/adr/0035-d.md", refs)  # names a changed file
-        self.assertEqual((led["capped"]["adr"], out["adr_omitted"]), (10, 10))
-        self.assertIn("10 decision records omitted", self.read("inputs/spec.md"))
+        rows = self.index_rows()
+        self.assertEqual(len(rows), 40)
+        self.assertIn("number named", rows["docs/adr/0037-d.md"])
+        self.assertIn("names a changed file or issue", rows["docs/adr/0035-d.md"])
+        self.assertEqual(rows["docs/adr/0001-d.md"], "record directory")
+        self.assertEqual(list(rows)[:2], ["docs/adr/0035-d.md", "docs/adr/0037-d.md"])  # matches first, then path order
+        self.assertNotIn("adr_omitted", out)
+        self.assertNotIn("adr", led["capped"])
 
-    def test_adr_cut_ranks_a_record_that_names_an_issue_the_change_names(self):  # issue 24
+    def test_adr_index_matches_an_issue_the_change_names_exactly(self):  # issue 24
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         files["docs/adr/0039-d.md"] = "Decided in #77 and #7770.\n"
         files["docs/adr/0038-d.md"] = "Mentions #770 only.\n"
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
         sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (fixes #77)")
-        out, led = self.build(commits=[sha])
-        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
-        self.assertIn("docs/adr/0039-d.md", refs)
-        self.assertNotIn("docs/adr/0038-d.md", refs)  # #770 is not #77
+        self.build(commits=[sha])
+        rows = self.index_rows()
+        self.assertIn("names a changed file or issue", rows["docs/adr/0039-d.md"])
+        self.assertEqual(rows["docs/adr/0038-d.md"], "record directory")  # #770 is not #77
 
-    def test_adr_set_has_a_byte_budget(self):
-        big = "x" * 150000
-        _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
-                                 "docs/adr/0004-d.md": big})
-        self.assertEqual(len(led["spec"]["sources"]), 2)
+    def test_adr_set_has_no_byte_cap(self):
+        big = "# T\n" + "x" * 150000
+        _, led = self.adr_build({"docs/adr/000%d-a.md" % i: big for i in range(1, 5)})
+        self.assertEqual(len(led["spec"]["sources"]), 4)
+        self.assertEqual(len(self.index_rows()), 4)
 
-    def test_adr_already_matched_by_name_is_not_listed_twice(self):
-        self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "ADR-P\n"})
+    def test_a_record_that_is_not_text_stays_listed(self):
+        self.adr_build({"docs/adr/0001-a.md": b"\0\1binary", "docs/adr/0002-b.md": "# B\n"})
+        self.assertEqual(sorted(self.index_rows()), ["docs/adr/0001-a.md", "docs/adr/0002-b.md"])
+
+    def test_adr_name_matching_the_branch_is_an_index_row_not_a_pasted_file(self):
+        self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "# Parser\nADR-P\n"})
         self.g("checkout", "-q", "-b", "feat-parser")
         gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
         _, led = self.build()
-        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("file", "docs/adr/0001-parser.md")])
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("adr", "docs/adr/0001-parser.md")])
+        self.assertEqual(self.index_rows(), {"docs/adr/0001-parser.md": "branch name, record directory"})
+        self.assertNotIn("ADR-P", self.read("inputs/spec.md"))
+
+    @staticmethod
+    def three(body):
+        return {"docs/adr/0001-a.md": "# First title\n" + body("A"), "docs/adr/0002-b.md": "# Second title\n" + body("B"),
+                "arch/decisions/0003-c.md": "# Third title\n" + body("C")}
+
+    def test_spec_md_holds_each_adr_row_and_none_of_the_bodies(self):  # gh#57
+        self.adr_build(self.three(lambda k: "CANARY-BODY-%s must hold\nsecond CANARY-LINE-%s\n" % (k, k)))
+        spec = self.read("inputs/spec.md")
+        self.assertEqual(sorted(self.index_rows()), ["arch/decisions/0003-c.md", "docs/adr/0001-a.md", "docs/adr/0002-b.md"])
+        for t in ("First title", "Second title", "Third title"):
+            self.assertIn(t, spec)
+        self.assertIn("(%07d bytes)" % len("# First title\nCANARY-BODY-A must hold\nsecond CANARY-LINE-A\n"), spec)
+        self.assertNotIn("CANARY", spec)
+
+    def test_spec_md_size_does_not_grow_with_the_adr_bodies(self):  # gh#57
+        self.adr_build(self.three(lambda k: ("word %s\n" % k) * 100))
+        small = len(self.read("inputs/spec.md").encode())
+        self.g("checkout", "-q", "main")  # the same repository again, the records ten times larger
+        self.g("branch", "-q", "-D", "wip")
+        gitfix.commit(self.repo, self.three(lambda k: ("word %s\n" % k) * 1000), "base2")
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        self.build()
+        self.assertEqual(len(self.read("inputs/spec.md").encode()), small)
 
     def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
         _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])

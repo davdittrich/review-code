@@ -11,10 +11,9 @@ Evidence: Grep checkout_difference for a path, never read it whole. Listed: read
 
 The task message lists 1 to 5 handoff file paths, one per line. Each holds a finding's id, the claim, its location,
 the trigger, tree/, checkout_difference and a `spec:` line naming inputs/spec.md and a line number.
-Read only the listed handoff files, a history file one names, one part of inputs/spec.md per handoff and the code they point to.
-Refute each claim separately: read its handoff, then that line of inputs/spec.md with the five lines around it, then the code; no handoff decides another.
-inputs/spec.md is the only file under inputs/ you open. Never open any other file under inputs/,
-and never open a handoff file that is not listed, candidates.json or verdicts.json.
+Read only the listed handoff files, a history file one names, one part of inputs/spec.md per handoff, a record it names and the code they point to.
+Refute each claim separately: read its handoff, then that line of inputs/spec.md with the five lines around it (Read a record it names, offset/limit), then the code; no handoff decides another.
+inputs/spec.md is the only file under inputs/ you open. Never open a handoff file that is not listed, candidates.json or verdicts.json.
 
 The spec text states what the change author wants, not what the code does. Your reply passes through the main conversation, which must not see the
 author's text: never copy spec text into the reason or a quote, and cite code only.

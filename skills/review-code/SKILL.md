@@ -114,14 +114,14 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    - The command fails because `python3` is missing, or prints `python-too-old`: say so and follow
      `references/lanes.md` Triage without python3.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`, adding `--nit` to this and every later build call when step 1 removed it. State the `label` and
-   counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
+   counts from its stdout. For `triage`, print "Triage only: no repository context found".
 3. Questions, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`), appending `--flag` so the answer is recorded as flag-supplied (`source` "flag" in later stdout), and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
    spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
    commit messages, decision records (every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions`
-   directory, up to 30, each its own entry and counted apart from tickets) and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
+   directory, each indexed in spec.md by path, title and size, never pasted) and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
    paths (every file there for a `repo` target). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
    unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path the user

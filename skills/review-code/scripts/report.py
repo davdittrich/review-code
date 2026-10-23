@@ -55,7 +55,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   hidden_content_omitted, and hidden_routine[{file, count, kinds}]: the removed spans that carry no signal, counted per file,
   so hidden_content plus the counts always sum to the ledger's records; `added` (only when above 0) is how many of those
   the change adds. A span's `signal` is `assistant`, `encoded`, `url`, `markup` or `long`; its `provenance` (`added`: it lies on a
-  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. adr_omitted (the ledger's capped.adr, only when above 0): ADR files the spec lane never saw. history_cut (the ledger's capped.history, only when non-empty): what the history caps left out, {hunks, logs, files_omitted, unread: counts, bytes, log_failed: true}. Additive keys keep schema_version 1.
+  line the change adds; `touched`: it lies in a file the change touches that has no diff) is separate and never lists it. history_cut (the ledger's capped.history, only when non-empty): what the history caps left out, {hunks, logs, files_omitted, unread: counts, bytes, log_failed: true}. Additive keys keep schema_version 1.
   Item keys (a finding also carries impact, the verifier's reason): id, path, line, end_line, severity (blocking|required|suggestion|nit|noted), category, title, trigger,
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output). A file name that holds a hidden character stays raw in findings[].path and evidence[].path (a machine key); the text report and hidden_content show it escaped.
@@ -623,13 +623,20 @@ def _words(s):
 
 def _spec_copy(run):
     """Predicate: True when a string holds SPEC_RUN consecutive words (case and punctuation ignored) of the text inside
-    the UNTRUSTED blocks of inputs/spec.md. The text stays inside this closure (CTX-03)."""
+    the UNTRUSTED blocks of inputs/spec.md and of the indexed decision records. The text stays inside this closure (CTX-03)."""
     inside = _spec_lines(run)
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             w = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
     except OSError:
         w = []
+    try:  # the indexed decision records are spec text lanes read from the repository: their words count too (gh#57)
+        adr = [x["ref"] for x in target.load_json(run, "ledger.json")["spec"]["sources"] if x.get("kind") == "adr"]
+        pin = _Pinned(run, adr, adr)
+        # shortcut: a record named with a hidden character is listed by its escaped ref, finds no row and is not covered
+        w += [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
+    except (target.Refuse, KeyError, TypeError, AttributeError):
+        pass  # shortcut: fails open on an unreadable ledger or a failed tree read, like an unreadable spec.md above
     runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
     def copied(s):
@@ -1522,8 +1529,6 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
-    if isinstance(led.get("capped", {}).get("adr"), int) and led["capped"]["adr"] > 0:  # ADRs the spec lane never saw
-        doc["adr_omitted"] = led["capped"]["adr"]
     cut = _history_cut(led)
     if cut:  # what history.build's caps left out of the files lanes were told to read
         doc["history_cut"] = cut
@@ -1708,8 +1713,6 @@ def _text(doc):
                 ", %d of them added by the change" % r["added"] if r.get("added") else "")
                 for r in doc.get("hidden_routine", [])])
     out += section("Areas inspected", ["- " + e(a) for a in doc["inspected"]["areas"]]
-                   + (["- %d ADR file%s omitted by the cap" % (doc["adr_omitted"], "" if doc["adr_omitted"] == 1 else "s")]
-                      if doc.get("adr_omitted") else [])
                    + ([_cut_text(doc["history_cut"])] if doc.get("history_cut") else []))
     return "\n".join(out + ["Verdict", doc["verdict"] + " (advisory only)", ""])
 
