@@ -11,6 +11,7 @@ from unittest import mock
 import paths  # noqa: F401
 
 import gitfix  # noqa: E402
+import ledger  # noqa: E402
 import target  # noqa: E402
 import test_post as tpost  # noqa: E402  (module imports: their test classes are not collected twice)
 import test_target as tt  # noqa: E402
@@ -372,6 +373,39 @@ class Basis(tpost.Base):
     def test_an_unknown_tool_is_a_usage_error(self):
         rc, out, _ = cli("plan.py", ["plan", "--run", self.run_dir, "--tool", "grep"], self.repo, self.tmp)
         self.assertEqual((rc, json.loads(out)["reason"]), (1, "usage"))
+
+
+class PinnedListingArgMax(tt.Base):
+    """review-code-wgk8: ledger._pinned_listing named every difference path on one ls-tree command line, so a difference past
+    ARG_MAX of path bytes killed the build. It runs the shared chunking helper: one process per budget of path bytes."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"a.py": "a = 1\n", "d/b.py": "b = 1\n"}, "base")
+        self.tree = raw(self.repo, "rev-parse", "HEAD^{tree}").decode().strip()
+
+    def listing(self, paths):
+        log = os.path.join(self.tmp, "trace%d.json" % len(os.listdir(self.tmp)))
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            got = ledger._pinned_listing(self.repo, self.tree, paths)
+        return got, [x for x in starts(log) if "ls-tree" in x]
+
+    def test_a_small_difference_costs_one_ls_tree(self):
+        got, procs = self.listing(["a.py", "d/b.py", "gone.py"])
+        self.assertEqual(sorted(got), ["a.py", "d/b.py"])
+        self.assertEqual(len(procs), 1)
+
+    def test_a_difference_past_arg_max_is_listed_in_chunks_not_refused(self):
+        many = ["d%04d/%s" % (k, "x" * 3990) for k in range(os.sysconf("SC_ARG_MAX") // 4000 + 2)]
+        got, procs = self.listing(["a.py"] + many + ["d/b.py"])
+        self.assertEqual(sorted(got), ["a.py", "d/b.py"])
+        self.assertTrue(1 < len(procs) < 2 * len(many) * 4000 // ledger.ARGV_BYTES)
+
+    def test_a_pruned_tree_refuses_pin_pruned(self):
+        with self.assertRaises(target.Refuse) as cm:
+            ledger._pinned_listing(self.repo, "0" * 40, ["a.py"])
+        self.assertEqual(cm.exception.reason, "pin-pruned")
 
 
 if __name__ == "__main__":

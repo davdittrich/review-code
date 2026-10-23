@@ -612,11 +612,9 @@ def ls_tree(tree: str, paths: Iterable[str], repo: str, long: bool = False) -> b
 
 
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
-    """path -> (mode, oid) of exactly `paths` in the pinned tree: one ls-tree, literal pathspecs, never the whole tree."""
+    """path -> (mode, oid) of exactly `paths` in the pinned tree: ls_tree's chunks, literal pathspecs, never the whole tree."""
     out = {}
-    # shortcut: the paths go on one argv (ls-tree reads no pathspec file); a difference of ~100k paths would pass ARG_MAX
-    for rec in target.git_bytes(["ls-tree", "-z", "--full-tree", tree, "--"] + paths, repo,
-                                env={"GIT_LITERAL_PATHSPECS": "1"}).split(b"\0"):
+    for rec in ls_tree(tree, paths, repo).split(b"\0"):
         meta, tab, name = rec.partition(b"\t")
         f = meta.split()
         if tab and len(f) == 3:
