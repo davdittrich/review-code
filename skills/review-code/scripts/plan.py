@@ -284,7 +284,7 @@ def _churn(repo, names):
 
 def _rank_shards(tj, led, groups, stats):
     """[(risk, files)] riskiest first. Risk = files whose path holds a RISK_TOKENS entry, plus 1 when no file of the
-    shard is a test or has a test in the ledger, plus churn over the shard's current line count. Weights are
+    shard is a test or has a test in the ledger, plus churn over the line count of its counted files. Weights are
     unvalidated: ties break by first path."""
     churn = _churn(tj["repo"], {p for g in groups for p in g})
     tested = {e["file"] for e in led.get("tests", []) if isinstance(e, dict) and isinstance(e.get("file"), str)}
@@ -292,7 +292,8 @@ def _rank_shards(tj, led, groups, stats):
     for g in groups:
         tokens = sum(1 for p in g if any(t in p.lower() for t in RISK_TOKENS))
         untested = 0 if any(p in tested or ledger._is_test(p) for p in g) else 1
-        ranked.append((tokens + untested + sum(churn.get(p, 0) for p in g) / max(1, sum(stats[p][1] for p in g)), g))
+        known = [p for p in g if stats[p][1] is not None]  # shortcut: a file with no line count (over MAX_FILE) leaves both sums, so a shard of only such files ranks on tokens and tests alone; upgrade when a count exists for it
+        ranked.append((tokens + untested + sum(churn.get(p, 0) for p in known) / max(1, sum(stats[p][1] for p in known)), g))
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
@@ -530,7 +531,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     _install_packs(run, packs, nit_text)
     shards = []
     if tj["kind"] in ("path", "repo"):
-        stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p, 0)) for p in tj["included"]}  # (bytes, lines) as pinned
+        stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p)) for p in tj["included"]}  # (bytes, lines or None) as pinned
         groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
