@@ -131,6 +131,23 @@ class MissingSymbol(tr.Base):
         self.assertEqual(len(out["ids"]), 2)
 
 
+class MissingSymbolNamedLikeAFile(tr.Base):
+    """review-code-1luq: a claim about an undefined symbol is no claim that a file is missing, even when a pinned file
+    has the symbol's name (an extensionless `load` or `Makefile`)."""
+    base_files = dict(tr.BASE, load="#!/bin/sh\n")
+
+    def test_an_undefined_symbol_claim_stays_a_finding_when_a_pinned_file_has_its_name(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="undefined name load", trigger="NameError at call time"),
+                          tr.cand("def load():", 1, title="load is not defined", trigger="NameError at call time"),
+                          tr.cand("def add(a, b):", 4, title="function load is undefined", trigger="NameError at call time"))
+        self.assertEqual(reasons(out), [("accepted", None)] * 3)
+
+    def test_a_file_claim_still_downgrades(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="missing file load", trigger="open fails"),
+                          tr.cand("def load():", 1, title="load is missing", trigger="open fails"))
+        self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 2)
+
+
 class InvisibleEntryPoints(tr.Lanes):
     """review-code-kiq3: every other place a lane's raw quote enters (a repaired control character, a lost line's id) reads
     it through report._esc as well, so an invisible character matches the escaped rows and a retry recovers the line."""

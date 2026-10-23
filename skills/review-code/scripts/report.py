@@ -353,10 +353,10 @@ def _cited(pin, path, line, end, quote):
 
 
 _NAME = r"[`'\"]?([\w][\w./+-]*)[`'\"]?"
-# shortcut: a fixed English word list; a claim worded otherwise is not caught and is verified as before
-_GONE = r"(?:is |are |was )?(?:missing|absent|undefined|not defined|not found|nonexistent|non-existent|does not exist|doesn't exist)"
+# shortcut: a fixed English word list; a claim worded otherwise is not caught and is verified as before; no symbol word (undefined, not defined, name, function ...): a symbol that shares a pinned file's name is no missing file
+_GONE = r"(?:is |are |was )?(?:missing|absent|not found|nonexistent|non-existent|does not exist|doesn't exist)"
 _MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\b))|(?:missing|absent|undefined|nonexistent|"
-                      r"non-existent|no such)\s+(?:file|module|function|symbol|class|method|name|import|path)\s+%s(?=$|[\s.,;:)!])"
+                      r"non-existent|no such)\s+(?:file|module|path)\s+%s(?=$|[\s.,;:)!])"
                       % (_NAME, _GONE, _NAME), re.I)
 
 
