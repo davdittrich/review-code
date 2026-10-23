@@ -654,6 +654,13 @@ class Basis(tpost.Base):
     def test_both_tools_passed_lose_nothing(self):
         self.assertEqual(self.plan("codegraph", "serena")["lost_capabilities"], [])
 
+    def test_ledger_records_the_tool_set_plan_json_holds(self):  # gh#47 item 10
+        for tools in (("serena",), ("codegraph", "serena"), ()):
+            with self.subTest(tools=tools):
+                self.plan(*tools)
+                self.assertEqual(load(self.run_dir, "ledger.json")["tools"], load(self.run_dir, "plan.json")["tools"])
+                self.assertEqual(load(self.run_dir, "ledger.json")["tools"], sorted(tools))
+
     def test_no_tool_passed_loses_both(self):
         self.assertEqual(self.plan()["lost_capabilities"], ["codegraph: callers and blast radius",
                                                              "serena: symbol and reference lookup"])
