@@ -129,10 +129,10 @@ def _toplevel(cwd: str) -> str:
     return _rev_path("--show-toplevel", cwd)
 
 
-def _rev_path(flag: str, cwd: str) -> str:
+def _rev_path(flag: str, cwd: str, *operand: str) -> str:
     """One rev-parse path, lossless (surrogateescape) with the one trailing LF dropped. One flag per call: git echoes -z
     back instead of NUL-separating, so two LF-joined paths are ambiguous when either holds an LF."""
-    out = git_bytes(["rev-parse", flag], cwd).decode("utf-8", "surrogateescape")
+    out = git_bytes(["rev-parse", flag, *operand], cwd).decode("utf-8", "surrogateescape")
     return out[:-1] if out.endswith("\n") else out
 
 
@@ -285,7 +285,7 @@ def _prune(base: str) -> None:
 
 def new_run_dir(cwd: str) -> str:
     """Mode 0700 directory under the git dir: a read-only lane cannot read $TMPDIR (probe A3)."""
-    base = git(["rev-parse", "--git-path", "review-code"], cwd).strip()
+    base = _rev_path("--git-path", cwd, "review-code")
     base = os.path.join(cwd, base)
     os.makedirs(base, mode=0o700, exist_ok=True)
     _prune(base)
@@ -1052,7 +1052,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     change and the drift: one raw diff, one untracked listing, one config read in place, at most one hash-object and one
     update-index; with a filter driver configured, one ls-files and one check-attr more, and every filtered file read."""
     idx = os.path.join(run, "index.tmp")
-    real = os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip())
+    real = os.path.join(top, _rev_path("--git-path", top, "index"))
     if os.path.exists(real):
         shutil.copy2(real, idx)  # keeps the mtime git judges racy entries by; a refresh writes the copy, never the index
     env = {"GIT_INDEX_FILE": idx}
@@ -1155,7 +1155,7 @@ def integrity(top: str) -> dict:
         if len(f) > n:
             dirty[shown(f[n])] = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
     try:
-        with open(os.path.join(top, git(["rev-parse", "--git-path", "index"], top).strip()), "rb") as fh:
+        with open(os.path.join(top, _rev_path("--git-path", top, "index")), "rb") as fh:
             index = hashlib.sha256(fh.read()).hexdigest()
     except (OSError, Refuse):
         index = None

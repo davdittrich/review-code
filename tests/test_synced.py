@@ -11,6 +11,7 @@ import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import test_pinned as tp  # noqa: E402
+import target  # noqa: E402
 import test_target as tt  # noqa: E402
 
 
@@ -481,6 +482,30 @@ class StderrHeldOpen(tt.PRWorld):
         self.assertTrue(self.has_pr_objects())
         with open(self.kids, encoding="utf-8") as fh:
             self.assertEqual(len(fh.read().split()), 2)  # the gate's ls-remote and the objects fetch, each served
+
+
+class NonUtf8GitDir(tt.Base):
+    """A repository whose separate git directory name holds byte 0xff: `rev-parse --git-path` returns it absolute."""
+
+    def setUp(self):
+        super().setUp()
+        self.gd = os.path.join(self.tmp, os.fsdecode(b"gd\xff"))
+        self.repo = os.path.join(self.tmp, "work")
+        os.makedirs(self.repo)
+        gitfix.run(["git", "init", "-q", "-b", "main", "--separate-git-dir", self.gd, self.repo], self.tmp)
+        gitfix.commit(self.repo, {"a.py": "a = 0\n", "b.py": "b = 0\n"}, "base")
+        tp.write(self.repo, "a.py", "a = 1\n")
+
+    def test_the_run_directory_is_made_inside_the_real_git_dir(self):  # review-code-v9fi, target.new_run_dir
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out.get("kind")), (0, "worktree"), out)
+        self.assertEqual(len(os.listdir(os.path.join(self.gd, "review-code"))), 1)
+        self.assertEqual([n for n in os.listdir(self.tmp) if "�" in n], [])
+        tree = gitfix.run(["git", "ls-tree", "--name-only", tt.load(out["run"])["pinned_tree"]], self.repo)
+        self.assertEqual(tree.split(), ["a.py", "b.py"])  # without the copied index b.py, unchanged, drops out
+
+    def test_the_index_is_read_from_the_real_git_dir(self):  # review-code-v9fi, target.integrity
+        self.assertIsNotNone(target.integrity(self.repo)["index"])
 
 
 if __name__ == "__main__":
