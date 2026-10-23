@@ -296,7 +296,7 @@ def _rank_shards(tj, led, groups, stats):
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
-def _build_shard(run, tj, i, files, trust, packs, nit=None):
+def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=()):
     """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
     and the global packs that match its files."""
     d = os.path.join(run, "shards", str(i))
@@ -306,6 +306,7 @@ def _build_shard(run, tj, i, files, trust, packs, nit=None):
     ledger.build(d, nit=bool(nit))
     if trust in ledger.TRUST_VALUES:
         ledger.trust_set(d, trust)
+    ledger.tools_set(d, tools)
     mine = set(files)
     _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)], nit)
     return d
@@ -539,7 +540,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
                 if i > caps["max_shards"]:
                     skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
                 else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text),
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools),
                                    "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
@@ -578,6 +579,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc, {p: size for p, (size, _) in blobs.items()})
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
+    ledger.tools_set(run, tools)
     return {"status": "ok", "tier": tier, "mode": doc["mode"],
             "calls": [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard", "input") if k != "input" or serial}
                       for c in calls],  # SKILL steps 7 and 8 read these instead of plan.json

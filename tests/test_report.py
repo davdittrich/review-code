@@ -2425,6 +2425,13 @@ class LoneSurrogate(Base):
             self.assertEqual(self.snap(), before)
 
 
+    def test_a_surrogate_in_an_inspected_path_refuses_and_leaves_the_run_alone(self):  # review-code-71de.16
+        self.ingest(CAND)
+        before = self.snap()
+        rc, out = self.rep("ingest", lines(CAND, {"inspected": [os.fsdecode(b"bad\xff.py")]}))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), out)
+        self.assertEqual(self.snap(), before)
+
 class LoneSurrogateSkips(unittest.TestCase):  # review-code-iz9u
     def test_a_file_system_that_refuses_the_name_skips_not_errors(self):
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(LoneSurrogate)

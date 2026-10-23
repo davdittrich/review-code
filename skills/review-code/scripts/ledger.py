@@ -1102,7 +1102,7 @@ def _source(led: dict) -> dict:
 
 
 def _keep_trust(run: str, led: dict) -> None:
-    """A rebuild keeps the stored answer. Re-read just before the write; a set between the read and
+    """A rebuild keeps the stored trust answer and the recorded tool set. Re-read just before the write; a set between the read and
     the replace is lost (shortcut: no lock, the orchestrator never builds and sets at once)."""
     try:
         old = target.load_json(run, "ledger.json")
@@ -1111,6 +1111,8 @@ def _keep_trust(run: str, led: dict) -> None:
     led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
     if "trust_source" in old:
         led["trust_source"] = old["trust_source"]
+    if "tools" in old:  # the tool set plan.py recorded (tools_set) outlives a rebuild
+        led["tools"] = old["tools"]
 
 
 def trust_set(run: str, value: str, flag: bool = False) -> dict:
@@ -1126,6 +1128,14 @@ def trust_set(run: str, value: str, flag: bool = False) -> dict:
             led["trust_source"] = "flag"  # asked stays true: the question is settled, only its source differs
         _write_json(os.path.join(run, "ledger.json"), led)
     return {"status": "ok", "trust": value}
+
+
+def tools_set(run: str, tools) -> None:
+    """plan.py records the tool set given to agents (gh#47 item 10), the same value as plan.json's `tools`. Load, set,
+    write like trust_set, so a trust answer written since the build is kept."""
+    led = target.load_json(run, "ledger.json")
+    led["tools"] = sorted(tools)
+    _write_json(os.path.join(run, "ledger.json"), led)
 
 
 def trust_get(run: str) -> dict:
