@@ -623,7 +623,7 @@ class PostingDocs(unittest.TestCase):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings at their 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
         self.assertLessEqual(os.path.getsize(SKILL), 22416)  # gh#52 shrank both; never raise these caps
-        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15117)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
         """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""
