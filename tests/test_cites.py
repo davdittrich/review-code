@@ -35,6 +35,12 @@ class Outside(tr.Base):
         out = self.ingest(dict(tr.CAND, path="pkg/gone.py", line=1, quote="x"))
         self.assertEqual(reasons(out), [("rejected", "path-not-in-tree")])
 
+    def test_a_path_too_long_to_look_up_is_rejected_with_its_own_reason(self):  # review-code-df4z
+        for n in (4095, 4096):  # names of 4095 bytes still go to ls-tree (and are absent); 4096 never does
+            path = "/".join(["d" * 254] * 17)[:n]
+            out = self.ingest(dict(tr.CAND, path=path, line=1, quote="x"))
+            self.assertEqual(reasons(out), [("rejected", "path-not-in-tree" if n == 4095 else "path-too-long")], n)
+
     def test_a_quote_only_the_checkout_holds_is_rejected_with_its_own_reason(self):
         tp.write(self.repo, "src/calc.py", tr.FEAT.replace("a - b", "a + b"))  # edited after pinning
         tp.write(self.repo, "src/new.py", "fresh = 1\n")  # untracked: only the checkout has it
@@ -179,6 +185,19 @@ class OldRun(tr.Base):
         self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
 
 
+class HiddenName(tr.Base):
+    """review-code-s9zi: a file whose name holds a hidden character is never copied or scanned (hidden-name). A cite under its raw
+    name is accepted (the pinned blob holds it); one under the escaped name the lanes are shown is rejected."""
+    RAW = "src/x" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+    base_files = tr.BASE
+    feat_files = {"src/calc.py": tr.FEAT, RAW: "y = 1\n"}
+
+    def test_a_cite_on_a_hidden_named_file_is_accepted_under_the_raw_name_and_rejected_under_the_shown_one(self):
+        shown = "src/x<TAGS:5>.py"
+        out = self.ingest(*(dict(tr.CAND, path=p, line=1, quote="y = 1") for p in (self.RAW, shown)))
+        self.assertEqual(reasons(out), [("accepted", None), ("rejected", "path-not-in-tree")])
+
+
 class ArgMax(tr.Base):
     """review-code-eixz: the cited paths go on one ls-tree argv, so a reply naming more path bytes than the kernel's ARG_MAX
     killed ingest. ls-tree reads no paths from a file or stdin, so they now run in chunks: one process per budget of path bytes."""
@@ -192,9 +211,9 @@ class ArgMax(tr.Base):
         self.assertEqual({(d["disposition"], d["reason"]) for d in out["dispositions"]}, {("rejected", "path-not-in-tree")})
         self.assertEqual(out["ids"], [])
 
-    def test_a_path_no_file_can_have_is_not_in_the_tree_not_an_error(self):
+    def test_a_path_no_file_can_have_is_too_long_not_an_error(self):
         out = self.ingest(dict(tr.CAND, path="d/" + "x" * 200000), tr.CAND)
-        self.assertEqual(reasons(out), [("rejected", "path-not-in-tree"), ("accepted", None)])
+        self.assertEqual(reasons(out), [("rejected", "path-too-long"), ("accepted", None)])
 
     def test_the_chunks_cost_one_ls_tree_per_budget_of_path_bytes_not_one_per_path(self):
         log = os.path.join(self.tmp, "trace.json")

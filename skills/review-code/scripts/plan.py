@@ -144,30 +144,33 @@ def _glob(path, globs):
 
 
 def _heads(tj, blobs):
-    """{path: first SCAN_BYTES of its pinned blob} for `blobs` ({path: (size, blob id)}), from one `cat-file --batch`: the
-    reviewed content, whatever the checkout holds now (review-code-zcrc). A blob over MAX_FILE gives none."""
+    """({path: first SCAN_BYTES of its pinned blob}, {path: its newline count}) for `blobs` ({path: (size, blob id)}), from one
+    `cat-file --batch`: the reviewed content, whatever the checkout holds now (review-code-zcrc, l895). A blob over MAX_FILE
+    gives neither."""
     uniq = sorted({oid for _, oid in blobs.values()})
-    head = {oid: None if data is None else data[:SCAN_BYTES]
+    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))
             for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], tj["repo"], True, target.MAX_FILE))}
-    return {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
+    have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
+    return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
 
 
 def _scan_lines(run, tj, blobs):
-    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each file's pinned blob,
+    """({path: [(line number, text)]}, {path: pinned line count}) of included files (counts only for path and repo): added lines of change.diff, or the head of each file's pinned blob,
     stripped and escaped as tree/ copies are (ledger._scan). `blobs` is ledger.regular_blobs of the included files."""
     inc, out = set(tj["included"]), {}
     if tj["kind"] in ("path", "repo"):
-        for p, data in sorted(_heads(tj, blobs).items()):
+        heads, counts = _heads(tj, blobs)
+        for p, data in sorted(heads.items()):
             text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
             out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(text.split("\n"), 1)]
-        return out
+        return out, counts
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         diff, used = fh.read(), {}
     for _, path, tag, _, n, body, _ in sanitize.walk(diff):
         if tag == "+" and path in inc and used.get(path, 0) < SCAN_BYTES:
             used[path] = used.get(path, 0) + len(body) + 1
             out.setdefault(path, []).append((n, body[:LINE_MAX]))
-    return out
+    return out, {}
 
 
 def _match_packs(files, lines, with_llm):
@@ -236,18 +239,6 @@ def _install_packs(run, packs, nit=None):
 SHARD_BYTES = 400000
 CHURN_DAYS = 180  # about two release cycles
 CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when a monorepo needs more
-
-
-def _file_stat(repo, p):
-    """(bytes, lines) of a working-copy file; (0, 0) when unreadable."""
-    size = lines = 0
-    try:
-        with open(os.path.join(repo, p), "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                size, lines = size + len(chunk), lines + chunk.count(b"\n")
-    except OSError:
-        return 0, 0
-    return size, lines
 
 
 def _groups(files, size):
@@ -530,7 +521,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     if not tj.get("pinned_tree"):  # a run from before the pin: its included files have no pinned content to read
         raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
     blobs = ledger.regular_blobs(tj["pinned_tree"], tj["included"], tj["repo"])
-    lines = _scan_lines(run, tj, blobs)
+    lines, counts = _scan_lines(run, tj, blobs)
     inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
@@ -539,7 +530,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     _install_packs(run, packs, nit_text)
     shards = []
     if tj["kind"] in ("path", "repo"):
-        stats = {p: _file_stat(tj["repo"], p) for p in tj["included"]}
+        stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p, 0)) for p in tj["included"]}  # (bytes, lines) as pinned
         groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
