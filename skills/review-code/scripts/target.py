@@ -99,6 +99,11 @@ def _run(args: List[str], cwd: str, stdin: Optional[bytes] = None, env: Optional
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        if p.stdin:
+            try:
+                p.stdin.close()
+            except OSError:  # its flush met the dead reader; the descriptor is closed regardless
+                pass
         p.stdout.close()  # never drain: a grandchild that left the group (setsid, a ControlPersist master) keeps
         p.wait()          # the pipe open for ever; git itself is dead, so the wait returns
         if not isinstance(e, subprocess.TimeoutExpired):

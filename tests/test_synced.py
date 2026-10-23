@@ -2,6 +2,7 @@
 live upstream default-branch tip, through the run-directory contract."""
 import json
 import os
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -233,6 +234,24 @@ class NetStdin(tt.Base):
         for net in (False, True):
             rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=net)
             self.assertEqual((rc, out.strip()), (0, b"8baef1b4abc478178b004d62031cf7fe6db6f903"), net)
+
+    def test_a_timed_out_net_call_closes_the_stdin_pipe_it_made(self):  # review-code-5m2d
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        tt.target._env(repo)  # the filter read runs first, unspied
+        made = []
+
+        class Spy(subprocess.Popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+            def communicate(self, *a, **kw):
+                raise subprocess.TimeoutExpired("git", 1)
+
+        with mock.patch.object(tt.target.subprocess, "Popen", Spy):
+            rc, out, _ = tt.target._run(["hash-object", "--stdin"], repo, stdin=b"abc\n", net=True)
+        self.assertEqual((rc, out), (-9, b""))
+        self.assertEqual([p.stdin.closed for p in made], [True])
 
 
 class FetchMaintenance(tt.PRWorld):
