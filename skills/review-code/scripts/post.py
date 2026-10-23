@@ -716,10 +716,11 @@ def build(run: str) -> dict:
         keyed = {f["path"] for f in fresh if any("private-key" in _redact(f[k])[1] for k in ("title", "trigger", "quote", "fix"))}
     except Exception:
         raise Refuse("scan-failed")
+    pin = report._Pinned(run, [f["path"] for f in fresh], [f["path"] for f in fresh])  # the cited rows, read as ingest judged them
     for f in fresh:  # report order: axis, severity, path, line, id
         row = anchors.get((f["path"], f["line"]))
         inline = row is not None and len(comments) < MAX_INLINE
-        rows = report._cited(report._tree(run, f.get("shard")), f["path"], f["line"], f["end_line"], f["quote"])
+        rows = report._cited(pin, f["path"], f["line"], f["end_line"], f["quote"])
         try:  # each finding on its own, so every match is reported at the finding's path:line
             where = None if inline else "%s:%d" % (_prose(f["path"]), f["line"])
             text, rules = _render(f, rows, where, f["path"] in keyed, "new" if old["last_head"] or old["findings"] else None)

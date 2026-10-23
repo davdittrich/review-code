@@ -1063,14 +1063,14 @@ class Captured:
 
 
 class Shards(Lanes):
+    feat_files = dict(MFEAT, **{"src/only.py": "a = 1\nb = 2\nc = 3\nd = 4\na = 1\n"})  # the same text at lines 1 and 5
+
     def setUp(self):
         super().setUp()
         for n in (1, 2):
             shutil.copytree(os.path.join(self.run_dir, "tree"), os.path.join(self.run_dir, "shards", str(n), "tree"))
         with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
-            fh.write("def f(a):\n    return a\n")  # shard 2 lacks the flagged lines
-        with open(os.path.join(self.run_dir, "shards", "1", "tree", "src", "only.py"), "w") as fh:
-            fh.write("x = 1\ny = 2\n")
+            fh.write("def f(a):\n    return a\n")  # shard 2's copy lacks the flagged lines; cites read the pinned tree (gh#50)
         write_plan(self.run_dir, shards=[{"id": 1, "run": "shards/1", "files": ["src/calc.py", "src/only.py"], "risk": 3},
                                          {"id": 2, "run": "shards/2", "files": ["src/calc.py"], "risk": 1}],
                    skipped=[{"what": "shard 3", "why": "over the shard cap", "files": 7}, {"what": "pack x", "why": "cap"}])
@@ -1081,9 +1081,6 @@ class Shards(Lanes):
         return json.loads(out)
 
     def test_one_id_from_two_shards_at_distant_lines_merges(self):  # IN-05: ledger copies a sibling's caller file
-        for n in (1, 2):
-            with open(os.path.join(self.run_dir, "shards", str(n), "tree", "src", "only.py"), "w") as fh:
-                fh.write("a = 1\nb = 2\nc = 3\nd = 4\na = 1\n")  # the same text at lines 1 and 5
         q = dict(CAND, path="src/only.py", quote="a = 1")
         self.shard(1, dict(q, line=1))
         out = self.shard(2, dict(q, line=5, severity="blocking", category="bug"))
@@ -1092,10 +1089,10 @@ class Shards(Lanes):
             (c,) = json.load(fh)["candidates"]
         self.assertEqual((c["line"], c["shard"], c["severity"]), (5, 2, "blocking"))
 
-    def test_cite_is_checked_in_the_shard_tree(self):
+    def test_a_shard_cite_is_checked_in_the_pinned_tree_not_the_shard_copy(self):  # gh#50: shards share the pinned tree
         self.assertEqual(self.shard(1, mc(3))["dropped"]["invalid"], 0)
         out = self.shard(2, mc(3))
-        self.assertEqual(out["dropped"]["invalid"], 1)  # dropped sums lanes: shard 1 had none
+        self.assertEqual(out["dropped"]["invalid"], 0)  # shard 2's copy lacks the line, the pinned tree has it
         self.assertEqual(out["lanes"], {"defects@1": "incomplete", "defects@2": "incomplete"})
 
     def test_each_shard_keeps_its_own_summary_ordered_by_shard(self):  # review-code-d14.7
@@ -1118,16 +1115,16 @@ class Shards(Lanes):
         os.remove(os.path.join(self.run_dir, "plan.json"))
         self.assertEqual(self.shard(1, mc(3), rc=1)["reason"], "bad-shard")
 
-    def test_handoff_and_verdict_use_the_shard_tree(self):
-        o = dict(mc(3), path="src/only.py", line=2, quote="y = 2", category="bug")
+    def test_handoff_names_the_shard_tree_and_the_verdict_reads_the_pinned_one(self):
+        o = dict(mc(3), path="src/only.py", line=2, quote="b = 2", category="bug")
         out = self.shard(1, o)
         (i,) = out["ids"]
         with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
             self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), fh.read())
-        self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "y = 2"}], "reason": "r"})
+        self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "b = 2"}], "reason": "r"})
         d = self.doc()
         (f,) = d["findings"]
-        self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))  # src/only.py is absent from the main tree
+        self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))
 
     def test_two_shards_flagging_the_same_range_merge(self):
         with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
@@ -1888,19 +1885,18 @@ class Gate(Base):
             rows = fh.read().splitlines()
         self.assertEqual([r.split(" ", 1)[0] for r in rows], ["failed-validation:" + c for c in checks])
 
-    def test_an_unreadable_cited_file_is_rejected_as_unreadable(self):
-        f = os.path.join(self.run_dir, "tree", "src", "calc.py")
-        os.chmod(f, 0)
-        self.addCleanup(os.chmod, f, 0o600)
-        if os.access(f, os.R_OK):
-            self.skipTest("file modes are not enforced for this user")
-        self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "unreadable")
+    def test_an_unreadable_cited_file_is_rejected_as_unreadable(self):  # gh#50: a binary blob of the pinned tree
+        self.run_dir = self.committed("src/blob.py", "x = 1\n\0\n")
+        self.assertEqual(self.ingest(dict(self.GOOD, path="src/blob.py", line=1, quote="x = 1"))["rejected"][0]["check"], "unreadable")
 
-    def test_a_line_cited_in_an_empty_file_is_out_of_range(self):
-        os.makedirs(os.path.join(self.run_dir, "tree", "src"), exist_ok=True)
-        with open(os.path.join(self.run_dir, "tree", "src", "calc.py"), "w", encoding="utf-8"):
-            pass
+    def test_a_line_cited_in_an_empty_file_is_out_of_range(self):  # gh#50: an empty blob of the pinned tree
+        self.run_dir = self.committed("src/calc.py", "")
         self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "line-out-of-range")
+
+    def committed(self, path, text):
+        """A fresh run whose pinned tree holds `text` at `path`."""
+        gitfix.commit(self.repo, {path: text}, "edit")
+        return self.pin(self.pin_args)
 
     def test_verdicts_keep_rejected_lines_per_batch_and_status_lists_no_verdict_ids(self):
         (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]

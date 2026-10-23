@@ -27,8 +27,8 @@ prints the report):
     report.py ingest   --run DIR [--lane defects|standards|spec|sota] [--shard N] [--agent ID]
                                    candidate lines + one ["inspected", [path, ...]] pair line (SOTA: item numbers); Defects lane only: one ["summary", text] line (text up to SUMMARY_MAX characters, first wins, others invalid);
                                    additive per lane (key <lane>, or <lane>@N for shard N, a plan.json shard id:
-                                   cites are checked in <run>/shards/N/tree, conventions in
-                                   <run>/shards/N/conventions; else bad-shard)
+                                   conventions are checked in <run>/shards/N/conventions; else bad-shard). Every
+                                   cite of ingest and verdicts is checked in the pinned tree (target.json pinned_tree)
     report.py verdicts --run DIR [--batch K] [--agent ID]   id, verdict, evidence (a list of path, line, quote), reason pair-array lines.
                                    --batch K (a verify_calls batch of candidates.json) stores the reply in replies/verify/K.txt,
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
@@ -148,7 +148,9 @@ REASONS = {
     "declined-invalid:too-long": "keep a declined why to 300 characters",
     "declined-invalid:copied-from-spec": "paraphrase the declined why: it holds a run of words copied from the spec",
     "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
-    "path-not-in-tree": "cite a file that exists in tree/",
+    "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
+    "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
+    "claims-missing": "the reviewed content has the file or symbol the finding calls missing: check it there, then drop or reword the finding",
     "line-out-of-range": "cite a line range inside the file",
     "unreadable": "cite a file that is readable text",
     "quote-not-at-line": "quote text that the file holds at the cited line",
@@ -167,7 +169,7 @@ REASONS = {
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
     "bad-summary": "send one summary line, text up to the length cap",
-    "no-cite": "a refuted verdict needs a cite that holds in tree/ (any file): none did",
+    "no-cite": "a refuted verdict needs a cite that holds in the reviewed content (any file): none did",
     "shared-cite": "one cite cannot refute two findings: give each refuted id its own cite",
     "other-batch": "the id belongs to another verify batch",
     "unknown-id": "the id is no candidate of this run",
@@ -224,14 +226,60 @@ def _real(tree, path):
     return real if real.startswith(tree + os.sep) and os.path.isfile(real) else None
 
 
-def _cite(tree, path, line, end, quote):
-    """(the cited lines, None) when path, range and quote all hold in tree/, else (None, the failing check)."""
-    real = _real(tree, path)
-    if real is None:
+def _norm(path):
+    """path normalised, or None when it can name no file inside a tree (no string, empty, absolute, NUL, leaves the root)."""
+    if not isinstance(path, str) or not path or "\0" in path or os.path.isabs(path):
+        return None
+    p = os.path.normpath(path)
+    return None if p in (".", "..") or p.startswith(".." + os.sep) else p
+
+
+class _Pinned:
+    """The pinned tree's regular files that one ingest, verdicts or post call names (gh#50): `files` from one `ls-tree`
+    of exactly those paths, `rows` {path: lines, or None when unreadable} of the `cited` ones from one `cat-file --batch`,
+    each blob read once by id. Rows hold the text tree/ held (ledger._scan: escaped, prose stripped), so a cite matches
+    what the lanes were shown and post.py never renders a raw invisible character."""
+
+    def __init__(self, run, paths, cited=()):
+        tj = target.load_json(run, "target.json")
+        self.top, self.files, self.rows, blob = tj["repo"], set(), {}, {}
+        want = sorted({p for p in map(_norm, paths) if p})
+        if not want:
+            return
+        # shortcut: the paths go on one argv (ls-tree reads no pathspec file); a reply naming ~100k paths would pass ARG_MAX
+        out = target.git_bytes(["ls-tree", "-z", "-l", "--full-tree", tj["pinned_tree"], "--"] + want, self.top,
+                               env={"GIT_LITERAL_PATHSPECS": "1"})
+        for rec in out.split(b"\0"):
+            meta, tab, name = rec.partition(b"\t")
+            f = meta.split()
+            if tab and len(f) == 4 and f[0] in (b"100644", b"100755"):  # a link, submodule or directory is no cited file
+                p = name.decode("utf-8", "surrogateescape")
+                self.files.add(p)
+                blob[p] = f[2].decode()
+        need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
+        uniq = sorted(set(need.values()))
+        text = {oid: None if data is None else ledger._text(data)
+                for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], self.top, True, target.MAX_FILE))}
+        for p, oid in need.items():
+            t = text.get(oid)
+            self.rows[p] = None if t is None else _lines(ledger._scan(p, t)[0])
+
+
+def _lines(text):
+    rows = text.split("\n")
+    if rows[-1] == "":
+        rows.pop()
+    return rows
+
+
+def _cite(pin, path, line, end, quote):
+    """(the cited lines, None) when path, range and quote all hold in the pinned tree, else (None, the failing check)."""
+    p = _norm(path)
+    if p not in pin.files:
         return None, "path-not-in-tree"
     if not (_int(line) and _int(end) and 1 <= line <= end):
         return None, "line-out-of-range"
-    rows = _rows(real)
+    rows = pin.rows.get(p)
     if rows is None:
         return None, "unreadable"
     if end > len(rows):
@@ -241,22 +289,25 @@ def _cite(tree, path, line, end, quote):
     return (got, None) if ok else (None, "quote-not-at-line")
 
 
-def _rows(real):
-    try:
-        with open(real, encoding="utf-8", errors="replace") as fh:
-            rows = fh.read().split("\n")
-    except OSError:
-        return None
-    if rows[-1] == "":
-        rows.pop()
-    return rows
+def _from_checkout(pin, path, quote):
+    """True when the checkout's file holds `quote` and the pinned file does not: the quote is not of the reviewed content.
+    A plain file read under the checkout root, no git process."""
+    p, q = _norm(path), isinstance(quote, str) and _ws(quote)
+    if not p or not q or q in _ws(" ".join(pin.rows.get(p) or ())):
+        return False
+    top = os.path.realpath(pin.top)
+    up = os.path.realpath(os.path.dirname(os.path.join(top, p)))
+    if up != top and not up.startswith(top + os.sep):  # a parent directory that leads out of the checkout
+        return False
+    status, data = target.read_working(os.path.join(top, p), target.MAX_FILE)
+    t = ledger._text(data) if status == "ok" else None
+    return t is not None and q in _ws(t)
 
 
-def _relocate(tree, path, line, end, quote):
+def _relocate(pin, path, line, end, quote):
     """(line, end) of the one place nearest the cited range where the file holds `quote` across as many lines as were
     cited, else None: a tie, or no such place, keeps the refusal. The quote check itself stays as strict as _cite's."""
-    real = _real(tree, path)
-    rows = _rows(real) if real else None
+    rows = pin.rows.get(_norm(path))
     q = _ws(quote)
     if rows is None or not q or not (_int(line) and _int(end) and 1 <= line <= end):
         return None
@@ -274,9 +325,22 @@ def _relocate(tree, path, line, end, quote):
     return lo + 1, hi
 
 
-def _cited(tree, path, line, end, quote):
-    """The cited lines when path, range and quote all hold in tree/, else None."""
-    return _cite(tree, path, line, end, quote)[0]
+def _cited(pin, path, line, end, quote):
+    """The cited lines when path, range and quote all hold in the pinned tree, else None."""
+    return _cite(pin, path, line, end, quote)[0]
+
+
+_NAME = r"[`'\"]?([\w][\w./+-]*)[`'\"]?"
+# shortcut: a fixed English word list; a claim worded otherwise is not caught and is verified as before
+_GONE = r"(?:is |are |was )?(?:missing|absent|undefined|not defined|not found|nonexistent|non-existent|does not exist|doesn't exist)"
+_MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\b))|(?:missing|absent|undefined|nonexistent|"
+                      r"non-existent|no such)\s+(?:file|module|function|symbol|class|method|name|import|path)\s+%s(?=$|[\s.,;:)!])"
+                      % (_NAME, _GONE, _NAME), re.I)
+
+
+def _claimed(o):
+    """Names a finding's title or trigger calls missing ("x.py is missing", "undefined name f")."""
+    return {(a or b).rstrip(".") for k in ("title", "trigger") if isinstance(o.get(k), str) for a, b in _MISSING.findall(o[k])}
 
 
 def _wire(v):
@@ -427,14 +491,11 @@ def _repair_one(s, budget):
     raise _unrepairable(s)
 
 
-def _hostile(tree, path):
+def _hostile(pin, path):
     """True when the cited file holds a known-key wire token: a quote copied from it could carry keys into a repaired
     line, so such a line keeps no fix, end_line or evidence (dc5)."""
-    real = _real(tree, path)
-    if real is None:
-        return False
-    with open(real, encoding="utf-8", errors="replace") as fh:
-        return _TOKEN.search(fh.read()) is not None
+    rows = pin.rows.get(_norm(path))
+    return rows is not None and _TOKEN.search("\n".join(rows)) is not None
 
 
 def _parse(ln, load):
@@ -568,8 +629,8 @@ def _sources(x):
     return x
 
 
-def _candidate(o, tree, lane, base, ctx=None, nit_mode=False):
-    """(candidate, None), or (None, the failing check)."""
+def _candidate(o, tree, pin, lane, base, ctx=None, nit_mode=False):
+    """(candidate, None), or (None, the failing check): cites are judged in the pinned tree `pin`, a norm count in tree/."""
     for k in CANDIDATE_REQUIRED:
         if k not in o:
             return None, "missing-field"
@@ -590,13 +651,13 @@ def _candidate(o, tree, lane, base, ctx=None, nit_mode=False):
         if src is None or _ws(c["quote"]) != _ws(ctx[o["item"]][2]) or end != c["line"]:
             return None, "sota-invalid"
         c["sources"] = src
-    c["rows"], why = _cite(tree, c["path"], c["line"], end, c["quote"])
+    c["rows"], why = _cite(pin, c["path"], c["line"], end, c["quote"])
     alt = None
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and c["quote"].translate(_CONTROL) != c["quote"]:
         # a regex or path with a single backslash before b, t, n, f or r parsed as a JSON control character: read it as the
-        # written backslash and letter when that reading is what tree/ holds (the cite check below still decides)
+        # written backslash and letter when that reading is what the pinned file holds (the cite check below still decides)
         fixed = c["quote"].translate(_CONTROL)
-        rows, again = _cite(tree, c["path"], c["line"], end, fixed)
+        rows, again = _cite(pin, c["path"], c["line"], end, fixed)
         if rows is not None:
             c["quote"], c["rows"], why = fixed, rows, again
         else:
@@ -604,15 +665,15 @@ def _candidate(o, tree, lane, base, ctx=None, nit_mode=False):
     if c["rows"] is None and why in ("quote-not-at-line", "line-out-of-range") and lane != "sota":  # sota cites its checklist item, not a line to move
         moved = None
         for q in (c["quote"], alt):
-            moved = q and _relocate(tree, c["path"], c["line"], end, q)
+            moved = q and _relocate(pin, c["path"], c["line"], end, q)
             if moved:
                 c["quote"] = q
                 break
         if moved:
             c["line"], c["end_line"] = moved
-            c["rows"], why = _cite(tree, c["path"], c["line"], c["end_line"], c["quote"])
+            c["rows"], why = _cite(pin, c["path"], c["line"], c["end_line"], c["quote"])
     if c["rows"] is None:
-        return None, why
+        return None, "quote-from-checkout" if why != "unreadable" and _from_checkout(pin, c["path"], c["quote"]) else why
     if c["category"] == "convention":
         r, why = _rule(o, base)
         if r is None:
@@ -657,6 +718,14 @@ def _refs(run, shard=None):
         return {}
 
 
+def _symbols(base):
+    """{symbol: defining file} of the ledger at `base` (the run or a shard); {} when unreadable."""
+    try:
+        return {s["name"]: s.get("file") for s in target.load_json(base, "ledger.json")["symbols"]}
+    except (target.Refuse, KeyError, TypeError):
+        return {}
+
+
 def _handoff(c, run, nonce, packs=(), refs=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
@@ -697,8 +766,9 @@ def _doomed(run, cands):
 
 
 def _queue(cands, skip=()):
-    """Candidates a verifier may judge, in verification order; SOTA is advisory: no verifier call; `skip` ids are doomed."""
-    return sorted((c for c in cands if c["category"] != "sota" and c["id"] not in skip),
+    """Candidates a verifier may judge, in verification order; SOTA is advisory: no verifier call; `skip` ids are doomed; a
+    downgraded candidate (claims-missing) gets none either."""
+    return sorted((c for c in cands if c["category"] != "sota" and c["id"] not in skip and "downgraded" not in c),
                   key=lambda c: (SEVERITIES.index(c["severity"]), AXES.index(c["axis"]), c["path"], c["line"], c["id"]))
 
 
@@ -939,7 +1009,18 @@ def _read_lane(text, lane, tree, run, shard=None):
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
-    for n, (ln, o, fixed) in enumerate(_objects(text), 1):
+    parsed = list(_objects(text))  # read once: the paths of every line go into one ls-tree and one cat-file
+    cited, named, syms = set(), set(), _symbols(base)
+    for _, o, _ in parsed:
+        if o is None:
+            continue
+        cited.add(ctx[o["item"]][0] if lane == "sota" and _int(o.get("item")) and o["item"] in ctx else o.get("path"))
+        if isinstance(o.get("inspected"), list):
+            named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"] if lane != "sota" or _int(a) and a in ctx)
+        for name in _claimed(o):
+            named.update((name, syms.get(name)))
+    pin = _Pinned(run, cited | named, cited)
+    for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
         why = _syntax(ln) if o is None else None  # else the check that failed
@@ -957,7 +1038,7 @@ def _read_lane(text, lane, tree, run, shard=None):
                 got = o["inspected"] if isinstance(o["inspected"], list) else []
                 if lane == "sota":  # item numbers, mapped back to their inventory paths
                     got = [ctx[a][0] for a in got if _int(a) and a in ctx]
-                areas += [a for a in got if _real(tree, a)]
+                areas += [a for a in got if _norm(a) in pin.files]
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + len(bad)
@@ -969,9 +1050,9 @@ def _read_lane(text, lane, tree, run, shard=None):
             continue
         if lane == "sota" and o is not None:  # the inventory, never the lane, picks the path and line
             o = dict(o, path=ctx[o["item"]][0], line=ctx[o["item"]][1]) if _int(o.get("item")) and o["item"] in ctx else None
-        if fixed and o is not None and _hostile(tree, o.get("path")):  # dc5
+        if fixed and o is not None and _hostile(pin, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
-        c, check = _candidate(o, tree, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
+        c, check = _candidate(o, tree, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
         if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
             c, check = None, "copied-from-spec"
         if c is None or c["id"] in kept:
@@ -985,7 +1066,9 @@ def _read_lane(text, lane, tree, run, shard=None):
             ignored += 1
             disp.append(_disp(n, c["id"], "rejected", "do-not-flag"))
         else:
-            disp.append(_disp(n, c["id"], "accepted", ok))
+            if any(_norm(x) in pin.files for name in _claimed(c) for x in (name, syms.get(name))):
+                c["downgraded"] = "claims-missing"  # the pinned tree has what the finding calls missing: no verifier call
+            disp.append(_disp(n, c["id"], "downgraded" if "downgraded" in c else "accepted", c.get("downgraded", ok)))
             kept[c["id"]] = dict(c, shard=shard) if shard is not None else c
     return {"candidates": sorted(kept.values(), key=lambda c: c["id"]), "inspected": areas, "complete": complete,
             **({"summary": summary} if summary else {}), "declined": declined, "dropped": {"invalid": invalid, "do_not_flag": ignored}, "rejected": rejected,
@@ -1138,14 +1221,14 @@ def _replies(run):
     return os.path.join(run, "replies", "verify")
 
 
-def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
-    """Fold one stored reply into got (first verdict per id wins); returns (count of ids outside `allowed`, rejected rows,
-    repaired line count, disposition rows).
+def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
+    """Fold one stored reply (its _objects rows) into got (first verdict per id wins); returns (count of ids outside
+    `allowed`, rejected rows, repaired line count, disposition rows).
     allowed None is a serial reply (any queued id); a set is a batch, whose refuted needs a cite that validates against
-    tree/ in any file (the code elsewhere may already cover the claim) and that no other refuted id of the reply
-    uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
+    the pinned tree `pin` in any file (the code elsewhere may already cover the claim) and that no other refuted id of the
+    reply uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
     foreign, mine, bad, fixed, disp, at = 0, [], [], 0, [], {}  # at: id -> index of its row in disp
-    for n, (ln, o, fix) in enumerate(_objects(text, total), 1):
+    for n, (ln, o, fix) in enumerate(parsed, 1):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
@@ -1162,9 +1245,9 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
             continue
         ev = o.get("evidence")
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
-                 and _cited(trees[o["id"]], e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
+                 and _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")
-        if fix and any(_hostile(trees[o["id"]], p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
+        if fix and any(_hostile(pin, p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
             cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
@@ -1174,7 +1257,8 @@ def _one(text, allowed, cand_ids, trees, spec, copied, got, paths, total):
             if fix:  # a repaired line never refutes: text read from a quote must not drop a finding
                 kind, down = "unverifiable", "repaired"
             elif allowed is not None and not cites:
-                kind, down = "unverifiable", "no-cite"
+                kind, down = "unverifiable", "quote-from-checkout" if any(isinstance(e, dict) and _from_checkout(
+                    pin, e.get("path"), e.get("quote")) for e in (ev if isinstance(ev, list) else [])) else "no-cite"
         got[o["id"]] = dict({"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                              "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}, **({"downgraded": down} if down else {}))
         mine.append(o["id"])
@@ -1193,7 +1277,6 @@ def _verdicts(run, text, batch, agent=None):
     """verdicts() without the lock."""
     cand = target.load_json(run, "candidates.json")
     _counts(run)
-    trees = {c["id"]: _tree(run, c.get("shard")) for c in cand["candidates"]}  # cites are checked in the cited shard's tree
     ids = {c["id"] for c in cand["candidates"] if c["category"] != "sota"} - set(cand.get("capped_ids", []))  # a cut one never reached a verifier
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
@@ -1222,18 +1305,24 @@ def _verdicts(run, text, batch, agent=None):
     _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
     got, foreign, repaired, fixes, lost, disp, rej = {}, 0, 0, {}, 0, [], []
     names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
+    replies = []
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
-            with open(os.path.join(store, n), encoding="utf-8") as fh:
-                f, bad, fixed, rows = _one(fh.read(), None if k is None else calls[k], ids, trees, spec, copied, got, paths,
-                                           [INGEST_STEPS])  # each stored batch has its own repair budget (one hostile batch starves no other)
-            if k == batch:
-                disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, _) in enumerate(bad, 1)]
-            _reject(run, "serial" if k is None else "batch-%d" % k, bad)
-            fixes["serial" if k is None else "batch-%d" % k] = fixed
-            lost += len(bad) if k == batch else 0
-            foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
+            with open(os.path.join(store, n), encoding="utf-8") as fh:  # each stored batch has its own repair budget
+                replies.append((k, list(_objects(fh.read(), [INGEST_STEPS]))))  # (one hostile batch starves no other)
+    # every stored batch is judged again, so all their cites share one ls-tree and one cat-file
+    cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
+                                   if o and isinstance(o.get("evidence"), list) for e in o["evidence"] if isinstance(e, dict)}
+    pin = _Pinned(run, cited, cited)
+    for k, parsed in replies:
+        f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
+        if k == batch:
+            disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, _) in enumerate(bad, 1)]
+        _reject(run, "serial" if k is None else "batch-%d" % k, bad)
+        fixes["serial" if k is None else "batch-%d" % k] = fixed
+        lost += len(bad) if k == batch else 0
+        foreign, repaired = foreign + (f if k == batch else 0), repaired + (fixed if k == batch else 0)
     _put(os.path.join(run, "verdicts.json"), json.dumps(got, sort_keys=True, indent=2))
     _counts(run, "serial" if batch is None else "batch-%d" % batch, lost, fixes, lambda n: n == "serial" or n.startswith("batch-"))
     if agent is not None:
@@ -1339,7 +1428,7 @@ def _build(run):
         else:
             cls = "inferred" if cites else "speculative"
             reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else (
-                "verifier-cap" if c["id"] in capped else "no-verdict")
+                "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
@@ -1348,7 +1437,7 @@ def _build(run):
         if origin == "pre-existing" and sev in SEVERITIES[2:] and c["id"] not in capped:
             dropped["do_not_flag"] += 1
             continue
-        items.append(dict(c, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
+        items.append(dict({k: x for k, x in c.items() if k != "downgraded"}, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
                           verified=cls in ("reproduced", "traced"), origin=origin, reason=reason))
     items.sort(key=lambda i: (AXES.index(i["axis"]), SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
     findings = [i for i in items if i["verified"]]
