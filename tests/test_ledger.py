@@ -1533,5 +1533,73 @@ class Trust(Base):
         self.assertEqual(cm.exception.reason, "bad-ledger")
 
 
+class GitProcessCount(Base):
+    """review-code-dz5l: symbol refs and commit messages cost one git process each, whatever their number."""
+
+    def scenario(self, tag, nsym, ncommits):
+        """Build a ledger in its own repo; return (ledger, number of git processes the build started)."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo-" + tag))
+        self.run_dir = os.path.join(self.tmp, "run-" + tag)
+        trace = os.path.join(self.tmp, "trace-%s.json" % tag)
+        self.base({"src/use.py": "".join("v%d = fn_%02d()\n" % (i, i) for i in range(nsym))})
+        self.g("checkout", "-q", "-b", "feat")
+        gitfix.commit(self.repo, {"src/m.py": "".join("def fn_%02d():\n    return 1\n" % i for i in range(nsym))}, "c0")
+        for i in range(1, ncommits):
+            self.g("commit", "-q", "--allow-empty", "-m", "c%d" % i)
+        commits = self.g("rev-list", "--reverse", "main..HEAD").split()
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": trace}):
+            _, led = self.build(commits=commits, included=["src/m.py"])
+        with open(trace, encoding="utf-8") as fh:
+            starts = sum(json.loads(ln)["event"] == "start" for ln in fh)
+        return led, starts
+
+    def test_process_count_is_the_same_for_one_symbol_and_forty(self):
+        small, n_small = self.scenario("s1", 1, 1)
+        large, n_large = self.scenario("s40", 40, 1)
+        self.assertEqual((len(small["symbols"]), len(large["symbols"])), (1, 40))
+        self.assertEqual((sum(s["refs"] for s in large["symbols"]), len(large["callers"])), (40, 40))
+        self.assertEqual(n_small, n_large)
+
+    def test_process_count_is_the_same_for_one_commit_and_thirty(self):
+        _, n_small = self.scenario("c1", 1, 1)
+        _, n_large = self.scenario("c30", 1, 30)
+        self.assertEqual(n_small, n_large)
+
+    def test_symbol_refs_match_one_grep_per_symbol_by_whole_word_only(self):
+        self.base({"src/use.py": "from m import parse_cfg, parse_cfg_all\nparse_cfg()\nxparse_cfg()\nparse_cfg_all()\n"
+                                 "# parse_cfg parse_cfg_all\n",
+                   "src/other.py": "def parse_cfg():\n    pass\n"})
+        self.branch({"src/m.py": "def parse_cfg():\n    pass\n\n\ndef parse_cfg_all():\n    pass\n"})
+        _, led = self.build(included=["src/m.py"])
+        rev = led["target"]["head_sha"]
+        want_refs, want_callers = {}, []
+        for s in led["symbols"]:
+            every = ledger._grep(self.repo, rev, [s["name"]])
+            want_refs[s["name"]] = sum(f != s["file"] and ledger.defined_name(t) != s["name"] for f, _, t in every)
+            want_callers += [(f, ln, s["name"]) for f, ln, _ in every if f != "src/m.py"]
+        self.assertEqual({s["name"] for s in led["symbols"]}, {"parse_cfg", "parse_cfg_all"})
+        self.assertEqual({s["name"]: s["refs"] for s in led["symbols"]}, want_refs)
+        self.assertEqual(sorted((c["file"], c["line"], c["symbol"]) for c in led["callers"]), sorted(want_callers))
+        self.assertIn(("src/use.py", 1, "parse_cfg"), want_callers)
+        self.assertNotIn(("src/use.py", 3, "parse_cfg"), want_callers)  # xparse_cfg is another word
+
+    def test_commit_messages_equal_one_log_per_commit_in_the_given_order(self):
+        self.base({"a.txt": "0\n"})
+        shas = []
+        for i, (msg, date) in enumerate([("newest by date\n\nbody\n\n", "2026-03-01T00:00:00+0000"), ("", "2026-01-01T00:00:00+0000"),
+                                         ("no trailing newline", "2026-02-01T00:00:00+0000"), ("héllo\r\nwin", "2026-01-15T00:00:00+0000")]):
+            with open(os.path.join(self.repo, "a.txt"), "w", encoding="utf-8") as fh:
+                fh.write("%d\n" % (i + 1))
+            self.g("add", "a.txt")
+            gitfix.run(["git", "commit", "-q", "--allow-empty-message", "-m", msg], self.repo,
+                       dict(gitfix.env(), GIT_COMMITTER_DATE=date, GIT_AUTHOR_DATE=date))
+            shas.append(self.g("rev-parse", "HEAD"))
+        want = [ledger.sanitize.sanitize_prose(target.git_bytes(
+            ["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], self.repo).decode("utf-8", "surrogateescape"))
+            for c in shas]
+        self.assertEqual(ledger._commit_messages(self.repo, shas), want)
+        self.assertEqual(ledger._commit_messages(self.repo, []), [])
+
+
 if __name__ == "__main__":
     unittest.main()
