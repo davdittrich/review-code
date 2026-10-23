@@ -1229,6 +1229,7 @@ class Tamper(Scope):
         def with_(**kw):
             return lambda st: json.dumps(dict(st, **kw))
         cases = {"done entry not an object": with_(done={"F-1": "x"}),
+                 "in_flight not an object": with_(in_flight="F-1"),
                  "in_flight without id": with_(in_flight={"path": "a.py", "mode": 420}),
                  "in_flight path not a string": with_(in_flight={"id": "F-1", "path": 1, "mode": 420}),
                  "in_flight mode missing": with_(in_flight={"id": "F-1", "path": "a.py"}),
