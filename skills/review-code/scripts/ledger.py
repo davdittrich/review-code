@@ -62,7 +62,7 @@ _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
-ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, so spec.md's length never follows it
+ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, clamped to 10**ADR_WIDTH-1, so spec.md's length never follows it
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -96,18 +96,18 @@ def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
 
 
-def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, Optional[bytes]]]:
-    """(oid, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
+def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, int, Optional[bytes]]]:
+    """(oid, size, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
     attributes; a missing id is skipped, a failing git run refuses, and a blob over target.MAX_FILE comes
     as None, unread (6xl.75)."""
     uniq = sorted(set(oids))
     for f, data in target.cat_batch([o.encode() for o in uniq], repo, True, target.MAX_FILE):
         if len(f) == 3 and f[1] == b"blob":
-            yield f[0].decode(), data
+            yield f[0].decode(), int(f[2]), data
 
 
 def _blobs(repo: str, oids) -> Dict[str, bytes]:
-    return dict(_blob_stream(repo, oids))
+    return {oid: data for oid, _, data in _blob_stream(repo, oids)}
 
 
 def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool = False,
@@ -720,7 +720,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             skipped.append({"path": p, "reason": "submodule"})
         elif mode is not None:
             want.setdefault(oid, []).append(p)
-    for oid, data in _blob_stream(repo, want):
+    for oid, _, data in _blob_stream(repo, want):
         for p in want[oid]:
             if data is None:
                 skipped.append({"path": p, "reason": "too-large"})
@@ -827,6 +827,27 @@ def _is_record(p: str) -> bool:
     return p.lower().endswith(_PROSE_EXT) and bool(_ADR_DIRS & set(p.lower().split("/")[:-1]))
 
 
+def _record_facts(size: int, data: Optional[bytes], spots, issues) -> tuple:
+    """(size, is text, title or None, names a changed file or issue) of one record's bytes."""
+    text = _text(data) if data is not None else None
+    low = text.lower() if text else ""
+    first = next((ln.strip().lstrip("#").strip() for ln in sanitize._BREAK.split(text or "") if ln.strip()), "")
+    return (size, text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
+            bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+
+
+def _record_row(p: str, facts: tuple, hay: str, toks) -> tuple:
+    """(size, title, why list) of the record at `p` from its `_record_facts`."""
+    size, is_text, title, names = facts
+    n = re.match(r"[0-9]+", posixpath.basename(p))
+    why = [w for w, hit in (
+        ("path named", p.lower() in hay),
+        ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
+        ("names a changed file or issue", names),
+        ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
+    return size, title if is_text else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE, why
+
+
 def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=(), toks=()) -> dict:
     """path -> (size in bytes, title, why) of the decision records: prose files under an adr, adrs, decisions or
     architecture-decisions directory at any depth, and under a directory the spec finder named. Every record is listed and
@@ -843,23 +864,11 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
     got = {}  # blob id -> (size, text or not, title, names a changed file or issue): one record's bytes held at a time (n4lk.2)
-    for f, data in target.cat_batch([o.encode() for o in oids], repo, True, target.MAX_FILE):
-        if len(f) == 3 and f[1] == b"blob":
-            text = _text(data) if data is not None else None
-            low = text.lower() if text else ""
-            first = next((ln.strip().lstrip("#").strip() for ln in (text or "").split("\n") if ln.strip()), "")
-            got[f[0].decode()] = (int(f[2]), text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
-                                  bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+    for oid, size, data in _blob_stream(repo, oids):
+        got[oid] = _record_facts(size, data, spots, issues)
     info = {}
     for p in cand:
-        size, is_text, title, names = got.get(reg[p], (0, False, None, False))
-        n = re.match(r"[0-9]+", posixpath.basename(p))
-        why = [w for w, hit in (
-            ("path named", p.lower() in hay),
-            ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
-            ("names a changed file or issue", names),
-            ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
-        info[p] = (size, title if is_text else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE, why)
+        info[p] = _record_row(p, got.get(reg[p], (0, False, None, False)), hay, toks)
     out = {}
     for p in sorted(cand, key=lambda p: (-len(info[p][2]), p)):
         size, title, why = info[p]
@@ -884,7 +893,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
             out[p] = text
     for p in found:
         rel = posixpath.normpath(str(p).replace(os.sep, "/"))
-        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out or rel in skip:
+        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out or rel in skip or _is_record(rel):
             continue
         data = _blobs(repo, [reg[rel]]).get(reg[rel])
         text = _text(data) if data is not None else None
@@ -1083,7 +1092,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
                       "## Decision records\n" + ("\n\n".join(
-                          "### %s (%0*d bytes): %s\n%s" % (lab, ADR_WIDTH, size, why, block(title, nonce))
+                          "### %s (%0*d bytes): %s\n%s" % (lab, ADR_WIDTH, min(size, 10 ** ADR_WIDTH - 1), why, block(title, nonce))
                           for lab, (size, title, why) in sections["adrs"]) or "none") + "\n")) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()

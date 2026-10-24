@@ -746,9 +746,9 @@ class Tree(Base):
         oids = subprocess.run(["git", "hash-object", "-w", "--stdin-paths"], cwd=self.repo, env=gitfix.env(),
                               input=("\n".join(paths) + "\n").encode(), stdout=subprocess.PIPE,
                               check=True).stdout.decode().split()
-        got = dict(ledger._blob_stream(self.repo, oids + ["0" * 40]))
+        got = {o: (n, d) for o, n, d in ledger._blob_stream(self.repo, oids + ["0" * 40])}
         self.assertEqual(len(got), 3000)
-        self.assertEqual(got[oids[1234]], b"blob 1234\n")
+        self.assertEqual(got[oids[1234]], (len(b"blob 1234\n"), b"blob 1234\n"))
 
     def test_blob_stream_git_failure_refuses(self):
         # a failing cat-file must not pass as an empty tree/ (the old git_bytes check)
@@ -1211,6 +1211,48 @@ class Spec(Base):
         gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
         self.build()
         self.assertEqual(len(self.read("inputs/spec.md").encode()), small)
+
+    def test_adr_blobs_are_read_through_blob_stream(self):  # review-code-2gz4: one cat_batch loop
+        seen = []
+        real = ledger._blob_stream
+
+        def spy(repo, oids):
+            oids = list(oids)
+            seen.extend(oids)
+            return real(repo, oids)
+        with mock.patch.object(ledger, "_blob_stream", spy):
+            self.adr_build({"docs/adr/0001-a.md": "# A\n"})
+        oid = self.g("rev-parse", "wip:docs/adr/0001-a.md")
+        self.assertIn(oid, seen)
+
+    def test_a_cr_only_record_gets_a_one_line_title(self):  # review-code-6ean
+        self.adr_build({"docs/adr/0001-a.md": b"# T\rCRBODY\r"})
+        spec = self.read("inputs/spec.md")
+        found, _ = blocks(spec)
+        self.assertIn("T", [c for _, c in found])
+        self.assertNotIn("CRBODY", spec)
+
+    def test_a_record_the_finder_names_is_indexed_not_pasted(self):  # review-code-efro
+        self.base({"README.md": "r\n", "docs/adr/0001-x.md": "# X\nFINDCANARY\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        head = gitfix.commit(self.repo, {"src/b.py": "b = 1\n"}, "work")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/b.py"])
+        with redirect_stdout(io.StringIO()), mock.patch.object(sys, "stdin", io.StringIO("docs/adr/0001-x.md\n")):
+            self.assertEqual(ledger.main(["build", "--run", self.run_dir, "--found", "-"]), 0)
+        led = json.load(open(os.path.join(self.run_dir, "ledger.json")))
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("adr", "docs/adr/0001-x.md")])
+        self.assertNotIn("FINDCANARY", self.read("inputs/spec.md"))
+        self.assertIn("docs/adr/0001-x.md", self.index_rows())
+
+    def test_adr_size_field_keeps_its_width_past_the_cap(self):  # review-code-j7sv
+        def spec_len(n):
+            self.adr_build({"docs/adr/0001-a.md": b"\0" + b"x" * (n - 1)})
+            out = len(self.read("inputs/spec.md").encode())
+            self.g("checkout", "-q", "main")
+            self.g("branch", "-q", "-D", "wip")
+            return out
+        self.assertEqual(spec_len(10_000_000), spec_len(4_000_000))
 
     def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
         _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])

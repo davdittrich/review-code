@@ -149,7 +149,7 @@ def _heads(tj, blobs):
     gives neither."""
     uniq = sorted({oid for _, oid in blobs.values()})
     head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))  # reduced per blob: peak memory is one blob
-            for oid, data in ledger._blob_stream(tj["repo"], uniq)}
+            for oid, _, data in ledger._blob_stream(tj["repo"], uniq)}
     have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
     return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
 
