@@ -2638,6 +2638,19 @@ class WireTokenScope(Base):
         with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
             self.assertEqual([c["path"] for c in json.load(fh)[i]["cites"]], ["src/clean.py"])
 
+    def test_a_partial_cite_drop_is_said_on_the_traced_finding_and_nothing_dropped_is_not(self):  # review-code-j3mq
+        i = self._setup("quote", dict(CAND, path="src/clean.py", line=1, quote="x = 1", fix=""))
+        self.verdicts(self._line(i, ("src/calc.py", 5, "return f"), ("src/clean.py", 1, "x = 1")))
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["evidence_class"], f["reason"].startswith("cites-dropped-wire-token; ")), ("traced", True), f["reason"])
+        self.assertEqual(f["reason"].count("cites-dropped-wire-token"), 1)
+
+    def test_nothing_dropped_renders_the_reason_unchanged(self):  # review-code-j3mq
+        i = self._setup("summary")
+        self.verdicts(self._line(i, ("src/calc.py", 5, "return f")))
+        (f,) = self.doc()["findings"]
+        self.assertNotIn("cites-dropped", f["reason"])
+
     def test_a_repaired_verdict_takes_no_cite_when_the_candidates_own_file_holds_a_verdict_token(self):
         i = self._setup("evidence")  # review-code-spb8: the cite file is clean, the candidate file is the hostile one
         self.assertEqual(self.verdicts(self._line(i, ("src/clean.py", 1, "x = 1")))["confirmed"], [])

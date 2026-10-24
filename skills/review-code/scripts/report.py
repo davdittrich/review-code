@@ -1745,8 +1745,10 @@ def _build(run):
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"
-            reason = ("cites-dropped-wire-token; " * bool(v.get("cites_dropped")) + v["reason"]) if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
+            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
+        if v.get("cites_dropped") and not reason.startswith("cites-dropped-wire-token"):  # a partial drop still says so, whatever the class
+            reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
