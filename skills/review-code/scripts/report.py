@@ -363,6 +363,9 @@ _MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\
 # a name "missing from the imports/scope/namespace/module" is a symbol claim unless it holds a "/"; any other tail stays a file claim;
 # shortcut: a slashless file name with this tail ("config.yaml is missing from the module") also stays a finding, left to the verifier
 _SYMBOL_TAIL = re.compile(r"\s*(?:from|in)\s+(?:the\s+|this\s+|its\s+)?(?:imports?|scope|namespace|module)\b", re.I)
+# a name after a preposition ("error handling in x.py is missing", "test for x.py") is where the missing thing lives, not the
+# subject; shortcut: a file claim worded so ("the file at x.py is missing") stays a finding, left to the verifier
+_OBJECT = re.compile(r"\b(?:in|of|for|to|from|within|inside|into|on|at|by|with|under)\s+(?:the\s+|this\s+|its\s+|an?\s+)?$", re.I)
 
 
 def _claimed(o):
@@ -371,7 +374,7 @@ def _claimed(o):
     for k in ("title", "trigger"):
         for m in _MISSING.finditer(o[k]) if isinstance(o.get(k), str) else ():
             a, b = m.groups()
-            if not (a and "/" not in a and _SYMBOL_TAIL.match(o[k], m.end())):
+            if not (a and (("/" not in a and _SYMBOL_TAIL.match(o[k], m.end())) or _OBJECT.search(o[k], 0, m.start()))):
                 names.add((a or b).rstrip("."))
     return names
 
