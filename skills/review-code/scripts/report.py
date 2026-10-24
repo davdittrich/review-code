@@ -91,8 +91,10 @@ if sys.version_info < (3, 9):
     print('{"reason": "python-too-old", "status": "refuse"}')
     sys.exit(1)
 
+import collections
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -627,6 +629,22 @@ def _words(s):
     return re.findall(r"\w+", s.casefold())
 
 
+def _runs(s):
+    w = _words(s)
+    return {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
+
+
+def _leaves(o):
+    """Every string inside a parsed reply object; a stack, not recursion, so nesting depth cannot raise."""
+    todo = [o]
+    while todo:
+        o = todo.pop()
+        if isinstance(o, str):
+            yield o
+        elif isinstance(o, (dict, list)):
+            todo.extend(o.values() if isinstance(o, dict) else o)
+
+
 def _spec_refs(run):
     """The decision records indexed in the ledger, as the paths the pinned tree is asked for. Fails closed (review-code-27ht):
     an unreadable ledger refuses, since nothing proves the reply copies no record. A record named with a hidden character is
@@ -666,10 +684,13 @@ def _hidden_names(run, shown):
 
 def _spec_copy(run):
     """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
-    the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin and the
+    the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), whose rows the pin read with the reply's own cites in the same ls-tree and
-    cat-file (review-code-1zqz). That gives the predicate: True when a string holds SPEC_RUN consecutive words (case and
-    punctuation ignored) of either text. The text stays inside these closures (CTX-03)."""
+    cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
+    SPEC_RUN consecutive words (case and punctuation ignored) of either text. The text stays inside these closures (CTX-03).
+    The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
+    words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
+    pass of its own."""
     inside = _spec_lines(run)
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
@@ -677,17 +698,27 @@ def _spec_copy(run):
     except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
 
-    def with_records(pin, adr):
+    def with_records(pin, adr, said):
         # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch).
         # One the pin could not read whole (over MAX_FILE, or not text) refuses: a lane can read it in parts (review-code-py53)
         if any(pin.rows.get(p, "") is None for p in map(_norm, adr)):
             raise target.Refuse("record-unreadable", REASONS["record-unreadable"])
-        w = spec + [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
-        runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
+
+        def held(want):
+            """The runs of `want` in the spec words followed by every record's, in order (a run may span two records)."""
+            got, win = set(), collections.deque(maxlen=SPEC_RUN)
+            rows = (x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row))
+            for x in itertools.chain(spec, rows) if want else ():
+                win.append(x)
+                if len(win) == SPEC_RUN and tuple(win) in want:
+                    got.add(tuple(win))
+            return got
+        asked = set().union(*map(_runs, said))
+        found = held(asked)
 
         def copied(s):
-            t = _words(s)
-            return any(tuple(t[i:i + SPEC_RUN]) in runs for i in range(len(t) - SPEC_RUN + 1))
+            t = _runs(s)
+            return bool(t & found) if t <= asked else bool(held(t))
         return copied
     return with_records
 
@@ -1103,7 +1134,7 @@ def _read_lane(text, lane, run, shard=None):
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named | set(adr), cited | set(adr))
-    copied = spec_text(pin, adr) if lane == "spec" else None
+    copied = spec_text(pin, adr, (s for _, o, _ in parsed for s in _leaves(o))) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
         ok = "repaired" if fixed else None  # the reason of an accepted line that was repaired
@@ -1411,7 +1442,7 @@ def _verdicts(run, text, batch, agent=None):
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited | set(adr), cited | set(adr))
-    copied = spec_text(pin, adr) if spec else None
+    copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o))) if spec else None
     if batch is None:
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
         for n in _rejected(run)[1]:

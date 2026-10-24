@@ -8,6 +8,7 @@ import io
 import shutil
 import tempfile
 import time
+import tracemalloc
 from unittest import mock
 import unittest
 
@@ -1011,6 +1012,71 @@ class SpecAdrNotText(_SpecAdrUnreadable):
         after = SpecAxis.snapshot(self)
         self.assertEqual(after.pop(".lock"), b"")  # the run lock, created empty by the first locked call
         self.assertEqual(after, before)  # no write, counters.json included: the refusal costs no try
+
+
+class SpecAdrGuardMemory(_SpecAdrUnreadable):
+    """review-code-9uk7: the copy guard holds the reply's word runs, not every record's: what it builds stays the same size
+    however many records the ledger lists, and a reply copying any record is still rejected."""
+    WORDS = ["w%d" % i for i in range(5000)]
+
+    def records(self, n):
+        """A run whose ledger lists n decision records of about 300 distinct words each (built once per n)."""
+        made = self.__dict__.setdefault("made", {})
+        if n in made:
+            self.run_dir, repo, rows = made[n]
+            return repo, rows
+        repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
+        rows = {"docs/adr/%04d-a.md" % i: "# T%d\n" % i + " ".join(self.WORDS[(i * 300 + k) % 5000] for k in range(300)) + "\n"
+                for i in range(n)}
+        gitfix.commit(repo, dict(BASE, **rows), "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+        gitfix.commit(repo, {"src/calc.py": FEAT}, "feat")
+        run = json.loads(cli("target.py", ["main"], repo, self.tmp)[1])["run"]
+        self.assertEqual(cli("ledger.py", ["build", "--run", run], repo, self.tmp)[0], 0)
+        self.run_dir, made[n] = run, (run, repo, rows)
+        return repo, rows
+
+    def guard_peak(self, n, why):
+        """(peak bytes the guard allocates while it is built, the rejected checks) of one in-process spec ingest."""
+        self.records(n)
+        peaks, real = [], report._spec_copy
+
+        def spy(run):
+            build = real(run)
+
+            def measured(*a):
+                self.assertFalse(tracemalloc.is_tracing())  # stop() below would end an outer tracer
+                tracemalloc.start()
+                try:
+                    return build(*a)
+                finally:
+                    peaks.append(tracemalloc.get_traced_memory()[1])
+                    tracemalloc.stop()
+            return measured
+        reply = lines({"declined": [{"spec_line": self.row(), "why": why}]}, {"inspected": []})
+        with mock.patch.object(report, "_spec_copy", spy):
+            rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, report.target.MAX_FILE)
+        self.assertEqual((rc, len(peaks)), (0, 1), out)
+        return peaks[0], [r["check"] for r in out["rejected"]]
+
+    def test_the_guard_builds_the_same_size_for_three_records_and_thirty(self):
+        three, _ = self.guard_peak(3, "Adders are meant to give whole numbers")
+        thirty, _ = self.guard_peak(30, "Adders are meant to give whole numbers")
+        self.assertLess(thirty, three + 100_000, (three, thirty))  # every record's runs held at once: about 1.4 MB more
+
+    def test_a_why_copying_the_last_record_is_still_rejected(self):
+        _, rows = self.records(30)
+        last = rows["docs/adr/0029-a.md"].split("\n")[1].split()
+        _, got = self.guard_peak(30, " ".join(last[100:106]))
+        self.assertEqual(got, ["declined-invalid:copied-from-spec"])
+
+    def test_a_string_the_reply_did_not_hold_is_still_checked_against_every_record(self):
+        _, rows = self.records(30)
+        copy = " ".join(rows["docs/adr/0017-a.md"].split("\n")[1].split()[7:13])
+        with gitfix.isolated(self.tmp):
+            pin = report._Pinned(self.run_dir, rows, rows)
+            copied = report._spec_copy(self.run_dir)(pin, list(rows), ["unrelated words only here"])
+        self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (True, False))
 
 
 class SpecAdrInPlace(Base):
