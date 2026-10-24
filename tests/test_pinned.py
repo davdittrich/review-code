@@ -13,6 +13,7 @@ import paths  # noqa: F401
 
 import gitfix  # noqa: E402
 import ledger  # noqa: E402
+import report  # noqa: E402
 import target  # noqa: E402
 import test_fix as tfix  # noqa: E402
 import test_post as tpost  # noqa: E402  (module imports: their test classes are not collected twice)
@@ -653,6 +654,13 @@ class Basis(tpost.Base):
     def test_both_tools_passed_lose_nothing(self):
         self.assertEqual(self.plan("codegraph", "serena")["lost_capabilities"], [])
 
+    def test_ledger_records_the_tool_set_plan_json_holds(self):  # gh#47 item 10
+        for tools in (("serena",), ("codegraph", "serena"), ()):
+            with self.subTest(tools=tools):
+                self.plan(*tools)
+                self.assertEqual(load(self.run_dir, "ledger.json")["tools"], load(self.run_dir, "plan.json")["tools"])
+                self.assertEqual(load(self.run_dir, "ledger.json")["tools"], sorted(tools))
+
     def test_no_tool_passed_loses_both(self):
         self.assertEqual(self.plan()["lost_capabilities"], ["codegraph: callers and blast radius",
                                                              "serena: symbol and reference lookup"])
@@ -749,6 +757,38 @@ class MissingBlob(tt.Base):
         with self.assertRaises(target.Refuse) as cm:
             pin.every()
         self.assertEqual(cm.exception.reason, "bad-ref")
+
+
+class PinnedBlobRead(tt.Base):
+    """PR60 N8: report._Pinned reads its cited blobs through ledger._blobs, which caps each read at MAX_FILE."""
+
+    def test_a_cited_blob_over_the_cap_has_no_rows_and_a_small_one_has_its_lines(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        gitfix.commit(repo, {"big.py": "x = 1\n" * 50, "ok.py": "y = 2\n"}, "base")
+        run = os.path.join(self.tmp, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump({"repo": repo, "pinned_tree": self.git("rev-parse", "HEAD^{tree}", cwd=repo)}, fh)
+        with mock.patch.object(target, "MAX_FILE", 100):
+            pinned = report._Pinned(run, ["big.py", "ok.py"], ["big.py", "ok.py"])
+        self.assertEqual(pinned.rows, {"big.py": None, "ok.py": ["y = 2"]})
+
+
+class IndexTreeNoRecords(tt.Base):
+    """PR60 N7: an empty record set runs no update-index and still writes the (empty) tree."""
+
+    EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    def test_no_records_run_no_update_index_and_write_the_empty_tree(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        log = os.path.join(self.tmp, "trace.json")
+        env = {"GIT_INDEX_FILE": os.path.join(self.tmp, "x.index")}
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            tree = target._write_index_tree(repo, env, b"")
+        argv = starts(log)
+        self.assertEqual([a for a in argv if "update-index" in a], [])
+        self.assertEqual(sum(1 for a in argv if "write-tree" in a), 1)
+        self.assertEqual(tree, self.EMPTY_TREE)
 
 
 if __name__ == "__main__":

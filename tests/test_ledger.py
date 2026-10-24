@@ -21,7 +21,7 @@ import ledger  # noqa: E402
 import target  # noqa: E402
 
 DIFF = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
-INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
+INPLACE = target.INPLACE
 
 
 def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None,

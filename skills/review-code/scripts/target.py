@@ -60,6 +60,16 @@ class Refuse(Exception):
         self.detail = detail
 
 
+def require_utf8(texts, reason: str, detail: str) -> None:
+    """Refuse with `reason` when any text holds a lone surrogate (a non-UTF-8 path read lossily, or a JSON \\udcxx escape): it
+    cannot be written out as UTF-8."""
+    try:
+        for t in texts:
+            t.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refuse(reason, detail)
+
+
 _NO_FILTERS: dict = {}  # cwd -> its GIT_CONFIG_* entries (_no_filters); cleared after an outside command (repro._execute)
 
 
@@ -997,6 +1007,13 @@ def _sections(lines: Iterator[str]) -> Iterator[str]:
         yield "".join(x + "\n" for x in cur)
 
 
+def _write_index_tree(top: str, env: dict, records: bytes) -> str:
+    """Load `records` (-z --index-info lines) into the index file `env` names, then write-tree it; no records, no load."""
+    if records:
+        git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=records)
+    return git(["write-tree"], top, env=env).strip()
+
+
 def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str, top: str,
                 blobs: dict) -> Tuple[list, list]:
     """Strip and escape the change diff file by file into change.diff, so memory holds one file's diff and,
@@ -1010,9 +1027,8 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
             return
         env = {"GIT_INDEX_FILE": os.path.join(os.path.dirname(path), "untracked.index.tmp")}
         try:
-            git_bytes(["update-index", "-z", "--index-info"], top, env=env, stdin=b"".join(
+            tree = _write_index_tree(top, env, b"".join(
                 ("%s\t" % want[u]).encode() + u.encode("utf-8", "surrogateescape") + b"\0" for u in sorted(want)))
-            tree = git(["write-tree"], top, env=env).strip()
         finally:
             if os.path.exists(env["GIT_INDEX_FILE"]):
                 os.remove(env["GIT_INDEX_FILE"])
@@ -1042,6 +1058,7 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
 
 
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
+REGULAR = ("100644", "100755")  # the modes of a regular file: never a link (120000) or a submodule (160000)
 _RAW_DIFF = ["--raw", "--no-abbrev", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
 
 
@@ -1073,7 +1090,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     # in place: the working tree against the index, the edits the kind pins or leaves; else against the pinned tree
     f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
     edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
-    imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in ("100644", "100755")}
+    imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in REGULAR}
     other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
         git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
     tmp, blobs = [], {}
@@ -1122,22 +1139,27 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                     raise Refuse("bad-ref", "a git command failed")
                 blobs = {p: "%s %s" % (mode, oid) for (p, mode, _), oid in zip(srcs, oids)}
                 recs.update(blobs)
-            if recs:
-                git_bytes(["update-index", "-z", "--index-info"], top, env=env,
-                          stdin=b"".join(("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
-            tree = git(["write-tree"], top, env=env).strip()
+            tree = _write_index_tree(top, env, b"".join(
+                ("%s\t" % recs[p]).encode() + p.encode("utf-8", "surrogateescape") + b"\0" for p in sorted(recs)))
             paths = {p: t for p, t in paths.items() if p not in recs or p in unmerged}
     finally:
         for t in tmp + [idx]:
             if os.path.exists(t):
                 os.remove(t)
-    rc, out, _ = _run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], top)
     return {"pinned_tree": tree, "pinned_head": None if inplace else plan["head"],
-            "checkout_head": out.decode().strip() if rc == 0 else None, "paths": paths, "blobs": blobs}
+            "checkout_head": _head_oid(top), "paths": paths, "blobs": blobs}
 
 
 KNOWLEDGE = (".wolf", ".codegraph", ".serena")  # tool knowledge directories (gh#51); changes there are informational
 CAUSE = "changed during the run; hooks, index daemons or other sessions may be the cause"
+
+
+UNTRACKED_CAP = 5000  # untracked files itemised in the snapshot; above it only a count and a digest are kept
+TRACKED_CAP = 5000  # the same for changed tracked files (status records 1, 2 and u), a mass rename for example
+
+
+def _knowledge(p: str) -> bool:
+    return any(p == d or p.startswith(d + "/") for d in KNOWLEDGE)
 
 
 def _stat(path: str):
@@ -1149,14 +1171,16 @@ def _stat(path: str):
 
 
 def integrity(top: str) -> dict:
-    """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, the real index file's SHA-256,
+    """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, a digest of `git ls-files -s -v -z`,
     each status entry's fields with its (size, mtime_ns) so a second edit to a file already dirty shows, and (size,
     mtime_ns) of every file under the knowledge directories, walked by stat only. Clean tracked files cost nothing;
-    no file content is read. A failed status or an unreadable index is recorded as it is, never raised."""
-    # shortcut: normal untracked mode collapses a wholly untracked directory to one entry, so an edit to a file already
-    # inside it shows only when the directory's own size or mtime moves; use --untracked-files=all if that must be exact
-    out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=dirty"], top, check=False)
-    dirty, recs = {}, out.decode("utf-8", "surrogateescape").split("\0")
+    no file content is read. Untracked files are listed one by one (--untracked-files=all), so an edit inside an untracked directory shows; the cost is one lstat
+    per untracked, non-ignored file. Above UNTRACKED_CAP untracked files they are not itemised: the snapshot holds
+    `untracked` {count, digest of the sorted (path, size, mtime_ns)}, so an edit still shows, but not which file.
+    Above TRACKED_CAP changed tracked files (tool knowledge aside) `tracked` holds the same over their (path, row).
+    A failed status or an unreadable index is recorded as it is, never raised."""
+    out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"], top, check=False)
+    dirty, unt, trk, recs = {}, [], [], out.decode("utf-8", "surrogateescape").split("\0")
     skip = False
     for r in recs:
         if skip or not r:
@@ -1164,20 +1188,39 @@ def integrity(top: str) -> dict:
             continue
         n = {"1": 8, "2": 9, "u": 10}.get(r[0], 1)  # fields before the path; a rename record's next field is its source
         f, skip = r.split(" ", n), r[0] == "2"
-        if len(f) > n:
-            dirty[shown(f[n])] = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
-    try:
-        with open(os.path.join(top, _rev_path("--git-path", top, "index")), "rb") as fh:
-            index = hashlib.sha256(fh.read()).hexdigest()
-    except (OSError, Refuse):
-        index = None
+        if len(f) > n and r[0] == "?" and not _knowledge(f[n]):  # tool knowledge is informational, not part of the digest
+            unt.append(f[n])
+        elif len(f) > n:
+            row = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
+            if r[0] == "?" or _knowledge(f[n]):
+                dirty[shown(f[n])] = row
+            else:
+                trk.append((f[n], row))
+    if len(trk) <= TRACKED_CAP:
+        dirty.update((shown(p), v) for p, v in trk)
+    dig = hashlib.sha256()  # streamed, never itemised: the whole untracked set in one value
+    for p in sorted(unt):
+        st = _stat(os.path.join(top, p))
+        dig.update(("%s\0%s\n" % (p, st)).encode("utf-8", "surrogateescape"))
+        if len(unt) <= UNTRACKED_CAP:
+            dirty[shown(p)] = ["?", st]
+    # entries (mode, oid, stage, path) and the -v tag, which carries the assume-unchanged and skip-worktree flags that
+    # hide an edit from status (87o1.10); no stat data, so a stat-only refresh is no change
+    rc, ls, _ = _run(["ls-files", "-s", "-v", "-z"], top)
+    index = hashlib.sha256(ls).hexdigest() if rc == 0 else None
     know = {}
     for d in KNOWLEDGE:
         for root, _, files in os.walk(os.path.join(top, d)):
             for f in files:
                 p = os.path.join(root, f)
                 know[shown(os.path.relpath(p, top).replace(os.sep, "/"))] = _stat(p)
-    return {"version": 1, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
+    snap = {"version": 2, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
+    if len(unt) > UNTRACKED_CAP:
+        snap["untracked"] = {"count": len(unt), "digest": dig.hexdigest()}
+    if len(trk) > TRACKED_CAP:
+        snap["tracked"] = {"count": len(trk), "digest": hashlib.sha256("".join(
+            "%s\0%s\n" % r for r in sorted(trk)).encode("utf-8", "surrogateescape")).hexdigest()}
+    return snap
 
 
 def integrity_changes(top: str, snap: dict) -> dict:
@@ -1185,13 +1228,27 @@ def integrity_changes(top: str, snap: dict) -> dict:
     Paths are stored and returned escaped (shown); a knowledge path the status lists is reported only as knowledge."""
     now = json.loads(json.dumps(integrity(top)))  # lists, as the stored snapshot holds them
 
+    def kind(p, v):  # which capped set a non-knowledge row belongs to
+        return None if _knowledge(p) else "untracked" if v[0] == "?" else "tracked"
+
+    # a set over its cap on either side: its rows are dropped from both and the digests compared instead
+    caps = {k: (now.get(k) or {}).get("count", sum(1 for p, v in now["dirty"].items() if kind(p, v) == k))
+            for k in ("tracked", "untracked") if k in snap or k in now}
+    if caps:
+        snap, now = ({**d, "dirty": {p: v for p, v in d["dirty"].items() if kind(p, v) not in caps}} for d in (snap, now))
+
     def moved(key):
         a, b = snap[key], now[key]
         return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 
-    mine = lambda p: any(p == d or p.startswith(d + "/") for d in KNOWLEDGE)  # noqa: E731
-    return {"working_tree": [p for p in moved("dirty") if not mine(p)], "index": snap["index"] != now["index"],
-            "knowledge": moved("knowledge"), "cause": CAUSE}
+    same = snap.get("version") == now["version"]  # 87o1.11: `index` digests another thing in another version
+    res = {"working_tree": [p for p in moved("dirty") if not _knowledge(p)], "index": same and snap["index"] != now["index"],
+           "knowledge": moved("knowledge"), "cause": CAUSE}
+    if not same:
+        res["version_note"] = "index not compared: snapshot from another version"
+    for k, n in caps.items():  # a side under the cap holds no digest, so it differs from a side over it (the counts differ too)
+        res[k] = {"count": n, "changed": snap.get(k) != now.get(k)}
+    return res
 
 
 def _checkout_root(top: str, head: str) -> str:
@@ -1275,8 +1332,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "diff_base": plan.get("diff_base"),
-        # a tracked entry in the snapshot's status is dirty already; only a clean one needs --ignore-submodules=none
-        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
+        # a tracked entry in the snapshot's status, itemised or capped (87o1.9), is dirty already; only a clean one needs --ignore-submodules=none
+        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or "tracked" in snap or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
         "untracked": sorted(shown(n) for n in plan["untracked"]),

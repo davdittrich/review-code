@@ -711,6 +711,21 @@ class ShardMerge(ShardBase):
             self.assertIn("## Nit mode", self.read_text("shards", str(s["id"]), "inputs", "standards.md"))
         self.assertIn("## Nit mode", self.read_text("inputs", "standards.md"))
 
+    def test_tool_set_reaches_run_and_shard_ledgers(self):  # gh#47 item 10
+        for tools in (("serena", "codegraph"), ()):
+            with self.subTest(tools=tools):
+                p = self.run_plan(tools=tools)
+                self.assertTrue(p["shards"])
+                self.assertEqual(self.read_json("ledger.json")["tools"], p["tools"])
+                for s in p["shards"]:
+                    self.assertEqual(self.read_json("shards", str(s["id"]), "ledger.json")["tools"], p["tools"])
+
+    def test_rebuild_keeps_recorded_tool_set(self):
+        import ledger
+        self.run_plan(tools=("serena",))
+        ledger.build(self.run_dir)
+        self.assertEqual(self.read_json("ledger.json")["tools"], ["serena"])
+
     def test_one_group_is_not_sharded(self):
         p = self.run_plan(shard_bytes=10 ** 9)
         self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
@@ -747,7 +762,7 @@ class Shards(ShardBase):
         self.assertIn({"what": "shard 3", "why": "shard cap: 1 files", "files": 1}, p["skipped"])
 
     def test_each_shard_has_its_own_run_tree_and_ledger(self):
-        before = self.read_text("ledger.json")
+        before = self.read_json("ledger.json")
         parent_tree = sorted(os.listdir(os.path.join(self.run_dir, "tree")))
         p = self.run_plan()
         for s in p["shards"]:
@@ -761,7 +776,7 @@ class Shards(ShardBase):
             on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
             self.assertEqual(on_disk, set())  # gh#52: a shard tree holds the whole checkout difference, empty here
             self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
-        self.assertEqual(self.read_text("ledger.json"), before)
+        self.assertEqual(self.read_json("ledger.json"), dict(before, tools=[]))  # plan adds only the tool set (gh#47 item 10)
         self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)
 
     def test_shards_inherit_the_single_trust_answer(self):

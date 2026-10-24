@@ -90,7 +90,7 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
     wth = os.path.join(run_dir, "wt-head-" + fid)  # base mode only: where the head's copy of the test is read
     try:
         target.git_bytes(["worktree", "add", "--detach", wth if base else wt, head], repo)
-        if kind in ledger.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
+        if kind in target.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
             args = ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color"]
             diff = target.git_bytes(args + (["--cached"] if kind == "staged" else []) + ["HEAD"], repo)
             if diff:

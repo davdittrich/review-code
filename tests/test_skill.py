@@ -688,6 +688,12 @@ class ReviewFixesPR60(unittest.TestCase):
         self.assertIn("a staged review lists the worktree edits on top of the index and its unmerged paths; "
                       "for example, a changed or untracked path that is a directory, FIFO, socket or oversized file also stays in the difference", t)
 
+    def test_readme_requires_a_remote_network_and_synced_checkout_for_a_head_that_is_not_checked_out(self):  # review-code-71de.7 (N7)
+        t = self.flat("README.md")
+        self.assertIn("Reviewing a commit, branch or range whose head is not checked out also needs an `origin` remote "
+                      "with `origin/HEAD` set, network access to read the upstream tip with `git ls-remote`, and the main checkout (not a linked worktree) "
+                      "on the upstream default branch at that tip; otherwise it refuses `no-upstream-remote`, `remote-unreachable` or `checkout-not-synced`.", t)
+
     def test_a_drop_with_a_remaining_writer_is_not_exempt(self):  # review-code-g5qv.2 (C2)
         t = self.flat("skills", "review-code", "references", "packs", "data-migrations.md")
         self.assertIn("A drop of a column or table whose name a search of the repository finds in no code that reads or writes it.", t)

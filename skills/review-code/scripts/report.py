@@ -79,7 +79,10 @@ line lists item numbers; it gets no verifier call, class inferred, reason web-so
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
 lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
 checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. render adds
-integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause}, or null without a snapshot. A handoff for a file listed by a plan.json pack
+integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause, version_note only when the
+snapshot is from another version (index then not compared, false), and only above 5,000
+untracked files untracked{count, changed}, above 5,000 changed tracked files tracked{count, changed} (changed is a warning, not
+itemised)}, or null without a snapshot. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
 """
 import sys
@@ -257,8 +260,7 @@ class _Pinned:
         self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
         uniq = sorted(set(need.values()))
-        text = {oid: None if data is None else ledger._text(data)
-                for oid, (_, data) in zip(uniq, target.cat_batch([o.encode() for o in uniq], self.top, True, target.MAX_FILE))}
+        text = {oid: None if data is None else ledger._text(data) for oid, data in ledger._blobs(self.top, uniq).items()}
         for p, oid in need.items():
             t = text.get(oid)
             self.rows[p] = None if t is None else _lines(ledger._scan(p, t)[0])
@@ -274,7 +276,7 @@ class _Pinned:
 
     def blobs(self, oids):
         """{blob id: bytes, or None over MAX_FILE} from one `cat-file --batch`."""
-        return {o: data for o, (_, data) in zip(oids, target.cat_batch([o.encode() for o in oids], self.top, True, target.MAX_FILE))}
+        return ledger._blobs(self.top, oids)
 
 
 def _lines(text):
@@ -361,6 +363,9 @@ _MISSING = re.compile(r"%s\s+%s(?=\s*(?:$|[.,;:)!]|(?:from|in|at|on|here|there)\
 # a name "missing from the imports/scope/namespace/module" is a symbol claim unless it holds a "/"; any other tail stays a file claim;
 # shortcut: a slashless file name with this tail ("config.yaml is missing from the module") also stays a finding, left to the verifier
 _SYMBOL_TAIL = re.compile(r"\s*(?:from|in)\s+(?:the\s+|this\s+|its\s+)?(?:imports?|scope|namespace|module)\b", re.I)
+# a name after a preposition ("error handling in x.py is missing", "test for x.py") is where the missing thing lives, not the
+# subject; shortcut: a file claim worded so ("the file at x.py is missing") stays a finding, left to the verifier
+_OBJECT = re.compile(r"\b(?:in|of|for|to|from|within|inside|into|on|at|by|with|under)\s+(?:the\s+|this\s+|its\s+|an?\s+)?$", re.I)
 
 
 def _claimed(o):
@@ -369,7 +374,7 @@ def _claimed(o):
     for k in ("title", "trigger"):
         for m in _MISSING.finditer(o[k]) if isinstance(o.get(k), str) else ():
             a, b = m.groups()
-            if not (a and "/" not in a and _SYMBOL_TAIL.match(o[k], m.end())):
+            if not (a and (("/" not in a and _SYMBOL_TAIL.match(o[k], m.end())) or _OBJECT.search(o[k], 0, m.start()))):
                 names.add((a or b).rstrip("."))
     return names
 
@@ -1260,13 +1265,12 @@ def _ingest(run, text, lane, shard):
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
+    diff = ledger.difference_path(target.load_json(run, "target.json"))
     texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
-    try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
-        for t in texts:
-            t.encode("utf-8")
-    except UnicodeEncodeError:
-        raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
+    # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
+    # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
+    target.require_utf8(texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)],
+                        "non-utf8-name", "a finding path or text is not valid UTF-8")
     for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     for n in _rejected(run)[1]:  # their replies are gone (4gj)
@@ -1685,10 +1689,17 @@ def _text(doc):
     if ig:
         rows = (["integrity warning: %s (working tree) %s" % (e(p), ig["cause"]) for p in ig["working_tree"]]
                 + (["integrity warning: index " + ig["cause"]] if ig["index"] else [])
-                + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
+                + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]]
+                + (["integrity note: " + ig["version_note"]] if ig.get("version_note") else []))  # a row: no clean line
+        caps = [(k, ig[k]) for k in ("tracked", "untracked") if ig.get(k)]  # over a snapshot cap: a change is detected, not itemised
+        rows = ["integrity warning: %s files changed (not fully seen: %d %s files, not itemised) %s" % (k, u["count"], k, ig["cause"])
+                for k, u in caps if u["changed"]] + rows
+        nf = "; ".join("not fully seen: %d %s files" % (u["count"], k) for k, u in caps if not u["changed"])
+        if nf and rows:
+            rows.append("integrity note: " + nf)  # the clean line is not shown, so say it here
         out += (rows[:MAX_HIDDEN] + (["integrity: +%d more in --format json" % (len(rows) - MAX_HIDDEN)] if len(rows) > MAX_HIDDEN else [])
                 if rows else ["integrity: no change to the checkout, index or tool knowledge during the run "
-                              "(not seen: files inside untracked directories, submodule worktrees)"])
+                              "(not seen: submodule worktrees, nested repositories, files flagged assume-unchanged or skip-worktree%s)" % ("; " + nf if nf else "")])
     out += ["findings: %d, unverifiable: %d" % (len(fs), sum(1 for i in doc["unverifiable"] if i["category"] != "sota")),
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]

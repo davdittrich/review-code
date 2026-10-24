@@ -164,6 +164,19 @@ class MissingSymbolNamedLikeAFile(tr.Base):
                           tr.cand("def add(a, b):", 4, title="src/calc.py is missing from the imports", trigger="x"))
         self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 3)
 
+    def test_a_thing_missing_inside_a_pinned_file_stays_a_finding(self):  # review-code-87o1.4 (F-4c7ad0e079)
+        out = self.ingest(tr.cand("return a - b", 5, title="Error handling in src/calc.py is missing", trigger="x"),
+                          tr.cand("def load():", 1, title="Test for src/calc.py is missing", trigger="x"),
+                          tr.cand("def add(a, b):", 4, title="bug", trigger="The guard in the `src/calc.py` is missing."))
+        self.assertEqual(reasons(out), [("accepted", None)] * 3)
+
+    def test_a_pinned_file_named_as_the_subject_still_downgrades(self):
+        out = self.ingest(tr.cand("return a - b", 5, title="src/calc.py is missing", trigger="x"),
+                          tr.cand("def load():", 1, title="The file src/calc.py is missing", trigger="x"),
+                          tr.cand("def add(a, b):", 4, title="Origin src/calc.py does not exist", trigger="x"),  # "in" only as a word
+                          tr.cand("return 1", 2, title="missing file src/calc.py", trigger="x"))
+        self.assertEqual(reasons(out), [("downgraded", "claims-missing")] * 4)
+
     def test_a_file_missing_from_the_imports_or_the_repo_still_downgrades(self):
         out = self.ingest(tr.cand("return a - b", 5, title="src/calc.py is missing from the imports", trigger="x"),
                           tr.cand("def load():", 1, title="load is missing from the repo", trigger="x"))

@@ -40,7 +40,6 @@ def _nit_rank(p: str) -> int:
         return 0
     return (p.endswith("GLOSSARY.md") and 1) or (p.startswith("docs/adr/") and 2) or (p.startswith(".gemini/") and 3) \
         or (p.startswith(".cursor/") and 4) or 5
-_REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
 PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_list", "difference_count", "integrity")  # gh#48, gh#51
@@ -54,7 +53,6 @@ _XREF = re.compile(r"(?<![\w/.-])([A-Za-z0-9][A-Za-z0-9-]{0,38}/[\w.-]{1,100})#(
 _FILE_EXT = re.compile(r"\.(?:py|js|ts|tsx|jsx|md|rst|txt|go|rs|java|c|h|cpp|rb|php|json|ya?ml|toml|sh|cfg|ini|html|css)\Z", re.I)
 _GH_URL = re.compile(r"https?://(%s)/([\w.-]+/[\w.-]+)/issues/([0-9]{1,9})\b" % _HOST)
 _GL_URL = re.compile(r"https?://(%s)/([\w.-]+(?:/[\w.-]+)+?)/-/issues/([0-9]{1,9})\b" % _HOST)
-INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
@@ -468,7 +466,7 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         extra = sorted(cand - _conv_paths(base_ls, included), key=lambda p: (_nit_rank(p), p))
         over = extra[_NIT_CAP:]
         want = sorted(cand - set(over))
-    regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
+    regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in target.REGULAR}
     blobs = _blobs(repo, regular.values())
     conv, ignored = [], []
     for p in want:
@@ -644,7 +642,7 @@ def regular_records(raw: bytes) -> List[Tuple[str, int, str]]:
     """[(name, size, blob id)] of the regular files (100644, 100755) of one `ls-tree -z -l`: a link's blob is a path, not code."""
     out = []
     for mode, oid, name, size in ls_records(raw, True):
-        if mode in ("100644", "100755"):
+        if mode in target.REGULAR:
             if not size.isdigit():  # BAD: the blob is missing (review-code-mjwq)
                 raise target.Refuse("bad-ref", "a blob of the pinned tree is missing")
             out.append((name, int(size), oid))
@@ -697,7 +695,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
 
     # a difference path's reviewed content is its pinned blob; the head listing is the pinned tree for ref kinds
     pin = [p for p in jobs if p in copy]
-    pin_ls = listing if listing is not None and not tj["kind"] in INPLACE else \
+    pin_ls = listing if listing is not None and not tj["kind"] in target.INPLACE else \
         _pinned_listing(repo, tj["pinned_tree"], pin) if pin else {}
     top = os.path.realpath(repo) + os.sep
     want = {}
@@ -836,7 +834,7 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names, or its file name
     holds a token of the branch; the rest follow in path order. A record that is not text (a NUL byte, or over MAX_FILE) is listed
     with no title."""
-    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
+    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
     cand = sorted(p for p in reg if p not in taken and p not in skip and (_is_record(p) or (
         p.lower().endswith(_PROSE_EXT) and any(p.startswith(d + "/") for d in dirs))))
@@ -872,7 +870,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
     the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
-    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
+    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
                                                                                          for t in toks)))[:CAP_SPEC_FILES]
     blobs = _blobs(repo, [reg[p] for p in want])
@@ -969,7 +967,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     sources += [{"kind": "file", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(files)]
     # an in-place run reviews the working copy, so its records are listed from the pinned tree: a record renamed there is listed
     # under its new name and read by the copy guard, and none is listed that the reviewed tree lacks (review-code-bbch)
-    adr_ls = target.tree_listing(tj["pinned_tree"], tj["repo"]) if kind in INPLACE and tj.get("pinned_tree") else head_ls
+    adr_ls = target.tree_listing(tj["pinned_tree"], tj["repo"]) if kind in target.INPLACE and tj.get("pinned_tree") else head_ls
     adrs = _adr_files(tj["repo"], adr_ls, found, set(files), set(tj["included"]) if kind == "path" else (),
                       "\n".join(prose + tj["included"]), tj["included"], toks)
     sources += [{"kind": "adr", "ref": sanitize.escape_for_code(p)[0]} for p in sorted(adrs)]
@@ -1007,10 +1005,8 @@ def _commit_messages(repo: str, commits: List[str]) -> List[str]:
 
 
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
-    try:  # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
-        run.encode("utf-8")
-    except UnicodeEncodeError:
-        raise target.Refuse("non-utf8-name", "the run directory path is not valid UTF-8")
+    # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
+    target.require_utf8([run], "non-utf8-name", "the run directory path is not valid UTF-8")
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
@@ -1018,7 +1014,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
         raise target.Refuse("no-target", "the run directory has no target.json")
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
-    inplace = tj["kind"] in INPLACE
+    inplace = tj["kind"] in target.INPLACE
     head_ls = None if inplace else target.tree_listing(head, repo)
     idx = target.index_listing(repo) if tj["kind"] == "staged" else None
     if idx is not None:
@@ -1089,7 +1085,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                           for lab, (size, title, why) in sections["adrs"]) or "none") + "\n")) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
-                   if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
+                   if mode in target.REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
     write(os.path.join(run, "inputs", "spec-find.md"),
           "# Spec finder input\n\n" + pin + "\n## Reviewed files\n\n%s\n\n## Symbols\n\n%s\n\n## Prose files at head\n\n%s\n" % (
               "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
@@ -1139,7 +1135,7 @@ def _source(led: dict) -> dict:
 
 
 def _keep_trust(run: str, led: dict) -> None:
-    """A rebuild keeps the stored answer. Re-read just before the write; a set between the read and
+    """A rebuild keeps the stored trust answer and the recorded tool set. Re-read just before the write; a set between the read and
     the replace is lost (shortcut: no lock, the orchestrator never builds and sets at once)."""
     try:
         old = target.load_json(run, "ledger.json")
@@ -1148,6 +1144,8 @@ def _keep_trust(run: str, led: dict) -> None:
     led["trust"], led["trust_asked"] = old.get("trust", "unset"), old.get("trust_asked", False)
     if "trust_source" in old:
         led["trust_source"] = old["trust_source"]
+    if "tools" in old:  # the tool set plan.py recorded (tools_set) outlives a rebuild
+        led["tools"] = old["tools"]
 
 
 def trust_set(run: str, value: str, flag: bool = False) -> dict:
@@ -1163,6 +1161,14 @@ def trust_set(run: str, value: str, flag: bool = False) -> dict:
             led["trust_source"] = "flag"  # asked stays true: the question is settled, only its source differs
         _write_json(os.path.join(run, "ledger.json"), led)
     return {"status": "ok", "trust": value}
+
+
+def tools_set(run: str, tools) -> None:
+    """plan.py records the tool set given to agents (gh#47 item 10), the same value as plan.json's `tools`. Load, set,
+    write like trust_set, so a trust answer written since the build is kept."""
+    led = target.load_json(run, "ledger.json")
+    led["tools"] = sorted(tools)
+    _write_json(os.path.join(run, "ledger.json"), led)
 
 
 def trust_get(run: str) -> dict:
@@ -1195,6 +1201,12 @@ def _history_lines(run: str, h: dict) -> str:
                 os.path.join(run, "history"), h["files"]))
 
 
+def difference_path(tj: dict) -> Optional[str]:
+    """The checkout-difference file a run's target.json names: difference_list when present, else the older difference key;
+    None when neither exists (a run pinned before gh#48)."""
+    return tj.get("difference_list", tj.get("difference"))
+
+
 def _basis(tj: dict) -> str:
     """The pin lines every lane input carries: the pinned tree and head, and the difference file by path, never its
     paths (gh#48). Empty for a run pinned before the difference existed."""
@@ -1202,7 +1214,7 @@ def _basis(tj: dict) -> str:
         return ""
     n = tj["difference_count"]
     return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
-        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj.get("difference_list", tj["difference"]), n, "" if n == 1 else "s")
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", difference_path(tj), n, "" if n == 1 else "s")
 
 
 def context(run: str) -> dict:
@@ -1213,7 +1225,7 @@ def context(run: str) -> dict:
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     n = tj.get("difference_count")
-    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj.get("difference_list", tj["difference"]))] if n is not None else []
+    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", difference_path(tj))] if n is not None else []
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": seen + led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
              "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}
