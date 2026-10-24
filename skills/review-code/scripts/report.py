@@ -172,6 +172,7 @@ REASONS = {
     "norm-sample-small": "the two idioms occur on fewer than 20 lines of the reviewed files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
     "norm-too-large": "the files norm_glob matches hold more text than the skill will count: narrow norm_glob to the files you counted",
     "norm-not-majority": "norm_for must occur on more lines than norm_against: if the repo writes norm_against more often there is no norm, so drop the finding",
+    "cites-dropped-wire-token": "the cited file holds text shaped like a verdict key (a quoted key and a comma): cite another file, or send the line without raw double quotes so it is not repaired",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
@@ -454,6 +455,7 @@ LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only 
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + tuple(k for v in LANE_OPTIONAL.values() for k in v) + (
     "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
+_VTOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(VERDICT_KEYS + CITE_KEYS)))  # keys a verdict line carries
 _ESC = re.compile(r'(\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))|\\|"')  # a valid escape (kept), else a lone backslash or quote
 _CONTROL = {8: "\\b", 9: "\\t", 10: "\\n", 12: "\\f", 13: "\\r"}  # the control characters a lone \b \t \n \f \r in a quote decodes to
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
@@ -572,11 +574,11 @@ def _repair_one(s, budget):
     raise _unrepairable(s)
 
 
-def _hostile(pin, path):
-    """True when the cited file holds a known-key wire token: a quote copied from it could carry keys into a repaired
-    line, so such a line keeps no fix, end_line or evidence (dc5)."""
+def _hostile(pin, path, token=_TOKEN):
+    """True when the file holds a wire token of `token` (default: any known key): a quote copied from it could carry keys
+    into a repaired line, so such a line keeps no fix, end_line or evidence (dc5)."""
     rows = pin.rows.get(_norm(path))
-    return rows is not None and _TOKEN.search("\n".join(rows)) is not None
+    return rows is not None and token.search("\n".join(rows)) is not None
 
 
 def _parse(ln, load):
@@ -1428,19 +1430,21 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
                  and _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
         reason = o.get("reason")
-        if fix and any(_hostile(pin, p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
-            cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
+        kept = [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]  # dc5: a repaired line carries no cite
+        dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
             bad.append(("copied-from-spec", ln))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
             continue
-        kind, down = o["verdict"], None  # a downgrade is a refuted verdict that cannot stand, and says why
+        kind, down = o["verdict"], None  # a downgrade is a verdict that cannot stand as sent, and says why
         if kind == "refuted":
             if fix:  # a repaired line never refutes: text read from a quote must not drop a finding
                 kind, down = "unverifiable", "repaired"
             elif allowed is not None and not cites:
                 kind, down = "unverifiable", "quote-from-checkout" if any(isinstance(e, dict) and _from_checkout(
                     pin, e.get("path"), e.get("quote")) for e in (ev if isinstance(ev, list) else [])) else "no-cite"
+        elif dropped:  # a confirmed or unverifiable verdict keeps its kind; the reason shows why cites are missing
+            down = "cites-dropped-wire-token"
         got[o["id"]] = dict({"verdict": kind, "reason": reason if isinstance(reason, str) else "",
                              "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}, **({"downgraded": down} if down else {}))
         mine.append(o["id"])
@@ -1619,7 +1623,7 @@ def _build(run):
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else (
+            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
