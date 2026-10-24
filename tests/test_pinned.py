@@ -789,6 +789,16 @@ class PinnedBlobRead(tt.Base):
             pinned = report._Pinned(run, ["big.py", "ok.py"], ["big.py", "ok.py"])
         self.assertEqual(pinned.rows, {"big.py": None, "ok.py": ["y = 2"]})
 
+    def test_the_shared_blob_read_caps_a_blob_over_max_file_by_itself(self):
+        # review-code-n4lk.1: _Pinned's size prefilter keeps an oversize blob out of the read above, so this calls
+        # ledger._blobs with no prefilter in the path; a missing id is skipped, so the exact dict proves the cap
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        big, small = ("x = 1\n" * 50).encode(), b"y = 2\n"
+        ids = [subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=b, env=gitfix.env(), check=True,
+                              stdout=subprocess.PIPE).stdout.decode().strip() for b in (big, small)]
+        with mock.patch.object(target, "MAX_FILE", 100):
+            self.assertEqual(ledger._blobs(repo, ids), {ids[0]: None, ids[1]: small})
+
 
 class IndexTreeNoRecords(tt.Base):
     """PR60 N7: an empty record set runs no update-index and still writes the (empty) tree."""
