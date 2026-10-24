@@ -1235,6 +1235,7 @@ def _read_lane(text, lane, run, shard=None):
     summary = None
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
+    spec_lane = lane == "spec"  # CTX-03: a rejected row of this lane keeps no wire line
     spec_text = _spec_copy(run) if lane == "spec" else None  # before _spec_refs, which may write marks.json
     adr = _spec_refs(run) if lane == "spec" else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
@@ -1276,7 +1277,7 @@ def _read_lane(text, lane, run, shard=None):
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + len(bad)
-                rejected += [(b, ln) for b in bad]  # one row per invalid entry
+                rejected += [(b, ln, n, spec_lane) for b in bad]  # one row per invalid entry
                 if bad:
                     disp.append(_disp(n, None, "downgraded" if good else "rejected", bad[0]))
                     continue
@@ -1293,7 +1294,7 @@ def _read_lane(text, lane, run, shard=None):
         if c is None or c["id"] in kept:
             if c is None:
                 invalid += 1
-                rejected.append((why or check, ln))
+                rejected.append((why or check, ln, n, spec_lane))
                 disp.append(_disp(n, _lost_id(ln, lane), "rejected", why or check))
             else:  # a duplicate loses nothing: no rejected row, so it is not counted invalid
                 disp.append(_disp(n, c["id"], "rejected", "duplicate"))
@@ -1312,14 +1313,15 @@ def _read_lane(text, lane, run, shard=None):
 
 def _reject(run, name, rows):
     """<run>/rejected/<name>.txt holds one `reason line` row per rejected wire line, replaced whole by a re-ingest of
-    the same lane or batch and removed when none is left. A wire line any row of which failed a copied-from-spec check
-    holds spec text (CTX-03): each of its rows keeps `index <i>` (the `rejected[].index` of stdout) in place of the line."""
+    the same lane or batch and removed when none is left. Rows are (reason, line, n, red): n is the line's position among
+    the reply's wire lines (`dispositions[].index`, prose not counted). A red row (the spec axis: a line that may hold
+    spec text, CTX-03) keeps `index <n>` in place of the line, as does every row of a wire line that has a red row."""
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        hot = {ln for why, ln in rows if "copied-from-spec" in why}
+        hot = {n for _, _, n, red in rows if red}
         _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why,
-                                        "index %d" % i if ln in hot else ln) for i, (why, ln) in enumerate(rows, 1)))
+                                        "index %d" % n if n in hot else ln) for why, ln, n, _ in rows))
     elif os.path.exists(path):
         os.remove(path)
 
@@ -1448,7 +1450,7 @@ def _ingest(run, text, lane, shard):
     for c, t in zip(queue, texts):
         target.write_private(os.path.join(hand, c["id"] + ".md"), t)
     _reject(run, key, rejected)
-    lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
+    lost = [(why, ln) for why, ln, _, _ in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
     _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
             [_lost_id(ln, lane) for _, ln in lost], {c["id"] for c in lanes[key]["candidates"]},
             lanes[key].get("complete") is True)
@@ -1461,7 +1463,7 @@ def _ingest(run, text, lane, shard):
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
             "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired, "dispositions": disp,
             "lane_dropped": lanes[key]["dropped"],
-            "rejected": [{"lane": key, "index": i, "check": why} for i, (why, _) in enumerate(rejected, 1)]}
+            "rejected": [{"lane": key, "index": i, "check": why} for i, (why, *_) in enumerate(rejected, 1)]}
 
 
 def verdicts(run, text, batch=None, agent=None):
@@ -1481,12 +1483,18 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
     the pinned tree `pin` in any file (the code elsewhere may already cover the claim) and that no other refuted id of the
     reply uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
     foreign, mine, bad, fixed, disp, at = 0, [], [], 0, [], {}  # at: id -> index of its row in disp
+    reach = cand_ids if allowed is None else allowed
+
+    def _spec_line(o):  # CTX-03: may the rejected line hold spec text? A line naming no queued id counts when the reply reaches a spec id
+        i = o and o.get("id")
+        return bool(spec) and (i in spec if isinstance(i, str) and i in cand_ids else bool(spec & reach))
+
     for n, (ln, o, fix) in enumerate(parsed, 1):
         fixed += fix
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
             why = _syntax(ln) if o is None else "bad-type"
-            bad.append((why, ln))
+            bad.append((why, ln, n, _spec_line(o)))
             disp.append(_disp(n, _did(o and o.get("id")), "rejected", why))
             continue
         if allowed is not None and o["id"] not in allowed:
@@ -1507,7 +1515,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
         dup = copied(reason, [(e["path"], rows[id(e)]) for e in kept]) if o["id"] in spec and isinstance(reason, str) else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
-            bad.append(("copied-from-spec:%d" % dup, ln))
+            bad.append(("copied-from-spec:%d" % dup, ln, n, True))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
             continue
         kind, down = o["verdict"], None  # a downgrade is a verdict that cannot stand as sent, and says why
@@ -1590,7 +1598,7 @@ def _verdicts(run, text, batch, agent=None):
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
         if k == batch:
-            disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, _) in enumerate(bad, 1)]
+            disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, *_) in enumerate(bad, 1)]
         _reject(run, "serial" if k is None else "batch-%d" % k, bad)
         fixes["serial" if k is None else "batch-%d" % k] = fixed
         lost += len(bad) if k == batch else 0

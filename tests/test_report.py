@@ -1494,7 +1494,39 @@ class SpecAxis(Base):
         copy = {"spec_line": inner, "why": rows[inner - 1]}
         self.rep("ingest", lines({"declined": [bad, copy]}, {"inspected": ["src/calc.py"]}), extra=["--lane", "spec"])
         self.assertEqual(self.rejected_text(), "failed-validation:declined-invalid:bad-entry index 1\n"
-                                               "failed-validation:declined-invalid:copied-from-spec:10 index 2\n")
+                                               "failed-validation:declined-invalid:copied-from-spec:10 index 1\n")  # both rows name the one wire line
+
+    def test_every_rejected_spec_axis_row_stores_an_index_never_the_line(self):  # review-code-bine
+        rows, inner, _, _ = self.spec_rows()
+        copy = rows[inner - 1]
+        out = self.lane(dict(self.spec(inner, title=copy), path="nope.py"), dict(self.spec(inner, title=copy), quote="zzz"),
+                        {"declined": [{"spec_line": 10 ** 6, "why": copy}]}, self.spec(inner), {"inspected": ["src/calc.py"]})
+        (sid,) = out["spec_ids"]
+        self.assertEqual(len(out["rejected"]), 3)
+        bad = '[["id", "%s"], ["verdict", "nope"], ["reason", "%s"]]\n[["id", 1 2 ["reason", "%s"]\n' % (sid, copy, copy)
+        rc, vout = self.rep("verdicts", bad)
+        self.assertEqual((rc, [r["check"] for r in json.loads(vout)["rejected"]]), (0, ["bad-type", "invalid-json"]))
+        self.assertNotIn(CANARY, vout)
+        text = self.rejected_text()
+        self.assertNotIn(CANARY, text)
+        self.assertEqual(len(text.splitlines()), 5)
+        self.assertTrue(all(" index " in r for r in text.splitlines()), text)
+
+    def test_a_redacted_row_names_the_wire_line_position_not_the_row_ordinal(self):  # review-code-tf7k
+        rows, inner, _, _ = self.spec_rows()
+        copy = rows[inner - 1]
+        out = self.lane("prose", {"inspected": ["src/calc.py"]}, "prose", self.spec(inner, title=copy))  # wire line 2, row 1, text line 4
+        self.assertEqual(([r["index"] for r in out["rejected"]], self.rejected_text()), ([1], "failed-validation:copied-from-spec:10 index 2\n"))
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        unknown = [["id", "F-0000000000"], ["verdict", "confirmed"]]
+        rc, vout = self.rep("verdicts", lines("prose", unknown, "prose", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": copy}))
+        self.assertEqual([r["index"] for r in json.loads(vout)["rejected"]], [1])
+        self.assertEqual(self.rejected_text(), "failed-validation:copied-from-spec:10 index 2\n")
+
+    def test_a_non_spec_lane_row_keeps_its_line(self):  # review-code-bine
+        rc, out = self.rep("ingest", "[[\"path\", 1 2\n", extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("[[\"path\", 1 2", self.rejected_text())
 
     def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
         _, inner, _, _ = self.spec_rows()
