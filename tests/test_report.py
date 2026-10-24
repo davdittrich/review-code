@@ -2560,6 +2560,35 @@ class AgentReply(Captured, Base):
         self.assertEqual(r, rc, out)
         return json.loads(out)
 
+    def capped(self, argv, stdin, cap):
+        """report.main in-process with REPLY_MAX at `cap`: (rc, its JSON line)."""
+        out = io.StringIO()
+        with gitfix.isolated(self.tmp), mock.patch.object(report, "REPLY_MAX", cap), \
+                mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(stdin))), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue())
+
+    def test_a_reply_over_the_byte_cap_refuses_on_stdin_and_from_a_capture_and_writes_nothing(self):
+        # review-code-n4lk.3: the guard's memory follows the reply, so a reply over REPLY_MAX bytes is never read whole
+        reply = self.REPLY.encode("utf-8")
+        before = SpecAxis.snapshot(self)
+        for argv, stdin in ((["ingest", "--run", self.run_dir], reply), (["verdicts", "--run", self.run_dir], reply)):
+            rc, out = self.capped(argv, stdin, len(reply) - 1)
+            self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"), argv)
+        self.capture(self.REPLY)
+        size = os.path.getsize(os.path.join(os.path.dirname(self.run_dir), "captures", AID + ".handback.json"))
+        rc, out = self.capped(["ingest", "--run", self.run_dir, "--agent", AID], b"", size - 1)
+        self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"))
+        self.assertEqual(self.held(), [AID + ".handback.json"])  # kept, as every refused capture is
+        after = SpecAxis.snapshot(self)
+        self.assertEqual(after.pop(".lock", b""), b"")  # the run lock the --agent call took, created empty
+        self.assertEqual(after, before)
+        rc, out = self.capped(["ingest", "--run", self.run_dir, "--agent", AID], b"", size)  # the control: at the cap
+        self.assertEqual((rc, out["ids"]), (0, [QID]))
+        rc, out = self.capped(["ingest", "--run", self.run_dir], reply, len(reply))
+        self.assertEqual((rc, out["ids"]), (0, [QID]))
+        self.assertIn(format(report.REPLY_MAX, ","), report.REASONS["reply-too-large"])  # the hint names the real cap
+
     REPLY = lines("prose before", QCAND, {"inspected": ["src/calc.py"]}, "prose after")
 
     def test_ingest_takes_a_reply_with_quotes_and_a_multiline_quote_whole_and_consumes_it(self):

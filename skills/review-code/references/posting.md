@@ -89,6 +89,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `no-ledger` | The run has no `ledger.json` (`plan.py`, spec ingest and spec verdicts) | Run `ledger.py build` for the run, or review again |
 | `bad-ledger` | `ledger.json` cannot be read or has the wrong shape, or `inputs/spec.md` cannot be read; the spec copy guard refuses rather than pass text it cannot check | Run `ledger.py build` again, or review again |
 | `record-unreadable` | A decision record the ledger lists is over the 4,000,000-byte file cap (`MAX_FILE`) or not text (a NUL byte), so the spec copy guard cannot read it whole; a lane could still read it in parts, so the guard refuses rather than count it as no words (spec ingest and spec verdicts) | Shrink the record, save it as plain text (UTF-8) or move it out of the record directory, then review again |
+| `reply-too-large` | The reply on stdin, or the capture `--agent` names, is over 16,777,216 bytes (`REPLY_MAX`), far above any one lane reply; `report.py` reads no more than that, since the spec copy guard's memory follows the reply (`ingest` and `verdicts`) | Re-run the lane or verify call and pass its new reply |
 | `not-a-forge-target` | The target is not a PR or MR | Run without `--comment` |
 | `bad-target-url` | The URL, host, repository, number or head in `target.json` is malformed | Re-run the review |
 | `gh-missing` | `gh` is not installed | Install `gh` |

@@ -187,6 +187,8 @@ REASONS = {
     "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
     "record-unreadable": "a decision record the ledger lists is over the size cap or not text (a NUL byte), so the spec copy guard cannot check a reply against it: shrink it, save it as plain text (UTF-8) or move it out of the record directory, then review again",
     "bad-ledger": "ledger.json or inputs/spec.md cannot be read: run ledger.py build again, or review again",
+    "reply-too-large": "the reply on stdin, or its capture, is over 16,777,216 bytes, far above any one lane reply: re-run the "
+                       "lane or verify call and pass its new reply",
 }
 
 
@@ -445,6 +447,9 @@ REPAIR_MAX_LEN = 8000  # characters of a line the quote repair will work on
 REPAIR_STEPS = 250  # string ends and values it will try on one line (the 15 real lines need at most 47)
 INGEST_STEPS = 20000  # ... and on all lines of one ingest call or one stored verdicts batch
 SUMMARY_MAX = 600  # characters of a change summary: one to three sentences
+# bytes of one reply, on stdin or as its capture file: the copy guard holds about 30 bytes per reply byte (268 MB at 10 MB),
+# and a lane reply is one model message: at 128k output tokens of about 4 bytes, 0.5 MB, so 32 times that (review-code-n4lk.3)
+REPLY_MAX = 16 * 1024 * 1024
 LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only keys whose string may hold a raw quote (e7e)
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + tuple(k for v in LANE_OPTIONAL.values() for k in v) + (
     "item", "inspected", "declined", "why", "summary"))
@@ -1277,6 +1282,14 @@ def _bind(run, agent, key, record=False):
         raise target.Refuse("agent-reused", "this agent id already served another call of the run")
 
 
+def _capped(fh):
+    """The bytes of a reply stream, read no further than REPLY_MAX + 1: one over the cap refuses reply-too-large."""
+    data = fh.read(REPLY_MAX + 1)
+    if len(data) > REPLY_MAX:
+        raise _refuse("reply-too-large")
+    return data
+
+
 def _take(run, agent, want, needs_inspected):
     """The reply the capture hook stored for `agent` (handback before stop), when it came from agent type `want` and
     holds what the step needs: an `inspected` line for a lane (`needs_inspected` true), else any wire line. Else
@@ -1285,8 +1298,8 @@ def _take(run, agent, want, needs_inspected):
     target.load_json(run, "target.json")
     for kind in capture.KINDS:
         try:
-            with open(capture.path(os.path.dirname(os.path.abspath(run)), agent, kind), encoding="utf-8") as fh:
-                got = json.load(fh)
+            with open(capture.path(os.path.dirname(os.path.abspath(run)), agent, kind), "rb") as fh:
+                got = json.loads(_capped(fh).decode("utf-8"))
         except (OSError, ValueError, RecursionError):
             continue
         if isinstance(got, dict) and isinstance(got.get("message"), str):
@@ -1922,7 +1935,7 @@ def main(argv):
         agent = opts.get("--agent")
         if agent is not None and not capture.ID.fullmatch(agent):
             raise target.Refuse("bad-agent", "--agent is not an agent id")
-        text = None if agent else sys.stdin.buffer.read().decode("utf-8", "replace")  # the capture replaces stdin
+        text = None if agent else _capped(sys.stdin.buffer).decode("utf-8", "replace")  # the capture replaces stdin
         shard, batch = (int(opts[k]) if k in opts else None for k in ("--shard", "--batch"))
         out = ingest(run, text, lane, shard, agent) if sub == "ingest" else verdicts(run, text, batch, agent)
     except target.Refuse as r:
