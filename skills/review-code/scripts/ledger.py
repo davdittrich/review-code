@@ -839,25 +839,27 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     cand = sorted(p for p in reg if p not in taken and p not in skip and (_is_record(p) or (
         p.lower().endswith(_PROSE_EXT) and any(p.startswith(d + "/") for d in dirs))))
     oids = sorted({reg[p] for p in cand})
-    got = {f[0].decode(): (int(f[2]), d) for f, d in target.cat_batch([o.encode() for o in oids], repo, True, target.MAX_FILE)
-           if len(f) == 3 and f[1] == b"blob"}
     hay = hay.lower()
     issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
+    got = {}  # blob id -> (size, text or not, title, names a changed file or issue): one record's bytes held at a time (n4lk.2)
+    for f, data in target.cat_batch([o.encode() for o in oids], repo, True, target.MAX_FILE):
+        if len(f) == 3 and f[1] == b"blob":
+            text = _text(data) if data is not None else None
+            low = text.lower() if text else ""
+            first = next((ln.strip().lstrip("#").strip() for ln in (text or "").split("\n") if ln.strip()), "")
+            got[f[0].decode()] = (int(f[2]), text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
+                                  bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
     info = {}
     for p in cand:
-        size, data = got.get(reg[p], (0, None))
-        text = _text(data) if data is not None else None
+        size, is_text, title, names = got.get(reg[p], (0, False, None, False))
         n = re.match(r"[0-9]+", posixpath.basename(p))
-        low = text.lower() if text else ""
         why = [w for w, hit in (
             ("path named", p.lower() in hay),
             ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
-            ("names a changed file or issue", bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text))))),
+            ("names a changed file or issue", names),
             ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
-        first = next((ln.strip().lstrip("#").strip() for ln in (text or "").split("\n") if ln.strip()), "")
-        info[p] = (size, sanitize.sanitize_prose(first[:100]) if text is not None else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE,
-                   why)
+        info[p] = (size, title if is_text else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE, why)
     out = {}
     for p in sorted(cand, key=lambda p: (-len(info[p][2]), p)):
         size, title, why = info[p]

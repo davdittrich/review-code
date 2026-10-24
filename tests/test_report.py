@@ -1014,20 +1014,21 @@ class SpecAdrNotText(_SpecAdrUnreadable):
         self.assertEqual(after, before)  # no write, counters.json included: the refusal costs no try
 
 
-class SpecAdrGuardMemory(_SpecAdrUnreadable):
-    """review-code-9uk7: the copy guard holds the reply's word runs, not every record's: what it builds stays the same size
-    however many records the ledger lists, and a reply copying any record is still rejected."""
+class _SpecAdrRecords(_SpecAdrUnreadable):
     WORDS = ["w%d" % i for i in range(5000)]
 
+    def body(self, i):
+        """Record i: a title and about 300 distinct words on one line."""
+        return "# T%d\n" % i + " ".join(self.WORDS[(i * 300 + k) % 5000] for k in range(300)) + "\n"
+
     def records(self, n):
-        """A run whose ledger lists n decision records of about 300 distinct words each (built once per n)."""
+        """A run whose ledger lists n decision records (built once per n)."""
         made = self.__dict__.setdefault("made", {})
         if n in made:
             self.run_dir, repo, rows = made[n]
             return repo, rows
         repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
-        rows = {"docs/adr/%04d-a.md" % i: "# T%d\n" % i + " ".join(self.WORDS[(i * 300 + k) % 5000] for k in range(300)) + "\n"
-                for i in range(n)}
+        rows = {"docs/adr/%04d-a.md" % i: self.body(i) for i in range(n)}
         gitfix.commit(repo, dict(BASE, **rows), "base")
         gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
         gitfix.commit(repo, {"src/calc.py": FEAT}, "feat")
@@ -1035,6 +1036,11 @@ class SpecAdrGuardMemory(_SpecAdrUnreadable):
         self.assertEqual(cli("ledger.py", ["build", "--run", run], repo, self.tmp)[0], 0)
         self.run_dir, made[n] = run, (run, repo, rows)
         return repo, rows
+
+
+class SpecAdrGuardMemory(_SpecAdrRecords):
+    """review-code-9uk7: the copy guard holds the reply's word runs, not every record's: what it builds stays the same size
+    however many records the ledger lists, and a reply copying any record is still rejected."""
 
     def guard_peak(self, n, why):
         """(peak bytes the guard allocates while it is built, the rejected checks) of one in-process spec ingest."""
@@ -1077,6 +1083,67 @@ class SpecAdrGuardMemory(_SpecAdrUnreadable):
             pin = report._Pinned(self.run_dir, rows, rows)
             copied = report._spec_copy(self.run_dir)(pin, list(rows), ["unrelated words only here"])
         self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (True, False))
+
+
+class SpecIngestMemory(_SpecAdrRecords):
+    """review-code-n4lk.2: a spec ingest reads the listed records one at a time (read, decode, feed the guard, drop), and so
+    does the ledger build that lists them, so each peaks the same for 3 records of about 85 KB and for 30; spec ingest and
+    spec verdicts still run one ls-tree and one cat-file --batch however many records the ledger lists."""
+
+    def body(self, i):
+        return "# T%d\n" % i + "".join(" ".join(self.WORDS[(i * 300 + k + j) % 5000] for j in range(12)) + "\n"
+                                       for k in range(0, 12 * 1200, 12))
+
+    def test_a_spec_ingest_peaks_the_same_for_three_records_and_thirty(self):
+        peaks = []
+        for n in (3, 30):
+            self.records(n)
+            reply = lines({"declined": [{"spec_line": self.row(), "why": "Adders are meant to give whole numbers"}]},
+                          {"inspected": []})
+            tracemalloc.start()
+            try:
+                rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, report.target.MAX_FILE)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+            self.assertEqual((rc, out["rejected"]), (0, []), out)
+        self.assertLess(peaks[1], peaks[0] + 1_000_000, peaks)  # every record's rows held at once: about 6 MB more
+
+    def test_the_ledger_lists_three_records_and_thirty_in_the_same_memory(self):
+        import ledger
+        peaks, real = [], ledger._adr_files
+
+        def spy(*a, **k):
+            tracemalloc.start()
+            try:
+                return real(*a, **k)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+        for n in (3, 30):
+            self.repo, _ = self.records(n)
+            with gitfix.isolated(self.tmp), mock.patch.object(ledger, "_adr_files", spy), mock.patch("sys.stdout", io.StringIO()):
+                self.assertEqual(ledger.main(["build", "--run", self.run_dir], self.repo), 0)
+        self.assertLess(peaks[1], peaks[0] + 1_000_000, peaks)  # every record's bytes held at once: about 2.3 MB more
+
+    def traced(self, sub, text, extra=()):
+        log = os.path.join(self.tmp, "trace-%d.json" % len(os.listdir(self.tmp)))
+        rc, out, err = cli("report.py", [sub, "--run", self.run_dir] + list(extra), self.repo, self.tmp, text,
+                           {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return json.loads(out), tp.starts(log)
+
+    def test_spec_ingest_and_verdicts_run_one_ls_tree_and_one_cat_file_for_three_records_and_thirty(self):
+        for n in (3, 30):
+            self.repo, _ = self.records(n)
+            out, a = self.traced("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
+                                 ["--lane", "spec"])
+            (sid,) = out["spec_ids"]
+            out, b = self.traced("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}))
+            self.assertEqual(out["confirmed"], [sid])
+            for argv in (a, b):
+                self.assertEqual([sum(1 for x in argv if "ls-tree" in x),
+                                  sum(1 for x in argv if "cat-file" in x and "--batch" in x)], [1, 1], (n, argv))
 
 
 class SpecAdrInPlace(Base):

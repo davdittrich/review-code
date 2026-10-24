@@ -247,27 +247,63 @@ def _norm(path):
 class _Pinned:
     """The pinned tree's regular files that one ingest, verdicts or post call names (gh#50): `files` from one `ls-tree`
     of exactly those paths, `rows` {path: lines, or None when unreadable} of the `cited` ones from one `cat-file --batch`,
-    each blob read once by id. Rows hold the text ledger._scan makes (escaped, prose stripped), so a cite matches
-    what the lanes were shown and post.py never renders a raw invisible character."""
+    each cited blob read once by id. Rows hold the text ledger._scan makes (escaped, prose stripped), so a cite matches
+    what the lanes were shown and post.py never renders a raw invisible character. The `records` (the copy guard's decision
+    records, in order) are not held: their blobs, one per listed path, follow the cited ones in the same cat-file, left
+    unread until records() takes them one at a time (review-code-n4lk.2)."""
 
-    def __init__(self, run, paths, cited=()):
+    def __init__(self, run, paths, cited=(), records=()):
         tj = target.load_json(run, "target.json")
         self.top, self.files, self.rows = tj["repo"], set(), {}
         self.tree, self._every = tj.get("pinned_tree"), None
+        self._sized, self._recs, self._pending = {}, [], None
         if not self.tree:  # a run from before the pin (14-day retention) has nothing to judge a cite against
             raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
-        sized = ledger.regular_blobs(self.tree, want, self.top)
-        blob = {p: oid for p, (_, oid) in sized.items()}
-        self.files = set(blob)
-        need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
-        uniq = sorted({oid for p, oid in need.items() if sized[p][0] <= target.MAX_FILE})  # an oversize blob is never streamed
-        text = {oid: None if data is None else ledger._text(data) for oid, data in ledger._blobs(self.top, uniq).items()}
-        for p, oid in need.items():
-            t = text.get(oid)
-            self.rows[p] = None if t is None else _lines(ledger._scan(p, t)[0])
+        self._sized = sized = ledger.regular_blobs(self.tree, want, self.top)
+        self.files = set(sized)
+        need = {}
+        for p in {_norm(c) for c in cited} & self.files:
+            need.setdefault(sized[p][1], []).append(p)
+            self.rows[p] = None
+        uniq = sorted(oid for oid, ps in need.items() if sized[ps[0]][0] <= target.MAX_FILE)  # an oversize blob is never streamed
+        self._recs = [p for p in map(_norm, records) if p in self.files]
+        stream = target.cat_batch([o.encode() for o in uniq] + self._lines(self._recs), self.top, True, target.MAX_FILE)
+        for f, data in itertools.islice(stream, len(uniq)):
+            t = self._read(f, data)
+            for p in need.get(f[0].decode(), ()) if t is not None else ():
+                self.rows[p] = _lines(ledger._scan(p, t)[0])
+        if self._recs:
+            self._pending = stream
+        else:
+            for _ in stream:  # ends the run, so a failing git refuses here
+                pass
+
+    def _lines(self, recs):
+        return [self._sized[p][1].encode() for p in recs if self._sized[p][0] <= target.MAX_FILE]
+
+    @staticmethod
+    def _read(f, data):
+        return ledger._text(data) if data is not None and len(f) == 3 and f[1] == b"blob" else None
+
+    def records(self, adr):
+        """The text ledger._scan makes of each record of `adr` the pinned tree holds, in that order, one at a time, or None
+        for one over MAX_FILE or not text. The first call for the records given at construction reads the rest of the pin's
+        cat-file; any other runs one of its own. It reads to the end, so a failing git run refuses there."""
+        recs = [p for p in map(_norm, adr) if p in self.files]
+        stream, self._pending = self._pending, None
+        if stream is None or recs != self._recs:
+            for _ in stream or ():
+                pass
+            stream = target.cat_batch(self._lines(recs), self.top, True, target.MAX_FILE)
+        for p in recs:
+            f, data = next(stream, ([], None)) if self._sized[p][0] <= target.MAX_FILE else ([], None)
+            t = self._read(f, data)
+            yield None if t is None else ledger._scan(p, t)[0]
+        for _ in stream:
+            pass
 
 
     def every(self):
@@ -685,8 +721,8 @@ def _hidden_names(run, shown):
 def _spec_copy(run):
     """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
     the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
-    indexed decision records `adr` (gh#57), whose rows the pin read with the reply's own cites in the same ls-tree and
-    cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
+    indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
+    ls-tree and cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
     SPEC_RUN consecutive words (case and punctuation ignored) of either text. The text stays inside these closures (CTX-03).
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
@@ -699,19 +735,28 @@ def _spec_copy(run):
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
 
     def with_records(pin, adr, said):
-        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch).
-        # One the pin could not read whole (over MAX_FILE, or not text) refuses: a lane can read it in parts (review-code-py53)
-        if any(pin.rows.get(p, "") is None for p in map(_norm, adr)):
-            raise target.Refuse("record-unreadable", REASONS["record-unreadable"])
+        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
 
         def held(want):
-            """The runs of `want` in the spec words followed by every record's, in order (a run may span two records)."""
-            got, win = set(), collections.deque(maxlen=SPEC_RUN)
-            rows = (x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row))
-            for x in itertools.chain(spec, rows) if want else ():
+            """The runs of `want` in the spec words followed by every record's, in order (a run may span two records). Every
+            record is read, one at a time (review-code-n4lk.2), whatever `want` holds: one the pin cannot read whole (over
+            MAX_FILE, or not text) refuses, a lane can read it in parts (review-code-py53), once the read has ended, so a
+            failing git run still refuses bad-ref first."""
+            got, win, bad = set(), collections.deque(maxlen=SPEC_RUN), []
+
+            def words():
+                yield from spec if want else ()
+                for t in pin.records(adr):
+                    if t is None:
+                        bad.append(True)
+                    elif want and not bad:
+                        yield from (m.group() for m in re.finditer(r"\w+", t.casefold()))  # _words, not held as a list
+            for x in words():
                 win.append(x)
                 if len(win) == SPEC_RUN and tuple(win) in want:
                     got.add(tuple(win))
+            if bad:
+                raise target.Refuse("record-unreadable", REASONS["record-unreadable"])
             return got
         asked = set().union(*map(_runs, said))
         found = held(asked)
@@ -1133,7 +1178,7 @@ def _read_lane(text, lane, run, shard=None):
             named.update(ctx[a][0] if lane == "sota" else a for a in o["inspected"]
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
-    pin = _Pinned(run, cited | named | set(adr), cited | set(adr))
+    pin = _Pinned(run, cited | named | set(adr), cited, adr)
     copied = spec_text(pin, adr, (s for _, o, _ in parsed for s in _leaves(o))) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
@@ -1441,7 +1486,7 @@ def _verdicts(run, text, batch, agent=None):
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
-    pin = _Pinned(run, cited | set(adr), cited | set(adr))
+    pin = _Pinned(run, cited | set(adr), cited, adr)
     copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o))) if spec else None
     if batch is None:
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
