@@ -804,9 +804,13 @@ class SpecAdrCite(Base):
 
     def test_a_title_copying_six_words_of_a_record_body_is_rejected_a_paraphrase_passes(self):
         out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="The adder MUST-RETURN-INT Calls pass ints")
-        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec"], []))
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec:8"], []))
         out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="Adders are meant to give whole numbers")
         self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
+    def test_a_cite_into_the_record_itself_earns_no_exemption(self):  # GitHub #62: the cited lines may not launder the spec
+        out = self.lane(line=3, end_line=4, quote="The adder MUST-RETURN-INT.", title="The adder MUST-RETURN-INT Calls pass ints")
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec:8"], []))
 
     def traced_spec_ingest(self, n):
         repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
@@ -844,7 +848,7 @@ class SpecAdrCite(Base):
         rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=row)), extra=["--lane", "spec"])
         (sid,) = json.loads(out)["spec_ids"]  # it cites src/calc.py: only the records' own read brings the record's words
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "The adder MUST-RETURN-INT Calls pass ints"})
-        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec"], [sid]))
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:8"], [sid]))
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "Adders are meant to give whole numbers"})
         self.assertEqual(out["confirmed"], [sid])
 
@@ -911,7 +915,7 @@ class SpecAdrHiddenName(Base):
     def test_a_why_copying_a_hidden_named_record_is_rejected(self):
         refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
         self.assertEqual(refs, [self.SHOWN])
-        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec:8"])
         self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
 
 
@@ -963,7 +967,7 @@ class SpecAdrHiddenName(Base):
         with open(os.path.join(self.run_dir, "marks.json"), "w", encoding="utf-8") as fh:
             fh.write('{"tree": 1')
         self.assertEqual(self.traced_ingest(2), 1)
-        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec:8"])
 
 
 class NestedRunFile(Base):
@@ -1024,7 +1028,7 @@ class SpecAdrOversize(_SpecAdrUnreadable):
         rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, cap)
         self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
         rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, len(self.BODY))  # the control: read whole
-        self.assertEqual((rc, [r["check"] for r in out["rejected"]]), (0, ["declined-invalid:copied-from-spec"]))
+        self.assertEqual((rc, [r["check"] for r in out["rejected"]]), (0, ["declined-invalid:copied-from-spec:8"]))
         rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
                            extra=["--lane", "spec"])
         self.assertEqual(rc, 0, out)
@@ -1110,7 +1114,7 @@ class SpecAdrGuardMemory(_SpecAdrRecords):
         _, rows = self.records(30)
         last = rows["docs/adr/0029-a.md"].split("\n")[1].split()
         _, got = self.guard_peak(30, " ".join(last[100:106]))
-        self.assertEqual(got, ["declined-invalid:copied-from-spec"])
+        self.assertEqual(got, ["declined-invalid:copied-from-spec:6"])
 
     def test_a_string_the_reply_did_not_hold_is_still_checked_against_every_record(self):
         _, rows = self.records(30)
@@ -1118,7 +1122,7 @@ class SpecAdrGuardMemory(_SpecAdrRecords):
         with gitfix.isolated(self.tmp):
             pin = report._Pinned(self.run_dir, rows, rows)
             copied = report._spec_copy(self.run_dir)(pin, list(rows), ["unrelated words only here"])
-        self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (True, False))
+        self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (6, 0))
 
 
 class SpecIngestMemory(_SpecAdrRecords):
@@ -1214,7 +1218,7 @@ class SpecAdrInPlace(Base):
             row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
         rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": self.WHY}]}, {"inspected": []}), extra=["--lane", "spec"])
         self.assertEqual(rc, 0, out)
-        self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["declined-invalid:copied-from-spec"])
+        self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["declined-invalid:copied-from-spec:8"])
 
 
 class SpecAdrDeletedInPlace(SpecAdrInPlace):
@@ -1264,7 +1268,7 @@ class SpecAdrHiddenDecoy(SpecAdrHiddenName):
     base_files = dict(BASE, **{SpecAdrHiddenName.RAW: SpecAdrHiddenName.BODY, SpecAdrHiddenName.SHOWN: "# Decoy\n\nnothing here\n"})
 
     def test_a_why_copying_a_hidden_named_record_is_rejected(self):
-        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec:8"])
 
 
 class SpecAxis(Base):
@@ -1315,7 +1319,7 @@ class SpecAxis(Base):
     def test_text_copied_from_the_spec_is_rejected_as_copied(self):
         rows, inner, opn, cls = self.spec_rows()
         out = self.lane(self.spec(inner, title=rows[inner - 1]))
-        self.assertEqual([r["check"] for r in out["rejected"]], ["copied-from-spec"])
+        self.assertEqual([r["check"] for r in out["rejected"]], ["copied-from-spec:10"])
 
     def test_spec_line_is_required_and_defects_never_carries_it(self):
         rows, inner, _, _ = self.spec_rows()
@@ -1345,7 +1349,7 @@ class SpecAxis(Base):
                         {"inspected": []})
         self.assertEqual(out["lane_dropped"]["invalid"], 3)
         self.assertEqual([r["check"] for r in out["rejected"]],
-                         ["declined-invalid:bad-entry", "declined-invalid:too-long", "declined-invalid:copied-from-spec"])
+                         ["declined-invalid:bad-entry", "declined-invalid:too-long", "declined-invalid:copied-from-spec:10"])
         (d1, d2) = out["dispositions"]
         self.assertEqual((d1["disposition"], d1["reason"]), ("downgraded", "declined-invalid:bad-entry"))  # the good entry is kept
         self.assertEqual(d2["disposition"], "accepted")
@@ -1421,7 +1425,7 @@ class SpecAxis(Base):
         (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]})
         self.assertEqual(([(d["disposition"], d["reason"]) for d in out["dispositions"]], out["no_verdict"]),
-                         ([("rejected", "copied-from-spec")], [sid]))
+                         ([("rejected", "copied-from-spec:10")], [sid]))
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
 
@@ -1430,9 +1434,9 @@ class SpecAxis(Base):
         self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
         (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
         rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}), extra=["--batch", "1"])
-        self.assertEqual((rc, [r["check"] for r in json.loads(out)["rejected"]]), (0, ["copied-from-spec"]))
+        self.assertEqual((rc, [r["check"] for r in json.loads(out)["rejected"]]), (0, ["copied-from-spec:10"]))
         with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
-            self.assertRegex(fh.read(), r"\Afailed-validation:copied-from-spec \[.*\n\Z")
+            self.assertRegex(fh.read(), r"\Afailed-validation:copied-from-spec:10 \[.*\n\Z")
         self.assertEqual(json.loads(self.rep("status")[1])["rejected_batches"], {"1": 1})
 
     def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
@@ -1513,6 +1517,74 @@ def write_plan(run, **plan):
 
 INV = {"item": 1, "kind": "import", "path": "src/calc.py", "line": 3, "name": MQ[3]}
 
+
+
+class SpecCodeRun(Base):
+    """GitHub #62: a run of spec words that the cited lines also hold is the quote of a code-shaped finding, not a copy;
+    otherwise the line is rejected with the count of matching words, never the text."""
+    LIT = "the adder must " + CANARY + " return a sum always"
+    spec_text = LIT + "\n"
+    feat_files = {"src/calc.py": "def load():\n    return 1\n\ndef add(a, b):\n    return '" + LIT + "'\n"}
+    HERE = {"path": "src/calc.py", "line": 5, "quote": "return '" + LIT + "'"}
+    ELSE = {"path": "src/calc.py", "line": 4, "quote": "def add(a, b):"}
+
+    pin, spec_rows, lane = SpecAxis.pin, SpecAxis.spec_rows, SpecAxis.lane
+
+    def spec(self, spec_line, **kw):
+        return dict(CAND, category="spec-wrong", spec_line=spec_line, **dict(self.HERE, **kw))
+
+    def n(self):
+        return len(report._words(self.LIT))
+
+    def test_a_title_whose_spec_run_the_cited_lines_hold_is_accepted(self):
+        _, inner, _, _ = self.spec_rows()
+        out = self.lane(self.spec(inner, title=self.LIT, trigger="x " + self.LIT, fix="y " + self.LIT), {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
+    def test_a_title_copying_spec_words_the_cited_lines_lack_is_rejected_with_the_count_only(self):
+        _, inner, _, _ = self.spec_rows()
+        out = self.lane(self.spec(inner, title=self.LIT, **{k: v for k, v in self.ELSE.items()}), {"inspected": ["src/calc.py"]})
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec:%d" % self.n()], []))
+        self.assertNotIn("adder", json.dumps(out).lower())
+        self.assertNotIn(CANARY, json.dumps(out))
+
+    def test_a_declined_why_is_judged_by_the_same_count_rule(self):
+        _, inner, _, _ = self.spec_rows()
+        out = self.lane({"declined": [{"spec_line": inner, "why": self.LIT}]}, {"inspected": []})
+        self.assertEqual([r["check"] for r in out["rejected"]], ["declined-invalid:copied-from-spec:%d" % self.n()])
+
+    def test_a_verdict_reason_is_ignored_when_the_cited_lines_hold_the_run_else_dropped_with_the_count(self):
+        _, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner, title="paraphrase"), {"inspected": ["src/calc.py"]})["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [self.HERE], "reason": self.LIT})
+        self.assertEqual(out["confirmed"], [sid])
+        self.rep("discard")
+        (sid,) = self.lane(self.spec(inner, title="paraphrase"), {"inspected": ["src/calc.py"]})["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [self.ELSE], "reason": self.LIT})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:%d" % self.n()], [sid]))
+
+
+class SpecFileCite(Base):
+    """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
+    SPEC = "docs/specs/feat.md"
+    LIT = SpecCodeRun.LIT
+    feat_files = {"src/calc.py": FEAT, SPEC: LIT + "\n"}
+    pin_args = ["main"]
+    spec_rows, lane = SpecAxis.spec_rows, SpecAxis.lane
+
+    def pin(self, args):
+        run = json.loads(cli("target.py", args, self.repo, self.tmp)[1])["run"]
+        rc, out, _ = cli("ledger.py", ["build", "--run", run, "--spec", self.SPEC], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        return run
+
+    def test_a_cite_into_a_spec_file_earns_no_exemption(self):
+        _, inner, _, _ = self.spec_rows()
+        out = self.lane(dict(CAND, category="spec-wrong", spec_line=inner, path=self.SPEC, line=1, quote=self.LIT, title=self.LIT),
+                        {"inspected": [self.SPEC]})
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]),
+                         (["copied-from-spec:%d" % len(report._words(self.LIT))], []))
+        self.assertNotIn(CANARY, json.dumps(out))
 
 class Sota(Lanes):
     def sota(self, **kw):  # gaz.33: the lane names an inventory item, never a path or line

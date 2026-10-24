@@ -9,11 +9,11 @@ never repaired.
 
 Gate: every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
 re-ingest of the same lane or batch. A lane line's reason is `invalid-json[:bad-escape]`, `retired-object-form`, or
-`failed-validation:<check>` (see REASONS). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
+`failed-validation:<check>` (see REASONS; the two copy checks end in `:N`, a word count). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
 section and does not go above Needs discussion while either is nonzero.
 
 Ingest and verdicts stdout carry `dispositions`, one row {index, id|null, disposition, reason} per wire line of that call
-(prose is skipped): accepted, rejected or downgraded, with a key of REASONS (the closed reason -> retry hint table) or
+(prose is skipped): accepted, rejected or downgraded, with a key of REASONS (the closed reason -> retry hint table; the two copy keys end in `:N`) or
 null. Cumulative figures stay cumulative: `dropped` sums every stored lane (`lane_dropped` is the ingested lane's own
 count) and verdicts.json holds every stored batch. In `verdicts` stdout, confirmed, refuted and unverifiable are
 cumulative over the stored batches (`cumulative` names them); `batch_ids` names the ids this call covers (every queued id for
@@ -70,8 +70,9 @@ unverifiable with reason verifier-cap.
 
 Spec lane: a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
 UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
-consecutive words of spec text counts invalid (verdicts: the line is dropped), so no output carries such a run; a
-paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
+consecutive words of spec text counts invalid (verdicts: the line is dropped), unless the cited lines (never a decision
+record or spec file) hold the same run, a code quote; the check is `copied-from-spec:N`, N the count of words in such runs,
+never the text, so no output carries such a run; a paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
 and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (its path and line come from there;
 any path or line in the line is overwritten), quote = the item name, with 1 to 5 https `sources`, and its inspected
@@ -152,8 +153,10 @@ REASONS = {
     "sota-invalid": "cite a checklist item, its name as the quote and 1 to 5 https sources",
     "declined-invalid:bad-entry": "send each declined entry as spec_line (inside an UNTRUSTED block) and a why",
     "declined-invalid:too-long": "keep a declined why to 300 characters",
-    "declined-invalid:copied-from-spec": "paraphrase the declined why: it holds a run of words copied from the spec",
-    "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
+    # a copy reason ends in `:N`, the count of its words in a run of SPEC_RUN copied from the spec, never the text; a run the
+    # cited lines also hold is the quote of a code finding and is not counted (GitHub #62)
+    "declined-invalid:copied-from-spec": "reword the declined why: N of its words sit in a run copied from the spec",
+    "copied-from-spec": "reword the text: N of its words sit in a run copied from the spec and not in the cited lines",
     "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
     "path-too-long": "cite a path of fewer than 4096 bytes: the skill looks up no longer one in the pinned tree",
     "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
@@ -195,8 +198,8 @@ REASONS = {
 
 def _disp(index, id, disposition, reason=None):
     """One disposition row: the `index`th wire line of a call, the finding id it names (or None), what became of it
-    (accepted, rejected or downgraded) and why (a REASONS key, or None for a plain accept)."""
-    if reason is not None and reason not in REASONS:
+    (accepted, rejected or downgraded) and why (a REASONS key, a copy key with a `:N` count, or None for a plain accept)."""
+    if reason is not None and re.sub(r"(?<=copied-from-spec):\d+\Z", "", reason) not in REASONS:
         raise KeyError("reason missing from REASONS: %r" % (reason,))
     return {"index": index, "id": id, "disposition": disposition, "reason": reason}
 
@@ -729,11 +732,19 @@ def _spec_copy(run):
     the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
     ls-tree and cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
-    SPEC_RUN consecutive words (case and punctuation ignored) of either text. The text stays inside these closures (CTX-03).
+    SPEC_RUN consecutive words (case and punctuation ignored) of either text, and the predicate returns how many of the
+    string's words sit in such runs (0: none; the count may leave, the text never, CTX-03). A run the string's `cites` (pairs of
+    path and cited lines) also hold is ignored, a spec finding's quote being code (GitHub #62); a cite into a decision
+    record or a spec file earns no such exemption, or a line could cite the spec itself.
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
     inside = _spec_lines(run)
+    try:
+        led = target.load_json(run, "ledger.json")["spec"]["sources"]
+        files = {_norm(x["ref"]) for x in led if x.get("kind") in ("adr", "file")}
+    except (target.Refuse, KeyError, TypeError, AttributeError):  # _spec_refs refuses an unreadable ledger
+        files = set()
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
@@ -767,9 +778,18 @@ def _spec_copy(run):
         asked = set().union(*map(_runs, said))
         found = held(asked)
 
-        def copied(s):
+        banned = files | {_norm(p) for p in adr}
+
+        def copied(s, cites=()):
             t = _runs(s)
-            return bool(t & found) if t <= asked else bool(held(t))
+            hit = t & found if t <= asked else held(t)
+            code = "\n".join("\n".join(rows) for path, rows in cites if _norm(path) not in banned)
+            hit -= _runs(code) if hit and code else set()
+            w, got = _words(s), set()
+            for i in range(len(w) - SPEC_RUN + 1):
+                if tuple(w[i:i + SPEC_RUN]) in hit:
+                    got.update(range(i, i + SPEC_RUN))
+            return len(got)
         return copied
     return with_records
 
@@ -1155,8 +1175,8 @@ def _declined(o, ctx, copied):
             bad.append("declined-invalid:bad-entry")
         elif len(d["why"]) > 300:
             bad.append("declined-invalid:too-long")
-        elif copied(d["why"]):
-            bad.append("declined-invalid:copied-from-spec")
+        elif n := copied(d["why"]):
+            bad.append("declined-invalid:copied-from-spec:%d" % n)
         else:
             good.append({"spec_line": d["spec_line"], "why": _ws(d["why"])})
     return good, bad
@@ -1219,8 +1239,9 @@ def _read_lane(text, lane, run, shard=None):
         if fixed and o is not None and _hostile(pin, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
         c, check = _candidate(o, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
-        if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
-            c, check = None, "copied-from-spec"
+        dup = max((copied(c[k], [(c["path"], c["rows"])]) for k in ("title", "trigger", "fix")), default=0) if c is not None and copied else 0
+        if dup:  # CTX-03: the count of the worst field, never its text
+            c, check = None, "copied-from-spec:%d" % dup
         if c is None or c["id"] in kept:
             if c is None:
                 invalid += 1
@@ -1427,14 +1448,16 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
             continue
         ev = o.get("evidence")
         ev = [dict(e, quote=_esc(e["quote"])) if isinstance(e, dict) and "quote" in e else e for e in ev] if isinstance(ev, list) else ev
-        cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
-                 and _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
+        rows = {id(e): _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote"))
+                for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)}
+        cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict) and rows[id(e)] is not None]
         reason = o.get("reason")
         kept = [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]  # dc5: a repaired line carries no cite
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
-        if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
-            bad.append(("copied-from-spec", ln))
-            disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
+        dup = copied(reason, [(e["path"], rows[id(e)]) for e in kept]) if o["id"] in spec and isinstance(reason, str) else 0
+        if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
+            bad.append(("copied-from-spec:%d" % dup, ln))
+            disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
             continue
         kind, down = o["verdict"], None  # a downgrade is a verdict that cannot stand as sent, and says why
         if kind == "refuted":
