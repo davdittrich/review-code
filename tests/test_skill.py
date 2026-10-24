@@ -646,6 +646,12 @@ class PostingDocs(unittest.TestCase):
         self.assertIn("Never open `inputs/spec.md` or read PR, MR, issue or commit text except history files.", flat)
         self.assertNotIn("or any PR, MR, issue or commit text", flat)
 
+    def test_lanes_refusals_list_every_nit_refusal_the_code_has(self):  # review-code-kly8
+        import paths  # noqa: F401  (puts the scripts on sys.path)
+        import nit
+        line = next(ln for ln in self.read(self.REFS, "lanes.md").splitlines() if ln.lstrip().startswith("Refusals:"))
+        self.assertEqual(set(re.findall(r"`([a-z-]+)`", line)), set(nit.REFUSED))
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
