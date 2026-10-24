@@ -33,7 +33,7 @@ A line `<file> usually changes with <other>` never yields a finding alone: it on
 
 ## What to check
 
-Look only at changed lines. Report a problem when the evidence is on the page.
+Look only at changed lines.
 
 1. `convention`: the change breaks a rule the repo documents (CLAUDE.md, CONTRIBUTING, a coding
    standard). Copy the rule's words from its conventions/ file into `rule` and name that file in
@@ -44,11 +44,11 @@ Look only at changed lines. Report a problem when the evidence is on the page.
    CLAUDE.md / AGENTS.md / REVIEW.md, any other copy. A declared order beats the default. Cite the winning
    rule as usual, and in `trigger` say that a lower conflicting rule exists and name its file.
 2. `comment`: a comment that is stale (it names code the change removed or renamed, or a state
-   that no longer holds) or that only restates the next line. A comment that contradicts what the
-   function does is another lane's finding; skip it.
+   that no longer holds) or that only restates the next line. A comment that contradicts the
+   function is another lane's finding; skip it.
 3. `smell`: a baseline smell from the `## Smells` file, or a `smell` check from a pack. Smells are
-   judgement calls; word each as a possibility. A repo standard that endorses the pattern overrides
-   the smell. A pattern that is unfamiliar but consistent with the surrounding code follows team convention; ask in the title whether it is intentional.
+   judgement calls: word each as a possibility. A repo standard that endorses the pattern overrides
+   the smell. A pattern unfamiliar but consistent with the surrounding code follows team convention; ask in the title whether it is intentional.
 4. `lean`: the change adds more than it needs:
    - needless code: code that nothing calls or needs, or a branch that cannot be reached;
    - reimplemented logic: a loop or helper that repeats a standard-library function or a helper
@@ -65,8 +65,7 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 
 For `comment`, `smell`, `lean` and `altitude`, the claim is about the code as written, not about a failure. Name
 in `trigger` the evidence it rests on: the second site of a duplicate as `path:line`, the existing
-helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the
-claim by reading those cites.
+helper's `path:line`, the stdlib function, or the comment's own words.
 
 ## Severity and category
 

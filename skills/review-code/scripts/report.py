@@ -62,7 +62,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
 A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
-folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
+folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
 [{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
@@ -915,6 +915,10 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree"), ensure_ascii=False))
+    out += "".join("merged: %s at %s (folded into this finding; one verdict, for the id above)\n%s\n" % (
+        m["id"], json.dumps("%s:%d%s" % (c["path"], m["line"], "-%d" % m["end_line"] if m["end_line"] != m["line"] else ""),
+                            ensure_ascii=False), ledger.block(m["trigger"], nonce))
+        for m in c.get("merged_from", []))
     out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
@@ -1060,6 +1064,8 @@ def status(run):
             "repaired": repaired, "repaired_total": sum(repaired.values()),
             "no_verdict": _no_verdict(run, cand, ver), "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "verify_calls": calls, "lane_state": state,
+            "merged_from": {c["id"]: [dict(m, trigger=sanitize.escape_line(m["trigger"])) for m in c["merged_from"]]
+                            for c in cand["candidates"] if c.get("merged_from")},
             "missing_lanes": sorted(set(_planned(run)) - set(state)),
             "missing_batches": [] if "serial.txt" in have else [c["batch"] for c in calls if "%d.txt" % c["batch"] not in have],
             "confirmed": sorted(i for i, v in ver.items() if v.get("verdict") == "confirmed" and v.get("cites"))}
@@ -1084,6 +1090,15 @@ def _batches(queue, hand, prefix="review-code"):
     return out
 
 
+MERGED_TRIGGER = 160  # chars of a merged-away trigger kept on the survivor (gh#59); the full text stays in the lane's own candidate
+
+
+def _merged_rows(c, e):
+    """One printed row per candidate merged into c: its id, range and trigger, escaped and one line (untrusted lane text)."""
+    return ["    merged: [%s] %s:%s  %s" % (m["id"], e(c["path"]), m["line"] if m["end_line"] == m["line"] else "%d-%d" % (m["line"], m["end_line"]),
+                                           e(m["trigger"])) for m in c.get("merged_from", [])]
+
+
 def _dedupe(cands):
     """(survivors, merged count). Per axis, candidates on one path and category whose ranges lie within 2 lines merge;
     the more severe survives, then the longer trigger, then the smaller id. A wrong merge hides a finding and a missed
@@ -1105,7 +1120,9 @@ def _dedupe(cands):
             end, j = max(end, ordered[j]["end_line"]), j + 1
         group = ordered[i:j]
         win = min(group, key=lambda c: (SEVERITIES.index(c["severity"]), -len(c["trigger"]), c["id"]))
-        out.append(dict(win, also_found_by=sorted({c["source_lane"] for c in group} - {win["source_lane"]})))
+        out.append(dict(win, also_found_by=sorted({c["source_lane"] for c in group} - {win["source_lane"]}),
+                        merged_from=[{"id": c["id"], "line": c["line"], "end_line": c["end_line"], "trigger": c["trigger"][:MERGED_TRIGGER]}
+                                     for c in sorted(group, key=lambda c: (c["line"], c["id"])) if c is not win]))
         merged, i = merged + len(group) - 1, j
     return sorted(out, key=lambda c: c["id"]), merged
 
@@ -1797,7 +1814,7 @@ def _text(doc):
     def item(i):
         out = ["- [%s] %s:%d  %s (%s, score %d, %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                       i["evidence_class"], i["score"], i["origin"]),
-               "    trigger: " + e(i["trigger"])]
+               "    trigger: " + e(i["trigger"])] + _merged_rows(i, e)
         out += ["    spec: inputs/spec.md:%d" % i["spec_line"]] if "spec_line" in i else []
         out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
         out += ["    impact: " + e(i["impact"])] if i["impact"] else []
@@ -1878,9 +1895,9 @@ def _text(doc):
             out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
         nits = [i for i in fs if i["axis"] == ax and i["severity"] == "nit"]
         out += section("Nits", nit.rows(nits, e)) if nits else []
-        out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
-                                                                       i["evidence_class"], e(i["reason"]))
-                                        + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])
+        out += section("Unverifiable", [x for i in unv for x in ["- [%s] %s:%d  %s (%s): %s" % (
+            i["id"], e(i["path"]), i["line"], e(i["title"]), i["evidence_class"], e(i["reason"]))
+            + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "")] + _merged_rows(i, e)])
         if sota:
             out += section("SOTA (advisory)", [x for i in sota for x in (
                 ["- [%s] %s:%d  %s (%s: %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]), i["evidence_class"],

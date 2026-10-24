@@ -621,6 +621,37 @@ class MultiLane(Lanes):
         self.assertEqual({f["line"] for f in d["findings"] + d["unverifiable"]}, {3, 6})
         self.assertEqual(d["findings"][0]["also_found_by"], [])
 
+    def test_dedupe_lists_each_merged_away_candidate_on_the_survivor(self):  # gh#59
+        got, _ = report._dedupe([node("a", 5, trigger="win" * 9), node("b", 6, "suggestion", trigger="x\ny" * 200),
+                                 node("c", 7, "nit")])
+        (s,) = got
+        self.assertEqual([(m["id"], m["line"], m["end_line"]) for m in s["merged_from"]],
+                         [("F-blean6", 6, 6), ("F-clean7", 7, 7)])
+        self.assertLessEqual(len(s["merged_from"][0]["trigger"]), report.MERGED_TRIGGER)
+        (s,), _ = report._dedupe([node("a", 5)])
+        self.assertEqual(s["merged_from"], [])
+
+    def test_merged_away_candidate_reaches_status_handoff_and_render(self):  # gh#59
+        out = self.lane("defects", mc(2, trigger="first bug\x1b[31m\nsecond row", severity="suggestion"),
+                        mc(3, trigger="second bug", severity="blocking"))
+        (kept,) = out["ids"]
+        gone = fid("src/calc.py", "bug", MQ[2])
+        st = json.loads(self.rep("status")[1])["merged_from"]
+        self.assertEqual(list(st), [kept])
+        self.assertEqual((st[kept][0]["id"], st[kept][0]["line"]), (gone, 2))
+        self.assertNotIn("\n", st[kept][0]["trigger"])
+        self.assertNotIn("\x1b", st[kept][0]["trigger"])
+        with open(os.path.join(out["handoff"], kept + ".md"), encoding="utf-8") as fh:
+            hand = fh.read()
+        self.assertIn(gone, hand)
+        self.assertIn("first bug", hand)
+        self.assertIn("merged: [%s]" % gone, self.rep("render")[1])  # an unverified survivor lists it too
+        self.verdicts({"id": kept, "verdict": "confirmed", "evidence": [dict(CITE, line=3, quote=MQ[3])], "reason": "r"})
+        self.assertEqual(self.doc()["findings"][0]["merged_from"][0]["id"], gone)
+        rc, text = self.rep("render")
+        self.assertIn("merged: [%s] src/calc.py:2  first bug" % gone, text)
+        self.assertNotIn("\x1b", text)
+
     def test_unhashable_verdict_id_is_skipped_and_keeps_the_batch(self):  # CR-01
         (i,) = self.lane("defects", mc(2))["ids"]
         cite = [dict(CITE, line=2, quote=MQ[2])]
