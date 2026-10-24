@@ -16,7 +16,7 @@ Never open a handoff file that is not listed, candidates.json, verdicts.json or 
 
 ## Check
 
-Try to refute the claim. Answer each question by reading the code, not names or comments:
+Answer each question by reading the code, not names or comments:
 
 1. Would the cited line fail as claimed when the trigger occurs?
 2. Which assumptions does the claim rest on, and which of them are unvalidated?

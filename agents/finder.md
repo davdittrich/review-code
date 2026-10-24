@@ -100,7 +100,7 @@ One line per finding, plus the summary and inspected lines below, nothing else. 
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
 
 Before the findings, one line with a one-to-three sentence summary of what the change does, written
-from the code and change.diff only, in at most 600 characters (apply the same `\u007b` and `\u0022` rule to its text). The skill shows it labelled as model text.
+from the code and change.diff only, in at most 600 characters. The skill shows it labelled as model text.
 
 [["summary", "Adds add() to src/calc.py and a test for it."]]
 

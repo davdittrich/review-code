@@ -462,8 +462,8 @@ class SharedPhrases(unittest.TestCase):
     # The six reader prompts measured 34,905 bytes before gh#52 (whole files; gh#52's "30,585" matches no measurement of
     # them): the rule is paid for by the tree/ wording it replaced, so the total never grows. The cap is the real total:
     # slack would let a clause in unpaid.
-    # One approved growth: +93 bytes (34814 -> 34907) for the standards decision-record clause (review-code-kizp); the cap is still the real total.
-    READER_BYTES = 34907
+    # The standards decision-record clause (review-code-kizp, review-code-edon) was paid for by trimming duplicated meaning (review-code-w815).
+    READER_BYTES = 34814
 
     def text(self, name):
         return "\n".join(parts(name)[1])

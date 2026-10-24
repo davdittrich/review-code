@@ -46,10 +46,10 @@ confidence are no evidence either way. A claim that cannot be checked from the c
 
 ## Severity and category
 
-Severity is one of `required`, `suggestion`, `noted`. Never use `blocking`.
+Severity is one of `required`, `suggestion`, `noted`.
 Use `required` only when the spec line plainly demands what the code lacks or contradicts, `suggestion`
 when the spec is open to two readings, and `noted` for a minor point.
-Category is one of `spec-missing`, `spec-partial`, `spec-wrong`, `scope-creep`. Nothing else is accepted.
+Category is one of `spec-missing`, `spec-partial`, `spec-wrong`, `scope-creep`.
 
 For `spec-missing`, cite the changed code where the requirement belongs. Every finding cites code
 that exists; the spec cite is `spec_line` alone.
@@ -79,7 +79,7 @@ Then one line listing every file you read:
 [["inspected", ["src/calc.py"]]]
 
 Last, one line with each requirement you looked at and chose not to report, `why` in your own words
-(at most 300 characters, no spec text):
+(at most 300 characters):
 
 [["declined", [[["spec_line", 33], ["why", "needs a deployment the change does not touch"]]]]]
 
