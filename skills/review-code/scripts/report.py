@@ -1471,7 +1471,8 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
                 for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)}
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict) and rows[id(e)] is not None]
         reason = o.get("reason")
-        kept = [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]  # dc5: a repaired line carries no cite
+        # dc5: a repaired line carries no cite out of its candidate's file, nor out of a cite file holding a verdict-key token
+        kept = [] if fix and _hostile(pin, paths[o["id"]], _VTOKEN) else [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
         dup = copied(reason, [(e["path"], rows[id(e)]) for e in kept]) if o["id"] in spec and isinstance(reason, str) else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text

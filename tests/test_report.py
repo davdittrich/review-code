@@ -2472,11 +2472,12 @@ class WireTokenScope(Base):
     feat_files = {"src/calc.py": 'def load():\n    return 1\n\ndef say():\n    return f("a", "b")\n    h = [%s, 1]\n',
                   "src/clean.py": 'x = 1\ny = 2\n'}
 
-    def _setup(self, key):
+    def _setup(self, key, cand=None):
         self.feat_files = dict(self.feat_files, **{"src/calc.py": self.feat_files["src/calc.py"] % ('"%s"' % key)})
         gitfix.commit(self.repo, self.feat_files, "more")
         self.run_dir = self.pin(self.pin_args)
-        (i,) = self.ingest(dict(CAND, line=5, quote=QQUOTE, fix=""), {"inspected": ["src/calc.py"]})["ids"]
+        cand = cand or dict(CAND, line=5, quote=QQUOTE, fix="")  # the candidate's own file is the token file unless named
+        (i,) = self.ingest(cand, {"inspected": [cand["path"]]})["ids"]
         return i
 
     def _line(self, i, *cites):
@@ -2497,11 +2498,17 @@ class WireTokenScope(Base):
         self.assertEqual(u["reason"], "cites-dropped-wire-token")
 
     def test_only_the_cites_in_a_hostile_file_are_dropped(self):
-        i = self._setup("quote")
+        i = self._setup("quote", dict(CAND, path="src/clean.py", line=1, quote="x = 1", fix=""))  # candidate file is clean
         out = self.verdicts(self._line(i, ("src/calc.py", 5, "return f"), ("src/clean.py", 1, "x = 1")))
         self.assertEqual(out["confirmed"], [i])
         with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
             self.assertEqual([c["path"] for c in json.load(fh)[i]["cites"]], ["src/clean.py"])
+
+    def test_a_repaired_verdict_takes_no_cite_when_the_candidates_own_file_holds_a_verdict_token(self):
+        i = self._setup("evidence")  # review-code-spb8: the cite file is clean, the candidate file is the hostile one
+        self.assertEqual(self.verdicts(self._line(i, ("src/clean.py", 1, "x = 1")))["confirmed"], [])
+        with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)[i]["cites"], [])
 
     def test_a_repaired_candidate_in_a_file_holding_only_a_fix_token_keeps_no_fix(self):
         self._setup("fix")  # candidate-ingest keeps the full token set: "fix" is no verdict key
