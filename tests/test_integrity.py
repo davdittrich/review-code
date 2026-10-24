@@ -164,6 +164,32 @@ class DirtyFlag(tpost.Base):
         self.assertEqual(self.pin(), (True, 1))  # the snapshot (=dirty) hides it, so the tracked status must still run
 
 
+class CappedDirtyFlag(tpost.Base):
+    """review-code-87o1.9: above TRACKED_CAP the snapshot has no tracked row, only tracked{count, digest}; `dirty`
+    still comes from the snapshot alone (in-process, so the patched cap reaches pin)."""
+
+    def setUp(self):
+        super().setUp()
+        gitfix.commit(self.repo, {"bulk/f%d.txt" % i: "x\n" for i in range(5)}, "bulk")
+        for i in range(5):  # tracked edits only: no knowledge row that would make dirty true by itself
+            tp.write(self.repo, "bulk/f%d.txt" % i, "x, modified\n")
+
+    def pin(self, cap):
+        log = os.path.join(self.tmp, "capped%d.json" % cap)
+        with mock.patch.object(target, "TRACKED_CAP", cap), mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": log}):
+            rc, out = tt.call(["main"], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        snap = tp.load(out["run"], "integrity.json")
+        plain = sum(1 for a in tp.starts(log) if "status" in a and "--porcelain" in a)
+        return "tracked" in snap, tt.load(out["run"])["dirty"], plain
+
+    def test_a_capped_tracked_set_is_dirty_from_the_snapshot_alone(self):
+        self.assertEqual(self.pin(3), (True, True, 0))
+
+    def test_below_the_cap_the_rows_still_make_it_dirty(self):
+        self.assertEqual(self.pin(100), (False, True, 0))
+
+
 class RenderProcessCount(tpost.Base):
     def count(self, n):
         self.make_run()

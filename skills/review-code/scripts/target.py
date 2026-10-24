@@ -1316,8 +1316,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "diff_base": plan.get("diff_base"),
-        # a tracked entry in the snapshot's status is dirty already; only a clean one needs --ignore-submodules=none
-        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
+        # a tracked entry in the snapshot's status, itemised or capped (87o1.9), is dirty already; only a clean one needs --ignore-submodules=none
+        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or "tracked" in snap or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
         "untracked": sorted(shown(n) for n in plan["untracked"]),
