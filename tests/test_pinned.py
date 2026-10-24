@@ -457,8 +457,24 @@ class Symlinks(tt.Base):
 
 def starts(path):
     """argv of every git process start recorded in a GIT_TRACE2_EVENT file."""
-    with open(path, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8", errors="surrogateescape") as fh:  # a non-UTF-8 file name sits raw in the trace
         return [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start" and os.path.basename(e["argv"][0]) == "git"]
+
+
+class StartsNonUtf8(tt.Base):
+    """review-code-s2qi: a git process that names a non-UTF-8 file sits raw in the trace; reading it must not raise."""
+
+    def test_a_trace_holding_a_non_utf8_file_name_is_read(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r"))
+        name = b"bad\xff.py"
+        try:
+            with open(os.path.join(os.fsencode(repo), name), "w"):
+                pass
+        except OSError as e:  # APFS and some mounts refuse the name: nothing to test there
+            self.skipTest("the system refuses a non-UTF-8 file name: %s" % e)
+        log = os.path.join(self.tmp, "trace.json")
+        gitfix.run(["git", "add", "--", name], repo, dict(gitfix._env(), GIT_TRACE2_EVENT=log))
+        self.assertIn(os.fsdecode(name), [a for argv in starts(log) for a in argv])
 
 
 class ProcessCount(tt.Base):

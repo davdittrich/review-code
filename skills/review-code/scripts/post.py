@@ -55,16 +55,18 @@ _RUN = re.compile(r"[\w.-]+")
 # fails from all of them. Such a run holds no match, so `_refs` searches a copy with its `/` turned into `.`: the same
 # class for every other alternative, and no `/` left for `_NS` to start on.
 _NO_GT = re.compile(r"(?<![\w./-])[\w./-]+(?![\w./-]|>)")
-# Likewise `[[..]]` reads to the end of its [^\]`] run from every `[[`; a run that does not end in `]]` holds no wiki
-# link. The first `[` of each pair there becomes NUL: `[issue:..]` still starts at its own `[`, and no class cares.
+# Likewise `[[..]]` and `[issue:..]` read to the end of their [^\]`] run from every `[`; a run that does not end in `]`
+# holds neither, so every `[` there becomes NUL. A run that ends in a single `]` holds no wiki link, but `[issue:..]`
+# still starts at its own `[`: only the first `[` of each pair becomes NUL. No class cares about either.
 _NO_WIKI = re.compile(r"(?<![^\]`])[^\]`]+(?![^\]`]|\]\])")
 _PAIR = re.compile(r"\[(?=\[)")
+_ALL = re.compile(r"\[")
 
 
 def _refs(t: str):
     """The matches `_REF.finditer(t)` yields, in linear time on a long word. Spans are the original's; take text from `t`."""
     s = _NO_GT.sub(lambda r: r.group().replace("/", "."), t)  # same length as t
-    s = _NO_WIKI.sub(lambda r: _PAIR.sub("\0", r.group()), s)
+    s = _NO_WIKI.sub(lambda r: (_PAIR if s.startswith("]", r.end()) else _ALL).sub("\0", r.group()), s)
     at, dead = 0, 0  # dead: the end of a run where _NS is known to fail from `at`
     while True:
         m = _REF_G.search(s, at)

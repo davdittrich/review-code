@@ -928,9 +928,7 @@ class SpecAdrHiddenName(Base):
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
                            lines({"inspected": []}), {"GIT_TRACE2_EVENT": log})
         self.assertEqual((rc, err), (0, ""), out)
-        with open(log, encoding="utf-8", errors="surrogateescape") as fh:  # a non-UTF-8 name sits raw in the trace
-            argvs = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start"]
-        return len([a for a in argvs if "ls-tree" in a and "-r" in a])
+        return len([a for a in tp.starts(log) if "ls-tree" in a and "-r" in a])
 
     def test_the_whole_tree_listing_for_marked_refs_runs_once_per_run(self):  # review-code-fot3
         self.assertEqual([self.traced_ingest(1), self.traced_ingest(2)], [1, 0])
