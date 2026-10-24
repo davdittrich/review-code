@@ -5,12 +5,16 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import paths  # noqa: F401
 
+import gitfix  # noqa: E402
+import target  # noqa: E402
+import test_pinned as tp2  # noqa: E402
 import test_packs as tp  # noqa: E402
 import test_report as tr  # noqa: E402  (module import: its test classes are not collected twice)
 from test_report import CAND, CITE, cand, cli, fid, verdict  # noqa: E402
@@ -355,7 +359,7 @@ class Serial(Fixture):
 
 class Tracer(Fixture):
     KEYS = {"version", "agent_prefix", "tier", "mode", "calls", "verifier", "spec_verifier", "caps", "max_turns", "packs", "shards",
-            "skipped", "lost_guarantees", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
+            "skipped", "lost_guarantees", "tools", "lost_capabilities", "sota_inventory", "preview", "confirm", "effective_overrides", "ai"}
 
     def test_standard_tier_without_spec(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "standard")
@@ -707,6 +711,21 @@ class ShardMerge(ShardBase):
             self.assertIn("## Nit mode", self.read_text("shards", str(s["id"]), "inputs", "standards.md"))
         self.assertIn("## Nit mode", self.read_text("inputs", "standards.md"))
 
+    def test_tool_set_reaches_run_and_shard_ledgers(self):  # gh#47 item 10
+        for tools in (("serena", "codegraph"), ()):
+            with self.subTest(tools=tools):
+                p = self.run_plan(tools=tools)
+                self.assertTrue(p["shards"])
+                self.assertEqual(self.read_json("ledger.json")["tools"], p["tools"])
+                for s in p["shards"]:
+                    self.assertEqual(self.read_json("shards", str(s["id"]), "ledger.json")["tools"], p["tools"])
+
+    def test_rebuild_keeps_recorded_tool_set(self):
+        import ledger
+        self.run_plan(tools=("serena",))
+        ledger.build(self.run_dir)
+        self.assertEqual(self.read_json("ledger.json")["tools"], ["serena"])
+
     def test_one_group_is_not_sharded(self):
         p = self.run_plan(shard_bytes=10 ** 9)
         self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
@@ -743,7 +762,7 @@ class Shards(ShardBase):
         self.assertIn({"what": "shard 3", "why": "shard cap: 1 files", "files": 1}, p["skipped"])
 
     def test_each_shard_has_its_own_run_tree_and_ledger(self):
-        before = self.read_text("ledger.json")
+        before = self.read_json("ledger.json")
         parent_tree = sorted(os.listdir(os.path.join(self.run_dir, "tree")))
         p = self.run_plan()
         for s in p["shards"]:
@@ -755,10 +774,9 @@ class Shards(ShardBase):
             self.assertEqual(self.read_text("shards", str(s["id"]), "change.diff"), "")
             tree = os.path.join(d, "tree")
             on_disk = {os.path.relpath(os.path.join(r, f), tree) for r, _, fs in os.walk(tree) for f in fs}
-            # util/helpers.py is helper-named, so every shard tree holds it as reuse context (review-code-3ea.2)
-            self.assertEqual(on_disk & {"auth/login.py", "docs/guide.md"}, set(s["files"]) - {"util/helpers.py"})
+            self.assertEqual(on_disk, set())  # gh#52: a shard tree holds the whole checkout difference, empty here
             self.assertTrue(os.path.isfile(os.path.join(d, "ledger.json")))
-        self.assertEqual(self.read_text("ledger.json"), before)
+        self.assertEqual(self.read_json("ledger.json"), dict(before, tools=[]))  # plan adds only the tool set (gh#47 item 10)
         self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "tree"))), parent_tree)
 
     def test_shards_inherit_the_single_trust_answer(self):
@@ -929,6 +947,204 @@ def _tree_bytes(d):
     return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs)
 
 
+class ScanHead(Fixture):
+    """review-code-axql (51cd011): a path or repo plan scans only the first SCAN_BYTES of each reviewed file. The read itself is no
+    output a test can see, so the bound is pinned by what it decides: a content rule matches inside the head, not beyond it."""
+    HEAD = "x = 1\n" * 12000  # 72000 bytes, past SCAN_BYTES (65536)
+    base_files = {"near.txt": "import subprocess\n" + HEAD, "far.txt": HEAD + "import subprocess\n"}
+    feat_files = {"z.txt": "z = 1\n"}
+    pin_args = ["."]
+
+    def test_a_content_rule_matches_inside_the_scanned_head_and_not_beyond_it(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        (owasp,) = [x for x in self.plan_json()["packs"] if x["name"] == "security-owasp"]
+        self.assertEqual(owasp["files"], ["near.txt"])
+
+
+BLOB_BYTES = 3 * 10 ** 6  # under target.MAX_FILE (4,000,000)
+
+
+class ScanHeadMemory(ShardBase):
+    """review-code-q35e.2: plan keeps the head bytes and line count of each pinned blob and drops the blob before the next,
+    so peak memory follows one blob (the reader may hold a copy of it), not their sum. Runs in process, so tracemalloc sees it."""
+    base_files = {"f%d.txt" % i: (("%d" % i) * 99 + "\n") * (BLOB_BYTES // 100) for i in range(10)}
+    feat_files = {"z.txt": "z = 1\n"}
+
+    def test_ten_large_blobs_peak_under_three_blobs(self):
+        import tracemalloc
+        tracemalloc.start()
+        try:
+            self.run_plan(shard_bytes=10 ** 9)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 3 * BLOB_BYTES)  # one blob plus the reader's copy; ten held at once is 30 MB
+
+
+class ToolsByTrust(ShardBase):
+    """review-code-q35e.5: plan gives agents the catalogue's tools by stored trust. External code gets no tool whose queries
+    execute repository code or configuration; own code adds them. Plan runs in process so a record can be added to the catalogue."""
+    LSP = {"how": "language server queries", "runs": True, "knowledge": (), "hooks": (), "agent": ("LSP",), "loss": "type-aware lookup"}
+
+    def given(self, trust=None):
+        if trust:
+            rc, out, _ = cli("ledger.py", ["trust", "set", trust, "--run", self.run_dir], self.repo, self.tmp)
+            self.assertEqual(rc, 0, out)
+        import plan as mod
+        with mock.patch.dict(mod.TOOLS, {"lsp": self.LSP}):
+            p = self.run_plan(tools=("codegraph", "serena", "lsp"))
+        self.assertEqual(self.read_json("ledger.json")["tools"], p["tools"])
+        return p["tools"], p["lost_capabilities"]
+
+    def test_external_and_unanswered_trust_get_no_executing_tool(self):
+        for trust in (None, "external"):
+            with self.subTest(trust=trust):
+                self.assertEqual(self.given(trust), (["codegraph", "serena"], ["lsp: type-aware lookup"]))
+
+    def test_own_trust_adds_the_executing_tool(self):
+        self.assertEqual(self.given("own"), (["codegraph", "lsp", "serena"], []))
+
+    def test_the_catalogue_describes_the_six_tools_of_gh47_once_each(self):
+        import plan as mod
+        self.assertEqual(set(mod.TOOLS), {"codegraph", "serena", "openwolf", "llm-tldr", "language-server", "history"})
+        for name, rec in mod.TOOLS.items():
+            self.assertLessEqual({"how", "runs", "knowledge", "hooks", "agent"}, set(rec), name)
+            self.assertIsInstance(rec["runs"], bool, name)
+            self.assertTrue(rec["how"], name)
+        self.assertEqual({n for n, r in mod.TOOLS.items() if r["runs"]}, {"llm-tldr", "language-server"})
+        self.assertEqual({n for n, r in mod.TOOLS.items() if r["agent"]}, {"codegraph", "serena"})
+
+    def test_a_tool_without_an_agent_surface_is_a_usage_error_for_tool(self):
+        for name in ("openwolf", "language-server"):
+            rc, out = self.plan("plan", "--run", self.run_dir, "--tool", name)
+            self.assertEqual((rc, out["reason"]), (1, "usage"), name)
+
+
+class ReadWorking(unittest.TestCase):
+    """read_working reads a regular file whole up to `limit`, calls a larger one too large, and refuses a link, a FIFO
+    and a missing file."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.d = self._td.name
+
+    def put(self, name, data):
+        with open(os.path.join(self.d, name), "wb") as fh:
+            fh.write(data)
+        return os.path.join(self.d, name)
+
+    def test_a_file_over_the_limit_is_too_large_and_a_smaller_one_whole(self):
+        big, small = self.put("big", b"0123456789"), self.put("small", b"0123")
+        self.assertEqual(target.read_working(small, 4), ("ok", b"0123"))
+        self.assertEqual(target.read_working(big, 4), ("too-large", 10))
+
+    def test_a_link_a_fifo_and_a_missing_file_are_no_file(self):
+        os.symlink(self.put("real", b"abcdef"), os.path.join(self.d, "link"))
+        os.mkfifo(os.path.join(self.d, "fifo"))
+        self.assertEqual(target.read_working(os.path.join(self.d, "link"), 4)[0], "symlink")
+        self.assertEqual(target.read_working(os.path.join(self.d, "fifo"), 4)[0], "special")
+        self.assertEqual(target.read_working(os.path.join(self.d, "gone"), 4)[0], "missing")
+
+
+class PinnedContent(Fixture):
+    """review-code-zcrc: plan reads the reviewed files as the pinned tree holds them, so an edit after the pin moves neither the
+    packs, nor the inventory, nor the token estimate (it read the live checkout)."""
+    base_files = {"near.txt": "import subprocess\n", "clean.txt": "x = 1\n"}
+    feat_files = {"z.txt": "z = 1\n"}
+    pin_args = ["."]
+
+    def owasp(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual(rc, 0, out)
+        return [x["files"] for x in self.plan_json()["packs"] if x["name"] == "security-owasp"]
+
+    def test_an_edit_after_the_pin_does_not_move_a_content_pack(self):
+        with open(os.path.join(self.repo, "near.txt"), "w") as fh:
+            fh.write("x = 1\n")
+        with open(os.path.join(self.repo, "clean.txt"), "w") as fh:
+            fh.write("import subprocess\n")
+        self.assertEqual(self.owasp(), [["near.txt"]])
+
+    def test_a_run_without_a_pinned_tree_refuses_no_pin(self):
+        path = os.path.join(self.run_dir, "target.json")
+        with open(path, encoding="utf-8") as fh:
+            tj = json.load(fh)
+        del tj["pinned_tree"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        self.assertEqual((rc, out["reason"]), (1, "no-pin"))
+
+    def test_a_file_deleted_after_the_pin_is_still_scanned(self):
+        os.remove(os.path.join(self.repo, "near.txt"))
+        self.assertEqual(self.owasp(), [["near.txt"]])
+
+    def line(self):
+        rc, out = self.plan("plan", "--run", self.run_dir)
+        return next(x for x in out["preview"] if x.startswith("Call defects:"))
+
+    def test_growing_an_included_file_after_the_pin_does_not_move_the_estimate(self):
+        before = self.line()
+        with open(os.path.join(self.repo, "near.txt"), "a") as fh:
+            fh.write("y = 2\n" * 100000)
+        self.assertEqual(self.line(), before)
+
+
+class PlanProcessCount(tr.Base):
+    """review-code-zcrc: the pinned blobs cost one ls-tree and one cat-file --batch whatever the number of files."""
+    pin_args = ["."]
+
+    def count(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r%d" % n))
+        gitfix.commit(repo, {"f%02d.py" % i: "v = %d\n" % i for i in range(n)}, "base")
+        rc, out, _ = cli("target.py", ["."], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        run = json.loads(out)["run"]
+        rc, out, _ = cli("ledger.py", ["build", "--run", run], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        log = os.path.join(self.tmp, "plan-trace%d.json" % n)
+        rc, out, err = cli("plan.py", ["plan", "--run", run], repo, self.tmp, "", {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return [x for x in tp2.starts(log)]
+
+    def test_plan_runs_the_same_git_processes_for_three_files_and_thirty(self):
+        a, b = self.count(3), self.count(30)
+        self.assertEqual(len(a), len(b))
+        for argv in (a, b):
+            self.assertEqual(sum(1 for x in argv if "ls-tree" in x), 1)
+            self.assertEqual(sum(1 for x in argv if "cat-file" in x and "--batch" in x), 1)
+
+
+class ShardsPinnedStat(ShardBase):
+    """review-code-l895: shard sizes and the risk ranking read the pinned blobs, not the checkout."""
+    base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
+    feat_files = {"auth/login.py": PAD + "other = 2\n"}
+
+    def test_a_checkout_edit_after_the_pin_moves_neither_the_shards_nor_their_risk(self):
+        for p in self.base_files:
+            with open(os.path.join(self.repo, p), "a") as fh:
+                fh.write(BIG * 100)  # the checkout now weighs 6010 bytes a file, the pin 10
+        import plan as mod
+        with mock.patch.object(mod, "CHURN_DAYS", 10 ** 5):  # the fixture commits are dated long ago
+            p = self.run_plan(shard_bytes=25)  # pinned: two files share a shard
+        self.assertEqual([(s["files"], s["risk"]) for s in p["shards"]],
+                         [(["auth/login.py"], 3.0), (["docs/guide.md", "util/helpers.py"], 2.0)])
+
+
+class ShardsUncountedFile(ShardBase):
+    """review-code-jv4h: a blob over MAX_FILE has no line count, so its churn must not be divided by a count of 0."""
+    base_files = {"a/big.py": PAD * 40, "b/small.py": PAD}
+    feat_files = {"b/small.py": PAD + "z = 2\n"}
+
+    def test_an_over_cap_file_adds_neither_its_churn_nor_its_lines_to_the_risk(self):
+        import plan as mod
+        with mock.patch.object(mod, "CHURN_DAYS", 10 ** 5), mock.patch.object(target, "MAX_FILE", 100):  # big.py is 400 bytes
+            p = self.run_plan(shard_bytes=300)
+        self.assertEqual([(s["files"], s["risk"]) for s in p["shards"]], [(["b/small.py"], 2.0), (["a/big.py"], 1.0)])
+
+
 class Preview(Fixture):
     def test_deep_preview_states_calls_caps_and_ceilings(self):
         rc, out = self.plan("plan", "--run", self.run_dir, "--tier", "deep")
@@ -952,7 +1168,8 @@ class Preview(Fixture):
             fh.write(b"x" * 400000)  # browsable but not included: must not show in the estimate
         self.plan("plan", "--run", self.run_dir)
         p = self.plan_json()
-        total = (sum(os.path.getsize(os.path.join(self.run_dir, "tree", f)) for f in inc) + os.path.getsize(call["input"])
+        # gh#52: tree/ holds only the checkout difference (none here), so the included files are sized in the repository
+        total = (sum(os.path.getsize(os.path.join(self.repo, f)) for f in inc) + os.path.getsize(call["input"])
                  + os.path.getsize(os.path.join(self.run_dir, "change.diff")))
         line = next(x for x in p["preview"] if x.startswith("Call defects:"))
         self.assertIn("about %d input tokens (estimate)" % ((total + 3) // 4), line)

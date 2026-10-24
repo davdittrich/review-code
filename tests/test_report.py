@@ -4,8 +4,12 @@ import hashlib
 import json
 import os
 import re
+import io
 import shutil
+import tempfile
 import time
+import tracemalloc
+from unittest import mock
 import unittest
 
 import paths  # noqa: F401
@@ -15,12 +19,20 @@ SCRIPTS = paths.SCRIPTS
 import gitfix  # noqa: E402
 from gitfix import cli, fid, lines, wire  # noqa: E402,F401
 import report  # noqa: E402
+import test_pinned as tp  # noqa: E402
 
 BASE = {"src/calc.py": "def load():\n    return 1\n"}
 FEAT = "def load():\n    return 1\n\ndef add(a, b):\n    return a - b\n"  # lines 3 to 5 are added
 CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "bug", "title": "add subtracts",
         "trigger": "add(2, 3) returns -1", "quote": "return a - b", "fix": "FIXTEXT-q1"}
 CITE = {"path": "src/calc.py", "line": 5, "quote": "return a - b"}
+
+
+def refusal(out):
+    """A report.py refusal line without its detail (review-code-2i1e prints it), after checking the detail is text."""
+    got = json.loads(out) if isinstance(out, str) else dict(out)
+    assert isinstance(got.pop("detail", None), str), got
+    return got
 
 
 class Base(gitfix.FeatureRepo):
@@ -130,6 +142,20 @@ class Derivation(Base):
                          ("needs runtime", "inferred", 50, False))
         self.assertEqual((un[n]["reason"], un[n]["evidence_class"]), ("no-valid-cite", "speculative"))
         self.assertEqual((un[o]["reason"], un[o]["evidence_class"], un[o]["score"]), ("no-verdict", "speculative", 25))
+
+    def test_a_list_or_dict_path_rejects_that_line_only(self):  # PR60 C4: unhashable paths never fail the whole ingest
+        good = cand(Q_ADD, 8)
+        out = self.ingest(dict(good, path=[1, 2]), dict(good, path={"a": 1}), good, {"inspected": [["x"], {"y": 1}, "src/calc.py"]})
+        self.assertEqual([r["check"] for r in out["rejected"]], ["bad-type", "bad-type"])
+        self.assertEqual(len(out["ids"]), 1)
+
+    def test_a_list_evidence_path_in_verdicts_is_no_valid_cite(self):  # PR60 C4: same filter as ingest
+        self.ingest(cand(Q_ADD, 8), cand(Q_MUL, 11), {"inspected": ["src/calc.py"]})
+        a, m = (fid("src/calc.py", "bug", q) for q in (Q_ADD, Q_MUL))
+        ok = verdict((Q_MUL, 11), "confirmed")
+        bad = verdict((Q_ADD, 8), "confirmed", evidence=[{"path": [1], "line": 8, "quote": Q_ADD}])
+        v = self.verdicts(bad, ok)
+        self.assertEqual((v["confirmed"], v["unverifiable"]), ([m], [a]))
 
     def test_confirmed_finding_shows_the_verifier_reason_as_impact(self):  # review-code-d14.4
         self.ingest(cand(Q_ADD, 8), {"inspected": ["src/calc.py"]})
@@ -461,16 +487,31 @@ class Renders(Base):
         d = self.doc()
         self.assertEqual((len(d["hidden_content"]), d["hidden_content_omitted"]), (40, 5))
 
-    def test_adr_omitted_count_from_the_ledger_is_surfaced(self):  # gh#24
-        self.seed()
+    def capped_history(self, cut):
         path = os.path.join(self.run_dir, "ledger.json")
         with open(path, encoding="utf-8") as fh:
             led = json.load(fh)
-        led.setdefault("capped", {})["adr"] = 3
+        led.setdefault("capped", {})["history"] = cut
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(led, fh)
-        self.assertEqual(self.doc()["adr_omitted"], 3)
-        self.assertIn("3 ADR files omitted by the cap", self.rep("render")[1])
+
+    def test_history_cut_by_the_caps_is_surfaced_in_json_and_text(self):  # review-code-v6xs
+        self.seed()
+        self.assertNotIn("history_cut", self.doc())
+        cut = {"hunks": 2, "logs": 1, "bytes": True, "files_omitted": 4, "unread": 3, "log_failed": True}
+        self.capped_history(cut)
+        self.assertEqual(self.doc()["history_cut"], cut)
+        text = self.rep("render")[1]
+        self.assertIn("- change history cut: 2 hunks with older commits not shown, 1 log with older commits not shown, "
+                      "byte cap reached (4 files without history), 3 files without blame, log call failed", text)
+
+    def test_a_malformed_history_cut_is_dropped_not_rendered(self):  # review-code-v6xs
+        self.seed()
+        self.capped_history({"hunks": "x\x1b[31m", "logs": -1, "unread": True, "other": 5})
+        self.assertNotIn("history_cut", self.doc())
+        self.capped_history("not a dict")
+        self.assertNotIn("history_cut", self.doc())
+        self.assertNotIn("change history cut", self.rep("render")[1])
 
     def test_text_sections_and_escape(self):
         self.seed(title="boom \x1b[31mRED\r\x1b]0;pwn\x07")
@@ -743,6 +784,453 @@ class RepoTarget(Base):
 CANARY = "CANARY-SPEC-TEXT-7731"
 
 
+class SpecAdrCite(Base):
+    """gh#57: a decision record is indexed in spec.md, not pasted; a spec-lane cite of one of its lines is judged in the pinned tree."""
+    ADR = "docs/adr/0001-integers.md"
+    base_files = dict(BASE, **{ADR: "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"})
+
+    def lane(self, **kw):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=row, path=self.ADR, **kw)), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)
+
+    def test_a_quote_that_matches_the_pinned_record_is_accepted(self):
+        out = self.lane(line=3, quote="The adder MUST-RETURN-INT.")
+        self.assertEqual((len(out["spec_ids"]), out["dropped"]["invalid"]), (1, 0))
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            self.assertNotIn("MUST-RETURN-INT", fh.read())
+
+    def test_a_title_copying_six_words_of_a_record_body_is_rejected_a_paraphrase_passes(self):
+        out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="The adder MUST-RETURN-INT Calls pass ints")
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec"], []))
+        out = self.lane(line=3, quote="The adder MUST-RETURN-INT.", title="Adders are meant to give whole numbers")
+        self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
+    def traced_spec_ingest(self, n):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
+        gitfix.commit(repo, dict(BASE, **{"docs/adr/%04d-a.md" % i: "# T%d\nbody %d\n" % (i, i) for i in range(n)}), "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+        gitfix.commit(repo, {"src/calc.py": FEAT}, "feat")
+        rc, out, _ = cli("target.py", ["main"], repo, self.tmp)
+        run = json.loads(out)["run"]
+        self.assertEqual(cli("ledger.py", ["build", "--run", run], repo, self.tmp)[0], 0)
+        log = os.path.join(self.tmp, "trace%d.json" % n)
+        rc, out, err = cli("report.py", ["ingest", "--run", run, "--lane", "spec"], repo, self.tmp,
+                           lines({"inspected": ["src/calc.py"]}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return [a for a in tp.starts(log) if "ls-tree" in a or ("cat-file" in a and "--batch" in a)]
+
+    def test_a_spec_ingest_runs_the_same_tree_reads_for_three_records_and_thirty(self):
+        three, thirty = self.traced_spec_ingest(3), self.traced_spec_ingest(30)
+        self.assertEqual(len(three), len(thirty))
+        # review-code-1zqz: the records ride the reply's own pin, so one ls-tree and one cat-file --batch serve cites and records
+        self.assertEqual(len([a for a in thirty if "ls-tree" in a]), 1, thirty)
+        self.assertEqual(len([a for a in thirty if "cat-file" in a]), 1, thirty)
+
+    def test_a_spec_verdicts_call_runs_one_ls_tree_and_one_cat_file_batch(self):  # review-code-1zqz
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        log = os.path.join(self.tmp, "verdicts-trace.json")
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp,
+                           lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        got = [a for a in tp.starts(log) if "ls-tree" in a or ("cat-file" in a and "--batch" in a)]
+        self.assertEqual([("ls-tree" in a) for a in got], [True, False], got)
+
+    def test_a_verdict_reason_copying_a_record_is_dropped(self):  # review-code-1zqz: the verdicts pin reads the records too
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=row)), extra=["--lane", "spec"])
+        (sid,) = json.loads(out)["spec_ids"]  # it cites src/calc.py: only the records' own read brings the record's words
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "The adder MUST-RETURN-INT Calls pass ints"})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec"], [sid]))
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "Adders are meant to give whole numbers"})
+        self.assertEqual(out["confirmed"], [sid])
+
+    def test_a_quote_the_record_does_not_hold_is_rejected(self):
+        out = self.lane(line=3, quote="The adder MUST-RETURN-STR.")
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["quote-not-at-line"], []))
+
+    def refuses(self, sub, reply, extra, reason):
+        before = {n: open(os.path.join(self.run_dir, n), "rb").read() for n in ("candidates.json",)
+                  if os.path.exists(os.path.join(self.run_dir, n))}
+        rc, out = self.rep(sub, reply, extra=extra)
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": reason}))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected", "spec.txt")))
+        self.assertEqual(before, {n: open(os.path.join(self.run_dir, n), "rb").read() for n in before})
+
+    def test_an_unreadable_ledger_refuses_the_copy_guard_instead_of_skipping_the_records(self):  # review-code-27ht
+        path = os.path.join(self.run_dir, "ledger.json")
+        with open(path, encoding="utf-8") as fh:
+            good = fh.read()
+        for body, reason in ((None, "no-ledger"), ("[]", "bad-ledger"), ('{"spec": {}}', "bad-ledger"),
+                             ('{"spec": {"sources": [{"kind": "adr", "ref": 5}]}}', "bad-ledger"),
+                             ('{"spec": {"sources": [{"kind": "adr", "ref": "../x.md"}]}}', "bad-ledger")):
+            os.remove(path)
+            if body is not None:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            self.refuses("ingest", lines({"inspected": ["src/calc.py"]}), ["--lane", "spec"], reason)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(good)
+
+    def test_an_unreadable_ledger_refuses_spec_verdicts_too(self):  # review-code-27ht: the second caller
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        with open(os.path.join(self.run_dir, "ledger.json"), "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        self.refuses("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), (), "bad-ledger")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
+    def test_a_failed_tree_read_refuses_a_declined_why_that_no_other_read_would_check(self):  # review-code-27ht
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = "0" * 40  # no such object: the record read fails, and the reply cites nothing else to read
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        why = "The adder MUST-RETURN-INT Calls pass ints"
+        self.refuses("ingest", lines({"declined": [{"spec_line": row, "why": why}]}, {"inspected": []}), ["--lane", "spec"], "pin-pruned")
+
+
+class SpecAdrHiddenName(Base):
+    """review-code-ktry: a decision record whose name holds a hidden character is listed by its escaped ref (raw names stay
+    out of ledger.json); the copy guard still reads its words, and a file literally named as the escaped ref hides nothing."""
+    RAW = "docs/adr/0002-ints" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".md"
+    SHOWN = "docs/adr/0002-ints<TAGS:5>.md"
+    BODY = "# Hidden ints\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"
+    base_files = dict(BASE, **{RAW: BODY})
+
+    def lane(self, title):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": title}]}, {"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        return [r["check"] for r in json.loads(out)["rejected"]]
+
+    def test_a_why_copying_a_hidden_named_record_is_rejected(self):
+        refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
+        self.assertEqual(refs, [self.SHOWN])
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+        self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
+
+
+    def test_an_unreadable_spec_refuses_before_the_marks_file_is_written(self):  # review-code-iawb with a marked ref
+        spec = os.path.join(self.run_dir, "inputs", "spec.md")
+        os.remove(spec)
+        os.mkdir(spec)  # open() fails with an OSError as root too
+        rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "marks.json")))
+
+    def traced_ingest(self, n):
+        """git process starts of one spec ingest; the whole-tree listing is the one `ls-tree -r`."""
+        log = os.path.join(self.tmp, "marks%d.json" % n)
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
+                           lines({"inspected": []}), {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return len([a for a in tp.starts(log) if "ls-tree" in a and "-r" in a])
+
+    def test_the_whole_tree_listing_for_marked_refs_runs_once_per_run(self):  # review-code-fot3
+        self.assertEqual([self.traced_ingest(1), self.traced_ingest(2)], [1, 0])
+
+    def test_a_changed_pin_or_ledger_lists_again(self):  # review-code-fot3: the cache cannot go stale
+        self.assertEqual(self.traced_ingest(1), 1)
+        gitfix.commit(self.repo, {"extra.txt": "x\n"}, "later")
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = gitfix.run(["git", "rev-parse", "HEAD^{tree}"], self.repo).strip()
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        self.assertEqual(self.traced_ingest(2), 1)  # another pinned tree
+        path = os.path.join(self.run_dir, "ledger.json")
+        led = tp.load(self.run_dir, "ledger.json")
+        led["spec"]["sources"].append({"kind": "adr", "ref": "docs/adr/0003-none<U+0041>.md"})
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(led, fh)
+        self.assertEqual(self.traced_ingest(3), 1)  # another marked ref
+        self.assertEqual(self.traced_ingest(4), 0)
+
+    def test_a_corrupt_marks_file_is_listed_again_not_trusted(self):  # review-code-fot3
+        self.assertEqual(self.traced_ingest(1), 1)
+        with open(os.path.join(self.run_dir, "marks.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"tree": 1')
+        self.assertEqual(self.traced_ingest(2), 1)
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
+class _SpecAdrUnreadable(Base):
+    """review-code-py53: a listed decision record the guard cannot read whole (over MAX_FILE, or not text) refuses
+    record-unreadable instead of adding no words: a lane can still read it in parts and copy it."""
+    ADR = "docs/adr/0001-integers.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n" + "padding words here\n" * 10
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+
+    def row(self):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            return [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+
+    def call(self, argv, reply, cap):
+        """report.main in-process with MAX_FILE at `cap` (above src/calc.py, below the record): (rc, its JSON line)."""
+        out = io.StringIO()
+        stdin = io.TextIOWrapper(io.BytesIO(reply.encode("utf-8")))
+        with gitfix.isolated(self.tmp), mock.patch.object(report.target, "MAX_FILE", cap), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue())
+
+
+class SpecAdrOversize(_SpecAdrUnreadable):
+    def test_a_record_over_max_file_refuses_spec_ingest_and_spec_verdicts(self):
+        cap = len(FEAT) + 1
+        self.assertGreater(len(self.BODY), cap)
+        reply = lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []})
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, len(self.BODY))  # the control: read whole
+        self.assertEqual((rc, [r["check"] for r in out["rejected"]]), (0, ["declined-invalid:copied-from-spec"]))
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        (sid,) = json.loads(out)["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        before = SpecAxis.snapshot(self)
+        rc, out = self.call(["verdicts", "--run", self.run_dir],
+                            lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": self.WHY}), cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        self.assertEqual(SpecAxis.snapshot(self), before)  # review-code-szle: the record read precedes every write
+
+
+class SpecAdrNotText(_SpecAdrUnreadable):
+    base_files = dict(BASE, **{_SpecAdrUnreadable.ADR: "\0" + _SpecAdrUnreadable.BODY})
+
+    def test_a_record_that_is_not_text_refuses_spec_ingest(self):
+        before = SpecAxis.snapshot(self)
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "record-unreadable"))
+        after = SpecAxis.snapshot(self)
+        self.assertEqual(after.pop(".lock"), b"")  # the run lock, created empty by the first locked call
+        self.assertEqual(after, before)  # no write, counters.json included: the refusal costs no try
+
+
+class _SpecAdrRecords(_SpecAdrUnreadable):
+    WORDS = ["w%d" % i for i in range(5000)]
+
+    def body(self, i):
+        """Record i: a title and about 300 distinct words on one line."""
+        return "# T%d\n" % i + " ".join(self.WORDS[(i * 300 + k) % 5000] for k in range(300)) + "\n"
+
+    def records(self, n):
+        """A run whose ledger lists n decision records (built once per n)."""
+        made = self.__dict__.setdefault("made", {})
+        if n in made:
+            self.run_dir, repo, rows = made[n]
+            return repo, rows
+        repo = gitfix.make_repo(os.path.join(self.tmp, "n%d" % n))
+        rows = {"docs/adr/%04d-a.md" % i: self.body(i) for i in range(n)}
+        gitfix.commit(repo, dict(BASE, **rows), "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], repo)
+        gitfix.commit(repo, {"src/calc.py": FEAT}, "feat")
+        run = json.loads(cli("target.py", ["main"], repo, self.tmp)[1])["run"]
+        self.assertEqual(cli("ledger.py", ["build", "--run", run], repo, self.tmp)[0], 0)
+        self.run_dir, made[n] = run, (run, repo, rows)
+        return repo, rows
+
+
+class SpecAdrGuardMemory(_SpecAdrRecords):
+    """review-code-9uk7: the copy guard holds the reply's word runs, not every record's: what it builds stays the same size
+    however many records the ledger lists, and a reply copying any record is still rejected."""
+
+    def guard_peak(self, n, why):
+        """(peak bytes the guard allocates while it is built, the rejected checks) of one in-process spec ingest."""
+        self.records(n)
+        peaks, real = [], report._spec_copy
+
+        def spy(run):
+            build = real(run)
+
+            def measured(*a):
+                self.assertFalse(tracemalloc.is_tracing())  # stop() below would end an outer tracer
+                tracemalloc.start()
+                try:
+                    return build(*a)
+                finally:
+                    peaks.append(tracemalloc.get_traced_memory()[1])
+                    tracemalloc.stop()
+            return measured
+        reply = lines({"declined": [{"spec_line": self.row(), "why": why}]}, {"inspected": []})
+        with mock.patch.object(report, "_spec_copy", spy):
+            rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, report.target.MAX_FILE)
+        self.assertEqual((rc, len(peaks)), (0, 1), out)
+        return peaks[0], [r["check"] for r in out["rejected"]]
+
+    def test_the_guard_builds_the_same_size_for_three_records_and_thirty(self):
+        three, _ = self.guard_peak(3, "Adders are meant to give whole numbers")
+        thirty, _ = self.guard_peak(30, "Adders are meant to give whole numbers")
+        self.assertLess(thirty, three + 100_000, (three, thirty))  # every record's runs held at once: about 1.4 MB more
+
+    def test_a_why_copying_the_last_record_is_still_rejected(self):
+        _, rows = self.records(30)
+        last = rows["docs/adr/0029-a.md"].split("\n")[1].split()
+        _, got = self.guard_peak(30, " ".join(last[100:106]))
+        self.assertEqual(got, ["declined-invalid:copied-from-spec"])
+
+    def test_a_string_the_reply_did_not_hold_is_still_checked_against_every_record(self):
+        _, rows = self.records(30)
+        copy = " ".join(rows["docs/adr/0017-a.md"].split("\n")[1].split()[7:13])
+        with gitfix.isolated(self.tmp):
+            pin = report._Pinned(self.run_dir, rows, rows)
+            copied = report._spec_copy(self.run_dir)(pin, list(rows), ["unrelated words only here"])
+        self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (True, False))
+
+
+class SpecIngestMemory(_SpecAdrRecords):
+    """review-code-n4lk.2: a spec ingest reads the listed records one at a time (read, decode, feed the guard, drop), and so
+    does the ledger build that lists them, so each peaks the same for 3 records of about 85 KB and for 30; spec ingest and
+    spec verdicts still run one ls-tree and one cat-file --batch however many records the ledger lists."""
+
+    def body(self, i):
+        return "# T%d\n" % i + "".join(" ".join(self.WORDS[(i * 300 + k + j) % 5000] for j in range(12)) + "\n"
+                                       for k in range(0, 12 * 1200, 12))
+
+    def test_a_spec_ingest_peaks_the_same_for_three_records_and_thirty(self):
+        peaks = []
+        for n in (3, 30):
+            self.records(n)
+            reply = lines({"declined": [{"spec_line": self.row(), "why": "Adders are meant to give whole numbers"}]},
+                          {"inspected": []})
+            tracemalloc.start()
+            try:
+                rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, report.target.MAX_FILE)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+            self.assertEqual((rc, out["rejected"]), (0, []), out)
+        self.assertLess(peaks[1], peaks[0] + 1_000_000, peaks)  # every record's rows held at once: about 6 MB more
+
+    def test_the_ledger_lists_three_records_and_thirty_in_the_same_memory(self):
+        import ledger
+        peaks, real = [], ledger._adr_files
+
+        def spy(*a, **k):
+            tracemalloc.start()
+            try:
+                return real(*a, **k)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+        for n in (3, 30):
+            self.repo, _ = self.records(n)
+            with gitfix.isolated(self.tmp), mock.patch.object(ledger, "_adr_files", spy), mock.patch("sys.stdout", io.StringIO()):
+                self.assertEqual(ledger.main(["build", "--run", self.run_dir], self.repo), 0)
+        self.assertLess(peaks[1], peaks[0] + 1_000_000, peaks)  # every record's bytes held at once: about 2.3 MB more
+
+    def traced(self, sub, text, extra=()):
+        log = os.path.join(self.tmp, "trace-%d.json" % len(os.listdir(self.tmp)))
+        rc, out, err = cli("report.py", [sub, "--run", self.run_dir] + list(extra), self.repo, self.tmp, text,
+                           {"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, err), (0, ""), out)
+        return json.loads(out), tp.starts(log)
+
+    def test_spec_ingest_and_verdicts_run_one_ls_tree_and_one_cat_file_for_three_records_and_thirty(self):
+        for n in (3, 30):
+            self.repo, _ = self.records(n)
+            out, a = self.traced("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
+                                 ["--lane", "spec"])
+            (sid,) = out["spec_ids"]
+            out, b = self.traced("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}))
+            self.assertEqual(out["confirmed"], [sid])
+            for argv in (a, b):
+                self.assertEqual([sum(1 for x in argv if "ls-tree" in x),
+                                  sum(1 for x in argv if "cat-file" in x and "--batch" in x)], [1, 1], (n, argv))
+
+
+class SpecAdrInPlace(Base):
+    """review-code-bbch: an in-place run reviews the working copy, so its records are listed from the pinned tree, never from
+    HEAD. A record renamed there is listed under its new name and its body still counts for the copy guard (a lane can read
+    the renamed file); a record deleted there is not listed. The record kept in place is the control."""
+    ADR = "docs/adr/0001-integers.md"
+    NEW = "docs/adr/0002-renamed.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n"
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+    REFS = [ADR]
+
+    def edit(self):
+        pass
+
+    def setUp(self):
+        gitfix.FeatureRepo.setUp(self)
+        with open(os.path.join(self.repo, "src", "calc.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n# edit\n")
+        self.edit()
+        self.run_dir = self.pin(["--unstaged"])
+
+    def test_the_copy_guard_reads_the_record_where_the_working_copy_holds_it(self):
+        refs = [x["ref"] for x in tp.load(self.run_dir, "ledger.json")["spec"]["sources"] if x["kind"] == "adr"]
+        self.assertEqual(refs, self.REFS)
+        pinned = gitfix.run(["git", "ls-tree", "-r", "--name-only", tp.load(self.run_dir)["pinned_tree"]], self.repo).split("\n")
+        self.assertTrue(all(r in pinned for r in refs))
+        if not refs:  # nothing listed: spec.md has no record row to decline against
+            return
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": row, "why": self.WHY}]}, {"inspected": []}), extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["declined-invalid:copied-from-spec"])
+
+
+class SpecAdrDeletedInPlace(SpecAdrInPlace):
+    REFS = []
+
+    def edit(self):
+        os.remove(os.path.join(self.repo, self.ADR))
+
+
+class SpecAdrRenamedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        os.rename(os.path.join(self.repo, self.ADR), os.path.join(self.repo, self.NEW))
+
+
+class SpecAdrGitMovedInPlace(SpecAdrInPlace):
+    REFS = [SpecAdrInPlace.NEW]
+
+    def edit(self):
+        gitfix.run(["git", "mv", self.ADR, self.NEW], self.repo)
+
+
+class SpecAdrHiddenVS(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <VS:n> mark (a run of variation selectors)."""
+    RAW = "docs/adr/0002-ints\ufe00\ufe00.md"
+    SHOWN = "docs/adr/0002-ints<VS:2>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenCodepoint(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <U+XXXX> mark (one invisible character)."""
+    RAW = "docs/adr/0002-ints\u200b.md"
+    SHOWN = "docs/adr/0002-ints<U+200B>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenBytes(SpecAdrHiddenName):
+    """review-code-1t2v: the same guard for the <BYTES:n> mark (a name that is not UTF-8)."""
+    RAW = "docs/adr/0002-ints\udc80.md"
+    SHOWN = "docs/adr/0002-ints<BYTES:1>.md"
+    base_files = dict(BASE, **{RAW: SpecAdrHiddenName.BODY})
+
+
+class SpecAdrHiddenDecoy(SpecAdrHiddenName):
+    """The look-alike file named as the escaped ref resolves the ref without a miss: the hidden-named record must still count."""
+    base_files = dict(BASE, **{SpecAdrHiddenName.RAW: SpecAdrHiddenName.BODY, SpecAdrHiddenName.SHOWN: "# Decoy\n\nnothing here\n"})
+
+    def test_a_why_copying_a_hidden_named_record_is_rejected(self):
+        self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
 class SpecAxis(Base):
     """Spec lines cite inputs/spec.md by line number only; no spec text reaches any output."""
     spec_text = "The adder must " + CANARY + " add its operands.\n"
@@ -870,6 +1358,49 @@ class SpecAxis(Base):
             self.assertNotIn(CANARY, self.rep("render", extra=["--format", fmt])[1])
         self.rep("discard")  # a lane ingest after verdicts refuses (review-code-edk)
         self.assertEqual(len(self.ingest(dict(CAND, title=copy))["ids"]), 1)  # Defects never reads the spec: no check
+
+    def snapshot(self):
+        out = {}
+        for d, _, names in os.walk(self.run_dir):
+            for n in names:
+                with open(os.path.join(d, n), "rb") as fh:
+                    out[os.path.relpath(os.path.join(d, n), self.run_dir)] = fh.read()
+        return out
+
+    def test_an_unreadable_spec_refuses_the_copy_guard_instead_of_passing_spec_text(self):  # review-code-iawb
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        spec = os.path.join(self.run_dir, "inputs", "spec.md")
+        os.remove(spec)
+        os.mkdir(spec)  # open() fails with an OSError as root too, where chmod 000 would not
+        before = self.snapshot()
+        for sub, reply, extra in (("verdicts", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}, ()),
+                                  ("ingest", {"declined": [{"spec_line": inner, "why": rows[inner - 1]}]}, ["--lane", "spec"])):
+            rc, out = self.rep(sub, lines(reply, {"inspected": []}) if sub == "ingest" else lines(reply), extra=extra)
+            self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
+            self.assertEqual(self.snapshot(), before, sub)
+
+    def test_a_verdict_reason_copying_a_spec_line_is_dropped(self):  # review-code-flwv
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]})
+        self.assertEqual(([(d["disposition"], d["reason"]) for d in out["dispositions"]], out["no_verdict"]),
+                         ([("rejected", "copied-from-spec")], [sid]))
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
+
+    def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
+        _, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = "0" * 40  # the pin's ls-tree of the cites and records fails
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        before = self.snapshot()
+        rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "refuted", "evidence": [CITE], "reason": "second"}))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "pin-pruned"))
+        self.assertEqual(self.snapshot(), before)
 
     def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
         rows, inner, _, _ = self.spec_rows()
@@ -1063,14 +1594,14 @@ class Captured:
 
 
 class Shards(Lanes):
+    feat_files = dict(MFEAT, **{"src/only.py": "a = 1\nb = 2\nc = 3\nd = 4\na = 1\n"})  # the same text at lines 1 and 5
+
     def setUp(self):
         super().setUp()
         for n in (1, 2):
-            shutil.copytree(os.path.join(self.run_dir, "tree"), os.path.join(self.run_dir, "shards", str(n), "tree"))
+            os.makedirs(os.path.join(self.run_dir, "shards", str(n), "tree", "src"))
         with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
-            fh.write("def f(a):\n    return a\n")  # shard 2 lacks the flagged lines
-        with open(os.path.join(self.run_dir, "shards", "1", "tree", "src", "only.py"), "w") as fh:
-            fh.write("x = 1\ny = 2\n")
+            fh.write("def f(a):\n    return a\n")  # shard 2's copy lacks the flagged lines; cites read the pinned tree (gh#50)
         write_plan(self.run_dir, shards=[{"id": 1, "run": "shards/1", "files": ["src/calc.py", "src/only.py"], "risk": 3},
                                          {"id": 2, "run": "shards/2", "files": ["src/calc.py"], "risk": 1}],
                    skipped=[{"what": "shard 3", "why": "over the shard cap", "files": 7}, {"what": "pack x", "why": "cap"}])
@@ -1081,9 +1612,6 @@ class Shards(Lanes):
         return json.loads(out)
 
     def test_one_id_from_two_shards_at_distant_lines_merges(self):  # IN-05: ledger copies a sibling's caller file
-        for n in (1, 2):
-            with open(os.path.join(self.run_dir, "shards", str(n), "tree", "src", "only.py"), "w") as fh:
-                fh.write("a = 1\nb = 2\nc = 3\nd = 4\na = 1\n")  # the same text at lines 1 and 5
         q = dict(CAND, path="src/only.py", quote="a = 1")
         self.shard(1, dict(q, line=1))
         out = self.shard(2, dict(q, line=5, severity="blocking", category="bug"))
@@ -1092,10 +1620,10 @@ class Shards(Lanes):
             (c,) = json.load(fh)["candidates"]
         self.assertEqual((c["line"], c["shard"], c["severity"]), (5, 2, "blocking"))
 
-    def test_cite_is_checked_in_the_shard_tree(self):
+    def test_a_shard_cite_is_checked_in_the_pinned_tree_not_the_shard_copy(self):  # gh#50: shards share the pinned tree
         self.assertEqual(self.shard(1, mc(3))["dropped"]["invalid"], 0)
         out = self.shard(2, mc(3))
-        self.assertEqual(out["dropped"]["invalid"], 1)  # dropped sums lanes: shard 1 had none
+        self.assertEqual(out["dropped"]["invalid"], 0)  # shard 2's copy lacks the line, the pinned tree has it
         self.assertEqual(out["lanes"], {"defects@1": "incomplete", "defects@2": "incomplete"})
 
     def test_each_shard_keeps_its_own_summary_ordered_by_shard(self):  # review-code-d14.7
@@ -1112,27 +1640,27 @@ class Shards(Lanes):
         for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):
             rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "defects", "--shard", bad],
                                self.repo, self.tmp, lines(mc(3)))
-            self.assertEqual((rc, json.loads(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
+            self.assertEqual((rc, refusal(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
 
     def test_shard_without_plan_refuses(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
         self.assertEqual(self.shard(1, mc(3), rc=1)["reason"], "bad-shard")
 
-    def test_handoff_and_verdict_use_the_shard_tree(self):
-        o = dict(mc(3), path="src/only.py", line=2, quote="y = 2", category="bug")
+    def test_handoff_names_the_shard_tree_and_the_verdict_reads_the_pinned_one(self):
+        o = dict(mc(3), path="src/only.py", line=2, quote="b = 2", category="bug")
         out = self.shard(1, o)
         (i,) = out["ids"]
         with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
-            self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), fh.read())
-        self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "y = 2"}], "reason": "r"})
+            text = fh.read()
+        self.assertIn("tree: " + json.dumps(os.path.join(self.run_dir, "shards", "1", "tree")), text)
+        with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:  # gh#52: the evidence rule greps it
+            self.assertIn("\ncheckout_difference: " + json.dumps(json.load(fh)["difference_list"]) + "\n", text)
+        self.verdicts({"id": i, "verdict": "confirmed", "evidence": [{"path": "src/only.py", "line": 2, "quote": "b = 2"}], "reason": "r"})
         d = self.doc()
         (f,) = d["findings"]
-        self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))  # src/only.py is absent from the main tree
+        self.assertEqual((f["shard"], f["path"]), (1, "src/only.py"))
 
-    def test_two_shards_flagging_the_same_range_merge(self):
-        with open(os.path.join(self.run_dir, "shards", "2", "tree", "src", "calc.py"), "w") as fh:
-            with open(os.path.join(self.run_dir, "tree", "src", "calc.py")) as src:
-                fh.write(src.read())
+    def test_two_shards_flagging_the_same_range_merge(self):  # both cite the pinned tree, whatever the shard copies hold
         self.shard(1, mc(3))
         out = self.shard(2, mc(3))
         self.assertEqual((len(out["ids"]), out["merged"]), (1, 1))
@@ -1888,19 +2416,18 @@ class Gate(Base):
             rows = fh.read().splitlines()
         self.assertEqual([r.split(" ", 1)[0] for r in rows], ["failed-validation:" + c for c in checks])
 
-    def test_an_unreadable_cited_file_is_rejected_as_unreadable(self):
-        f = os.path.join(self.run_dir, "tree", "src", "calc.py")
-        os.chmod(f, 0)
-        self.addCleanup(os.chmod, f, 0o600)
-        if os.access(f, os.R_OK):
-            self.skipTest("file modes are not enforced for this user")
-        self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "unreadable")
+    def test_an_unreadable_cited_file_is_rejected_as_unreadable(self):  # gh#50: a binary blob of the pinned tree
+        self.run_dir = self.committed("src/blob.py", "x = 1\n\0\n")
+        self.assertEqual(self.ingest(dict(self.GOOD, path="src/blob.py", line=1, quote="x = 1"))["rejected"][0]["check"], "unreadable")
 
-    def test_a_line_cited_in_an_empty_file_is_out_of_range(self):
-        os.makedirs(os.path.join(self.run_dir, "tree", "src"), exist_ok=True)
-        with open(os.path.join(self.run_dir, "tree", "src", "calc.py"), "w", encoding="utf-8"):
-            pass
+    def test_a_line_cited_in_an_empty_file_is_out_of_range(self):  # gh#50: an empty blob of the pinned tree
+        self.run_dir = self.committed("src/calc.py", "")
         self.assertEqual(self.ingest(self.GOOD)["rejected"][0]["check"], "line-out-of-range")
+
+    def committed(self, path, text):
+        """A fresh run whose pinned tree holds `text` at `path`."""
+        gitfix.commit(self.repo, {path: text}, "edit")
+        return self.pin(self.pin_args)
 
     def test_verdicts_keep_rejected_lines_per_batch_and_status_lists_no_verdict_ids(self):
         (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
@@ -1974,7 +2501,7 @@ class Gate(Base):
                 fh.write(junk)
             for sub, text, extra in (("ingest", lines(self.GOOD), ()), ("verdicts", lines({"id": i, "verdict": "confirmed"}), ())):
                 rc, out = self.rep(sub, text, extra)
-                self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
+                self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), junk)
 
@@ -2033,6 +2560,35 @@ class AgentReply(Captured, Base):
         self.assertEqual(r, rc, out)
         return json.loads(out)
 
+    def capped(self, argv, stdin, cap):
+        """report.main in-process with REPLY_MAX at `cap`: (rc, its JSON line)."""
+        out = io.StringIO()
+        with gitfix.isolated(self.tmp), mock.patch.object(report, "REPLY_MAX", cap), \
+                mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(stdin))), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue())
+
+    def test_a_reply_over_the_byte_cap_refuses_on_stdin_and_from_a_capture_and_writes_nothing(self):
+        # review-code-n4lk.3: the guard's memory follows the reply, so a reply over REPLY_MAX bytes is never read whole
+        reply = self.REPLY.encode("utf-8")
+        before = SpecAxis.snapshot(self)
+        for argv, stdin in ((["ingest", "--run", self.run_dir], reply), (["verdicts", "--run", self.run_dir], reply)):
+            rc, out = self.capped(argv, stdin, len(reply) - 1)
+            self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"), argv)
+        self.capture(self.REPLY)
+        size = os.path.getsize(os.path.join(os.path.dirname(self.run_dir), "captures", AID + ".handback.json"))
+        rc, out = self.capped(["ingest", "--run", self.run_dir, "--agent", AID], b"", size - 1)
+        self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"))
+        self.assertEqual(self.held(), [AID + ".handback.json"])  # kept, as every refused capture is
+        after = SpecAxis.snapshot(self)
+        self.assertEqual(after.pop(".lock", b""), b"")  # the run lock the --agent call took, created empty
+        self.assertEqual(after, before)
+        rc, out = self.capped(["ingest", "--run", self.run_dir, "--agent", AID], b"", size)  # the control: at the cap
+        self.assertEqual((rc, out["ids"]), (0, [QID]))
+        rc, out = self.capped(["ingest", "--run", self.run_dir], reply, len(reply))
+        self.assertEqual((rc, out["ids"]), (0, [QID]))
+        self.assertIn(format(report.REPLY_MAX, ","), report.REASONS["reply-too-large"])  # the hint names the real cap
+
     REPLY = lines("prose before", QCAND, {"inspected": ["src/calc.py"]}, "prose after")
 
     def test_ingest_takes_a_reply_with_quotes_and_a_multiline_quote_whole_and_consumes_it(self):
@@ -2054,7 +2610,7 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.agent_ingest()["ids"], [QID])
 
     def test_no_capture_refuses_and_stores_nothing(self):
-        self.assertEqual(self.agent_ingest(rc=1), {"reason": "no-capture", "status": "refuse"})
+        self.assertEqual(refusal(self.agent_ingest(rc=1)), {"reason": "no-capture", "status": "refuse"})
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")
@@ -2155,7 +2711,7 @@ class AgentReply(Captured, Base):
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
-        self.assertEqual((rc, json.loads(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
+        self.assertEqual((rc, refusal(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
     def test_discard_leaves_the_captures_alone(self):  # they belong to the repository, not to this run
@@ -2200,10 +2756,16 @@ class AgentReply(Captured, Base):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
     def test_no_capture_detail_says_to_rerun_on_stdin(self):
-        with self.assertRaises(report.target.Refuse) as cm:  # the CLI prints the reason only, so read the detail in-process
+        with self.assertRaises(report.target.Refuse) as cm:
             report._take(self.run_dir, AID, "review-code:finder", True)
         self.assertEqual((cm.exception.reason, cm.exception.detail),
                          ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
+
+    def test_the_cli_prints_the_refusal_detail_with_its_retry_hint(self):  # review-code-2i1e
+        rc, out = self.rep("ingest", extra=["--agent", AID])
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-capture", "detail": report.REASONS["no-capture"]}))
+        rc, out = self.rep("ingest", extra=["--shard", "x"])
+        self.assertEqual(json.loads(out)["detail"], "--shard is not a positive integer")
 
     def status(self):
         rc, out = self.rep("status")
@@ -2338,6 +2900,68 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+
+class LoneSurrogate(Base):
+    """A lone surrogate in a lane's path or text cannot be written as UTF-8: refuse before the run changes (3j06)."""
+    base_files = {"src/calc.py": "x = 1\n"}
+    feat_files = {os.fsdecode(b"bad\xff.py"): "def f():\n    return a - b\n", "src/calc.py": FEAT}
+
+    @staticmethod
+    def make_bad_name(directory):
+        with open(os.path.join(os.fsencode(directory), b"bad\xff.py"), "w"):
+            pass
+
+    def setUp(self):
+        with tempfile.TemporaryDirectory() as d:  # probe first: only this OSError skips, a setUp failure elsewhere stays an error
+            try:
+                self.make_bad_name(d)
+            except OSError as e:
+                raise unittest.SkipTest("the file system refuses a non-UTF-8 file name: %s" % e)
+        super().setUp()
+
+    def snap(self):
+        out = {}
+        for r, _, fs in os.walk(self.run_dir):
+            for f in fs:
+                with open(os.path.join(r, f), "rb") as fh:
+                    out[os.path.relpath(os.path.join(r, f), self.run_dir)] = fh.read()
+        return {k: v for k, v in out.items() if not k.startswith(("tree", "history"))}
+
+    def test_a_surrogate_path_or_text_refuses_and_leaves_the_run_alone(self):
+        self.ingest(CAND)
+        before = self.snap()
+        bad = os.fsdecode(b"bad\xff.py")
+        for c in (dict(CAND, path=bad, line=2), dict(CAND, title="t" + "\udcff"), dict(CAND, trigger="x" + "\udcff")):
+            rc, out = self.rep("ingest", lines(c))
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
+            self.assertEqual(self.snap(), before)
+
+
+    def test_a_surrogate_in_a_downgraded_candidate_refuses_too(self):  # review-code-71de.1: a claims-missing one is never queued
+        miss = dict(CAND, title="src/calc.py is missing", trigger="x")
+        self.assertEqual(self.ingest(miss)["dispositions"][0]["disposition"], "downgraded")  # the precondition
+        before = self.snap()
+        for c in (dict(miss, trigger="x" + "\udcff"), dict(miss, title="\udcff src/calc.py is missing")):
+            rc, out = self.rep("ingest", lines(c))
+            self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), c)
+            self.assertEqual(self.snap(), before)
+
+
+    def test_a_surrogate_in_an_inspected_path_refuses_and_leaves_the_run_alone(self):  # review-code-71de.16
+        self.ingest(CAND)
+        before = self.snap()
+        rc, out = self.rep("ingest", lines(CAND, {"inspected": [os.fsdecode(b"bad\xff.py")]}))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "non-utf8-name"), out)
+        self.assertEqual(self.snap(), before)
+
+class LoneSurrogateSkips(unittest.TestCase):  # review-code-iz9u
+    def test_a_file_system_that_refuses_the_name_skips_not_errors(self):
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(LoneSurrogate)
+        with mock.patch.object(LoneSurrogate, "make_bad_name", side_effect=OSError("Illegal byte sequence")):
+            res = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
+        self.assertEqual((len(res.skipped), res.errors, res.failures), (suite.countTestCases(), [], []))
+        self.assertIn("refuses a non-UTF-8 file name", res.skipped[0][1])
 
 
 class NotRunSkips(unittest.TestCase):

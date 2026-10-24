@@ -110,7 +110,7 @@
 | L132 | Verdict section | adapt | Advisory only; never maps to a GitHub review event (OUT-04). | OUT-01 terminal report | Posit v1.2 |
 | L133 | Three verdict labels, including an approval label | replace | OUT-04: the skill never approves or requests changes on GitHub; labels are renamed to Needs changes / Needs discussion / No blocking findings (approved) so none reads as an approval. | OUT-01 terminal report | Posit v1.2 |
 | L135 | Next steps section | drop | The report is relayed verbatim; the confirmation questions are the next steps. | OUT-01 terminal report | Posit v1.2 |
-| L136 | Offer follow-up options; skip when run as a subagent | adapt | Lane subagents return findings only and never offer options. | SKILL.md + lane prompts | Posit v1.2 |
+| L136 | Offer follow-up options; skip when run as a subagent | adapt | Only the sota lane states "never offer options" explicitly; the reader lanes return findings in their own output schema and never act on options. | SKILL.md + lane prompts | Posit v1.2 |
 
 ## Accepted risk (D-08)
 

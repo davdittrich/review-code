@@ -26,6 +26,12 @@ _EXTRA = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F)
 _BREAK = re.compile(r"\r\n|\r|\n")  # CommonMark line ends
 
 
+# The invisible ASCII characters (category Cc minus tab, LF, CR): the only ones ASCII can hold. One regex pass
+# settles an ASCII line; on other lines only non-ASCII characters go through `_invisible`.
+_ASCII_CTRL = frozenset(chr(i) for i in range(32) if chr(i) not in "\t\n\r") | {"\x7f"}
+_CTRL_RE = re.compile("[%s]" % "".join(sorted(_ASCII_CTRL)))
+
+
 def _invisible(ch: str) -> bool:
     if ch in "\t\n\r":
         return False
@@ -55,7 +61,9 @@ def is_prose_file(path: str) -> bool:
 
 
 def strip_invisible(text: str) -> str:
-    return "".join(c for c in text if not _invisible(c))
+    if text.isascii():
+        return _CTRL_RE.sub("", text)
+    return "".join(c for c in text if not (c in _ASCII_CTRL if c < "\x80" else _invisible(c)))
 
 
 def escape_line(x) -> str:
@@ -70,6 +78,9 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
     `[{"line": n, "codepoints": [...]}]`."""
     out, hits = [], []
     for n, line in enumerate(text.split("\n"), 1):
+        if line.isascii() and not _CTRL_RE.search(line):
+            out.append(line)
+            continue
         cps, buf, i = [], [], 0
         while i < len(line):
             c, kind = line[i], _run_kind(line[i])
@@ -79,7 +90,7 @@ def escape_for_code(text: str) -> Tuple[str, List[dict]]:
             emoji = c == "️" and j == i + 1 and i > 0 and unicodedata.category(line[i - 1]) == "So"
             if kind and not emoji:
                 cps.append("%s:%d" % (kind, j - i))
-            elif not kind and _invisible(c):
+            elif not kind and (c in _ASCII_CTRL if c < "\x80" else _invisible(c)):
                 cps.append("U+%04X" % ord(c))
             else:
                 buf.append(line[i:j])

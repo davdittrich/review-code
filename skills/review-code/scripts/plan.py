@@ -28,7 +28,7 @@ import report
 import sanitize
 import target
 
-STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "confirm", "preview",
+STDOUT_KEYS = {"status", "reason", "detail", "tier", "mode", "calls", "skipped", "lost_guarantees", "lost_capabilities", "confirm", "preview",
                "wave_size", "verifier", "spec_verifier"}
 DEFAULT_TIER = "standard"
 # (model, effort) per role. Unvalidated defaults: evals/ holds a harness but no baseline has been recorded to tune them against. The quick verifier
@@ -107,7 +107,7 @@ def _read_config():
 
 # Domain packs. Row: (name, file globs, content regex, content rule applies only to files matching these globs).
 # A file matches by glob (on the path or its base name) or by the regex over its scanned lines: the added lines of
-# change.diff for a change target, the first SCAN_BYTES of its tree/ copy for path and repo targets. Heuristics: a
+# change.diff for a change target, the first SCAN_BYTES of its pinned blob for path and repo targets. Heuristics: a
 # hit loads a pack for the lane to read, it is never a finding. llm-generated-code loads only through the ai flag
 # or the deep tier (ccr-contract: authorship is not knowable from a diff). Names come from this table only.
 RISK_TOKENS = ("auth", "login", "passw", "secret", "token", "crypt", "session", "admin", "payment", "billing",
@@ -143,29 +143,34 @@ def _glob(path, globs):
     return any(fnmatch.fnmatchcase(path, g) or fnmatch.fnmatchcase(base, g) for g in globs)
 
 
-def _scan_lines(run, tj):
-    """{path: [(line number, text)]} of included files: added lines of change.diff, or the head of each tree/ copy."""
+def _heads(tj, blobs):
+    """({path: first SCAN_BYTES of its pinned blob}, {path: its newline count}) for `blobs` ({path: (size, blob id)}), from one
+    `cat-file --batch`: the reviewed content, whatever the checkout holds now (review-code-zcrc, l895). A blob over MAX_FILE
+    gives neither."""
+    uniq = sorted({oid for _, oid in blobs.values()})
+    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))  # reduced per blob: peak memory is one blob
+            for oid, data in ledger._blob_stream(tj["repo"], uniq)}
+    have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
+    return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
+
+
+def _scan_lines(run, tj, blobs):
+    """({path: [(line number, text)]}, {path: pinned line count}) of included files (counts only for path and repo): added lines of change.diff, or the head of each file's pinned blob,
+    stripped and escaped as tree/ copies are (ledger._scan). `blobs` is ledger.regular_blobs of the included files."""
     inc, out = set(tj["included"]), {}
     if tj["kind"] in ("path", "repo"):
-        tree = os.path.realpath(os.path.join(run, "tree"))
-        for p in sorted(inc):
-            fp = os.path.realpath(os.path.join(tree, p))
-            if not fp.startswith(tree + os.sep):
-                continue
-            try:
-                with open(fp, "rb") as fh:
-                    data = fh.read(SCAN_BYTES)
-            except OSError:
-                continue
-            out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(data.decode("utf-8", "replace").split("\n"), 1)]
-        return out
+        heads, counts = _heads(tj, blobs)
+        for p, data in sorted(heads.items()):
+            text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
+            out[p] = [(i, ln[:LINE_MAX]) for i, ln in enumerate(text.split("\n"), 1)]
+        return out, counts
     with open(os.path.join(run, "change.diff"), encoding="utf-8", errors="replace") as fh:
         diff, used = fh.read(), {}
     for _, path, tag, _, n, body, _ in sanitize.walk(diff):
         if tag == "+" and path in inc and used.get(path, 0) < SCAN_BYTES:
             used[path] = used.get(path, 0) + len(body) + 1
             out.setdefault(path, []).append((n, body[:LINE_MAX]))
-    return out
+    return out, {}
 
 
 def _match_packs(files, lines, with_llm):
@@ -208,7 +213,7 @@ NIT_MODE = """The lane may also report `nit` findings, of two kinds.
 - A rule nit: category `convention`, severity `nit`, with `rule` and `rule_source` exactly as for a convention finding.
 - A norm nit: category `norm`, severity `nit`, with `norm_for` (the idiom most lines use), `norm_against` (the idiom the
   quoted line uses; the quote must contain it) and `norm_glob` (a file glob such as `*.py`). All three are literal
-  strings, never patterns. The skill counts lines in tree/ and the finding stands only with at least 20 lines naming
+  strings, never patterns. The skill counts lines in the pinned tree and the finding stands only with at least 20 lines naming
   either idiom and `norm_for` the majority, so do not send a norm you did not see on many lines.
 Changed lines only (a repo or path target: the files under review). Never report what a linter, formatter or CI of the repo enforces. No rule and no counted norm means no finding."""
 NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."
@@ -234,18 +239,6 @@ def _install_packs(run, packs, nit=None):
 SHARD_BYTES = 400000
 CHURN_DAYS = 180  # about two release cycles
 CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when a monorepo needs more
-
-
-def _file_stat(repo, p):
-    """(bytes, lines) of a working-copy file; (0, 0) when unreadable."""
-    size = lines = 0
-    try:
-        with open(os.path.join(repo, p), "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                size, lines = size + len(chunk), lines + chunk.count(b"\n")
-    except OSError:
-        return 0, 0
-    return size, lines
 
 
 def _groups(files, size):
@@ -278,10 +271,10 @@ def _groups(files, size):
 
 def _churn(repo, names):
     """{path: lines added + deleted over CHURN_DAYS} from one git log call; empty when git fails."""
-    out = target.git(["-c", "core.quotepath=off", "log", "--numstat", "--format=", "--no-renames",
-                      "--since=%d.days" % CHURN_DAYS, "--max-count=%d" % CHURN_COMMITS], repo, check=False)
+    out = target.git_bytes(["-c", "core.quotepath=off", "log", "--numstat", "--format=", "--no-renames",
+                            "--since=%d.days" % CHURN_DAYS, "--max-count=%d" % CHURN_COMMITS], repo, check=False)
     churn = {}
-    for ln in out.splitlines():
+    for ln in out.decode("utf-8", "surrogateescape").splitlines():  # exact names, as every other listing
         added, _, rest = ln.partition("\t")
         deleted, _, path = rest.partition("\t")
         if path in names and added.isdigit() and deleted.isdigit():
@@ -291,7 +284,7 @@ def _churn(repo, names):
 
 def _rank_shards(tj, led, groups, stats):
     """[(risk, files)] riskiest first. Risk = files whose path holds a RISK_TOKENS entry, plus 1 when no file of the
-    shard is a test or has a test in the ledger, plus churn over the shard's current line count. Weights are
+    shard is a test or has a test in the ledger, plus churn over the line count of its counted files. Weights are
     unvalidated: ties break by first path."""
     churn = _churn(tj["repo"], {p for g in groups for p in g})
     tested = {e["file"] for e in led.get("tests", []) if isinstance(e, dict) and isinstance(e.get("file"), str)}
@@ -299,11 +292,12 @@ def _rank_shards(tj, led, groups, stats):
     for g in groups:
         tokens = sum(1 for p in g if any(t in p.lower() for t in RISK_TOKENS))
         untested = 0 if any(p in tested or ledger._is_test(p) for p in g) else 1
-        ranked.append((tokens + untested + sum(churn.get(p, 0) for p in g) / max(1, sum(stats[p][1] for p in g)), g))
+        known = [p for p in g if stats[p][1] is not None]  # shortcut: a file with no line count (over MAX_FILE) leaves both sums, so a shard of only such files ranks on tokens and tests alone; upgrade when a count exists for it
+        ranked.append((tokens + untested + sum(churn.get(p, 0) for p in known) / max(1, sum(stats[p][1] for p in known)), g))
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
-def _build_shard(run, tj, i, files, trust, packs, nit=None):
+def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=()):
     """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
     and the global packs that match its files."""
     d = os.path.join(run, "shards", str(i))
@@ -313,6 +307,7 @@ def _build_shard(run, tj, i, files, trust, packs, nit=None):
     ledger.build(d, nit=bool(nit))
     if trust in ledger.TRUST_VALUES:
         ledger.trust_set(d, trust)
+    ledger.tools_set(d, tools)
     mine = set(files)
     _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)], nit)
     return d
@@ -415,15 +410,16 @@ def _included(call):
         return None
 
 
-def _estimate(call, included):
+def _estimate(call, included, sizes):
     """Input tokens, as bytes over 4 (a rough average for English and code): the input file, the diff and the included files.
 
-    tree/ is browsed, not loaded, so only the files the change touches count (a floor: lanes also open context files)."""
+    Only the included files count (a floor: lanes also open context files), each at its size in the pinned tree
+    (`sizes` {path: bytes}), the content the lanes review, not what the checkout holds now (review-code-zcrc)."""
     if call["input"] is None:
         return (len(call["prompt"].encode("utf-8")) + 3) // 4
     base = os.path.dirname(os.path.dirname(call["input"]))
-    files = [call["input"], os.path.join(base, "change.diff")] + [os.path.join(base, "tree", p) for p in included or []]
-    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + 3) // 4
+    files = [call["input"], os.path.join(base, "change.diff")]
+    return (sum(os.path.getsize(f) for f in files if os.path.isfile(f)) + sum(sizes.get(p, 0) for p in included or []) + 3) // 4
 
 
 def _files_ceiling(call, included):
@@ -432,7 +428,7 @@ def _files_ceiling(call, included):
     return None if included is None or ceiling is None else (len(included), ceiling)
 
 
-def _preview(doc):
+def _preview(doc, sizes):
     """Lines built only from numbers, fixed words, tier, model and effort values, lane and pack names and shard ids."""
     ver, calls, caps = doc["verifier"], doc["calls"], doc["caps"]
     agents = sum(1 for c in calls if c["agent"] != "main-thread")
@@ -447,7 +443,7 @@ def _preview(doc):
         inc = _included(c)
         fc = _files_ceiling(c, inc)
         out.append("Call %s: %s, about %d input tokens (estimate)%s" % (
-            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc),
+            name, "%s/%s" % (c["model"], c["effort"]) if c["model"] else "main thread", _estimate(c, inc, sizes),
             ", %d files, ceiling %d turns" % fc if fc else ""))
         if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
             warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
@@ -470,6 +466,29 @@ SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing 
                "Spec axis skipped: the main thread never opens inputs/spec.md",
                "SOTA skipped: no isolated web lane"]
 HEURISTIC = "(heuristic: settings env may not reach this script)"
+# The tools of gh#47, each described once: `how` agents query it, `runs` (its queries execute repository code or configuration),
+# `knowledge` paths a review never writes, `hooks` it must not trigger, `agent` the tool names an agent gets, `loss` what a lane
+# loses without it (gh#48). Only a record with `agent` is selectable by --tool (the main thread's list: a plugin agent gets one only
+# when the session has it). agents/*.md tool lists are static, so they carry exactly the non-executing records, in this order
+# (tests/test_lanes.py); an executing record has no agent name until the own-trust issue gives it one. llm-tldr is unverified
+# (gh#47), so it counts as executing. Fixed text, never repository text.
+TOOLS = {
+    "serena": {"how": "find_symbol, find_referencing_symbols, get_symbols_overview", "runs": False, "knowledge": (".serena/",), "hooks": (),
+               "agent": ("mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols", "mcp__serena__get_symbols_overview"),
+               "loss": "symbol and reference lookup"},
+    "codegraph": {"how": "codegraph_explore", "runs": False, "knowledge": (".codegraph/",), "hooks": (),
+                  "agent": ("mcp__codegraph__codegraph_explore",), "loss": "callers and blast radius"},
+    "openwolf": {"how": "read .wolf/ files as data", "runs": False, "knowledge": (".wolf/",), "hooks": ("read log", "memory log"),
+                 "agent": ()},
+    "llm-tldr": {"how": "unverified", "runs": True, "knowledge": (), "hooks": (), "agent": ()},
+    "language-server": {"how": "language server queries", "runs": True, "knowledge": (), "hooks": (), "agent": ()},
+    "history": {"how": "git log, blame, a file at a revision, precomputed into the run directory", "runs": False, "knowledge": (),
+                "hooks": (), "agent": ()},
+}
+
+
+def _selectable():
+    return sorted(t for t, r in TOOLS.items() if r["agent"])
 
 
 def _env_lost():
@@ -481,9 +500,10 @@ def _env_lost():
     return lost
 
 
-def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False):
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=()):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
+    tools = [t for t in tools if ledger.stored_trust(led) == "own" or not TOOLS[t]["runs"]]  # external code runs nothing of its own
     spec = led.get("spec")
     spec_none = not isinstance(spec, dict) or spec.get("status") == "none"
     t = TIERS[tier]
@@ -521,7 +541,10 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     if tier == "lean":  # the report must say which axes never ran
         skipped += [{"what": w, "why": "tier lean"} for w in ("defects", "spec") + (("sota",) if sota else ())
                     if not any(x["what"] == w for x in skipped)]
-    lines = _scan_lines(run, tj)
+    if not tj.get("pinned_tree"):  # a run from before the pin: its included files have no pinned content to read
+        raise target.Refuse("no-pin", "target.json has no pinned_tree: the run predates the pin, so review again")
+    blobs = ledger.regular_blobs(tj["pinned_tree"], tj["included"], tj["repo"])
+    lines, counts = _scan_lines(run, tj, blobs)
     inventory = _inventory(lines) if "sota" in lanes else []
     ranked = _match_packs(tj["included"], lines, ai or tier == "deep")
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
@@ -530,7 +553,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     _install_packs(run, packs, nit_text)
     shards = []
     if tj["kind"] in ("path", "repo"):
-        stats = {p: _file_stat(tj["repo"], p) for p in tj["included"]}
+        stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p)) for p in tj["included"]}  # (bytes, lines or None) as pinned
         groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
@@ -539,7 +562,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
                 if i > caps["max_shards"]:
                     skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
                 else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text),
+                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools),
                                    "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
@@ -567,7 +590,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
            "caps": dict(caps, wave_size=WAVE_SIZE),
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
-           "shards": shards, "skipped": skipped, "lost_guarantees": lost,
+           "shards": shards, "skipped": skipped, "lost_guarantees": lost, "tools": sorted(tools),
+           "lost_capabilities": ["%s: %s" % (t, TOOLS[t]["loss"]) for t in _selectable() if t not in tools],
            "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
@@ -575,18 +599,20 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         doc["nit"] = True
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
-    doc["preview"] = _preview(doc)
+    doc["preview"] = _preview(doc, {p: size for p, (size, _) in blobs.items()})
     target.write_private(os.path.join(run, "plan.json"), json.dumps(doc, sort_keys=True, indent=2))
+    ledger.tools_set(run, tools)
     return {"status": "ok", "tier": tier, "mode": doc["mode"],
             "calls": [{k: c[k] for k in ("lane", "agent", "prompt", "model", "effort", "shard", "input") if k != "input" or serial}
                       for c in calls],  # SKILL steps 7 and 8 read these instead of plan.json
             "wave_size": WAVE_SIZE, "verifier": doc["verifier"], "spec_verifier": doc["spec_verifier"], "skipped": skipped,
-            "lost_guarantees": lost, "confirm": doc["confirm"], "preview": doc["preview"]}
+            "lost_guarantees": lost, "lost_capabilities": doc["lost_capabilities"], "confirm": doc["confirm"],
+            "preview": doc["preview"]}
 
 
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai] [--nit]")
+                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--tool %s ...]" % "|".join(_selectable()))
 
 
 def _parse(argv):
@@ -597,6 +623,9 @@ def _parse(argv):
         a = argv[i]
         if a == "--tier" and "tier" not in opts and i + 1 < len(argv) and argv[i + 1] in TIERS:
             opts["tier"] = argv[i + 1]
+            i += 2
+        elif a == "--tool" and i + 1 < len(argv) and argv[i + 1] in _selectable() and argv[i + 1] not in opts.get("tools", ()):
+            opts.setdefault("tools", []).append(argv[i + 1])
             i += 2
         elif a in BOOL_FLAGS and BOOL_FLAGS[a][0] not in opts:
             opts[BOOL_FLAGS[a][0]] = BOOL_FLAGS[a][1]
@@ -612,7 +641,7 @@ def main(argv):
         cfg = _read_config()
         tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
         out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
-                       opts.get("ai", False), opts.get("nit", False)), 0
+                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ())), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback

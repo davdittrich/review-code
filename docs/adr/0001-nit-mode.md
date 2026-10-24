@@ -21,7 +21,7 @@ would not catch them. No flag lowers the floor.
     (the existing `_rule` check). Rule files are read from the merge base, so a PR cannot rewrite
     the rules it is judged by.
   - `norm`: category `norm`. The lane names two literal idioms and a file glob. The skill counts
-    lines in the pinned `tree/`; the finding stands only with at least 20 observations, the
+    lines in the pinned tree (amended by #52: `tree/` until then); the finding stands only with at least 20 observations, the
     deviating idiom in the quote, and the other idiom the majority. The counts are printed.
     No rule and no counted norm means no finding.
 - Nits skip what a linter or CI enforces. The skill never runs a linter.
@@ -43,10 +43,10 @@ would not catch them. No flag lowers the floor.
 
 ## Consequences
 
-Norm nits need 20 observations in `tree/`. A diff review's tree holds the changed files and capped
-helpers, so norm nits are rare there and common in `--repo` and path reviews. This is stated, not hidden.
+Norm nits need 20 observations among the pinned tree's files matching the glob (#52; before it, `tree/`, which
+held only the changed files and capped helpers on a diff review).
 
-Norm counts read `tree/`, which holds head content, so a PR author can add or dilute lines of an idiom. That moves
+Norm counts read the pinned tree, which holds head content, so a PR author can add or dilute lines of an idiom. That moves
 only nit severity, which never changes the verdict; rule nits come from merge-base files and have no such path.
 `.okf/` and `docs/adr` at the merge base become rule sources; a previously merged injection there could steer the
 Standards lane, again only at nit severity, and a rule must still occur verbatim in the file.

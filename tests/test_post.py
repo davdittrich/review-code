@@ -712,6 +712,79 @@ class PositionAcrossHunks(Base):
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
+class NonUtf8Path(Base):
+    def test_a_finding_whose_path_is_not_valid_utf8_refuses_before_any_forge_call(self):  # review-code-lvmu
+        self.review(14)
+        real = post.report.build
+
+        def build(run):
+            doc = real(run)
+            doc["findings"][0]["path"] = os.fsdecode(b"src/d\xffx.py")
+            return doc
+
+        with mock.patch.object(post.report, "build", build):
+            res = self.build()
+        st = res[2]
+        self.assertEqual((res[0], st["reason"]), (1, "non-utf8-name"), res[1])
+        self.assertEqual(self.fake.calls, [])
+        self.assertFalse(os.path.exists(self.payload_path()))
+
+    def test_an_edited_payload_with_a_non_utf8_comment_path_and_a_recomputed_digest_refuses_in_submit(self):  # review-code-hq5u
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        self.assertTrue(payload["comments"])
+        payload["comments"][0]["path"] = os.fsdecode(b"src/d\xffx.py")
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()  # ensure_ascii writes the surrogate as an escape
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        self.fake.head_reads = 0
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "non-utf8-name"), out)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_an_edited_payload_comment_body_with_a_lone_surrogate_and_a_recomputed_digest_refuses_before_any_write(self):  # review-code-ilqr
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        payload["comments"][0]["body"] = payload["comments"][0]["body"].replace("title 20", "title 20\udcff", 1)
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()  # ensure_ascii writes the surrogate as an escape
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        rc, out, st = self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+        self.assertEqual((rc, st["status"], st["reason"]), (1, "refuse", "unsafe-text"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
+
+class EditedFieldType(Base):
+    def edit_and_submit(self, key, value):
+        self.review(20)
+        rc, out, st = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        payload["comments"][0][key] = value
+        data = json.dumps(payload, sort_keys=True, indent=2).encode()
+        with open(self.payload_path(), "wb") as fh:
+            fh.write(data)
+        self.fake.calls[:] = []
+        self.fake.head_reads = 0
+        return self.call("submit", "--run", self.run_dir, "--digest", hashlib.sha256(data).hexdigest())
+
+    def test_an_edited_payload_with_a_non_string_comment_path_refuses_as_a_structured_refusal(self):
+        rc, out, st = self.edit_and_submit("path", 1)
+        self.assertEqual((rc, st["status"], st["reason"], st.get("detail")), (1, "refuse", "internal-error", "AttributeError"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
+    def test_an_edited_payload_with_a_list_comment_body_refuses_as_a_structured_refusal(self):
+        rc, out, st = self.edit_and_submit("body", ["x"])
+        self.assertEqual((rc, st["status"], st["reason"], st.get("detail")), (1, "refuse", "internal-error", "AttributeError"), out)
+        self.assertEqual([c for c in self.fake.calls if c[0] != "GET"], [])
+
+
 class EmptyRun(Base):
     def test_zero_verified_findings_refuse_nothing_to_post(self):
         self.review()
@@ -748,7 +821,7 @@ class Anchors(Base):
     def test_a_body_or_comment_over_the_limit_refuses_too_large(self):
         for line, where in ((2, "body"), (20, "comment")):
             with self.subTest(where):
-                self.review(line, fix="x" * (post.MAX_BODY + 1))
+                self.review(line, fix="x " * (post.MAX_BODY // 2 + 1))  # short words: one 60k-letter word makes the reference scan quadratic
                 self.refused_too_large()
 
     def test_a_preview_over_the_cap_refuses_and_writes_nothing(self):
@@ -1096,6 +1169,43 @@ class QuoteNumbers(Base):
         self.assertEqual((rc, st["status"]), (0, "ok"), out)
 
 
+class OutsideTree(Base):
+    """review-code-k79l: a finding on a tracked file the change leaves alone has no copy in tree/. Its quote is numbered from the
+    pinned blob (report._Pinned), not from a copy that is not there."""
+
+    OTHER = "o1 = 1\no2 = 2\no3 = 3\n"
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"src/calc.py": source(False, 0), "src/other.py": self.OTHER}, "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        gitfix.commit(self.repo, {"src/calc.py": source(True, 0)}, "feat")
+        self.make_run()
+
+    def test_the_quote_is_numbered_from_the_pinned_blob(self):
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "src", "other.py")))
+        cand = {"path": "src/other.py", "line": 2, "end_line": 2, "severity": "required", "category": "bug", "title": "t",
+                "trigger": "t", "quote": "o2 = 2", "fix": "f"}
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp,
+                           lines(cand, {"inspected": ["src/other.py"]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        (i,) = json.loads(out)["ids"]
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp, lines(
+            {"id": i, "verdict": "confirmed", "reason": "r", "evidence": [{"path": "src/other.py", "line": 2, "quote": "o2 = 2"}]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        self.retarget(kind="pr", url=PR_URL, number=7)
+        self.fake = FakeGitHub(self.run_dir)
+        rc, out, st = self.build()
+        self.assertEqual((rc, st["status"]), (0, "ok"), out)
+        body = self.payload()[1]["body"]
+        self.assertIn("**Location:** src/other.py:2 (outside the diff)", body)
+        self.assertIn("\n2: o2 = 2\n", body)
+        self.assertNotIn("quoted without line numbers", body)
+
+
 SIGILS = ("&123", "~bug", '~"feature request"', "%v1.23", '%"release candidate"', "$45", "^alert", '*iteration:"s 1"',
           "[issue:12]", "[work_item:g/p/3]", "[[Home]]", "GL-7", "GH-8", "grp/proj>")
 
@@ -1193,7 +1303,8 @@ class Idempotency(Base):
         mark = post.prior.review_mark(payload["head_sha"], [self.ids[2]])  # a status review: a prior id found fixed, no finding
         payload.update(body="**Verdict:** No blocking findings (advisory)\n\n" + mark, comments=[], in_body=[], skipped=[])
         post.target.write_private(self.payload_path(), json.dumps(payload, sort_keys=True, indent=2))
-        digest = hashlib.sha256(open(self.payload_path(), "rb").read()).hexdigest()
+        with open(self.payload_path(), "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
         rc, out, _ = self.call("submit", "--run", self.run_dir, "--digest", digest)
         self.assertEqual(rc, 0, out)
         writes = len(self.fake.writes())  # the answer of the first submit is lost; the user submits again
@@ -1791,6 +1902,258 @@ class EventConstant(unittest.TestCase):
             if isinstance(n, ast.Constant) and isinstance(n.value, str):
                 self.assertNotIn("reviewer_state", n.value)
                 self.assertIsNone(re.search(r"/(?:un)?approve\b|/merge\b", n.value), n.value)
+
+# Verbatim copy of the pre-fix reference regex and _prose (review-code-32ah): the oracle the linear scan must match.
+_OLD_REF = re.compile(
+    r"[@#!&~%$^](?=\w)[\w./-]*"
+    r'|[~%]"[^"`]*"|\*iteration:(?:"[^"`]*"|[\w./-]+)'
+    r"|\[\[[^\]`]*\]\]|\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):[^\]`]*\]"
+    r"|(?:GL|GH)-\d+|[\w.-]+/[\w.-][\w./-]*>")
+
+
+def _old_escape(t):
+    return t.replace("&", "&amp;").replace("\\", "\\\\").replace("<", "&lt;").replace("[", "\\[")
+
+
+def _old_prose(s):
+    t = sanitize.escape_line(s).replace("`", "'")
+    out, at = [], 0
+    for m in _OLD_REF.finditer(t):
+        out += [_old_escape(t[at:m.start()]), "`" + m.group() + "`"]
+        at = m.end()
+    return "".join(out + [_old_escape(t[at:])])
+
+
+class _Count:
+    """Stands in for a compiled regex and counts calls to the named methods."""
+    def __init__(self, rx):
+        self.rx, self.calls = rx, 0
+
+    def match(self, *a):
+        self.calls += 1
+        return self.rx.match(*a)
+
+
+class _Forbidden:
+    def __getattr__(self, name):
+        raise AssertionError("the quadratic _REF scan is back: _REF.%s" % name)
+
+
+class ProseLinear(unittest.TestCase):
+    """CPython `re` has no step counter, so the guard bounds the scanner's own calls to the one backtracking
+    alternative: once per run of word characters, never once per match or character."""
+
+    def calls(self, text):
+        c = _Count(post._NS)
+        with mock.patch.object(post, "_NS", c), mock.patch.object(post, "_REF", _Forbidden()):
+            post._prose(text)
+            post._guard("**Fix:** " + post._prose(text))
+        return c.calls
+
+    def test_long_word_costs_the_same_at_any_length(self):
+        self.assertEqual(self.calls("a" * 1000), self.calls("a" * 64000))
+
+    def test_many_matches_in_one_run_scan_that_run_once(self):
+        for unit in ("GH-1", "GH-1x", "GH-1.", "GH-1_"):  # the later ones leave a gap, so the next match starts after the resume point
+            self.assertEqual(self.calls(unit * 200), self.calls(unit * 12000), unit)
+            self.assertLessEqual(self.calls(unit * 12000), 2 * 2, unit)  # _prose and _guard, one run each
+
+    TOKENS = ["@user", "#123", "!45", "&epic", "~label", "%mile", "$snip", "^alert", "GL-1", "GH-12", "_GH-1_", "GH-1x/y>",
+              "GH-12GH-3", "a@b/c>", "@a/b>c/d>", "x/y>z/w>", "ns/proj>", "ns/proj", "[[x]]", "[[x", "[issue:1]", "[epic:", "~\"a b\"",
+              '%"m"', "*iteration:\"x\"", "*iteration:x", "http://h.io/p/q?a=1#f>", "https://x.y/z", "a" * 40, "0123456789abcdef" * 2 + "01234567",
+              "word", "é", "٣", "_", "a.b-c", "-", ".", "/", ">", "`", "\\", "&", "<", "[", "]", "\r", "\n", " ", "  ", "@", "#", "!1", "a/b", "a/b>"]
+
+    def inputs(self):
+        import random
+        rnd = random.Random(32)
+        for _ in range(4000):
+            yield "".join(rnd.choice(self.TOKENS) + rnd.choice(["", "", " ", "x", "1", "/"]) for _ in range(rnd.randint(1, 9)))
+        for tok in self.TOKENS:
+            yield tok * 5
+            yield "w" * 300 + tok + "w" * 300
+
+    def test_output_is_byte_identical_to_the_old_implementation(self):
+        for text in self.inputs():
+            self.assertEqual(post._prose(text), _old_prose(text), repr(text))
+
+    def test_guard_finds_a_reference_exactly_when_the_old_search_did(self):
+        for text in self.inputs():
+            t = sanitize.escape_line(text).replace("`", "'")
+            self.assertEqual(post._REF_G.search(t) is not None, _OLD_REF.search(t) is not None, repr(text))
+
+    def test_the_fast_pattern_anchors_the_backtracking_alternative_at_run_starts(self):
+        # shortcut: re exposes no step count, so a dropped lookbehind (quadratic, same output) is caught by shape
+        self.assertTrue(post._REF_G.pattern.endswith(r"(?<![\w.-])" + post._NS.pattern))
+
+    def test_the_pattern_is_the_one_the_span_regex_embeds(self):
+        self.assertEqual(post._REF.pattern, _OLD_REF.pattern)
+
+
+class _Spy:
+    """Stands in for `_REF_G` and keeps every text the reference search is handed."""
+    def __init__(self, rx):
+        self.rx, self.seen = rx, []
+
+    def search(self, t, *a):
+        self.seen.append(t)
+        return self.rx.search(t, *a)
+
+
+_W_RUN = re.compile(r"[\w./-]*")
+
+
+def _ns_wasted(t):
+    """Characters `_NS` (`ns/proj>`) would read for nothing in `t`: its tail scan from every word segment of a run of
+    [\\w./-] that never reaches `>`. CPython `re` has no step counter, so this is the work model; it is 0 exactly when
+    no such scan can start."""
+    w = 0
+    for m in re.finditer(r"(?<![\w.-])(?=[\w.-]+/[\w.-])", t):
+        e = _W_RUN.match(t, m.start()).end()
+        w += 0 if t.startswith(">", e) else e - m.start()
+    return w
+
+
+class _SpyMixin:
+    def seen(self, text):
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._prose(text)
+            with contextlib.suppress(post.Refuse):
+                post._guard("**Fix:** " + post._prose(text))
+        return spy.seen
+
+
+class ProseRepeatedPrefixLinear(_SpyMixin, unittest.TestCase):
+    """review-code-c9ks: 'a/' repeated made `_NS` read the rest of the run from every segment, though the run never
+    reaches `>`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "a/" * 2000
+        self.assertGreater(_ns_wasted(text), 1000000)  # the raw text is the bad case: the measure is not vacuous
+        seen = self.seen(text)
+        self.assertTrue(seen)
+        self.assertEqual(sum(_ns_wasted(t) for t in seen), 0)
+
+    def test_the_guard_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "**Fix:** " + "a/" * 2000  # a payload edited after build: no `_prose` ran over it
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._guard(text)
+        self.assertTrue(spy.seen)
+        self.assertEqual(sum(_ns_wasted(t) for t in spy.seen), 0)
+
+    def families(self):
+        for k in (0, 1, 2, 3, 7, 40):
+            for unit in ("a/", "[", "[[", "GH-1/", "@a/b", "x/", "a//", "[issue:", "[work_item:", "[issue:x[", "[[issue:"):
+                yield unit * k
+                for tail in (">", " x/y>", "x]]", "]", "]]", "`", " [issue:1]", "[issue:1]", "[[x]]", ">c/d>", "b>", "@u", "GH-2"):
+                    yield unit * k + tail
+                    yield tail + unit * k
+                    yield "@a/b" + unit * k + tail
+        yield from ("[[issue:1]", "[[[issue:1]]", "[[a [[b]] c", "[[a`[[b]]", "a/b>" + "a/" * 9, "a/" * 9 + "b>c/d>")
+
+    def test_output_and_verdict_are_the_old_implementations(self):
+        for text in self.families():
+            self.assertEqual(post._prose(text), _old_prose(text), repr(text))
+            t = sanitize.escape_line(text).replace("`", "'")
+            self.assertEqual(bool(list(post._refs(t))), _OLD_REF.search(t) is not None, repr(text))
+            self.assertEqual([m.span() for m in post._refs(t)], [m.span() for m in _OLD_REF.finditer(t)], repr(text))
+            raw = sanitize.escape_line(text)  # no backtick swap: `_refs` is also exact on a run that ends at a backtick
+            self.assertEqual([m.span() for m in post._refs(raw)], [m.span() for m in _OLD_REF.finditer(raw)], repr(text))
+
+
+_NOT_CLOSER = re.compile(r"[^\]`]*")
+
+
+def _wiki_wasted(t):
+    """Characters `[[..]]` would read for nothing in `t`: its scan from every `[[` of a run that never reaches `]]`."""
+    w = 0
+    for m in re.finditer(r"\[(?=\[)", t):
+        e = _NOT_CLOSER.match(t, m.start() + 2).end()
+        w += 0 if t.startswith("]]", e) else e - m.start()
+    return w
+
+
+class ProseRepeatedBracketLinear(_SpyMixin, unittest.TestCase):
+    """review-code-gaeo: '[' repeated made the wiki-link alternative read to the end of the run from every `[[`, though
+    the run never reaches `]]`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        for text in ("[" * 2000, "[[" * 2000, "[[x[" * 1000, "[" * 2000 + "]", "[" * 2000 + "`]]", "[" * 2000 + "] x]]"):
+            self.assertGreater(_wiki_wasted(text), 1000000, text[-6:])  # the raw text is the bad case: the measure is not vacuous
+            seen = self.seen(text)
+            self.assertTrue(seen, text[-6:])
+            self.assertEqual(sum(_wiki_wasted(t) for t in seen), 0, text[-6:])
+
+
+_KIND = re.compile(r"\[(?:issue|work_item|epic|cadence|vulnerability|feature_flag|contact|wiki_page):")
+
+
+def _kind_wasted(t):
+    """Characters `[issue:..]` would read for nothing in `t`: its scan from every `[kind:` to the end of a run that does
+    not reach `]`."""
+    w = 0
+    for m in _KIND.finditer(t):
+        e = _NOT_CLOSER.match(t, m.end()).end()
+        w += 0 if t.startswith("]", e) else e - m.start()
+    return w
+
+
+class ProseRepeatedKindLinear(_SpyMixin, unittest.TestCase):
+    """review-code-twed: '[issue:' repeated made the kind-list alternative read to the end of the run from every `[kind:`,
+    though the run never reaches `]`. The reference search must never be handed such a start."""
+
+    def test_the_search_is_handed_no_start_that_scans_for_nothing(self):
+        for text in ("[issue:" * 2000, "[work_item:x" * 1500, "[issue:" * 2000 + "`]", "[issue:" * 2000 + " x"):
+            self.assertGreater(_kind_wasted(text), 1000000, text[-6:])  # the raw text is the bad case: the measure is not vacuous
+            seen = self.seen(text)
+            self.assertTrue(seen, text[-6:])
+            self.assertEqual(sum(_kind_wasted(t) for t in seen), 0, text[-6:])
+
+    def test_the_guard_search_is_handed_no_start_that_scans_for_nothing(self):
+        text = "**Fix:** " + "\\[issue:" * 2000  # a payload edited after build, `[` escaped as `_prose` does: `_shown` undoes it
+        spy = _Spy(post._REF_G)
+        with mock.patch.object(post, "_REF_G", spy):
+            post._guard(text)
+        self.assertTrue(spy.seen)
+        self.assertEqual(sum(_kind_wasted(t) for t in spy.seen), 0)
+
+
+class HiddenNameInline(Base):
+    """review-code-avhn: a cite under a file's raw hidden-character name is accepted, so the finding's path is raw. The forge
+    needs that raw name to anchor an inline comment; no outgoing text may carry it, only its escaped form."""
+    RAW = "src/x" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.tmp = os.path.realpath(self._td.name)
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(self.repo, {"src/calc.py": source(False, 0)}, "base")
+        gitfix.run(["git", "checkout", "-q", "-b", "feat"], self.repo)
+        gitfix.commit(self.repo, {"src/calc.py": source(True, 0, None), self.RAW: "y = 1\n"}, "feat")
+        self.make_run()
+
+    def test_the_comment_path_is_raw_and_every_outgoing_text_shows_the_escaped_name(self):
+        cand = {"path": self.RAW, "line": 1, "severity": "required", "category": "bug", "title": "t", "trigger": "tr",
+                "quote": "y = 1", "fix": "f"}
+        rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp, lines(cand, {"inspected": ["src/calc.py"]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        ev = {"path": self.RAW, "line": 1, "quote": "y = 1"}
+        rc, out, err = cli("report.py", ["verdicts", "--run", self.run_dir], self.repo, self.tmp,
+                           lines({"id": fid(self.RAW, "bug", "y = 1"), "verdict": "confirmed", "reason": "r", "evidence": [ev]}))
+        self.assertEqual((rc, err), (0, ""), out)
+        self.retarget(kind="pr", url=PR_URL, number=7)
+        self.fake = FakeGitHub(self.run_dir)
+        self.fake.diff = ("diff --git a/{0} b/{0}\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/{0}\n"
+                          "@@ -0,0 +1 @@\n+y = 1\n").format(self.RAW)  # the forge's diff names the file raw
+        rc, out, _ = self.build()
+        self.assertEqual(rc, 0, out)
+        _, payload = self.payload()
+        self.assertEqual([c["path"] for c in payload["comments"]], [self.RAW])
+        for text in [payload["body"], out] + [c["body"] for c in payload["comments"]]:
+            self.assertFalse(any(0xE0000 <= ord(ch) <= 0xE007F for ch in text), ascii(text))
+        self.assertIn("src/x&lt;TAGS:5>.py:1", out)
 
 
 if __name__ == "__main__":

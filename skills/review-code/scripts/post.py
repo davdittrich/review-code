@@ -34,6 +34,8 @@ REVIEW_MARK = "<!-- review-code:review v1 head=%s -->"
 MARK_RE = re.compile(r"^<!-- review-code:finding (" + ID_RE + r") v1 -->$", re.M)
 REVIEW_RE = prior.REVIEW  # also the carried fixed= and outdated= lists, nothing else
 NOT_RUN_LINE = re.compile(r"\*\*Not run:\*\* (?:%s)(?:, (?:%s))*" % ((report.NOT_RUN_ITEM,) * 2))
+BASIS_LINE = re.compile(r"\*\*Pinned:\*\* (?:head|tree) [0-9a-f]{40}(?:[0-9a-f]{24})?, checkout difference [0-9]+ paths?"
+                        r"(?:; lost capability: [a-z]+: [a-z ]+)*")  # report.basis_line plus plan.py's fixed capability text
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")  # the breaks a forge renders: a GitLab path holding one could forge a diff header
 # Every reference GitHub or GitLab (docs.gitlab.com/user/markdown, "GitLab-specific references") links or pings. The
 # forges match rendered text, so escaping cannot defuse one; a code span can. Commit SHAs and bare URLs are not covered.
@@ -43,6 +45,44 @@ _REF = re.compile(r"[@#!&~%$^](?=\w)[\w./-]*"  # @user #1 !1 &epic ~label %miles
                   # GL-1 GH-1 issue keys, namespace/project>. No boundary anchor: `_GH-1_` renders `GH-1` as its own text,
                   # and so does `GH-2GH-1` once `GH-2` is a code span; a span inside a word is only cosmetic
                   r"|(?:GL|GH)-\d+|[\w.-]+/[\w.-][\w./-]*>")
+# `_REF` is quadratic on a long word: its last alternative rescans the word from every start. Its verdict at any start in
+# a run of [\w.-] depends only on what follows the run, so `_REF_G` tries it at run starts only and `_refs` repairs the
+# one start `finditer` could still reach mid-run (the resume point after a match), once per run.
+_NS = re.compile(r"[\w.-]+/[\w.-][\w./-]*>")
+_REF_G = re.compile(_REF.pattern.removesuffix(_NS.pattern) + r"(?<![\w.-])" + _NS.pattern)
+_RUN = re.compile(r"[\w.-]+")
+# `_NS` also rescans a run of [\w./-] from every segment start ('a/a/a/...') when the run does not end in `>`, and then
+# fails from all of them. Such a run holds no match, so `_refs` searches a copy with its `/` turned into `.`: the same
+# class for every other alternative, and no `/` left for `_NS` to start on.
+_NO_GT = re.compile(r"(?<![\w./-])[\w./-]+(?![\w./-]|>)")
+# Likewise `[[..]]` and `[issue:..]` read to the end of their [^\]`] run from every `[`; a run that does not end in `]`
+# holds neither, so every `[` there becomes NUL. A run that ends in a single `]` holds no wiki link, but `[issue:..]`
+# still starts at its own `[`: only the first `[` of each pair becomes NUL. No class cares about either.
+_NO_WIKI = re.compile(r"(?<![^\]`])[^\]`]+(?![^\]`]|\]\])")
+_PAIR = re.compile(r"\[(?=\[)")
+_ALL = re.compile(r"\[")
+
+
+def _refs(t: str):
+    """The matches `_REF.finditer(t)` yields, in linear time on a long word. Spans are the original's; take text from `t`."""
+    s = _NO_GT.sub(lambda r: r.group().replace("/", "."), t)  # same length as t
+    s = _NO_WIKI.sub(lambda r: (_PAIR if s.startswith("]", r.end()) else _ALL).sub("\0", r.group()), s)
+    at, dead = 0, 0  # dead: the end of a run where _NS is known to fail from `at`
+    while True:
+        m = _REF_G.search(s, at)
+        if at and at >= dead and _RUN.match(s, at - 1, at) and (m is None or m.start() > at):
+            n = _NS.match(s, at)
+            if n:
+                m = n
+            else:
+                r = _RUN.match(s, at)
+                dead = r.end() if r else at
+        if m is None:
+            return
+        yield m
+        at = m.end()  # no alternative matches empty
+
+
 # Adapted from the gitleaks rule set, config/gitleaks.toml (MIT, see NOTICE). Regex only: no entropy check, no encoded or split secrets.
 # A private key is detected by its BEGIN or END line only; its body has no reliable shape (PGP armor has a blank line,
 # CRLF, string literals), so a hit blanks every free-text field of the finding instead of guessing where the key ends.
@@ -114,7 +154,7 @@ def _changed(run: str, last: Optional[str], head: str) -> Optional[set]:
     if not last:
         return None
     rc, out, _ = target._run(["diff", "--name-only", "--no-renames", "-z", last, head], target.load_target(run)["repo"])
-    return set(out.decode("utf-8", "replace").split("\0")) - {""} if rc == 0 else None
+    return set(out.decode("utf-8", "surrogateescape").split("\0")) - {""} if rc == 0 else None  # exact names, like every listing
 
 
 def _target(run: str) -> dict:
@@ -168,7 +208,7 @@ class GitHub:
         rc, out, _ = _cli("gh", ["pr", "diff", self.i["url"], "--color", "never"], self.i["run"])
         if rc != 0:
             raise Refuse("diff-unavailable")
-        return out.decode("utf-8", "replace")
+        return "\n".join(target._diff_line(ln) for ln in out.split(b"\n"))  # header lines name files: exact; content: lossy
 
     def me(self) -> str:
         try:
@@ -522,8 +562,8 @@ def _prose(s) -> str:
     escape the escape. A code span shows its text as written, so nothing inside one is escaped."""
     t = sanitize.escape_line(s).replace("`", "'")
     out, at = [], 0
-    for m in _REF.finditer(t):
-        out += [_escape(t[at:m.start()]), "`" + m.group() + "`"]
+    for m in _refs(t):
+        out += [_escape(t[at:m.start()]), "`" + t[m.start():m.end()] + "`"]
         at = m.end()
     return "".join(out + [_escape(t[at:])])
 
@@ -585,13 +625,13 @@ def _guard(text: str) -> None:
                 raise Refuse("unsafe-text")
         elif re.fullmatch(r"`{3,}text", ln):
             fence = ln[:-4]
-        elif marker or ln in ("", "---") or prior.PRIOR_LINE.fullmatch(ln) or prior.STATE_LINE.fullmatch(ln) or NOT_RUN_LINE.fullmatch(ln):
-            continue  # the last three are exact shapes of ids, counts and closed words: no repository text can ride in them
+        elif marker or ln in ("", "---") or prior.PRIOR_LINE.fullmatch(ln) or prior.STATE_LINE.fullmatch(ln) or NOT_RUN_LINE.fullmatch(ln) or BASIS_LINE.fullmatch(ln):
+            continue  # the last four are exact shapes of ids, counts and closed words: no repository text can ride in them
         elif not _SHAPE.match(ln):
             raise Refuse("unsafe-text")
         else:
             bare = _SPAN.sub(r"\1 ", ln)  # a space: a span is a code element, so text around it never joins into a reference
-            if _LOOSE.search(bare) or _REF.search(_shown(bare)):
+            if _LOOSE.search(bare) or next(_refs(_shown(bare)), None):
                 raise Refuse("unsafe-text")
     if fence:
         raise Refuse("unsafe-text")
@@ -600,6 +640,10 @@ def _guard(text: str) -> None:
 def _checked(texts: List[str]) -> None:
     """The guard and the secret scan over every outgoing body; a scanner failure refuses rather than posts unscanned."""
     for t in texts:
+        try:  # a lone surrogate would go out as a bare \udcxx JSON escape, which a forge rejects or mangles
+            t.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refuse("unsafe-text")
         _guard(t)
     try:
         found = any(_scan(t) for t in texts)
@@ -669,6 +713,13 @@ def _body(verdict: str, findings: List[dict], entries: List[str], n_unverifiable
     return text + "\n\n" + (mark or REVIEW_MARK % head)
 
 
+def _basis(b: dict) -> Optional[str]:
+    """The `**Pinned:**` line (gh#48): pinned head or tree, difference size, each lost capability; None for an older run."""
+    if not b["pinned_tree"]:
+        return None
+    return "; ".join([report.basis_line(b, "**Pinned:** ")] + ["lost capability: " + c for c in b["lost_capabilities"]])
+
+
 def _preview(payload: dict) -> str:
     out = ["review-code post preview: %s %s head %s" % (payload["forge"], _prose(payload["url"]), payload["head_sha"]),
            "== review body ==", payload["body"]]
@@ -680,9 +731,15 @@ def _preview(payload: dict) -> str:
                             "already posted: %d" % len(payload["skipped"])])
 
 
+def _utf8(paths: List[str]) -> None:
+    # a lone surrogate path would reach the forge as a bogus JSON path and sink the whole review
+    target.require_utf8(paths, "non-utf8-name", "a finding path is not valid UTF-8")
+
+
 def build(run: str) -> dict:
     info = _target(run)
     doc = report.build(run)
+    _utf8([f["path"] for f in doc["findings"]])
     gh = _forge(info)
     head = info["head_sha"]
     if gh.state() != head:  # check (a): the diff below belongs to the pinned head; the refs are read here, then held
@@ -707,10 +764,11 @@ def build(run: str) -> dict:
         keyed = {f["path"] for f in fresh if any("private-key" in _redact(f[k])[1] for k in ("title", "trigger", "quote", "fix"))}
     except Exception:
         raise Refuse("scan-failed")
+    pin = report._Pinned(run, [f["path"] for f in fresh], [f["path"] for f in fresh])  # the cited rows, read as ingest judged them
     for f in fresh:  # report order: axis, severity, path, line, id
         row = anchors.get((f["path"], f["line"]))
         inline = row is not None and len(comments) < MAX_INLINE
-        rows = report._cited(report._tree(run, f.get("shard")), f["path"], f["line"], f["end_line"], f["quote"])
+        rows = report._cited(pin, f["path"], f["line"], f["end_line"], f["quote"])
         try:  # each finding on its own, so every match is reported at the finding's path:line
             where = None if inline else "%s:%d" % (_prose(f["path"]), f["line"])
             text, rules = _render(f, rows, where, f["path"] in keyed, "new" if old["last_head"] or old["findings"] else None)
@@ -728,7 +786,8 @@ def build(run: str) -> dict:
                "number": info["number"], "url": info["url"], "head_sha": head,
                "body": _body(doc["verdict"], fresh, entries, n_unverifiable, head, doc["inspected"]["areas"],
                              prior.review_mark(head, d["fixed_out"], d["outdated_out"]),
-                             tuple(x for x in (prior.render(d), "**Not run:** " + ", ".join(doc["not_run"]) if doc["not_run"] else None) if x)),
+                             tuple(x for x in (prior.render(d), "**Not run:** " + ", ".join(doc["not_run"]) if doc["not_run"] else None,
+                                               _basis(doc["basis"])) if x)),
                "comments": comments,
                "in_body": in_body, "unverifiable": n_unverifiable, "scan": scan,
                "skipped": [f["id"] for f in doc["findings"] if f["id"] in skip]}
@@ -767,6 +826,7 @@ def submit(run: str, digest: str) -> dict:
     info = _target(run)
     if not isinstance(payload, dict) or any(payload.get(k) != info[k] for k in ("forge", "host", "repo", "number", "head_sha")):
         raise Refuse("payload-mismatch")
+    _utf8([c["path"] for c in payload["comments"]])
     _checked([payload["body"]] + [c["body"] for c in payload["comments"]])  # the file may have been edited and re-hashed
     gh = _forge(info)
     _live(gh, info["head_sha"], payload.get("diff_refs"))  # check (c): before the first write
@@ -808,7 +868,7 @@ def main(argv: List[str]) -> int:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
         if r.detail:
             out["detail"] = r.detail
-    except (OSError, KeyError, ValueError, TypeError) as e:
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     target.emit(out, STDOUT_KEYS)
     return rc

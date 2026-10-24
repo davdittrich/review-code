@@ -3,10 +3,9 @@ norm (category norm). Candidate checks, the norm counter, the wording of a basis
 Stdlib only; imports nothing from report.py or post.py, which both call in."""
 import fnmatch
 import json
-import os
 
 NIT_RULE_CAP = 15  # rules the text report lists under Nits; the JSON keeps every nit
-NORM_SCAN_BYTES = 8 << 20  # bytes of tree/ files norm() may read per call: a norm_glob of "*" on a big repo is refused, not slow
+NORM_SCAN_BYTES = 8 << 20  # bytes of matching files norm() may read per call: a norm_glob of "*" on a big repo is refused, not slow
 NORM_MIN = 20  # lines naming either idiom that a norm needs before a deviation from it is a finding
 
 # Reasons a nit-mode candidate is refused for: the line itself claimed severity nit or category norm and did not qualify, so
@@ -35,10 +34,12 @@ def basis(c):
     return None if c["severity"] != "nit" else "norm" if c["category"] == "norm" else "rule"
 
 
-def norm(o, tree, quote):
-    """(fields, None) of a norm line, else (None, the failing check). The skill counts the lines of tree/ files matching
-    norm_glob that hold each literal idiom; the lane's own counts are never read. shortcut: literal strings, not
-    patterns (a model-written regex over repo text can backtrack without end); upgrade when lanes need patterns."""
+def norm(o, files, read, quote):
+    """(fields, None) of a norm line, else (None, the failing check). The skill counts the lines of the reviewed files
+    matching norm_glob that hold each literal idiom; the lane's own counts are never read. `files` lists the regular
+    files as (path, size, key) and read(keys) returns {key: bytes}; the budget is spent on sizes before any read, so a
+    binary file spends it too. shortcut: literal strings, not patterns (a model-written regex over repo text can backtrack
+    without end); upgrade when lanes need patterns."""
     got = {k: o.get(k) for k in ("norm_for", "norm_against", "norm_glob")}
     if not all(isinstance(v, str) and v.strip() and len(v) <= 200 for v in got.values()):
         return None, "norm-malformed"
@@ -49,27 +50,19 @@ def norm(o, tree, quote):
         return None, "norm-quote-mismatch"
     if got["norm_for"] in quote:  # the deviating line must not use the norm it deviates from
         return None, "norm-malformed"
-    n = {"for": 0, "against": 0}
-    budget = NORM_SCAN_BYTES
-    for root, _, files in os.walk(tree):
-        for f in files:
-            if os.path.islink(os.path.join(root, f)):  # tree/ holds no link by construction; never read one that appears
-                continue
-            rel = os.path.relpath(os.path.join(root, f), tree)
-            if not (fnmatch.fnmatch(rel, got["norm_glob"]) or fnmatch.fnmatch(f, got["norm_glob"])):
-                continue
-            path = os.path.join(root, f)
-            with open(path, "rb") as fh:
-                if b"\0" in fh.read(8192):  # binary: no idiom lives there
-                    continue
-            budget -= os.path.getsize(path)
-            if budget < 0:
-                return None, "norm-too-large"
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                for row in fh:
-                    has_for, has_against = got["norm_for"] in row, got["norm_against"] in row
-                    if has_for != has_against:  # a line holding both idioms says nothing about which one the repo prefers
-                        n["for" if has_for else "against"] += 1
+    n, g = {"for": 0, "against": 0}, got["norm_glob"]
+    hit = [(size, k) for p, size, k in files if fnmatch.fnmatch(p, g) or fnmatch.fnmatch(p.rpartition("/")[2], g)]
+    if sum(size for size, _ in hit) > NORM_SCAN_BYTES:
+        return None, "norm-too-large"
+    data = read(sorted({k for _, k in hit}))
+    for _, k in hit:
+        blob = data.get(k)
+        if blob is None or b"\0" in blob[:8192]:  # binary: no idiom lives there
+            continue
+        for row in blob.decode("utf-8", "replace").split("\n"):
+            has_for, has_against = got["norm_for"] in row, got["norm_against"] in row
+            if has_for != has_against:  # a line holding both idioms says nothing about which one the repo prefers
+                n["for" if has_for else "against"] += 1
     total = n["for"] + n["against"]
     if total < NORM_MIN:
         return None, "norm-sample-small"

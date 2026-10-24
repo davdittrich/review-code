@@ -65,8 +65,8 @@ Style findings are Required or Suggestions at most, and only when a linter would
 ## Nit mode
 
 `--nit` adds a Nit severity between Suggestions and Noted. It never changes the verdict. A nit is a
-`convention` finding that quotes a repo rule, or a `norm` finding whose counts the skill makes itself
-in `tree/` (at least 20 lines, the other idiom the majority). Diff targets report changed lines only;
+`convention` finding that quotes a repo rule, or a `norm` finding the skill counts itself in the
+pinned tree (at least 20 lines, the other idiom the majority). Diff targets report changed lines only;
 a `--repo` target also reports pre-existing nits. The text report lists at most 15 rules under Nits
 (JSON and SARIF keep every nit). `--fix` and `--fix-tests` ignore nits. `--nit --lean` is the
 nits-only pass. Detail: `references/lanes.md`.
@@ -84,8 +84,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
    `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
-   `--own` with `--external`: stop and say so), and `--since-last` (a fixed literal passed to target.py before `<<`: a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
-   commit, append the caret and exclamation mark to the commit id (the caret-bang form); a PR or MR is its
+   `--own` with `--external`: stop and say so), and `--since-last` (a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
+   commit, append the caret and exclamation mark to the commit id; a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
 
    ```
@@ -101,7 +101,8 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
      list the readings.
    - `refuse` with `no-target`: ask once (AskUserQuestion) what to review.
    - Any other `skip` or `refuse`: state `reason` and `detail` and stop (`skip` is not an error: closed,
-     merged, draft or empty).
+     merged, draft or empty). User fixes: `checkout-not-synced`, sync the main checkout; `no-upstream-remote`, add an
+     upstream remote; `remote-unreachable`, check access.
    - `ok`: state the `kind`, the pinned refs (`merge_base...head_sha` for diff kinds; `HEAD <sha>` plus
      "working tree" for staged, unstaged and worktree; `HEAD <sha>` for path and repo), the included
      and excluded counts and the `run` path. Do not read `target.json` yet: file names and notes come
@@ -113,14 +114,14 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    - The command fails because `python3` is missing, or prints `python-too-old`: say so and follow
      `references/lanes.md` Triage without python3.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`, adding `--nit` to this and every later build call when step 1 removed it. State the `label` and
-   counts from its stdout, and `adr_omitted` when present (decision records left out by the cap). For `triage`, print "Triage only: no repository context found".
-3. Questions, once per run, before reading any run-dir file. When step 2's
+   counts from its stdout. For `triage`, print "Triage only: no repository context found".
+3. Questions, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`), appending `--flag` so the answer is recorded as flag-supplied (`source` "flag" in later stdout), and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
    or an external or untrusted change?", options "My own code" and "External or untrusted code"); the
    spec is never asked for: the build already took it from PR or MR text, closing issues, issues named as `owner/repo#N` or by GitHub or GitLab issue URL (fetched with `gh` or `glab`; other trackers are listed unfetched), bd tickets named in the
    commit messages, decision records (every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions`
-   directory, up to 30, each its own entry and counted apart from tickets) and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
+   directory, each indexed in spec.md by path, title and size, never pasted) and spec files under `docs/`, `specs/` or `.scratch/` that match the branch or the reviewed
    paths (every file there for a `repo` target). Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>`
    only for an explicit "My own code" answer. For every other outcome (external, dismissed, empty, tool
    unavailable, headless run) run `... ledger.py trust set external --run <run>`. A spec path the user
@@ -131,11 +132,10 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `subagent_type` `review-code:spec-finder`, `model` `haiku`, `effort` `low`, `prompt` exactly
    `Spec finder. Input: <run>/inputs/spec-find.md`, and a short `description`. It names spec files by content.
    Re-run the build as `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run> --found -` with the `path`
-   value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule); the script
-   keeps tracked files only and drops the rest. State the new `spec_status`. When it is still `none`, the Spec axis is
+   value of every reply line that starts with `[` as one line of a here-document on stdin (stdin rule). State the new `spec_status`. When it is still `none`, the Spec axis is
    stated as skipped (no spec found).
 4. Context report, after trust is recorded. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py context --run <run>`
-   (it refuses until trust is recorded; do not read `target.json` or `ledger.json`). State each `excluded`
+   (do not read `target.json` or `ledger.json`). State each `excluded`
    path with its reason, each `notes` line (the ledger notes include the warning that Claude Code itself loads a
    checked-out head's CLAUDE.md), the `conventions` copies taken from the base and the `ignored`
    head-only files; `more` counts entries cut by the cap. If `hidden_text`, `hidden_routine` or `hidden_chars` is not empty, report each
@@ -144,7 +144,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (`assistant`, `encoded`, `url`, `markup`, `long`); `provenance` (`added` by the change, `touched` for a changed file with no diff) is kept apart and does not list a span singly. All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
-   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag. The plugin settings go on
+   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag, and `--tool codegraph` and `--tool serena` for each such MCP tool the session has. The plugin settings go on
    stdin, one `key=value` line each:
 
    ```
@@ -170,7 +170,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    `<run>/plan.json`.
 6. Cost gate. When plan.py's `confirm` is true, make one AskUserQuestion showing the `preview` lines
    with options "Run" and "Stop"; on "Stop" or no answer, stop. When headless, print the `preview` and
-   continue: the run stays inside the plan's caps. This question is asked once per run, also after a re-plan in step 7.
+   continue: the run stays inside the plan's caps. A re-plan in step 7 does not ask it again.
 7. Lanes. Use step 5's `calls` (do not read plan.json). Serial mode (`mode` is `serial`, or an Agent call fails with a
    nesting-depth or concurrent-limit error): follow `references/lanes.md` Serial mode instead of the Agent calls of
    steps 7 and 8; it also covers the re-plan after such a failure. Parallel mode (`mode` is `parallel`): take the calls in
@@ -189,7 +189,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> --agent <agentId>
    ```
 
-   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule), without `--agent`:
+   On any `--agent` refusal (`no-capture`, `empty-capture`, `agent-mismatch`, `agent-reused`, `bad-agent`; no capture means hooks off or the hook's python3 missing; `capture-incomplete` means only the agent's closing message is captured: use `--agent` only after its completion notification) re-run the command without `--agent` and pass every reply line that starts with `[` on stdin instead, by here-document (stdin rule):
 
    ```
    python3 ${CLAUDE_SKILL_DIR}/scripts/report.py ingest --run <run> --lane <lane> <<'REVIEW_FINDINGS'
@@ -197,14 +197,14 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    REVIEW_FINDINGS
    ```
 
-   The step is done when `status` lists no `missing_lanes` and its `rejected_total` is 0. Otherwise `<run>/rejected/<lane>.txt` holds each rejected line with its reason, which names the failing check (`quote` must be a whitespace-normalised substring of the cited lines, and a quote cited at the wrong line, or past the end of the file, is moved to the one nearest place the file holds it, never when two are equally near; `rule` must be 3 to 500 characters with at least 3 words and occur, whitespace-normalised, with Markdown emphasis and link syntax ignored and on word boundaries, in the named `conventions/` file): resume the agent of that call (SendMessage to the agentId of its Agent launch result), quote those lines, ask it for its full corrected reply, and ingest that reply with the same flags (an ingest replaces its lane; a reply with findings but no `inspected` line for a lane that is already complete is refused `no-inspected-line`: the lane is kept, but the refusal counts as one of its 2 tries). Make at most 2 tries per lane: the tries so far are `attempts` for that lane in `status` (the script counts every ingest; never count from memory), then tell the user that moment the exact count of lines still lost per lane. `lost` in `status` is every line any ingest dropped and no later ingest of its lane recovered, otherwise kept until the run is discarded: relay it, and the report stays at Needs discussion while it is nonzero, even when a retry left the lines out. A line moves from `lost` to `recovered` when a later ingest of its lane carries a finding with the same path, category and quote; a lost line that named no path, category and quote (unparseable) has no identity to match, so it counts as recovered once a complete retry of its lane loses no such line again (a heuristic: that retry may have dropped the finding instead). Never open `inputs/spec.md` or any PR, MR, issue
-   or commit text.
+   The step is done when `status` lists no `missing_lanes` and its `rejected_total` is 0. Otherwise `<run>/rejected/<lane>.txt` holds each rejected line with its reason, which names the failing check (`quote` must be a whitespace-normalised substring of the cited lines, and a quote cited at the wrong line, or past the end of the file, is moved to the one nearest place the file holds it, never when two are equally near; `rule` must be 3 to 500 characters with at least 3 words and occur, whitespace-normalised, with Markdown emphasis and link syntax ignored and on word boundaries, in the named `conventions/` file): resume the agent of that call (SendMessage to the agentId of its Agent launch result), quote those lines, ask it for its full corrected reply, and ingest that reply with the same flags (an ingest replaces its lane; a reply with findings but no `inspected` line for a lane that is already complete is refused `no-inspected-line`: the lane is kept, but the refusal counts as one of its 2 tries). Make at most 2 tries per lane: the tries so far are `attempts` for that lane in `status` (the script counts every ingest), then tell the user that moment the exact count of lines still lost per lane. `lost` in `status` is every line any ingest dropped and no later ingest of its lane recovered, otherwise kept until the run is discarded: relay it, and the report stays at Needs discussion while it is nonzero, even when a retry left the lines out. A line moves from `lost` to `recovered` when a later ingest of its lane carries a finding with the same path, category and quote; a lost line that named no path, category and quote (unparseable) has no identity to match, so it counts as recovered once a complete retry of its lane loses no such line again (a heuristic: that retry may have dropped the finding instead). Never open `inputs/spec.md` or read PR, MR, issue
+   or commit text except history files.
 8. Verify. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py status --run <run>` and use its stdout (read-only). When `missing_lanes` is not empty, stop and state them. When `blocked` is `lane-retry-open`, `verify_calls` is empty: a lane still has rejected lines and a try left, so finish step 7's retry first (a verdict stored earlier makes that ingest refuse `late-reply`). Parallel mode: for
    each entry of `verify_calls` make one Agent call, `subagent_type` the entry's `agent` (`review-code:verifier`, or `review-code:spec-verifier` for Spec ids), and the `prompt` is exactly the entry's
-   `prompt` and nothing else; `model` and `effort` come from step 5's `verifier`, or `spec_verifier` for the spec agent. Issue them in waves as in step 7, with the same fan-out rule. After the waves run `status` again; a call whose `batch` is in `missing_batches` is not stored. For each such call run
+   `prompt`; `model` and `effort` come from step 5's `verifier`, or `spec_verifier` for the spec agent. Issue them in waves as in step 7, with the same fan-out rule. After the waves run `status` again; a call whose `batch` is in `missing_batches` is not stored. For each such call run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py verdicts --run <run> --batch <batch> --agent <agentId>` (the entry's `batch`; the agentId of that Agent launch result). On any `--agent` refusal (as in step 7) pass every reply line that starts with `[`, per Agent call, to the same command without `--agent`, in a
    `REVIEW_VERDICTS` here-document, as in step 7: one verdicts call per entry; the batches add up (`confirmed`, `refuted` and `unverifiable` in stdout are cumulative over all stored batches, as `cumulative` says; `batch_ids` is this call's own), a repeat of a batch replaces only that batch, and ids outside the batch are ignored. The step is done when `missing_batches` and `no_verdict` are empty. For each batch in `rejected_batches` and each id in `no_verdict`, recover as in step 7 with the verifier agent of that batch (ingest its full corrected reply with the same `--batch`); the tries are `attempts` of `batch-<batch>` in `status`; after 2 tries tell the user that moment the exact ids still unverified. Skip this step when `ids` and `spec_ids` are empty.
-9. Reproduce, own code only, never in serial mode. Run this step only when `ledger.py trust get`
+9. Reproduce, never in serial mode. Run this step only when `ledger.py trust get`
    reports `effective` `own`, the `confirmed` of the last `verdicts` call (or of `status`) is not empty, and `ledger.json` lists tests or
    test config. For each confirmed id, write the smallest test that fails the way the finding claims,
    with `REPRO-<id>` in its failure message, at a new relative path. Make one AskUserQuestion that

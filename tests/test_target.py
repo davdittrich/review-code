@@ -74,10 +74,15 @@ class PRWorld(Base):
         gitfix.run(["git", "clone", "-q", "--no-local", self.bare, self.repo], self.tmp)
         self.git("remote", "set-url", "origin", self.URL)
         self.git("config", "url." + self.bare + ".insteadOf", self.URL)
+        self.git("config", "maintenance.auto", "false")  # a fetch's detached maintenance would race the temp-dir cleanup
         # main advances on the remote after the clone: an opportunistic ref update would move origin/main
         gitfix.run(["git", "checkout", "-q", "main"], src)
         gitfix.commit(src, {"src/other.py": "y = 1\n"}, "main moves on")
         gitfix.run(["git", "push", "-q", self.bare, "main"], src)
+        # gh#49: the checkout is synced to the live tip, while origin/main stays stale (no fallback to a cached ref)
+        self.git("fetch", "-q", "--refmap=", "origin", "+refs/heads/main:refs/sync-tip")
+        self.git("merge", "-q", "--ff-only", "refs/sync-tip")
+        self.git("update-ref", "-d", "refs/sync-tip")
         self.assertNotEqual(subprocess.call(["git", "cat-file", "-e", self.pr + "^{commit}"], cwd=self.repo,
                                             stderr=subprocess.DEVNULL), 0)
 
@@ -144,7 +149,7 @@ class TestPR(PRWorld):
         gh = self.gh()
         rc, out = call(["https://github.com/o/r/pull/7/files"], self.repo, self.tmp, gh=gh)
         self.assertEqual((rc, out["status"], out["number"]), (0, "ok", 7))
-        self.assertEqual(gh.call_args[0][0][:3], ["pr", "view", "https://github.com/o/r/pull/7"])
+        self.assertEqual(gh.call_args_list[0][0][0][:3], ["pr", "view", "https://github.com/o/r/pull/7"])
 
     def _skip(self, reason, **kw):
         before = self.run_dirs()
@@ -163,17 +168,20 @@ class TestPR(PRWorld):
         self._skip("draft", isDraft=True)
 
     def test_eligibility_cross_repo(self):
-        for arg, reason in (("https://github.com/other/repo/pull/7", "cross-repo"),):
+        for arg, reason in (("https://github.com/other/repo/pull/7", "no-upstream-remote"),):
             rc, out = call([arg], self.repo, self.tmp)  # gh must not be called
             self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", reason))
         rc, out = call(["7"], self.repo, self.tmp, gh=self.gh(url="https://github.com/other/repo/pull/7"))
-        self.assertEqual((rc, out["reason"]), (1, "no-remote-for-pr-repo"))
+        self.assertEqual((rc, out["reason"]), (1, "no-upstream-remote"))
 
     def test_eligibility_head_moved(self):
         rc, out = call(["7"], self.repo, self.tmp, gh=self.gh(headRefOid="1" * 40))
         self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "head-moved"))
 
     def test_eligibility_fetch_failed(self):
+        self.git("fetch", "-q", "--refmap=", "origin", "+refs/pull/7/head:refs/pr7")  # checked out: the gate skips it
+        self.git("checkout", "-q", "--detach", "refs/pr7")
+        self.git("update-ref", "-d", "refs/pr7")
         self.git("config", "url." + os.path.join(self.tmp, "nope.git") + ".insteadOf", self.URL)
         self.git("config", "--unset", "url." + self.bare + ".insteadOf")
         rc, out = call(["7"], self.repo, self.tmp, gh=self.gh())
@@ -259,6 +267,7 @@ class TestKinds(Local):
         self.assertEqual((rc, out["kind"], out["base_sha"], out["head_sha"]), (0, "commit", self.c1, self.c2))
         t = load(out["run"])
         self.assertEqual((t["commits"], t["merge_base"], t["included"]), ([self.c2], self.c1, ["B.py", "a.py", "src/y.py"]))
+        self.git("checkout", "-q", "--detach", self.root)  # gh#49: a head not checked out needs a synced checkout
         rc, out = self.pin(self.root + "^!")  # root commit: base is the empty tree
         empty = subprocess.run(["git", "hash-object", "-t", "tree", "--stdin"], cwd=self.repo, input=b"",
                                env=gitfix.env(), stdout=subprocess.PIPE).stdout.decode().strip()
@@ -370,7 +379,7 @@ class TestKinds(Local):
         a, b = load(o1["run"]), load(o2["run"])
         self.assertNotEqual(a["run"], b["run"])
         for d in (a, b):
-            d.pop("run"), d.pop("created")
+            d.pop("run"), d.pop("created"), d.pop("difference"), d.pop("difference_list"), d.pop("integrity")  # each names its own run directory
         self.assertEqual(a, b)
         self.assertEqual(a["included"], sorted(a["included"]))
         self.assertEqual(a["included"][:2], ["B.py", "a.py"])  # code point order: upper case first
@@ -462,6 +471,8 @@ class TestAmbiguity(Local):
 
     def test_ambiguity_descendant_ref(self):
         self.git("checkout", "-q", "main")
+        self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         c = self.ask("feat")
         self.assertEqual([x["reading"] for x in c], ["changes on HEAD since feat", "changes on feat since main"])
         rc, out = self.pin("feat", "--choice", "2")
@@ -637,7 +648,7 @@ class TestMR(PRWorld):
             glab = self.mr()
             rc, out = call([arg], self.repo, self.tmp, glab=glab)
             self.assertEqual((rc, out["status"], out["kind"], out["number"]), (0, "ok", "mr", 5), arg)
-            self.assertEqual(glab.call_args[0][0][:2], ["mr", "view"])
+            self.assertEqual(glab.call_args_list[0][0][0][:2], ["mr", "view"])
         t = load(out["run"])
         self.assertEqual((t["head_sha"], t["base_sha"], t["url"]), (self.pr, self.main, self.MR))
         self.assertEqual(t["notes"], ["merge request reading is untested against a live glab"])
@@ -657,7 +668,7 @@ class TestMR(PRWorld):
                        glab=self.mr(diff_refs={"base_sha": "a" * 39, "head_sha": self.pr}))
         self.assertEqual(out["reason"], "glab-failed")
         rc, out = call(["https://gitlab.com/other/x/-/merge_requests/5"], self.repo, self.tmp)
-        self.assertEqual(out["reason"], "cross-repo")
+        self.assertEqual(out["reason"], "no-upstream-remote")
 
     def test_mr_glab_missing(self):
         with mock.patch.dict(os.environ, {"PATH": ""}):
@@ -1034,6 +1045,7 @@ class TestHiddenRefNames(Local):
         shown = json.dumps(out)
         self.assertNotIn("\\udb40", shown)
         self.assertIn("br<TAGS:3>", shown)
+        self.git("checkout", "-q", name)  # gh#49: the reviewed head is checked out, so no gate applies
         rc, out = call(["main.." + name], self.repo, self.tmp)
         self.assertEqual((rc, out["status"]), (0, "ok"), out)
         with open(os.path.join(out["run"], "target.json"), "rb") as fh:
@@ -1175,3 +1187,18 @@ class TestHiddenText(Local):
         self.assertEqual(rc, 0)
         self.assertNotIn("HIDDENCMT", self.diff(out))
         self.assertEqual([h["kind"] for h in load(out["run"])["hidden_text"]], ["comment"])
+
+
+class TestRepoPathEndingInCR(Base):
+    """review-code-wb5s: a repository whose directory name ends in CR; the toplevel loses its newline only."""
+
+    def test_a_repo_path_ending_in_cr_reviews_and_dot_is_the_whole_repo(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "r\r"))
+        gitfix.commit(repo, {"a.py": "a = 1\n"}, "base")
+        with open(os.path.join(repo, "a.py"), "w") as fh:
+            fh.write("a = 2\n")
+        rc, out = call([], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out.get("kind")), (0, "ok", "worktree"), out)
+        rc, out = call(["."], repo, self.tmp)
+        self.assertEqual((rc, out["status"], out["kind"]), (0, "ok", "repo"), out)
+        self.assertEqual(load(out["run"])["repo"], repo)

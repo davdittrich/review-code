@@ -370,6 +370,8 @@ class SinceLast(tt.PRWorld):
         def fake(args, cwd):
             if args[0] == "pr":
                 return pr
+            if args[0] == "repo":  # gh#49's fork check
+                return {"isFork": False, "parent": None}
             self.assertEqual(args[:3], ["api", "--hostname", "github.com"], args)
             if args[3] == "user":
                 return {"login": login}
@@ -396,6 +398,8 @@ class SinceLast(tt.PRWorld):
         def fake(args, cwd):
             if args[0] == "pr":
                 return self.payload(headRefOid=self.head2)
+            if args[0] == "repo":
+                return {"isFork": False, "parent": None}
             raise target_refuse()
         target_refuse = lambda: tt.target.Refuse("gh-failed", "x")  # noqa: E731
         rc, out = tt.call(["7", "--since-last"], self.repo, self.tmp, gh=mock.Mock(side_effect=fake))
@@ -405,7 +409,7 @@ class SinceLast(tt.PRWorld):
         gh = self.gh_with(self.pr)
         rc, out = tt.call(["7"], self.repo, self.tmp, gh=gh)
         self.assertEqual((rc, "since_last" in out), (0, False))
-        self.assertEqual([c[0][0][0] for c in gh.call_args_list], ["pr"])
+        self.assertEqual([c[0][0][0] for c in gh.call_args_list], ["pr", "repo"])
 
     def test_gitlab_and_other_targets_refuse(self):
         glab = mock.Mock(side_effect=AssertionError("glab called"))

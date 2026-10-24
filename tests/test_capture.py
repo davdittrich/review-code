@@ -2,7 +2,10 @@
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -65,6 +68,61 @@ class Capture(unittest.TestCase):
         self.fire(stop("closing words"))
         self.assertEqual(self.stored("handback")["message"], "the report")
         self.assertEqual(self.stored("stop")["message"], "closing words")
+
+    def test_every_git_process_runs_with_the_review_seam_options(self):  # review-code-u1tn
+        os.makedirs(self.state)
+        log = os.path.join(self.tmp, "trace.json")
+        rc, out, err = gitfix.cli("capture.py", [], self.repo, self.tmp, json.dumps(stop()), extra={"GIT_TRACE2_EVENT": log})
+        self.assertEqual((rc, out, err), (0, "", ""))
+        self.assertEqual(self.stored("stop")["message"], MSG)
+        with open(log, encoding="utf-8") as fh:
+            argvs = [e["argv"] for e in map(json.loads, fh) if e.get("event") == "start" and os.path.basename(e["argv"][0]) == "git"]
+        self.assertTrue(any("rev-parse" in a for a in argvs), argvs)
+        for a in argvs:  # target._GIT: no hooks, no fsmonitor daemon
+            self.assertIn("core.hooksPath=/dev/null", a)
+            self.assertIn("core.fsmonitor=false", a)
+
+    def test_a_git_dir_with_a_non_utf8_byte_is_found(self):  # review-code-6gfy
+        gdir = os.path.join(self.tmp, "g\udcffd")
+        repo = os.path.join(self.tmp, "sep")
+        os.mkdir(repo)
+        subprocess.run([b"git", b"init", b"-q", b"--separate-git-dir", os.fsencode(gdir), os.fsencode(repo)],
+                       env=gitfix.env(), check=True)
+        os.makedirs(os.path.join(gdir, "review-code"))
+        self.fire(stop(), cwd=repo)
+        with open(os.path.join(gdir, "review-code", "captures", AID + ".stop.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["message"], MSG)
+
+    def test_no_filter_driver_runs_in_the_hook(self):  # review-code-9f4v
+        os.makedirs(self.state)
+        marker = os.path.join(self.tmp, "filter-ran")
+        for key in ("clean", "smudge", "process"):
+            gitfix.run(["git", "config", "filter.spy." + key, "touch '%s'; cat" % marker], self.repo)
+        self.fire(stop())
+        self.assertEqual(self.stored("stop")["message"], MSG)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_a_hook_without_its_sibling_module_still_exits_silent(self):  # review-code-u1tn
+        os.makedirs(self.state)
+        alone = os.path.join(self.tmp, "alone")
+        os.mkdir(alone)
+        shutil.copy(os.path.join(paths.SCRIPTS, "capture.py"), alone)  # no target.py beside it: its import fails
+        p = subprocess.run([sys.executable, os.path.join(alone, "capture.py")], cwd=self.repo, env=gitfix.env(),
+                           input=json.dumps(stop()).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"", b""))
+        self.assertEqual(self.names(), [])
+
+    def test_a_sibling_that_prints_and_exits_at_import_leaves_the_hook_silent(self):  # target's python-too-old guard
+        os.makedirs(self.state)
+        alone = os.path.join(self.tmp, "noisy")
+        os.mkdir(alone)
+        shutil.copy(os.path.join(paths.SCRIPTS, "capture.py"), alone)
+        with open(os.path.join(alone, "target.py"), "w") as fh:
+            fh.write('print("x")\nraise SystemExit(1)\n')
+        p = subprocess.run([sys.executable, os.path.join(alone, "capture.py")], cwd=self.repo, env=gitfix.env(),
+                           input=json.dumps(stop()).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"", b""))
+        self.assertEqual(self.names(), [])
 
     def test_a_later_event_of_a_kind_replaces_the_earlier_one(self):  # a resumed agent replies again
         os.makedirs(self.state)

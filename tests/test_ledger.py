@@ -1,4 +1,5 @@
 """ledger.py: context discovery, base-only conventions, head-tree materialization."""
+import ast
 import io
 import json
 import os
@@ -7,7 +8,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import tracemalloc
 import unittest
 from contextlib import redirect_stdout
@@ -22,11 +22,13 @@ import ledger  # noqa: E402
 import target  # noqa: E402
 
 DIFF = ["--unified=3", "--no-ext-diff", "--no-textconv", "--no-color"]
-INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
+INPLACE = target.INPLACE
 
 
-def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None):
-    """Write target.json and change.diff for a run dir straight from git, without running target.py."""
+def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untracked=(), commits=None, number=None, url=None,
+                 difference=None):
+    """Write target.json and change.diff for a run dir straight from git, without running target.py. `difference`, when
+    given, is written as difference.json (each path `modified`) with the pin keys target.py records (gh#48)."""
     os.makedirs(run, exist_ok=True)
     if kind in INPLACE:
         diff = gitfix.run(["git", "diff"] + DIFF + [head_sha, "--"], repo)
@@ -41,6 +43,15 @@ def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untr
            "untracked": list(untracked), "hidden_chars": [], "notes": [], "created": "2026-01-01T00:00:00Z"}
     with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
         json.dump(rec, fh, sort_keys=True, indent=2)
+    if difference is not None:
+        pinned = gitfix.run(["git", "rev-parse", head_sha + "^{tree}"], repo).strip()
+        d = os.path.join(run, "difference.json")
+        with open(d, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "pinned_tree": pinned, "paths": [{"path": x, "tag": "modified"} for x in sorted(difference)]}, fh)
+        rec.update(pinned_tree=pinned, pinned_head=None if kind in INPLACE else head_sha, checkout_head=head_sha, difference=d,
+                   difference_count=len(difference))
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, sort_keys=True, indent=2)
     return rec
 
 
@@ -72,12 +83,12 @@ class Base(unittest.TestCase):
         return [n for n in out.split("\0") if n]
 
     def build(self, kind="branch", included=None, untracked=(), head=None, mb=None, commits=None, number=None,
-              spec=None, url=None, found=(), nit=False):
+              spec=None, url=None, found=(), nit=False, difference=None):
         head = head or self.g("rev-parse", "HEAD")
         mb = mb or self.g("merge-base", "main", head)
         if included is None:
             included = self.names(mb, head)
-        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url)
+        write_target(self.run_dir, self.repo, kind, mb, head, mb, included, untracked, commits, number, url, difference)
         out = ledger.build(self.run_dir, spec, found, nit)
         return out, self.load()
 
@@ -98,6 +109,15 @@ class TestCategoryLists(unittest.TestCase):
     def test_context_categories_are_the_ledger_categories_between_symbols_and_conventions(self):  # review-code-wyb
         cats = ledger.CATEGORIES
         self.assertEqual(list(ledger._CTX), cats[cats.index("symbols") + 1:cats.index("conventions")])
+
+
+class Style(unittest.TestCase):
+    def test_no_membership_test_is_negated_from_outside(self):  # ruff E713: `not x in y` reads `x not in y`
+        with open(ledger.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        bad = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+               and isinstance(n.operand, ast.Compare) and len(n.operand.ops) == 1 and isinstance(n.operand.ops[0], ast.In)]
+        self.assertEqual(bad, [])
 
 
 class TestNames(unittest.TestCase):
@@ -154,7 +174,7 @@ class Categories(Base):
             for e in led[cat]:
                 self.assertTrue(e["how"], (cat, e))
         self.assertEqual(led["capped"], {c: False for c in
-                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues", "helpers")})
+                                         ("symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "issues")})
 
     def test_crlf_change_diff_reads_like_text_mode(self):
         # 6xl.54: a change.diff written in text mode on Windows ends lines with CRLF; discovery must not change
@@ -488,8 +508,8 @@ class Tree(Base):
         self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, "src/use.py": "parse_cfg('x')\n",
                    "tests/test_cfg.py": "parse_cfg\n", "unrelated.txt": "nope\n"})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
-        _, led = self.build()
-        self.assertEqual(self.tree_files(), ["src/cfg.py", "src/use.py", "tests/test_cfg.py"])
+        _, led = self.build(difference=["src/cfg.py"])
+        self.assertEqual(self.tree_files(), ["src/cfg.py"])  # gh#52: the caller and the test stay in the repository
         head = self.g("rev-parse", "HEAD")
         want = subprocess.run(["git", "show", head + ":src/cfg.py"], cwd=self.repo, stdout=subprocess.PIPE,
                               env=gitfix.env(), check=True).stdout
@@ -497,50 +517,6 @@ class Tree(Base):
             self.assertEqual(fh.read(), want)
         self.assertEqual(led["tree"], {"path": os.path.join(self.run_dir, "tree"), "source": "head commit", "skipped": []})
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
-
-    def test_tree_copies_helper_files_as_context(self):  # review-code-3ea.2
-        self.base({"src/a.py": "x = 1\n", "src/sibling.py": "def s(): pass\n", "pkg/utils.py": "def u(): pass\n",
-                   "lib/x.py": "def l(): pass\n", "other/zzz.py": "z = 1\n"})
-        self.branch({"src/a.py": "x = 2\n"})
-        out, led = self.build()
-        self.assertEqual(self.tree_files(), ["lib/x.py", "pkg/utils.py", "src/a.py", "src/sibling.py"])
-        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("src/sibling.py", "sibling of a changed file"), ("lib/x.py", "helper-named file"),
-                          ("pkg/utils.py", "helper-named file")])
-        self.assertEqual(out["counts"], {c: 0 for c in ledger.CATEGORIES})  # context, not reviewed files
-        self.assertEqual(led["tree"]["skipped"], [])
-
-    def test_helper_copy_is_capped_by_bytes(self):  # review-code-3ea.2
-        self.base({"src/a.py": "x = 1\n", "src/b_util.py": "b" * 60 + "\n", "src/c_util.py": "c" * 60 + "\n"})
-        self.branch({"src/a.py": "x = 2\n"})
-        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
-            _, led = self.build()
-        self.assertEqual(self.tree_files(), ["src/a.py", "src/b_util.py"])
-        self.assertEqual(files_of(led, "helpers"), ["src/b_util.py"])
-        self.assertEqual(led["tree"]["skipped"], [{"path": "src/c_util.py", "reason": "helper-cap"}])
-        self.assertTrue(led["capped"]["helpers"])
-
-    def test_same_directory_siblings_rank_before_helper_named_trees(self):  # review-code-oen
-        self.base({"lib/a.py": "x = 1\n", "lib/zz.py": "z" * 60 + "\n", "lib/sub/big1.py": "b" * 60 + "\n",
-                   "lib/sub/big2.py": "c" * 60 + "\n"})
-        self.branch({"lib/a.py": "x = 2\n"})
-        with mock.patch.object(ledger, "CAP_HELPER_BYTES", 100):
-            _, led = self.build()
-        self.assertEqual([(e["file"], e["how"]) for e in led["helpers"]],
-                         [("lib/zz.py", "sibling of a changed file")])
-        self.assertEqual(led["tree"]["skipped"], [{"path": "lib/sub/big1.py", "reason": "helper-cap"},
-                                                  {"path": "lib/sub/big2.py", "reason": "helper-cap"}])
-
-    def test_helper_sizes_are_looked_up_in_one_pass(self):  # review-code-cag
-        n = 6000
-        listing = {"d/f%d.py" % i: ("100644", "%040x" % i) for i in range(n)}
-        raw = "".join("%040x 10\n" % i for i in range(n)).encode()
-        with mock.patch.object(target, "git_bytes", return_value=raw):
-            t0 = time.monotonic()
-            kept, over = ledger._helpers("/unused", listing, sorted(listing), ["d/a.py"], set())
-            took = time.monotonic() - t0
-        self.assertEqual((len(kept), over), (n, []))
-        self.assertLess(took, 2.0)
 
     def test_expected_load_comes_from_tracked_deploy_and_entry_files(self):  # review-code-d14.1
         self.base({"Dockerfile": "FROM python\n", "src/server.py": "x = 1\n", "src/a.py": "a = 1\n"})
@@ -597,8 +573,8 @@ class Tree(Base):
         self.unused_claim_fixture()
         with mock.patch.object(ledger, "CAP_CALLERS", 1):
             _, led = self.build()
-        self.assertEqual(len(led["callers"]), 1)  # one caller copied; the rest are invisible to the verifier
-        self.assertEqual(self.tree_files(), ["app/a.py", "src/cfg.py"])
+        self.assertEqual(len(led["callers"]), 1)  # one caller listed; the rest are not even pointed at
+        self.assertEqual(self.tree_files(), [])  # gh#52: no difference, so the callers are read from the repository
         self.assertEqual([(s["name"], s["refs"]) for s in led["symbols"]], [("helper_fn", 3)])
         import report
         refs = {None: report._refs(self.run_dir)}
@@ -651,7 +627,7 @@ class Tree(Base):
         self.g("add", "leak")
         self.g("update-index", "--add", "--cacheinfo", "160000,%s,sub" % self.g("rev-parse", "HEAD"))
         gitfix.commit(self.repo, {"a.txt": "y\n"}, "links")
-        _, led = self.build()
+        _, led = self.build(difference=["a.txt", "leak", "sub"])
         self.assertEqual(self.tree_files(), ["a.txt"])
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "sub")))
@@ -670,7 +646,7 @@ class Tree(Base):
         self.base({"a.txt": "x\n"})
         self.branch({".gitattributes": "hidden.py export-ignore\nver.txt export-subst\n",
                      "hidden.py": "secret = 1\n", "ver.txt": "$Format:%H$\n"})
-        self.build()
+        self.build(difference=["hidden.py", "ver.txt"])
         self.assertIn("hidden.py", self.tree_files())
         self.assertEqual(self.read("tree/ver.txt"), "$Format:%H$\n")
 
@@ -678,7 +654,7 @@ class Tree(Base):
         rlo = chr(0x202E)
         self.base({"a.txt": "x\n"})
         self.branch({"a.txt": "ok\nevil %s line\n" % rlo})
-        _, led = self.build()
+        _, led = self.build(difference=["a.txt"])
         text = self.read("tree/a.txt")
         self.assertIn("<U+202E>", text)
         self.assertNotIn(rlo, text)
@@ -689,7 +665,7 @@ class Tree(Base):
         code = "x = 1  # <!-- CODECMT --> ![CODEALT](u)\n"
         self.base({"a.txt": "x\n"})
         self.branch({"notes.md": notes, "src/c.py": code})
-        _, led = self.build()
+        _, led = self.build(difference=["notes.md", "src/c.py"])
         text = self.read("tree/notes.md")
         for payload in ("HIDDENCMT", "ALTINJECT", "HIDDENEL"):
             self.assertNotIn(payload, text)
@@ -704,7 +680,7 @@ class Tree(Base):
         self.base({"a.txt": "x\n"})
         names = ("n.mdown", "n.mkdn", "n.mkd")
         self.branch({n: "intro\n<!-- HT_%s -->\n" % n[2:].upper() for n in names})
-        _, led = self.build()
+        _, led = self.build(difference=list(names))
         for n in names:
             self.assertNotIn("HT_", self.read("tree/" + n))
         self.assertEqual(sorted(h["file"] for h in led["hidden_text"]), sorted(names))
@@ -716,14 +692,14 @@ class Tree(Base):
         self.assertTrue(ledger._put(root, "a/b.txt", b"x"))
 
     def test_tree_hidden_named_ref_is_refused(self):
-        # 6xl.51: a referenced-only file whose name holds Tags is listed escaped and never copied into tree/
+        # 6xl.51: a file whose name holds Tags is listed escaped and never copied into tree/; the difference names it escaped
         tags = "".join(chr(0xE0000 + ord(c)) for c in "PWNED")
         evil = "src/use" + tags + ".py"
         body = "".join("    x = %d\n" % i for i in range(12))
         self.base({"src/cfg.py": "def parse_cfg(s):\n" + body, evil: "parse_cfg('x')\n"})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99")})
-        _, led = self.build()
         shown = "src/use<TAGS:5>.py"
+        _, led = self.build(difference=["src/cfg.py", shown])
         self.assertIn(shown, files_of(led, "callers"))
         self.assertIn({"path": shown, "reason": "hidden-name"}, led["tree"]["skipped"])
         for d, dirs, names in os.walk(self.run_dir):
@@ -735,15 +711,22 @@ class Tree(Base):
                 self.assertNotIn(tags.encode("utf-8"), data, n)
                 self.assertNotIn(b"\\udb40", data, n)
 
+    def test_a_changed_hidden_named_file_in_the_difference_is_skipped_once(self):  # gh#52: raw included, escaped listed
+        evil = "src/use" + "".join(chr(0xE0000 + ord(c)) for c in "PWNED") + ".py"
+        self.base({"src/cfg.py": "a = 1\n", evil: "b = 1\n"})
+        self.branch({evil: "b = 2\n"})
+        _, led = self.build(difference=["src/use<TAGS:5>.py"])
+        self.assertEqual(led["tree"]["skipped"], [{"path": "src/use<TAGS:5>.py", "reason": "hidden-name"}])
+
     def test_tree_hidden_hits_listed_for_changed_files_only(self):
-        # 6xl.46: referenced-only copies are stripped and escaped, but their hits are not change defects
+        # 6xl.46: difference-only copies are stripped and escaped, but their hits are not change defects
         rlo = chr(0x202E)
         body = "".join("    x = %d\n" % i for i in range(12))
         self.base({"README.md": "readme\n<!-- HT_REF_README -->\n", "src/cfg.py": "def parse_cfg(s):\n" + body,
                    "src/use.py": "parse_cfg('x')  # %s\n" % rlo})
         self.branch({"src/cfg.py": "def parse_cfg(s):\n" + body.replace("x = 11", "x = 99") + "# %s\n" % rlo,
                      "notes.md": "n\n<!-- HT_CHANGED -->\n"})
-        _, led = self.build()
+        _, led = self.build(difference=["README.md", "notes.md", "src/cfg.py", "src/use.py"])
         self.assertIn("src/use.py", files_of(led, "callers"))
         self.assertIn("README.md", files_of(led, "docs"))
         self.assertNotIn("HT_REF_README", self.read("tree/README.md"))
@@ -775,13 +758,13 @@ class Tree(Base):
             list(ledger._blob_stream(bare, ["0" * 40]))
 
     def test_tree_skips_huge_referenced_file(self):
-        # 6xl.75: a referenced-only file over the cap is skipped with a reason, never read whole
+        # 6xl.75: a difference file over the cap is skipped with a reason, never read whole
         line = "x" * 99 + "\n"
         self.base({"README.md": line * (target.MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
         tracemalloc.start()
         try:
-            _, led = self.build()
+            _, led = self.build(difference=["README.md"])
             peak = tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
@@ -810,7 +793,7 @@ class Tree(Base):
         led = self.load()
         self.assertEqual(led["hidden_text"], [{"file": "a.md", "line": 2, "kind": "comment", "length": 18, "provenance": "added"}])
         self.assertNotIn("HIDDENCMT", json.dumps(led))
-        self.assertNotIn("HIDDENCMT", self.read("tree/a.md"))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "a.md")))  # gh#52: scanned, not copied
 
     def test_tree_hidden_text_carries_target_entries(self):
         self.base({"a.txt": "x\n"})
@@ -842,7 +825,7 @@ class Tree(Base):
         self.branch({"src/a.py": "x = 2\n", "README.md": b"x\x00\n<!-- HT_EVIL_BIN_README -->\n"})
         head = self.g("rev-parse", "HEAD")
         mb = self.g("merge-base", "main", head)
-        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"])
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/a.py"], difference=["README.md", "src/a.py"])
         ledger.build(self.run_dir)
         led = self.load()
         self.assertIn("README.md", files_of(led, "docs"))
@@ -858,7 +841,7 @@ class Tree(Base):
         blob = b"# \xff " + chr(0x202E).encode("utf-8") + chr(0xE0041).encode("utf-8") + b"\n"
         self.base({"a.txt": "x\n"})
         self.branch({"src/d.py": blob})
-        _, led = self.build()
+        _, led = self.build(difference=["src/d.py"])
         with open(os.path.join(self.run_dir, "tree", "src", "d.py"), "rb") as fh:
             raw = fh.read()
         self.assertIn(b"<U+202E>", raw)
@@ -888,11 +871,12 @@ class Tree(Base):
         os.symlink(secret, os.path.join(self.repo, "leak"))
         ledger.build(self.run_dir)
         led = self.load()
-        self.assertEqual(self.read("tree/a.txt"), "x\nbad <U+202E>\n")
+        self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "a.txt")))  # gh#52: no difference, no copy
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "leak")))
         self.assertEqual((led["tree"]["source"], led["tree"]["skipped"]), ("working copy", [{"path": "leak", "reason": "symlink"}]))
         self.assertIn({"file": "a.txt", "line": 2, "codepoints": ["U+202E"]}, led["hidden_chars"])
         self.assertIn(json.dumps(os.path.join(self.run_dir, "tree")), self.read("inputs/defects.md"))
+        self.assertIn("Never read a path listed under Skipped, in the repository or anywhere else", self.read("inputs/defects.md"))  # vzhs
         with open(os.path.join(self.repo, "a.txt"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "x\nbad %s\n" % rlo)
 
@@ -1008,6 +992,13 @@ class Spec(Base):
         self.assertIn("abs.md", [s["ref"] for s in led["spec"]["sources"]])
         self.assertIn("ABS-TEXT", self.read("inputs/spec.md"))
 
+    def test_a_branch_name_ending_in_a_next_line_char_is_not_its_stripped_name(self):  # review-code-1hmb
+        self.base({"README.md": "r\n", "docs/widgetry.md": "WIDGET-TEXT\n"})
+        self.g("checkout", "-q", "-b", "feat-widgetry\u0085")  # .strip() dropped the NEL and matched docs/widgetry.md
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        _, led = self.build()
+        self.assertEqual(led["spec"]["sources"], [])
+
     def test_repo_target_takes_every_spec_dir_file(self):  # review-code-jwv
         self.base({"README.md": "r\n", "docs/design.md": "DESIGN-TEXT\n", "specs/x.md": "X-TEXT\n", "src/a.py": "a = 1\n"})
         out, led = self.build(kind="repo", included=["README.md", "docs/design.md", "specs/x.md", "src/a.py"])
@@ -1105,7 +1096,7 @@ class Spec(Base):
         return self.build(**kw)
 
     def test_adr_folder_is_an_independent_spec_set(self):  # review-code-2kz
-        out, led = self.adr_build({"docs/adr/0001-db.md": "ADR-ONE\n", "arch/decisions/0002-q.md": "ADR-TWO\n",
+        out, led = self.adr_build({"docs/adr/0001-db.md": "# DB\nADR-ONE\n", "arch/decisions/0002-q.md": "# Queue\nADR-TWO\n",
                                    "docs/adr/img.png": "x", "docs/adr/notes.py": "x = 1\n"})
         self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]],
                          [("adr", "arch/decisions/0002-q.md"), ("adr", "docs/adr/0001-db.md")])
@@ -1113,9 +1104,10 @@ class Spec(Base):
         spec = self.read("inputs/spec.md")
         self.assertIn("## Decision records", spec)
         found, _ = blocks(spec)
-        self.assertEqual(sorted(c for _, c in found if "ADR-" in c), ["ADR-ONE", "ADR-TWO"])
+        self.assertEqual(sorted(c for _, c in found if c in ("DB", "Queue")), ["DB", "Queue"])  # the title, never the body
+        self.assertNotIn("ADR-ONE", spec)
 
-    def test_adrs_beside_a_ticket_are_both_spec_and_the_ticket_is_not_capped_out(self):
+    def test_adrs_beside_a_ticket_are_both_spec_and_no_record_is_left_out(self):
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
@@ -1123,48 +1115,102 @@ class Spec(Base):
         with mock.patch.object(ledger, "_bd_show", return_value="TICKET-TEXT"):
             out, led = self.build(commits=[sha])
         kinds = [s["kind"] for s in led["spec"]["sources"]]
-        self.assertEqual((kinds.count("adr"), kinds.count("ticket")), (ledger.CAP_ADR, 1))
+        self.assertEqual((kinds.count("adr"), kinds.count("ticket")), (40, 1))
         self.assertNotIn("adr_only", out)
         self.assertIn("TICKET-TEXT", self.read("inputs/spec.md"))
 
-    def test_adr_cut_keeps_relevant_records_and_reports_the_rest(self):  # issue 24
+    def index_rows(self):
+        """{path: reasons} read from the Decision records headings of inputs/spec.md, in order."""
+        sec = self.read("inputs/spec.md").split("## Decision records\n")[1]
+        return dict(re.findall(r'^### "([^"]+)" \(\d+ bytes\): (.*)$', sec, re.M))
+
+    def test_adr_index_says_why_each_record_matched(self):  # issue 24, now an index row
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         files["docs/adr/0035-d.md"] = "ADR-35 governs src/a.py\n"
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
         sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a, per ADR-37")
         out, led = self.build(commits=[sha])
-        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
-        self.assertEqual(len(refs), ledger.CAP_ADR)
-        self.assertIn("docs/adr/0037-d.md", refs)  # named in the commit message
-        self.assertIn("docs/adr/0035-d.md", refs)  # names a changed file
-        self.assertEqual((led["capped"]["adr"], out["adr_omitted"]), (10, 10))
-        self.assertIn("10 decision records omitted", self.read("inputs/spec.md"))
+        rows = self.index_rows()
+        self.assertEqual(len(rows), 40)
+        self.assertIn("number named", rows["docs/adr/0037-d.md"])
+        self.assertIn("names a changed file or issue", rows["docs/adr/0035-d.md"])
+        self.assertEqual(rows["docs/adr/0001-d.md"], "record directory")
+        self.assertEqual(list(rows)[:2], ["docs/adr/0035-d.md", "docs/adr/0037-d.md"])  # matches first, then path order
+        self.assertNotIn("adr_omitted", out)
+        self.assertNotIn("adr", led["capped"])
 
-    def test_adr_cut_ranks_a_record_that_names_an_issue_the_change_names(self):  # issue 24
+    def test_adr_index_matches_an_issue_the_change_names_exactly(self):  # issue 24
         files = {"docs/adr/%04d-d.md" % i: "ADR-%d\n" % i for i in range(40)}
         files["docs/adr/0039-d.md"] = "Decided in #77 and #7770.\n"
         files["docs/adr/0038-d.md"] = "Mentions #770 only.\n"
         self.base(dict({"README.md": "r\n"}, **files))
         self.g("checkout", "-q", "-b", "wip")
         sha = gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "feat: a (fixes #77)")
-        out, led = self.build(commits=[sha])
-        refs = {s["ref"] for s in led["spec"]["sources"] if s["kind"] == "adr"}
-        self.assertIn("docs/adr/0039-d.md", refs)
-        self.assertNotIn("docs/adr/0038-d.md", refs)  # #770 is not #77
+        self.build(commits=[sha])
+        rows = self.index_rows()
+        self.assertIn("names a changed file or issue", rows["docs/adr/0039-d.md"])
+        self.assertEqual(rows["docs/adr/0038-d.md"], "record directory")  # #770 is not #77
 
-    def test_adr_set_has_a_byte_budget(self):
-        big = "x" * 150000
-        _, led = self.adr_build({"docs/adr/0001-a.md": big, "docs/adr/0002-b.md": big, "docs/adr/0003-c.md": big,
-                                 "docs/adr/0004-d.md": big})
-        self.assertEqual(len(led["spec"]["sources"]), 2)
+    def test_adr_set_has_no_byte_cap(self):
+        big = "# T\n" + "x" * 150000
+        _, led = self.adr_build({"docs/adr/000%d-a.md" % i: big for i in range(1, 5)})
+        self.assertEqual(len(led["spec"]["sources"]), 4)
+        self.assertEqual(len(self.index_rows()), 4)
 
-    def test_adr_already_matched_by_name_is_not_listed_twice(self):
-        self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "ADR-P\n"})
+    def test_a_record_that_is_not_text_stays_listed(self):
+        self.adr_build({"docs/adr/0001-a.md": b"\0\1binary", "docs/adr/0002-b.md": "# B\n"})
+        self.assertEqual(sorted(self.index_rows()), ["docs/adr/0001-a.md", "docs/adr/0002-b.md"])
+
+    def test_a_record_over_max_file_is_listed_with_its_size_and_no_title(self):  # review-code-dd1m
+        big = "# Big title\n" + "x" * 60
+        with mock.patch.object(target, "MAX_FILE", 40):
+            _, led = self.adr_build({"docs/adr/0001-big.md": big, "docs/adr/0002-b.md": "# B\n"})
+        self.assertEqual([s["ref"] for s in led["spec"]["sources"]], ["docs/adr/0001-big.md", "docs/adr/0002-b.md"])
+        spec = self.read("inputs/spec.md")
+        found, _ = blocks(spec)
+        self.assertIn("(not text: a NUL byte or over 40 bytes)", [c for _, c in found])
+        self.assertIn("B", [c for _, c in found])
+        self.assertIn("(%07d bytes)" % len(big), spec)
+        self.assertNotIn("Big title", spec)
+
+    def test_the_index_says_none_when_no_record_is_listed(self):  # review-code-dd1m: found unpinned by mutation
+        self.adr_build({"docs/notes.txt": "n\n"})
+        self.assertIn("## Decision records\nnone\n", self.read("inputs/spec.md"))
+
+    def test_adr_name_matching_the_branch_is_an_index_row_not_a_pasted_file(self):
+        self.base({"README.md": "r\n", "docs/adr/0001-parser.md": "# Parser\nADR-P\n"})
         self.g("checkout", "-q", "-b", "feat-parser")
         gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
         _, led = self.build()
-        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("file", "docs/adr/0001-parser.md")])
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("adr", "docs/adr/0001-parser.md")])
+        self.assertEqual(self.index_rows(), {"docs/adr/0001-parser.md": "branch name, record directory"})
+        self.assertNotIn("ADR-P", self.read("inputs/spec.md"))
+
+    @staticmethod
+    def three(body):
+        return {"docs/adr/0001-a.md": "# First title\n" + body("A"), "docs/adr/0002-b.md": "# Second title\n" + body("B"),
+                "arch/decisions/0003-c.md": "# Third title\n" + body("C")}
+
+    def test_spec_md_holds_each_adr_row_and_none_of_the_bodies(self):  # gh#57
+        self.adr_build(self.three(lambda k: "CANARY-BODY-%s must hold\nsecond CANARY-LINE-%s\n" % (k, k)))
+        spec = self.read("inputs/spec.md")
+        self.assertEqual(sorted(self.index_rows()), ["arch/decisions/0003-c.md", "docs/adr/0001-a.md", "docs/adr/0002-b.md"])
+        for t in ("First title", "Second title", "Third title"):
+            self.assertIn(t, spec)
+        self.assertIn("(%07d bytes)" % len("# First title\nCANARY-BODY-A must hold\nsecond CANARY-LINE-A\n"), spec)
+        self.assertNotIn("CANARY", spec)
+
+    def test_spec_md_size_does_not_grow_with_the_adr_bodies(self):  # gh#57
+        self.adr_build(self.three(lambda k: ("word %s\n" % k) * 100))
+        small = len(self.read("inputs/spec.md").encode())
+        self.g("checkout", "-q", "main")  # the same repository again, the records ten times larger
+        self.g("branch", "-q", "-D", "wip")
+        gitfix.commit(self.repo, self.three(lambda k: ("word %s\n" % k) * 1000), "base2")
+        self.g("checkout", "-q", "-b", "wip")
+        gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
+        self.build()
+        self.assertEqual(len(self.read("inputs/spec.md").encode()), small)
 
     def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
         _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])
@@ -1531,6 +1577,74 @@ class Trust(Base):
             with self.assertRaises(target.Refuse) as cm:
                 ledger.trust_gate(self.run_dir, ["make"])
         self.assertEqual(cm.exception.reason, "bad-ledger")
+
+
+class GitProcessCount(Base):
+    """review-code-dz5l: symbol refs and commit messages cost one git process each, whatever their number."""
+
+    def scenario(self, tag, nsym, ncommits):
+        """Build a ledger in its own repo; return (ledger, number of git processes the build started)."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo-" + tag))
+        self.run_dir = os.path.join(self.tmp, "run-" + tag)
+        trace = os.path.join(self.tmp, "trace-%s.json" % tag)
+        self.base({"src/use.py": "".join("v%d = fn_%02d()\n" % (i, i) for i in range(nsym))})
+        self.g("checkout", "-q", "-b", "feat")
+        gitfix.commit(self.repo, {"src/m.py": "".join("def fn_%02d():\n    return 1\n" % i for i in range(nsym))}, "c0")
+        for i in range(1, ncommits):
+            self.g("commit", "-q", "--allow-empty", "-m", "c%d" % i)
+        commits = self.g("rev-list", "--reverse", "main..HEAD").split()
+        with mock.patch.dict(os.environ, {"GIT_TRACE2_EVENT": trace}):
+            _, led = self.build(commits=commits, included=["src/m.py"])
+        with open(trace, encoding="utf-8") as fh:
+            starts = sum(json.loads(ln)["event"] == "start" for ln in fh)
+        return led, starts
+
+    def test_process_count_is_the_same_for_one_symbol_and_forty(self):
+        small, n_small = self.scenario("s1", 1, 1)
+        large, n_large = self.scenario("s40", 40, 1)
+        self.assertEqual((len(small["symbols"]), len(large["symbols"])), (1, 40))
+        self.assertEqual((sum(s["refs"] for s in large["symbols"]), len(large["callers"])), (40, 40))
+        self.assertEqual(n_small, n_large)
+
+    def test_process_count_is_the_same_for_one_commit_and_thirty(self):
+        _, n_small = self.scenario("c1", 1, 1)
+        _, n_large = self.scenario("c30", 1, 30)
+        self.assertEqual(n_small, n_large)
+
+    def test_symbol_refs_match_one_grep_per_symbol_by_whole_word_only(self):
+        self.base({"src/use.py": "from m import parse_cfg, parse_cfg_all\nparse_cfg()\nxparse_cfg()\nparse_cfg_all()\n"
+                                 "# parse_cfg parse_cfg_all\n",
+                   "src/other.py": "def parse_cfg():\n    pass\n"})
+        self.branch({"src/m.py": "def parse_cfg():\n    pass\n\n\ndef parse_cfg_all():\n    pass\n"})
+        _, led = self.build(included=["src/m.py"])
+        rev = led["target"]["head_sha"]
+        want_refs, want_callers = {}, []
+        for s in led["symbols"]:
+            every = ledger._grep(self.repo, rev, [s["name"]])
+            want_refs[s["name"]] = sum(f != s["file"] and ledger.defined_name(t) != s["name"] for f, _, t in every)
+            want_callers += [(f, ln, s["name"]) for f, ln, _ in every if f != "src/m.py"]
+        self.assertEqual({s["name"] for s in led["symbols"]}, {"parse_cfg", "parse_cfg_all"})
+        self.assertEqual({s["name"]: s["refs"] for s in led["symbols"]}, want_refs)
+        self.assertEqual(sorted((c["file"], c["line"], c["symbol"]) for c in led["callers"]), sorted(want_callers))
+        self.assertIn(("src/use.py", 1, "parse_cfg"), want_callers)
+        self.assertNotIn(("src/use.py", 3, "parse_cfg"), want_callers)  # xparse_cfg is another word
+
+    def test_commit_messages_equal_one_log_per_commit_in_the_given_order(self):
+        self.base({"a.txt": "0\n"})
+        shas = []
+        for i, (msg, date) in enumerate([("newest by date\n\nbody\n\n", "2026-03-01T00:00:00+0000"), ("", "2026-01-01T00:00:00+0000"),
+                                         ("no trailing newline", "2026-02-01T00:00:00+0000"), ("héllo\r\nwin", "2026-01-15T00:00:00+0000")]):
+            with open(os.path.join(self.repo, "a.txt"), "w", encoding="utf-8") as fh:
+                fh.write("%d\n" % (i + 1))
+            self.g("add", "a.txt")
+            gitfix.run(["git", "commit", "-q", "--allow-empty-message", "-m", msg], self.repo,
+                       dict(gitfix.env(), GIT_COMMITTER_DATE=date, GIT_AUTHOR_DATE=date))
+            shas.append(self.g("rev-parse", "HEAD"))
+        want = [ledger.sanitize.sanitize_prose(target.git_bytes(
+            ["log", "-1", "--no-show-signature", "--encoding=UTF-8", "--format=%B", c], self.repo).decode("utf-8", "surrogateescape"))
+            for c in shas]
+        self.assertEqual(ledger._commit_messages(self.repo, shas), want)
+        self.assertEqual(ledger._commit_messages(self.repo, []), [])
 
 
 if __name__ == "__main__":

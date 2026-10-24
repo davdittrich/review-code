@@ -61,6 +61,8 @@ def _execute(cmd: List[str], cwd: str, env: dict, fid: Optional[str], timeout: O
     except BaseException:
         _kill(p)
         raise
+    finally:
+        target._NO_FILTERS.clear()  # the command may have defined a filter: the next git call reads the config afresh
     text = out.decode("utf-8", "replace")
     hit = p.returncode == 0 if fid is None else p.returncode != 0 and SENTINEL + fid in text  # fid None: base mode, exit 0 is the claim
     outcome = "reproduced" if hit else "not-reproduced"
@@ -88,7 +90,7 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
     wth = os.path.join(run_dir, "wt-head-" + fid)  # base mode only: where the head's copy of the test is read
     try:
         target.git_bytes(["worktree", "add", "--detach", wth if base else wt, head], repo)
-        if kind in ledger.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
+        if kind in target.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
             args = ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color"]
             diff = target.git_bytes(args + (["--cached"] if kind == "staged" else []) + ["HEAD"], repo)
             if diff:

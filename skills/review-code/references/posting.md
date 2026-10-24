@@ -75,7 +75,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 
 ## Refusals
 
-`build` and `submit` print one JSON line. On a refusal `status` is `refuse` and `reason` is one of these (`detail` carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text).
+`build` and `submit` print one JSON line; `plan.py`, `report.py ingest` and `report.py verdicts` raise `no-pin`, `pin-pruned` and `bad-ref` too, with the same meaning. `plan.py`, a `report.py ingest --lane spec` and a `report.py verdicts` call on spec findings also raise `no-ledger` and `bad-ledger`; the two `report.py` calls also raise `record-unreadable`. On a refusal `status` is `refuse` and `reason` is one of these, with a `detail`: from `build` and `submit` it carries at most `HTTP nnn`, `timeout`, a handle or a count, never forge text; from `report.py` it is the cause or retry hint the script words (no reply, record or forge text), as `plan.py` prints its own.
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
@@ -83,6 +83,13 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `python-too-old` | Python below 3.9 | Use Python 3.9 or later |
 | `internal-error` | An unexpected file or data error (`detail` is the exception type) | Re-run the review; report it if it repeats |
 | `no-target` | `target.json` is missing or unreadable | Re-run the review from step 1 |
+| `no-pin` | `target.json` has no `pinned_tree`: the run predates the pin | Review again |
+| `pin-pruned` | The pinned tree is gone (a `git gc` pruned the synthetic tree of an in-place pin) | Review again |
+| `bad-ref` | A git command that reads the pinned tree failed (`ls-tree` or `cat-file`), or the tree lists a missing blob | Re-run; report it if it repeats |
+| `no-ledger` | The run has no `ledger.json` (`plan.py`, spec ingest and spec verdicts) | Run `ledger.py build` for the run, or review again |
+| `bad-ledger` | `ledger.json` cannot be read or has the wrong shape, or `inputs/spec.md` cannot be read; the spec copy guard refuses rather than pass text it cannot check | Run `ledger.py build` again, or review again |
+| `record-unreadable` | A decision record the ledger lists is over the 4,000,000-byte file cap (`MAX_FILE`) or not text (a NUL byte), so the spec copy guard cannot read it whole; a lane could still read it in parts, so the guard refuses rather than count it as no words (spec ingest and spec verdicts) | Shrink the record, save it as plain text (UTF-8) or move it out of the record directory, then review again |
+| `reply-too-large` | The reply on stdin, or the capture `--agent` names, is over 16,777,216 bytes (`REPLY_MAX`), far above any one lane reply; `report.py` reads no more than that, since the spec copy guard's memory follows the reply (`ingest` and `verdicts`) | Re-run the lane or verify call and pass its new reply |
 | `not-a-forge-target` | The target is not a PR or MR | Run without `--comment` |
 | `bad-target-url` | The URL, host, repository, number or head in `target.json` is malformed | Re-run the review |
 | `gh-missing` | `gh` is not installed | Install `gh` |
@@ -105,6 +112,7 @@ Bare URLs and commit SHAs still autolink (links, not pings).
 | `pending-drafts-exist` | You already have draft notes on this MR (the publish call would send them too; never deleted) | Publish or delete them, then re-run |
 | `too-large` | A body is over 60000 characters | Review a smaller change |
 | `preview-too-large` | The preview is over 25000 characters. Claude Code saves Bash output over 30000 characters (its default `BASH_MAX_OUTPUT_LENGTH`) to a file, so you would confirm text you never saw | Review a smaller change; nothing was written |
+| `non-utf8-name` | `ledger.py build` (the run directory path), `report.py ingest` (a path, title or trigger in a lane reply; the whole reply is refused, not the one line), `post.py build` (a finding's path) or `post.py submit` (a payload comment path) holds a byte that is not valid UTF-8; no file is written and no forge call is made | Review a checkout whose names are valid UTF-8 |
 | `unsafe-text` | A body holds a CR, or a line would run as a command or hide as markup | Report it; nothing was posted |
 | `secret-found` | A secret rule matches in an outgoing body: at submit time, or at build time in text the per-field redaction did not cover (a path) | At submit: re-run build, which redacts. At build: report it; nothing was posted |
 | `scan-failed` | The secret scanner raised | Report it; nothing was posted |

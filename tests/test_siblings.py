@@ -56,7 +56,7 @@ class Gaps(Sib):
         self.assertTrue(how.endswith(" | missing: skills/x/SKILL.md"), how)
         self.assertIn(json.dumps('    {"source": "./skills/a"},'), how)
         self.assertEqual(out["counts"]["siblings"], 1)
-        self.assertTrue(os.path.exists(os.path.join(self.run_dir, "tree", MKT)))  # the lane reads only tree/
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", MKT)))  # gh#52: read from the repository
         self.assertIn("- siblings: 1", self.read("inputs/defects.md"))
         sec = self.standards().split("## Siblings\n", 1)[1]
         self.assertIn(OPENER, sec)
@@ -207,7 +207,7 @@ class CoChange(Sib):
         self.assertEqual([(e["file"], e["kind"], e["how"]) for e in led["siblings"]],
                          [("o.py", "cochange", "c.py usually changes with o.py (3 of 5 commits)")])
         self.assertIn(OPENER + "\n" + "c.py usually changes with o.py (3 of 5 commits)", self.standards())
-        self.assertTrue(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))  # gh#52: read from the repository
 
     def test_a_commit_touching_more_than_thirty_files_is_skipped(self):
         big = {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(30)} for i in range(3, 6)}  # c + 30 fillers = 31 files
@@ -260,13 +260,13 @@ class CoChange(Sib):
 
     def test_git_failure_is_never_fatal(self):
         history(self.repo, 3, 0)
-        real = target.git
+        real = target.git_bytes
 
         def boom(args, cwd, *a, **kw):
-            if args and args[0] == "log":
-                return ""
+            if args and args[0] == "log" and "--name-only" in args:  # the siblings log only; #56 batches commit messages through another log call
+                return b""
             return real(args, cwd, *a, **kw)
-        with mock.patch.object(target, "git", boom):
+        with mock.patch.object(target, "git_bytes", boom):
             _, led = self.edit()
         self.assertEqual(led["siblings"], [])
 
@@ -291,7 +291,8 @@ class Ingest(tp.Fixture):
         self.assertEqual([d["disposition"] for d in out["dispositions"]], ["accepted", "accepted"], out)
 
     def hint(self):
-        led = json.load(open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as f:
+            led = json.load(f)
         return next(e["how"] for e in led["siblings"] if e["kind"] == "gap")
 
     def test_the_prompt_text_cannot_turn_a_cochange_line_into_a_finding(self):
@@ -314,7 +315,8 @@ class EndToEnd(tn.NitBase):
         cls.feat_files = {"skills/x/SKILL.md": "# x\n"}
 
     def test_a_confirmed_registry_gap_is_in_the_json_report_as_introduced(self):
-        led = json.load(open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(self.run_dir, "ledger.json"), encoding="utf-8") as f:
+            led = json.load(f)
         hint = next(e["how"] for e in led["siblings"] if e["kind"] == "gap")
         out = self.lane(gap_finding(hint), {"inspected": ["skills/x/SKILL.md", MKT]})
         self.assertEqual(len(out["ids"]), 1, out)

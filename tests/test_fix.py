@@ -251,6 +251,8 @@ class PlanGates(Base):
 
     def test_head_held_by_another_worktree(self):
         self.git("checkout", "-q", "main")
+        self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         wt = os.path.join(self.tmp, "wt")
         self.git("worktree", "add", "-q", wt, "feat")
         run, stale = self.pin("main...feat"), self.pin("main...feat")
@@ -278,6 +280,8 @@ class PlanGates(Base):
         self.assertNotIn("checkout: ", out)
         self.assertIn("git diff before committing", out)
         self.git("checkout", "-q", "main")
+        self.git("remote", "add", "origin", self.repo)  # gh#49: its default-branch tip is this main, so it is synced
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")  # the remote behind it
         wt = os.path.join(self.tmp, "wt")
         self.git("worktree", "add", "-q", wt, "feat")
         run = self.pin("main...feat")
@@ -1102,6 +1106,25 @@ class FinishScope(Scope):
 
 
 class Tamper(Scope):
+    def started_once(self):
+        """started() once per test; the returned `reset()` puts the run dir, src/calc.py and the sealed git files back
+        as they were, so each subtest begins from the same state without a subprocess set-up of its own."""
+        run, fid, bg = self.started()
+        saved = run + ".saved"
+        shutil.copytree(run, saved, symlinks=True)
+        gitfiles = {p: slurp(p) for p in self.state(run)["git_files"] + [os.path.join(self.repo, ".git", "info", "exclude")]
+                    if os.path.exists(p)}
+
+        def reset():
+            shutil.rmtree(run)
+            shutil.copytree(saved, run, symlinks=True)
+            for p, data in gitfiles.items():
+                with open(p, "wb") as fh:
+                    fh.write(data)
+            self.git("checkout", "--", "src/calc.py")
+            self.assertEqual(fix._seal(run, fid), bg["seal"])  # the next subtest starts untampered, as a fresh set-up would
+        return run, fid, bg, reset
+
     def tampered(self, run, bg, fid):
         calls = []
         orig = target._run
@@ -1122,9 +1145,9 @@ class Tamper(Scope):
                    "ledger.json": lambda run, fid: os.path.join(run, "ledger.json"),
                    "git config": lambda run, fid: self.state(run)["git_files"][0],
                    "git exclude": lambda run, fid: os.path.join(self.repo, ".git", "info", "exclude")}
+        run, fid, bg, reset = self.started_once()
         for name, where in targets.items():
             with self.subTest(file=name):
-                run, fid, bg = self.started()
                 self.edit("src/calc.py", QUOTE, "return a + b")
                 edited = slurp(self.p("src/calc.py"))
                 path = where(run, fid)
@@ -1133,7 +1156,7 @@ class Tamper(Scope):
                     fh.write(b" ")
                 self.tampered(run, bg, fid)
                 self.assertEqual(slurp(self.p("src/calc.py")), edited)
-                self.git("checkout", "--", "src/calc.py")
+                reset()
 
     def test_target_repointed_to_a_copy(self):
         run, fid, bg = self.started()
@@ -1178,9 +1201,9 @@ class Tamper(Scope):
         self.assertEqual(self.begin(run)[2], {"status": "refuse", "reason": "halted"})
 
     def test_unparseable_state_is_tampered(self):
+        run, fid, bg, reset = self.started_once()
         for name, content in (("not json", "{"), ("not an object", "[]"), ("missing keys", "{}")):
             with self.subTest(state=name):
-                run, fid, bg = self.started()
                 self.edit("src/calc.py", QUOTE, "return a + b")
                 edited = slurp(self.p("src/calc.py"))
                 with open(os.path.join(run, "fix", "state.json"), "w", encoding="utf-8") as fh:
@@ -1200,21 +1223,29 @@ class Tamper(Scope):
                         self.assertEqual(cm.exception.reason, "tampered")
                 self.assertEqual(calls, [])
                 self.assertEqual(slurp(self.p("src/calc.py")), edited)
-                self.git("checkout", "--", "src/calc.py")
+                reset()
 
     def test_wrong_typed_state_is_tampered(self):
         def with_(**kw):
             return lambda st: json.dumps(dict(st, **kw))
-        cases = {"done entry not an object": with_(done={"F-1": "x"}),
-                 "in_flight without id": with_(in_flight={"x": 1}),
+        cases = {"done not an object": with_(done=[]),
+                 "done entry not an object": with_(done={"F-1": "x"}),
+                 "in_flight not an object": with_(in_flight="F-1"),
+                 "in_flight without id": with_(in_flight={"path": "a.py", "mode": 420}),
                  "in_flight path not a string": with_(in_flight={"id": "F-1", "path": 1, "mode": 420}),
                  "in_flight mode missing": with_(in_flight={"id": "F-1", "path": "a.py"}),
                  "accepted not an object": with_(accepted=[]),
                  "untracked not a list": with_(untracked="x"),
+                 "side_effects not a list": with_(side_effects="src/other.py"),
+                 "git_files not a list": with_(git_files="x"),
+                 "refs not a string": with_(refs=0),
+                 "digest not a string": with_(digest=[]),
+                 "halted not a string or null": with_(halted=5),
+                 "version not an int": with_(version="1"),
                  "deeply nested": lambda st: "[" * 200000}
+        run, fid, bg, reset = self.started_once()
         for name, make in cases.items():
             with self.subTest(state=name):
-                run, fid, bg = self.started()
                 self.edit("src/calc.py", QUOTE, "return a + b")
                 edited = slurp(self.p("src/calc.py"))
                 path = os.path.join(run, "fix", "state.json")
@@ -1229,7 +1260,7 @@ class Tamper(Scope):
                         self.assertEqual((rc, j["status"], j.get("reason")), (1, "refuse", "tampered"), (args[0], j))
                     self.assertEqual(slurp(self.p("src/calc.py")), edited)
                 finally:
-                    self.git("checkout", "--", "src/calc.py")
+                    reset()
 
     def test_in_flight_cleared_is_tampered(self):
         run, fid, bg = self.started()

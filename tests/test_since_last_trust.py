@@ -49,7 +49,8 @@ class SinceLastTrust(tt.PRWorld):
         with gitfix.isolated(self.tmp):
             ledger.build(out["run"])
         self.assertFalse(os.path.exists(os.path.join(out["run"], "conventions", "REVIEW.md")))
-        led = tt.json.load(open(os.path.join(out["run"], "ledger.json"), encoding="utf-8"))
+        with open(os.path.join(out["run"], "ledger.json"), encoding="utf-8") as f:
+            led = tt.json.load(f)
         self.assertEqual([e for e in led["conventions"] if e["file"] == "REVIEW.md"], [])
         self.assertIn(("REVIEW.md", "head-only"), [(e["file"], e["reason"]) for e in led["ignored"]])
         self.assertEqual(led["target"]["merge_base"], rec["merge_base"])
@@ -66,6 +67,26 @@ class SinceLastTrust(tt.PRWorld):
         self.assertTrue(out["since_last"].startswith("full review: "), out)
         self.assertIn("merged", out["since_last"])
         self.assertNotEqual(rec["diff_base"], self.last)  # not last..head
+
+    def test_history_reads_the_diffs_old_side_not_the_merge_base(self):
+        src = os.path.join(self.tmp, "src4")
+        gitfix.make_repo(src)
+        gitfix.run(["git", "fetch", "-q", self.bare, "refs/pull/7/head"], src)
+        gitfix.run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], src)
+        cfg = "src/cfg.py"
+        self.last = gitfix.commit(src, {cfg: "# header\ndef load():\n    return 2\n", "src/early.py": "e = 1\n"}, "push A: header")
+        gitfix.run(["git", "push", "-q", "--force", self.bare, "HEAD:refs/pull/7/head"], src)
+        head4 = gitfix.commit(src, {cfg: "# header v2\ndef load():\n    return 2\n", "src/early.py": "e = 2\n"}, "push B")
+        gitfix.run(["git", "push", "-q", "--force", self.bare, "HEAD:refs/pull/7/head"], src)
+        out, rec = self.run_since_last(head4)
+        with gitfix.isolated(self.tmp):
+            ledger.build(out["run"])
+        with open(os.path.join(out["run"], "ledger.json"), encoding="utf-8") as f:
+            led = tt.json.load(f)
+        self.assertNotIn("unread", led["capped"].get("history", {}))  # early.py is absent at the merge base
+        with open(os.path.join(out["run"], "history", cfg + ".txt"), encoding="utf-8") as f:
+            self.assertRegex(f.read(), r"L1 [0-9a-f]{8} \S+ \S+: push A: header")  # old line 1 is the header push A made, not base's line 1
+        self.assertTrue(os.path.exists(os.path.join(out["run"], "history", "src/early.py.txt")))
 
 
 if __name__ == "__main__":

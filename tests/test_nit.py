@@ -149,17 +149,20 @@ class NormGuards(NitBase):
         out = self.lane(self.nit(norm_for="a", norm_against="b"))
         self.assertEqual([r["check"] for r in out["rejected"]], ["norm-malformed"])
 
-    def test_a_symlink_in_the_tree_is_never_counted(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            outside = os.path.join(d, "outside.py")
-            with open(outside, "w") as fh:
-                fh.write("".join("x%d = []\n" % i for i in range(30)))
-            tree = os.path.join(d, "tree")
-            os.mkdir(tree)
-            os.symlink(outside, os.path.join(tree, "l.py"))
-            got, why = nit.norm({"norm_for": "= []", "norm_against": "= list()", "norm_glob": "*.py"}, tree, "y = list()")
-        self.assertEqual((got, why), (None, "norm-sample-small"))
+
+class NormLink(SmallSample):
+    """A committed link is never counted: its blob is a path, and the file it names may lie outside the repository."""
+
+    def setUp(self):
+        __import__("gitfix").FeatureRepo.setUp(self)
+        outside = os.path.join(self.tmp, "outside.py")
+        with open(outside, "w") as fh:
+            fh.write("".join("x%d = []\n" % i for i in range(30)))
+        os.symlink(outside, os.path.join(self.repo, "l.py"))
+        self.git("add", "l.py")
+        self.git("commit", "-q", "-m", "link")
+        self.run_dir = self.pin(self.pin_args)
+        write_plan(self.run_dir, nit=True)
 
 
 class Tie(NitBase):
@@ -167,7 +170,8 @@ class Tie(NitBase):
 
     def test_a_refused_norm_nit_loses_nothing(self):
         self.lane(self.nit())
-        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        with open(os.path.join(self.run_dir, "counters.json")) as f:
+            c = json.load(f)
         self.assertEqual(c["lost"].get("standards", 0), 0)
 
     def test_a_tie_is_no_majority(self):
@@ -200,7 +204,8 @@ class LeanNitOnly(NitBase):
         self.assertNotIn("nit-only", nit.REFUSED)
         out = self.lane(self.rule_nit(severity="required", category="convention"))
         self.assertEqual([r["check"] for r in out["rejected"]], ["nit-only"])
-        c = json.load(open(os.path.join(self.run_dir, "counters.json")))
+        with open(os.path.join(self.run_dir, "counters.json")) as f:
+            c = json.load(f)
         self.assertEqual(c["lost"].get("standards"), 1)
         rej = report._rejected(self.run_dir)
         self.assertEqual(rej[0].get("standards"), 1)
@@ -320,6 +325,29 @@ class NormGlob(NitBase):
         self.assertEqual([r["check"] for r in self.check("*.rs")["rejected"]], ["norm-sample-small"])
 
 
+class NormSample(NitBase):
+    """review-code-givt: since #50 the norm sample is every file of the pinned tree norm_glob matches, counted as the raw blob."""
+    DOM, DEV = 12, 3  # 15 lines in src/calc.py: below NORM_MIN alone
+    base_files = dict(NitBase.base_files, **{"lib/old.py": "".join("o%d = []\n" % i for i in range(12)),
+                                             "docs/n.md": "".join("<!-- c%d = [] -->\n" % i for i in range(10))})
+
+    def test_an_unchanged_tracked_file_counts_though_tree_does_not_copy_it(self):
+        out = self.lane(self.nit())
+        self.assertEqual(out["rejected"], [])
+        self.confirm(out, [self.cite()])
+        self.assertEqual(self.doc()["findings"][0]["norm"], {"for": 24, "against": 3, "total": 27})
+
+    def test_a_checkout_edit_after_the_pin_does_not_change_the_sample(self):
+        os.remove(os.path.join(self.repo, "lib", "old.py"))  # the pinned tree still holds its 12 lines
+        self.assertEqual(self.lane(self.nit())["rejected"], [])
+
+    def test_the_count_runs_on_the_raw_blob_hidden_prose_included(self):
+        out = self.lane(self.nit(norm_glob="*"))
+        self.assertEqual(out["rejected"], [])
+        self.confirm(out, [self.cite()])
+        self.assertEqual(self.doc()["findings"][0]["norm"], {"for": 34, "against": 3, "total": 37})
+
+
 class ManyRules(NitBase):
     RULES = ["Rule number %d applies." % k for k in range(17)]
     DOM, DEV, SPREAD = 60, 17, 3
@@ -392,16 +420,17 @@ class Unit(unittest.TestCase):
     """scripts/nit.py through its own interface, no run directory."""
 
     def tree(self, dominant, deviant, name="a.py"):
-        import tempfile
-        d = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, d)
-        with open(os.path.join(d, name), "w") as fh:
-            fh.write("".join("a%d %s\n" % (i, DOMINANT) for i in range(dominant)) + "".join("b%d %s\n" % (i, DEVIANT) for i in range(deviant)))
-            fh.write("both %s %s\n" % (DOMINANT, DEVIANT))  # a line holding both idioms counts for neither
-        return d
+        """{path: bytes}: the files norm() is offered."""
+        return {name: ("".join("a%d %s\n" % (i, DOMINANT) for i in range(dominant)) + "".join("b%d %s\n" % (i, DEVIANT) for i in range(deviant))
+                       + "both %s %s\n" % (DOMINANT, DEVIANT)).encode()}  # a line holding both idioms counts for neither
 
     def norm(self, tree, **kw):
-        return nit.norm(dict({"norm_for": DOMINANT, "norm_against": DEVIANT, "norm_glob": "*.py"}, **kw), tree, "y " + DEVIANT)
+        read = []
+        got = nit.norm(dict({"norm_for": DOMINANT, "norm_against": DEVIANT, "norm_glob": "*.py"}, **kw),
+                       [(p, len(b), p) for p, b in sorted(tree.items())], lambda ks: read.append(ks) or {k: tree[k] for k in ks},
+                       "y " + DEVIANT)
+        self.assertLessEqual(len(read), 1)  # one read per call, whatever the number of files
+        return got
 
     def test_norm_counts_lines_holding_exactly_one_idiom(self):
         got, why = self.norm(self.tree(22, 3))
@@ -418,9 +447,10 @@ class Unit(unittest.TestCase):
         self.assertEqual(self.norm(d, norm_glob="*")[1], None)
         with mock.patch.object(nit, "NORM_SCAN_BYTES", 50):
             self.assertEqual(self.norm(d, norm_glob="*")[1], "norm-too-large")
-        with open(os.path.join(d, "blob.py"), "wb") as fh:  # a NUL byte in the first 8 KB: skipped, so it neither counts nor spends budget
-            fh.write(b"\0" + (DOMINANT + "\n").encode() * 500)
+        d["blob.py"] = b"\0" + (DOMINANT + "\n").encode() * 500  # a NUL byte in the first 8 KB: read, never counted
         self.assertEqual(self.norm(d)[0]["norm"], {"for": 22, "against": 3, "total": 25})
+        with mock.patch.object(nit, "NORM_SCAN_BYTES", sum(map(len, d.values())) - 1):  # sizes spend the budget before any read
+            self.assertEqual(self.norm(d)[1], "norm-too-large")
 
     def test_every_check_and_norm_reason_has_a_retry_hint(self):
         for why in ("nit-not-enabled", "nit-only", "nit-basis", "norm-malformed", "norm-quote-mismatch", "norm-sample-small", "norm-too-large", "norm-not-majority"):

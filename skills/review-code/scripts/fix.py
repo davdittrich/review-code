@@ -78,7 +78,9 @@ def _typed(st) -> bool:
     if not isinstance(st, dict) or any(k not in st for k in STATE_KEYS):
         return False
     cur = st["in_flight"]
-    return (all(isinstance(st[k], dict) for k in ("done", "accepted"))
+    return (all(isinstance(st[k], str) for k in ("digest", "refs")) and isinstance(st["version"], int)
+            and (st["halted"] is None or isinstance(st["halted"], str))  # baseline writes None or a reason
+            and all(isinstance(st[k], dict) for k in ("done", "accepted"))
             and all(isinstance(v, dict) for v in st["done"].values())
             and all(isinstance(st[k], list) for k in ("untracked", "side_effects", "git_files"))
             and (cur is None or (isinstance(cur, dict) and isinstance(cur.get("id"), str)
@@ -206,11 +208,16 @@ def _changes(repo: str) -> List[Tuple[str, str]]:
     return out
 
 
+def _git_files(repo: str) -> list:
+    """The repository's config, attributes and exclude files, named exactly (a CR or 0xff in the git directory's name)."""
+    return [os.path.join(repo, target._rev_path("--git-path", repo, p)) for p in ("config", "info/attributes", "info/exclude")]
+
+
 def _refs(repo: str) -> str:
     head = target.git(["rev-parse", "HEAD"], repo).strip()
-    listing = target.git(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags", "refs/stash"],
-                         repo)
-    return hashlib.sha256((head + "\n" + listing).encode("utf-8")).hexdigest()
+    listing = target.git_bytes(["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags", "refs/stash"],
+                               repo)  # bytes: two non-UTF-8 ref names must not both read U+FFFD
+    return hashlib.sha256(head.encode() + b"\n" + listing).hexdigest()
 
 
 def _seal(run: str, fid: str) -> str:
@@ -484,8 +491,7 @@ def baseline(run: str, digest: str) -> dict:
         raise target.Refuse("digest-mismatch")
     ledger.trust_gate(run, json.loads(raw.decode("utf-8"))["command"])
     repo = _root(tj)
-    files = [os.path.join(repo, target.git(["rev-parse", "--git-path", p], repo).strip())
-             for p in ("config", "info/attributes", "info/exclude")]
+    files = _git_files(repo)
     st = {"version": 1, "digest": digest, "refs": _refs(repo), "git_files": files, "done": {}, "accepted": {},
           "untracked": [], "in_flight": None, "halted": "baseline-interrupted", "side_effects": []}
     _save(run, st)  # before the run: a second baseline or plan refuses already-run, and a hard kill leaves it halted
