@@ -1489,7 +1489,8 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         elif dropped:  # a confirmed or unverifiable verdict keeps its kind; the reason shows why cites are missing
             down = "cites-dropped-wire-token"
         got[o["id"]] = dict({"verdict": kind, "reason": reason if isinstance(reason, str) else "",
-                             "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}, **({"downgraded": down} if down else {}))
+                             "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]},
+                             **({"downgraded": down} if down else {}), **({"cites_dropped": dropped} if dropped else {}))
         mine.append(o["id"])
         at[o["id"]] = len(disp)
         disp.append(_disp(n, o["id"], "downgraded" if down else "accepted", down or ("repaired" if fix else None)))
@@ -1666,7 +1667,7 @@ def _build(run):
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
+            reason = ("cites-dropped-wire-token; " * bool(v.get("cites_dropped")) + v["reason"]) if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"

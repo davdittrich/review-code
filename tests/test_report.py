@@ -2480,9 +2480,9 @@ class WireTokenScope(Base):
         (i,) = self.ingest(cand, {"inspected": [cand["path"]]})["ids"]
         return i
 
-    def _line(self, i, *cites):
+    def _line(self, i, *cites, verdict="confirmed"):
         c = ",".join('[["path","%s"],["line",%d],["quote","%s"]]' % c for c in cites)
-        return '[["id","%s"],["verdict","confirmed"],["reason","says "ok" here"],["evidence",[%s]]]' % (i, c)
+        return '[["id","%s"],["verdict","%s"],["reason","says "ok" here"],["evidence",[%s]]]' % (i, verdict, c)
 
     def test_a_token_of_a_key_no_verdict_line_carries_leaves_the_cites(self):
         i = self._setup("summary")
@@ -2509,6 +2509,23 @@ class WireTokenScope(Base):
         self.assertEqual(self.verdicts(self._line(i, ("src/clean.py", 1, "x = 1")))["confirmed"], [])
         with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)[i]["cites"], [])
+
+    def _dropped(self, verdict):
+        i = self._setup("evidence", dict(CAND, path="src/clean.py", line=1, quote="x = 1", fix=""))
+        self.verdicts(self._line(i, ("src/calc.py", 5, "return f"), verdict=verdict))
+        (u,) = self.doc()["unverifiable"]
+        with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
+            return u["reason"], json.load(fh)[i]
+
+    def test_a_dropped_cite_is_said_on_an_unverifiable_verdict(self):  # review-code-pzuk
+        reason, v = self._dropped("unverifiable")
+        self.assertTrue(reason.startswith("cites-dropped-wire-token"), reason)
+        self.assertEqual((v["downgraded"], v["cites"]), ("cites-dropped-wire-token", []))
+
+    def test_a_dropped_cite_is_said_on_a_repaired_refuted_verdict_that_stays_repaired(self):
+        reason, v = self._dropped("refuted")
+        self.assertTrue(reason.startswith("cites-dropped-wire-token"), reason)
+        self.assertEqual((v["downgraded"], v["cites"]), ("repaired", []))
 
     def test_a_repaired_candidate_in_a_file_holding_only_a_fix_token_keeps_no_fix(self):
         self._setup("fix")  # candidate-ingest keeps the full token set: "fix" is no verdict key
