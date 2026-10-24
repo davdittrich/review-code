@@ -704,7 +704,7 @@ def report_(run: str) -> dict:
     try:
         doc = _json(os.path.join(fd, "plan.json"))
         entries, skipped = doc["entries"], doc.get("skipped", [])
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, RecursionError):
         entries, skipped = [], []
     text, counts = [], {}
     if not unsafe and _elsewhere(tj):

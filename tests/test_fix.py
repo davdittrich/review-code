@@ -203,6 +203,12 @@ class Tracer(Base):
                "pull", "am"}
         self.assertEqual([n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value in bad], [])
 
+    def test_a_nested_plan_json_reads_in_the_report_as_a_corrupt_one(self):  # review-code-oved
+        run, _ = self.ready()
+        self.go(run)
+        gitfix.nested_reads_as_corrupt(self, os.path.join(run, "fix", "plan.json"),
+                                       lambda: cli("fix.py", ["report", "--run", run], self.repo, self.tmp))
+
 
 def append(path, text):
     with open(path, "a", encoding="utf-8") as fh:
