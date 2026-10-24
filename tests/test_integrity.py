@@ -35,7 +35,7 @@ class Integrity(tpost.Base):
         return json.loads(out) if fmt else out
 
     CLEAN = ("integrity: no change to the checkout, index or tool knowledge during the run "
-             "(not seen: submodule worktrees, nested repositories)")
+             "(not seen: submodule worktrees, nested repositories, files flagged assume-unchanged or skip-worktree)")
 
     def test_a_clean_run_reports_no_change_in_either_tier(self):
         self.assertIn(self.CLEAN, self.render().split("\n"))
@@ -56,6 +56,19 @@ class Integrity(tpost.Base):
         tp.write(self.repo, "nested/a.txt", "one, two, three, four\n")
         self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
         self.assertIn(self.CLEAN, self.render().split("\n"))
+
+    def test_an_edit_to_a_flagged_file_is_a_blind_spot_the_line_names(self):  # review-code-87o1.12
+        for flag in ("--assume-unchanged", "--skip-worktree"):  # status hides the edit and the flag does not change
+            with self.subTest(flag=flag):
+                gitfix.run(["git", "update-index", flag, "src/calc.py"], self.repo)
+                self.make_run()
+                self.review(5)
+                tp.write(self.repo, "src/calc.py", "edited during the run (%s)\n" % flag)
+                got = self.render("json")["integrity"]
+                self.assertEqual((got["working_tree"], got["index"]), ([], False))
+                self.assertIn(self.CLEAN, self.render().split("\n"))
+                gitfix.run(["git", "update-index", flag.replace("--", "--no-", 1), "src/calc.py"], self.repo)
+                gitfix.run(["git", "checkout", "--", "src/calc.py"], self.repo)
 
     def test_an_edit_inside_a_submodule_worktree_is_a_blind_spot_the_line_names(self):  # review-code-exrf
         sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
@@ -304,7 +317,7 @@ class CappedUntracked(tpost.Base):
     def test_an_unchanged_capped_tree_says_what_it_did_not_see(self):
         self.snap_here()
         self.assertIn("integrity: no change to the checkout, index or tool knowledge during the run "
-                      "(not seen: submodule worktrees, nested repositories; not fully seen: 5 untracked files)",
+                      "(not seen: submodule worktrees, nested repositories, files flagged assume-unchanged or skip-worktree; not fully seen: 5 untracked files)",
                       report.render(self.run_dir, "text").split("\n"))
 
     def test_crossing_the_cap_is_one_flag_not_a_row_per_file(self):
@@ -372,7 +385,7 @@ class CappedTracked(tpost.Base):
     def test_an_unchanged_capped_tree_says_what_it_did_not_see(self):
         self.snap_here()
         self.assertIn("integrity: no change to the checkout, index or tool knowledge during the run "
-                      "(not seen: submodule worktrees, nested repositories; not fully seen: 5 tracked files)",
+                      "(not seen: submodule worktrees, nested repositories, files flagged assume-unchanged or skip-worktree; not fully seen: 5 tracked files)",
                       report.render(self.run_dir, "text").split("\n"))
 
     def test_crossing_the_cap_is_one_flag_not_a_row_per_file(self):
