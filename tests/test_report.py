@@ -1486,6 +1486,19 @@ class SpecAxis(Base):
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
 
+    def test_spec_text_in_any_string_of_a_verdict_line_is_rejected_and_never_stored(self):  # review-code-ncol
+        rows, inner, _, _ = self.spec_rows()
+        copy = rows[inner - 1]
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        bad_cite = {"path": "src/calc.py", "line": 1, "quote": copy}  # fails _cited: the line keeps it as sent
+        for name, line in (("extra key", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r", "note": copy}),
+                           ("uncited quote", {"id": sid, "verdict": "confirmed", "evidence": [CITE, bad_cite], "reason": "r"}),
+                           ("list reason", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": [copy]})):
+            out = self.verdicts(line)
+            self.assertEqual(([(d["disposition"], d["reason"]) for d in out["dispositions"]], out["no_verdict"]),
+                             ([("rejected", "copied-from-spec:10")], [sid]), name)
+            self.assertFalse([n for n, b in self.snapshot().items() if CANARY.encode() in b and not n.startswith("inputs")], name)
+
     def test_a_batch_verdict_reason_copying_a_spec_line_leaves_a_rejected_row(self):  # GitHub #63
         rows, inner, _, _ = self.spec_rows()
         self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)

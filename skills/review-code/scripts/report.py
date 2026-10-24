@@ -1513,7 +1513,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
                 bad.append((why, ln, n, True))
             disp.append(_disp(n, None, "rejected", why))
             continue
-        o = o and {k: o.get(k) for k in VERDICT_KEYS}
+        raw, o = o, o and {k: o.get(k) for k in VERDICT_KEYS}  # raw: a line is stored as sent, so every string of it is checked
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
             why = _syntax(ln) if o is None else "bad-type"
             bad.append((why, ln, n, _spec_line(o)))
@@ -1535,7 +1535,8 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         # dc5: a repaired line carries no cite out of its candidate's file, nor out of a cite file holding a verdict-key token
         kept = [] if fix and _hostile(pin, paths[o["id"]], _VTOKEN) else [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
-        dup = copied(reason, [(e["path"], rows[id(e)]) for e in kept]) if o["id"] in spec and isinstance(reason, str) else 0
+        pairs = [(e["path"], rows[id(e)]) for e in kept]
+        dup = sum(copied(x, pairs) for x in _leaves(raw)) if o["id"] in spec else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
             bad.append(("copied-from-spec:%d" % dup, ln, n, True))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
