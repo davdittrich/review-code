@@ -220,7 +220,7 @@ def load_target(run: str) -> dict:
         tj["repo"], tj["head_sha"], tj["url"]
         if isinstance(tj["kind"], str) and isinstance(tj["included"], list):
             return tj
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         pass
     raise Refuse("no-target", "the run directory has no usable target.json")
 

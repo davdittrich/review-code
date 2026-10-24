@@ -1138,6 +1138,15 @@ class PlanCorruptTarget(tr.Base):
         self.assertEqual(err, "")  # no traceback
         self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"), out)
 
+    def test_a_deeply_nested_target_json_refuses_as_one_json_line(self):  # review-code-08fy
+        run = os.path.join(self.tmp, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            fh.write("[" * 100000 + "]" * 100000)
+        rc, out, err = cli("plan.py", ["plan", "--run", run], self.tmp, self.tmp)
+        self.assertEqual(err, "")  # no traceback
+        self.assertEqual((rc, json.loads(out)["status"], json.loads(out)["reason"]), (1, "refuse", "no-target"), out)
+
 
 class ShardsPinnedStat(ShardBase):
     """review-code-l895: shard sizes and the risk ranking read the pinned blobs, not the checkout."""
