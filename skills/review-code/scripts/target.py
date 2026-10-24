@@ -1160,7 +1160,7 @@ def _stat(path: str):
 
 
 def integrity(top: str) -> dict:
-    """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, a digest of `git ls-files -s -z`,
+    """The integrity snapshot (gh#51): a digest of one `git status --porcelain=v2 -z`, a digest of `git ls-files -s -v -z`,
     each status entry's fields with its (size, mtime_ns) so a second edit to a file already dirty shows, and (size,
     mtime_ns) of every file under the knowledge directories, walked by stat only. Clean tracked files cost nothing;
     no file content is read. Untracked files are listed one by one (--untracked-files=all), so an edit inside an untracked directory shows; the cost is one lstat
@@ -1193,7 +1193,9 @@ def integrity(top: str) -> dict:
         dig.update(("%s\0%s\n" % (p, st)).encode("utf-8", "surrogateescape"))
         if len(unt) <= UNTRACKED_CAP:
             dirty[shown(p)] = ["?", st]
-    rc, ls, _ = _run(["ls-files", "-s", "-z"], top)  # entries only (mode, oid, stage, path): a stat-only refresh is no change
+    # entries (mode, oid, stage, path) and the -v tag, which carries the assume-unchanged and skip-worktree flags that
+    # hide an edit from status (87o1.10); no stat data, so a stat-only refresh is no change
+    rc, ls, _ = _run(["ls-files", "-s", "-v", "-z"], top)
     index = hashlib.sha256(ls).hexdigest() if rc == 0 else None
     know = {}
     for d in KNOWLEDGE:

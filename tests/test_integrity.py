@@ -94,6 +94,27 @@ class Integrity(tpost.Base):
         self.assertNotEqual(self.index_bytes(), before)  # it did rewrite the index: refreshed stat data, no entry changed
         self.assertFalse(target.integrity_changes(self.repo, snap)["index"])
 
+    def test_a_stat_only_refresh_keeps_the_flags_and_is_no_index_change(self):  # review-code-87o1.10
+        gitfix.commit(self.repo, {"src/b.py": "b = 1\n", "src/c.py": "c = 1\n"}, "more")
+        gitfix.run(["git", "update-index", "--assume-unchanged", "src/b.py"], self.repo)
+        gitfix.run(["git", "update-index", "--skip-worktree", "src/c.py"], self.repo)
+        for p in ("src/calc.py", "src/b.py", "src/c.py"):
+            os.utime(os.path.join(self.repo, p), (1, 1))
+        snap, before = target.integrity(self.repo), self.index_bytes()
+        subprocess.run(["git", "status"], cwd=self.repo, check=True, stdout=subprocess.DEVNULL)
+        self.assertNotEqual(self.index_bytes(), before)  # refreshed, and the two flags are still set
+        self.assertEqual(gitfix.run(["git", "ls-files", "-v", "src/b.py", "src/c.py"], self.repo).split(), ["h", "src/b.py", "S", "src/c.py"])
+        self.assertFalse(target.integrity_changes(self.repo, snap)["index"])
+
+    def test_a_flag_that_hides_an_edit_from_status_is_an_index_change(self):  # review-code-87o1.10
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            snap = target.integrity(self.repo)
+            gitfix.run(["git", "update-index", flag, "src/calc.py"], self.repo)
+            self.assertTrue(target.integrity_changes(self.repo, snap)["index"], flag)
+            snap = target.integrity(self.repo)  # set before the snapshot, cleared during the run
+            gitfix.run(["git", "update-index", flag.replace("--", "--no-", 1), "src/calc.py"], self.repo)
+            self.assertTrue(target.integrity_changes(self.repo, snap)["index"], flag)
+
     def test_a_staged_change_is_an_index_warning(self):
         tp.write(self.repo, "src/calc.py", "edited before the run\n")
         self.make_run()
