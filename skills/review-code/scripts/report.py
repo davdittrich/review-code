@@ -703,8 +703,23 @@ def _spec_refs(run):
         adr = None
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
-    shown = {p for p in adr if _ESCAPED.search(p)}
-    return adr + (_hidden_names(run, shown) if shown else [])
+    return adr + _hidden_refs(run, adr, _file_refs(led))[0]
+
+
+def _file_refs(led):
+    """The refs of the ledger's spec files; [] when the ledger is unreadable (`_spec_refs` refuses that on its own)."""
+    try:
+        return [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "file" and isinstance(x.get("ref"), str)]
+    except (KeyError, TypeError, AttributeError):
+        return []
+
+
+def _hidden_refs(run, adr, files):
+    """(the tree names that escape to a hidden-named decision record, the ones that escape to a hidden-named spec file): one
+    listing and one marks.json for both, keyed by the union of their escaped refs, so neither call evicts the other's cache."""
+    shown = {p for p in adr + files if _ESCAPED.search(p)}
+    names = _hidden_names(run, shown) if shown else []
+    return [[n for n in names if sanitize.escape_for_code(n)[0] in refs] for refs in (adr, files)]
 
 
 def _hidden_names(run, shown):
@@ -750,6 +765,12 @@ def _spec_copy(run):
             spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
     except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
+    try:  # the ledger stores a hidden-named spec file by its escaped ref: ban the tree names too, as _spec_refs reads them
+        led = target.load_json(run, "ledger.json")
+        files |= {_norm(n) for n in _hidden_refs(run, [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "adr"],
+                                                 _file_refs(led))[1]}
+    except (target.Refuse, KeyError, TypeError, AttributeError):
+        pass
 
     def with_records(pin, adr, said):
         # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)

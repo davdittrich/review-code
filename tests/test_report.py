@@ -1643,6 +1643,13 @@ class SpecFileCite(Base):
                          (["copied-from-spec:%d" % len(report._words(self.LIT))], []))
         self.assertNotIn(CANARY, json.dumps(out))
 
+
+class SpecFileCiteHiddenName(SpecFileCite):
+    """review-code-wzii: a spec file whose name holds an invisible character is banned as the visible-named one is: the
+    ledger stores its ref escaped, so the raw tree name must be mapped back."""
+    SPEC = "docs/specs/fe\u200bat.md"
+    feat_files = {"src/calc.py": FEAT, SPEC: SpecFileCite.LIT + "\n"}
+
 class Sota(Lanes):
     def sota(self, **kw):  # gaz.33: the lane names an inventory item, never a path or line
         line = {k: v for k, v in mc(3, "sota", severity="blocking").items() if k not in ("path", "line")}
