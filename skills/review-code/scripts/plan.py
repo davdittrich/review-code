@@ -644,7 +644,7 @@ def main(argv):
                        opts.get("ai", False), opts.get("nit", False), opts.get("tools", ())), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
-    except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # one JSON line, never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     target.emit(out, STDOUT_KEYS)
     return rc
