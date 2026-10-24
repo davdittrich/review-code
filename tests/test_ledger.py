@@ -1213,17 +1213,18 @@ class Spec(Base):
         self.assertEqual(len(self.read("inputs/spec.md").encode()), small)
 
     def test_adr_blobs_are_read_through_blob_stream(self):  # review-code-2gz4: one cat_batch loop
-        seen = []
+        calls = []  # one list of oids per _blob_stream invocation
         real = ledger._blob_stream
 
         def spy(repo, oids):
             oids = list(oids)
-            seen.extend(oids)
+            calls.append(oids)
             return real(repo, oids)
         with mock.patch.object(ledger, "_blob_stream", spy):
-            self.adr_build({"docs/adr/0001-a.md": "# A\n"})
-        oid = self.g("rev-parse", "wip:docs/adr/0001-a.md")
-        self.assertIn(oid, seen)
+            self.adr_build({"docs/adr/0001-a.md": "# A\n", "docs/adr/0002-b.md": "# B\n"})
+        want = {self.g("rev-parse", "wip:docs/adr/0001-a.md"), self.g("rev-parse", "wip:docs/adr/0002-b.md")}
+        self.assertEqual(len(want), 2)  # distinct bytes, distinct blobs
+        self.assertTrue(any(want <= set(c) for c in calls), calls)  # both records in one call, not one call per record
 
     def test_a_cr_only_record_gets_a_one_line_title(self):  # review-code-6ean
         self.adr_build({"docs/adr/0001-a.md": b"# T\rCRBODY\r"})
