@@ -278,5 +278,71 @@ class CappedUntracked(tpost.Base):
         self.assertEqual(json.dumps(snap, sort_keys=True), before)
 
 
+class CappedTracked(tpost.Base):
+    """review-code-71de.17: above TRACKED_CAP changed tracked files the snapshot keeps a count and a digest, not a row each."""
+    snap_here = CappedUntracked.snap_here
+
+    def setUp(self):
+        super().setUp()
+        gitfix.commit(self.repo, dict({"bulk/f%d.txt" % i: "x\n" for i in range(5)}, **{".codegraph/meta.txt": "v1\n"}), "bulk")
+        for i in range(5):
+            tp.write(self.repo, "bulk/f%d.txt" % i, "x, modified before the run\n")
+        tp.write(self.repo, ".codegraph/meta.txt", "v2\n")  # tracked knowledge, modified: informational, never counted
+        self.make_run()
+        self.review(5)
+        cap = mock.patch.object(target, "TRACKED_CAP", 3, create=True)
+        cap.start()
+        self.addCleanup(cap.stop)
+
+    def test_the_snapshot_is_bounded_and_keeps_a_count_and_a_digest(self):
+        snap = self.snap_here()
+        self.assertEqual(set(snap["dirty"]), {".codegraph/meta.txt"})
+        self.assertEqual((snap["tracked"]["count"], len(snap["tracked"]["digest"])), (5, 64))
+        self.assertNotIn("untracked", snap)
+
+    def test_an_edit_above_the_cap_is_flagged_though_not_itemised(self):
+        snap = self.snap_here()
+        self.assertEqual(target.integrity_changes(self.repo, snap)["tracked"], {"count": 5, "changed": False})
+        tp.write(self.repo, "bulk/f2.txt", "x, modified before the run, edited again\n")
+        got = target.integrity_changes(self.repo, snap)
+        self.assertEqual((got["working_tree"], got["tracked"]), ([], {"count": 5, "changed": True}))
+        self.assertIn("integrity warning: tracked files changed (not fully seen: 5 tracked files, not itemised) " + CAUSE,
+                      report.render(self.run_dir, "text").split("\n"))
+
+    def test_an_unchanged_capped_tree_says_what_it_did_not_see(self):
+        self.snap_here()
+        self.assertIn("integrity: no change to the checkout, index or tool knowledge during the run "
+                      "(not seen: submodule worktrees, nested repositories; not fully seen: 5 tracked files)",
+                      report.render(self.run_dir, "text").split("\n"))
+
+    def test_crossing_the_cap_is_one_flag_not_a_row_per_file(self):
+        with mock.patch.object(target, "TRACKED_CAP", 100):
+            snap = self.snap_here()  # itemised: five rows and the knowledge file
+        self.assertEqual(len(snap["dirty"]), 6)
+        got = target.integrity_changes(self.repo, snap)  # the cap is 3 again: now has no tracked rows
+        self.assertEqual((got["working_tree"], got["tracked"]), ([], {"count": 5, "changed": True}))
+
+    def test_tracked_tool_knowledge_stays_informational_above_the_cap(self):
+        snap = self.snap_here()
+        tp.write(self.repo, ".codegraph/meta.txt", "v3, longer\n")
+        got = target.integrity_changes(self.repo, snap)
+        self.assertEqual((got["working_tree"], got["knowledge"], got["tracked"]["changed"]), ([], [".codegraph/meta.txt"], False))
+        self.assertNotIn("integrity warning", report.render(self.run_dir, "text"))
+
+    def test_an_untracked_file_does_not_hide_that_tracked_files_were_not_fully_seen(self):
+        self.snap_here()
+        tp.write(self.repo, "new.txt", "x\n")
+        out = report.render(self.run_dir, "text").split("\n")
+        self.assertIn("integrity warning: new.txt (working tree) " + CAUSE, out)
+        self.assertIn("integrity note: not fully seen: 5 tracked files", out)
+
+    def test_the_comparison_leaves_the_snapshot_it_was_given_intact(self):
+        with mock.patch.object(target, "TRACKED_CAP", 100):
+            snap = self.snap_here()  # six rows, which the capped comparison drops from its own copy
+        before = json.dumps(snap, sort_keys=True)
+        target.integrity_changes(self.repo, snap)
+        self.assertEqual(json.dumps(snap, sort_keys=True), before)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1144,6 +1144,7 @@ CAUSE = "changed during the run; hooks, index daemons or other sessions may be t
 
 
 UNTRACKED_CAP = 5000  # untracked files itemised in the snapshot; above it only a count and a digest are kept
+TRACKED_CAP = 5000  # the same for changed tracked files (status records 1, 2 and u), a mass rename for example
 
 
 def _knowledge(p: str) -> bool:
@@ -1165,9 +1166,10 @@ def integrity(top: str) -> dict:
     no file content is read. Untracked files are listed one by one (--untracked-files=all), so an edit inside an untracked directory shows; the cost is one lstat
     per untracked, non-ignored file. Above UNTRACKED_CAP untracked files they are not itemised: the snapshot holds
     `untracked` {count, digest of the sorted (path, size, mtime_ns)}, so an edit still shows, but not which file.
+    Above TRACKED_CAP changed tracked files (tool knowledge aside) `tracked` holds the same over their (path, row).
     A failed status or an unreadable index is recorded as it is, never raised."""
     out = git_bytes(["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"], top, check=False)
-    dirty, unt, recs = {}, [], out.decode("utf-8", "surrogateescape").split("\0")
+    dirty, unt, trk, recs = {}, [], [], out.decode("utf-8", "surrogateescape").split("\0")
     skip = False
     for r in recs:
         if skip or not r:
@@ -1178,7 +1180,13 @@ def integrity(top: str) -> dict:
         if len(f) > n and r[0] == "?" and not _knowledge(f[n]):  # tool knowledge is informational, not part of the digest
             unt.append(f[n])
         elif len(f) > n:
-            dirty[shown(f[n])] = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
+            row = [" ".join(f[:n]), _stat(os.path.join(top, f[n]))]
+            if r[0] == "?" or _knowledge(f[n]):
+                dirty[shown(f[n])] = row
+            else:
+                trk.append((f[n], row))
+    if len(trk) <= TRACKED_CAP:
+        dirty.update((shown(p), v) for p, v in trk)
     dig = hashlib.sha256()  # streamed, never itemised: the whole untracked set in one value
     for p in sorted(unt):
         st = _stat(os.path.join(top, p))
@@ -1196,6 +1204,9 @@ def integrity(top: str) -> dict:
     snap = {"version": 1, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
     if len(unt) > UNTRACKED_CAP:
         snap["untracked"] = {"count": len(unt), "digest": dig.hexdigest()}
+    if len(trk) > TRACKED_CAP:
+        snap["tracked"] = {"count": len(trk), "digest": hashlib.sha256("".join(
+            "%s\0%s\n" % r for r in sorted(trk)).encode("utf-8", "surrogateescape")).hexdigest()}
     return snap
 
 
@@ -1204,10 +1215,14 @@ def integrity_changes(top: str, snap: dict) -> dict:
     Paths are stored and returned escaped (shown); a knowledge path the status lists is reported only as knowledge."""
     now = json.loads(json.dumps(integrity(top)))  # lists, as the stored snapshot holds them
 
-    capped = "untracked" in snap or "untracked" in now  # one side holds no untracked rows: compare the digests instead
-    count = (now.get("untracked") or {}).get("count", sum(1 for p, v in now["dirty"].items() if v[0] == "?" and not _knowledge(p)))
-    if capped:
-        snap, now = ({**d, "dirty": {p: v for p, v in d["dirty"].items() if v[0] != "?"}} for d in (snap, now))
+    def kind(p, v):  # which capped set a non-knowledge row belongs to
+        return None if _knowledge(p) else "untracked" if v[0] == "?" else "tracked"
+
+    # a set over its cap on either side: its rows are dropped from both and the digests compared instead
+    caps = {k: (now.get(k) or {}).get("count", sum(1 for p, v in now["dirty"].items() if kind(p, v) == k))
+            for k in ("tracked", "untracked") if k in snap or k in now}
+    if caps:
+        snap, now = ({**d, "dirty": {p: v for p, v in d["dirty"].items() if kind(p, v) not in caps}} for d in (snap, now))
 
     def moved(key):
         a, b = snap[key], now[key]
@@ -1215,8 +1230,8 @@ def integrity_changes(top: str, snap: dict) -> dict:
 
     res = {"working_tree": [p for p in moved("dirty") if not _knowledge(p)], "index": snap["index"] != now["index"],
            "knowledge": moved("knowledge"), "cause": CAUSE}
-    if capped:  # a side under the cap holds no digest, so it differs from a side over it (the counts differ too)
-        res["untracked"] = {"count": count, "changed": snap.get("untracked") != now.get("untracked")}
+    for k, n in caps.items():  # a side under the cap holds no digest, so it differs from a side over it (the counts differ too)
+        res[k] = {"count": n, "changed": snap.get(k) != now.get(k)}
     return res
 
 
