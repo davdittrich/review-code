@@ -1633,6 +1633,22 @@ class Trust(Base):
         self.assertEqual(cm.exception.reason, "bad-ledger")
 
 
+class CorruptTarget(Base):
+    def test_hidden_chars_that_are_not_objects_refuse_as_one_json_line(self):  # review-code-bb1b
+        self.base({"README.md": "r\n"})
+        self.branch({"a.txt": "a\n"})
+        self.build()
+        path = os.path.join(self.run_dir, "target.json")
+        with open(path, encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["hidden_chars"] = ["x"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        rc, out, err = gitfix.cli("ledger.py", ["build", "--run", self.run_dir], self.repo, self.tmp)
+        self.assertEqual(err, "")  # no traceback
+        self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"), out)
+
+
 class GitProcessCount(Base):
     """review-code-dz5l: symbol refs and commit messages cost one git process each, whatever their number."""
 

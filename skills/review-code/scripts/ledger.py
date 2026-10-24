@@ -1298,7 +1298,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = build(argv[2], spec, found, nit)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
-    except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:
         rc = 0
