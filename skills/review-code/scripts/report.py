@@ -393,6 +393,16 @@ def _relocate(pin, path, line, end, quote):
     return lo + 1, hi
 
 
+def _quote_rows(rows, quote):
+    """`rows` trimmed from both ends to the lines the quote itself needs: the width a verifier cite has (gj6i)."""
+    q, lo, hi = _ws(quote), 0, len(rows)
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo + 1:hi])):
+        lo += 1
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo:hi - 1])):
+        hi -= 1
+    return rows[lo:hi]
+
+
 def _cited(pin, path, line, end, quote):
     """The cited lines when path, range and quote all hold in the pinned tree, else None."""
     return _cite(pin, path, line, end, quote)[0]
@@ -1277,7 +1287,7 @@ def _read_lane(text, lane, run, shard=None):
         if fixed and o is not None and _hostile(pin, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
         c, check = _candidate(o, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
-        dup = max((copied(c[k], [(c["path"], c["rows"])]) for k in ("title", "trigger", "fix")), default=0) if c is not None and copied else 0
+        dup = max((copied(c[k], [(c["path"], _quote_rows(c["rows"], c["quote"]))]) for k in ("title", "trigger", "fix")), default=0) if c is not None and copied else 0
         if dup:  # CTX-03: the count of the worst field, never its text
             c, check = None, "copied-from-spec:%d" % dup
         if c is None or c["id"] in kept:

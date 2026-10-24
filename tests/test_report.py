@@ -1605,6 +1605,15 @@ class SpecCodeRun(Base):
         self.assertNotIn("adder", json.dumps(out).lower())
         self.assertNotIn(CANARY, json.dumps(out))
 
+    def test_a_span_exempts_only_the_lines_its_quote_sits_on(self):  # review-code-gj6i
+        _, inner, _, _ = self.spec_rows()
+        wide = dict(self.ELSE, end_line=5)  # lines 4-5, the quote on line 4, the run on line 5
+        out = self.lane(self.spec(inner, title=self.LIT, **wide), {"inspected": ["src/calc.py"]})
+        self.assertEqual(([r["check"] for r in out["rejected"]], out["spec_ids"]), (["copied-from-spec:%d" % self.n()], []))
+        wide = dict(self.HERE, line=4, end_line=5)  # the quote is the line holding the run
+        out = self.lane(self.spec(inner, title=self.LIT, **wide), {"inspected": ["src/calc.py"]})
+        self.assertEqual((len(out["spec_ids"]), out["rejected"]), (1, []))
+
     def test_a_declined_why_is_judged_by_the_same_count_rule(self):
         _, inner, _, _ = self.spec_rows()
         out = self.lane({"declined": [{"spec_line": inner, "why": self.LIT}]}, {"inspected": []})
