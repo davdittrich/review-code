@@ -209,6 +209,39 @@ class Tracer(Base):
         gitfix.nested_reads_as_corrupt(self, os.path.join(run, "fix", "plan.json"),
                                        lambda: cli("fix.py", ["report", "--run", run], self.repo, self.tmp))
 
+    def nested_refuses(self, run, args):
+        """review-code-l2sf: a 100000-deep plan.json whose own digest checks out ends in rc 1 and one JSON refuse line, no traceback."""
+        nested = ("[" * 100000 + "]" * 100000).encode("ascii")
+        with open(os.path.join(run, "fix", "plan.json"), "wb") as fh:
+            fh.write(nested)
+        rc, out, err = cli("fix.py", args(hashlib.sha256(nested).hexdigest()), self.repo, self.tmp)
+        self.assertEqual((rc, err), (1, ""))
+        (line,) = out.splitlines()
+        self.assertEqual(json.loads(line)["status"], "refuse")
+
+    def test_baseline_refuses_a_nested_plan_json_with_its_own_digest(self):
+        run = self.pin()
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.assertEqual(self.plan(run)[0], 0)
+        self.nested_refuses(run, lambda d: ["baseline", "--run", run, "--digest", d])
+        self.assertFalse(os.path.exists(os.path.join(run, "fix", "state.json")))
+
+    def test_begin_refuses_a_nested_plan_json_with_its_own_digest(self):
+        run, _ = self.ready()
+        self.go(run)
+        sj = os.path.join(run, "fix", "state.json")
+
+        def args(digest):  # state.json holds the digest begin compares, so the nested file's own is written there
+            with open(sj, encoding="utf-8") as fh:
+                st = json.load(fh)
+            st["digest"] = digest
+            with open(sj, "w", encoding="utf-8") as fh:
+                json.dump(st, fh)
+            return ["begin", "--run", run]
+
+        self.nested_refuses(run, args)
+
 
 def append(path, text):
     with open(path, "a", encoding="utf-8") as fh:

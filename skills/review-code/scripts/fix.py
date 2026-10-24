@@ -825,7 +825,7 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         out = {"status": "refuse", "reason": r.reason}
         if r.detail:
             out["detail"] = r.detail
-    except (OSError, KeyError, ValueError, TypeError) as e:
+    except (OSError, KeyError, ValueError, TypeError, RecursionError) as e:
         out = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}
     except KeyboardInterrupt:  # finish and baseline restored before re-raising
         out = {"status": "halted", "reason": "interrupted"}
