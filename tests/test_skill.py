@@ -53,6 +53,11 @@ class Procedure(unittest.TestCase):
         with open(SKILL, encoding="utf-8") as fh:
             self.text = fh.read()
 
+    def test_step_7_says_a_row_ending_index_holds_no_line(self):  # review-code-o2gb, review-code-tf7k
+        flat = " ".join(self.text.split())
+        self.assertIn("a row ending `index <i>` holds no line: name <i>, its JSON line number, word count", flat)
+        self.assertNotIn("a `copied-from-spec` row holds none", flat)
+
     def allowed(self):
         fm = self.text.split("\n---", 1)[0]
         m = re.search(r"^allowed-tools:[ \t]*\n((?:[ \t]+- .*\n)+)", fm + "\n", re.M)

@@ -7,7 +7,7 @@ string holds raw double quotes, or a backslash that starts no JSON escape (a reg
 again by _repair; the ingest and verdicts stdout count such lines as `repaired`. A line that parses but is no pair array is
 never repaired.
 
-Gate: every rejected line is kept as `<reason> <line>` (a copied-from-spec line: `<reason> index <i>`) in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
+Gate: every rejected line is kept as `<reason> <line>` (a spec-axis line: `<reason> index <i>`, <i> its place among the reply's wire lines as in `dispositions[].index`) in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
 re-ingest of the same lane or batch. A lane line's reason is `invalid-json[:bad-escape]`, `retired-object-form`, or
 `failed-validation:<check>` (see REASONS; the two copy checks end in `:N`, a word count). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
 section and does not go above Needs discussion while either is nonzero.
