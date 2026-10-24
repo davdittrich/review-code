@@ -711,13 +711,12 @@ def _hidden_names(run, shown):
     key = {"tree": pin.tree, "shown": sorted(shown)}
     path = os.path.join(run, "marks.json")
     try:
-        with open(path, encoding="utf-8") as fh:
-            got = json.load(fh)
-        if (isinstance(got, dict) and all(got.get(k) == v for k, v in key.items())
-                and isinstance(got.get("names"), list) and all(isinstance(n, str) for n in got["names"])):
-            return got["names"]
-    except (OSError, ValueError):
-        pass
+        got = target.load_json(run, "marks.json")
+    except target.Refuse:  # a missing or corrupt cache is listed again, never trusted
+        got = {}
+    if (all(got.get(k) == v for k, v in key.items())
+            and isinstance(got.get("names"), list) and all(isinstance(n, str) for n in got["names"])):
+        return got["names"]
     names = [n for n, _, _ in pin.every() if sanitize.escape_for_code(n)[0] in shown]
     _put(path, json.dumps(dict(key, names=names)))
     return names
@@ -977,7 +976,7 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
             c = json.load(fh)
     except FileNotFoundError:
         c = {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # not load_json: no-counters would be a refusal here, not the empty start
         c = None
     if c is None or not isinstance(c, dict) or any(k in c and not isinstance(c[k], dict) for k in COUNTERS):
         raise target.Refuse("bad-counters", "counters.json is unreadable: discard the run (it would reset the retry counts)")
@@ -1560,11 +1559,10 @@ def _cap(cls, category):
 def _repro(run, fid, modes=None):
     """The repro outcome of a finding; with `modes`, only a record that repro.py wrote in one of them (older records have none: None)."""
     try:
-        with open(os.path.join(run, "repro", fid + ".json"), encoding="utf-8") as fh:
-            rec = json.load(fh)
-        return rec.get("outcome") if modes is None or rec.get("mode") in modes else None
-    except (OSError, ValueError, AttributeError):
+        rec = target.load_json(run, os.path.join("repro", fid + ".json"))
+    except target.Refuse:  # missing, unreadable or not an object
         return None
+    return rec.get("outcome") if modes is None or rec.get("mode") in modes else None
 
 
 NOT_RUN_ITEM = r"(?:defects|standards|spec|sota)(?:@[0-9]+)?|shard [0-9]+|repro|serial"
@@ -1885,8 +1883,7 @@ def _integrity(run, tj):
     """gh#51: what changed in the checkout, its index and tool knowledge since target.py's snapshot, or None when the
     run has no snapshot or the comparison fails. It reports only: never a refusal, the verdict or a finding."""
     try:
-        with open(os.path.join(run, "integrity.json"), encoding="utf-8") as fh:
-            snap = json.load(fh)
+        snap = target.load_json(run, "integrity.json")
         return target.integrity_changes(tj["repo"], snap)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, target.Refuse):
         return None
