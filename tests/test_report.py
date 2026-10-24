@@ -27,6 +27,13 @@ CAND = {"path": "src/calc.py", "line": 5, "severity": "required", "category": "b
 CITE = {"path": "src/calc.py", "line": 5, "quote": "return a - b"}
 
 
+def refusal(out):
+    """A report.py refusal line without its detail (review-code-2i1e prints it), after checking the detail is text."""
+    got = json.loads(out) if isinstance(out, str) else dict(out)
+    assert isinstance(got.pop("detail", None), str), got
+    return got
+
+
 class Base(gitfix.FeatureRepo):
     pin_args = ["main"]
     base_files, feat_files = BASE, {"src/calc.py": FEAT}
@@ -848,7 +855,7 @@ class SpecAdrCite(Base):
         before = {n: open(os.path.join(self.run_dir, n), "rb").read() for n in ("candidates.json",)
                   if os.path.exists(os.path.join(self.run_dir, n))}
         rc, out = self.rep(sub, reply, extra=extra)
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": reason}))
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": reason}))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected", "spec.txt")))
         self.assertEqual(before, {n: open(os.path.join(self.run_dir, n), "rb").read() for n in before})
 
@@ -912,7 +919,7 @@ class SpecAdrHiddenName(Base):
         os.remove(spec)
         os.mkdir(spec)  # open() fails with an OSError as root too
         rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "spec"])
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "marks.json")))
 
     def traced_ingest(self, n):
@@ -950,6 +957,62 @@ class SpecAdrHiddenName(Base):
             fh.write('{"tree": 1')
         self.assertEqual(self.traced_ingest(2), 1)
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
+class _SpecAdrUnreadable(Base):
+    """review-code-py53: a listed decision record the guard cannot read whole (over MAX_FILE, or not text) refuses
+    record-unreadable instead of adding no words: a lane can still read it in parts and copy it."""
+    ADR = "docs/adr/0001-integers.md"
+    BODY = "# Integers only\n\nThe adder MUST-RETURN-INT.\nCalls pass ints.\n" + "padding words here\n" * 10
+    base_files = dict(BASE, **{ADR: BODY})
+    WHY = "The adder MUST-RETURN-INT Calls pass ints"
+
+    def row(self):
+        with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
+            return [n for n, r in enumerate(fh.read().split("\n"), 1) if r.startswith("<<<UNTRUSTED-")][0] + 1
+
+    def call(self, argv, reply, cap):
+        """report.main in-process with MAX_FILE at `cap` (above src/calc.py, below the record): (rc, its JSON line)."""
+        out = io.StringIO()
+        stdin = io.TextIOWrapper(io.BytesIO(reply.encode("utf-8")))
+        with gitfix.isolated(self.tmp), mock.patch.object(report.target, "MAX_FILE", cap), \
+                mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue())
+
+
+class SpecAdrOversize(_SpecAdrUnreadable):
+    def test_a_record_over_max_file_refuses_spec_ingest_and_spec_verdicts(self):
+        cap = len(FEAT) + 1
+        self.assertGreater(len(self.BODY), cap)
+        reply = lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []})
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        rc, out = self.call(["ingest", "--run", self.run_dir, "--lane", "spec"], reply, len(self.BODY))  # the control: read whole
+        self.assertEqual((rc, [r["check"] for r in out["rejected"]]), (0, ["declined-invalid:copied-from-spec"]))
+        rc, out = self.rep("ingest", lines(dict(CAND, category="spec-wrong", spec_line=self.row()), {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual(rc, 0, out)
+        (sid,) = json.loads(out)["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        before = SpecAxis.snapshot(self)
+        rc, out = self.call(["verdicts", "--run", self.run_dir],
+                            lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": self.WHY}), cap)
+        self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "record-unreadable"))
+        self.assertEqual(SpecAxis.snapshot(self), before)  # review-code-szle: the record read precedes every write
+
+
+class SpecAdrNotText(_SpecAdrUnreadable):
+    base_files = dict(BASE, **{_SpecAdrUnreadable.ADR: "\0" + _SpecAdrUnreadable.BODY})
+
+    def test_a_record_that_is_not_text_refuses_spec_ingest(self):
+        before = SpecAxis.snapshot(self)
+        rc, out = self.rep("ingest", lines({"declined": [{"spec_line": self.row(), "why": self.WHY}]}, {"inspected": []}),
+                           extra=["--lane", "spec"])
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "record-unreadable"))
+        after = SpecAxis.snapshot(self)
+        self.assertEqual(after.pop(".lock"), b"")  # the run lock, created empty by the first locked call
+        self.assertEqual(after, before)  # no write, counters.json included: the refusal costs no try
 
 
 class SpecAdrInPlace(Base):
@@ -1183,8 +1246,30 @@ class SpecAxis(Base):
         for sub, reply, extra in (("verdicts", {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}, ()),
                                   ("ingest", {"declined": [{"spec_line": inner, "why": rows[inner - 1]}]}, ["--lane", "spec"])):
             rc, out = self.rep(sub, lines(reply, {"inspected": []}) if sub == "ingest" else lines(reply), extra=extra)
-            self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
+            self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-ledger"}), sub)
             self.assertEqual(self.snapshot(), before, sub)
+
+    def test_a_verdict_reason_copying_a_spec_line_is_dropped(self):  # review-code-flwv
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]})
+        self.assertEqual(([(d["disposition"], d["reason"]) for d in out["dispositions"]], out["no_verdict"]),
+                         ([("rejected", "copied-from-spec")], [sid]))
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
+
+    def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
+        _, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "first"})  # a stored reply to clear
+        tj = tp.load(self.run_dir)
+        tj["pinned_tree"] = "0" * 40  # the pin's ls-tree of the cites and records fails
+        with open(os.path.join(self.run_dir, "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        before = self.snapshot()
+        rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "refuted", "evidence": [CITE], "reason": "second"}))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "pin-pruned"))
+        self.assertEqual(self.snapshot(), before)
 
     def test_serial_replan_after_discard_has_no_stale_lane(self):  # CR-04
         rows, inner, _, _ = self.spec_rows()
@@ -1424,7 +1509,7 @@ class Shards(Lanes):
         for bad in ("0", "-1", "x", "1.5", "3", "99999999999"):
             rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "defects", "--shard", bad],
                                self.repo, self.tmp, lines(mc(3)))
-            self.assertEqual((rc, json.loads(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
+            self.assertEqual((rc, refusal(out), err), (1, {"status": "refuse", "reason": "bad-shard"}, ""), bad)
 
     def test_shard_without_plan_refuses(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
@@ -2285,7 +2370,7 @@ class Gate(Base):
                 fh.write(junk)
             for sub, text, extra in (("ingest", lines(self.GOOD), ()), ("verdicts", lines({"id": i, "verdict": "confirmed"}), ())):
                 rc, out = self.rep(sub, text, extra)
-                self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
+                self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-counters"}), (sub, junk))
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), junk)
 
@@ -2365,7 +2450,7 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.agent_ingest()["ids"], [QID])
 
     def test_no_capture_refuses_and_stores_nothing(self):
-        self.assertEqual(self.agent_ingest(rc=1), {"reason": "no-capture", "status": "refuse"})
+        self.assertEqual(refusal(self.agent_ingest(rc=1)), {"reason": "no-capture", "status": "refuse"})
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")
@@ -2466,7 +2551,7 @@ class AgentReply(Captured, Base):
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
-        self.assertEqual((rc, json.loads(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
+        self.assertEqual((rc, refusal(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
     def test_discard_leaves_the_captures_alone(self):  # they belong to the repository, not to this run
@@ -2511,10 +2596,16 @@ class AgentReply(Captured, Base):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
     def test_no_capture_detail_says_to_rerun_on_stdin(self):
-        with self.assertRaises(report.target.Refuse) as cm:  # the CLI prints the reason only, so read the detail in-process
+        with self.assertRaises(report.target.Refuse) as cm:
             report._take(self.run_dir, AID, "review-code:finder", True)
         self.assertEqual((cm.exception.reason, cm.exception.detail),
                          ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
+
+    def test_the_cli_prints_the_refusal_detail_with_its_retry_hint(self):  # review-code-2i1e
+        rc, out = self.rep("ingest", extra=["--agent", AID])
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-capture", "detail": report.REASONS["no-capture"]}))
+        rc, out = self.rep("ingest", extra=["--shard", "x"])
+        self.assertEqual(json.loads(out)["detail"], "--shard is not a positive integer")
 
     def status(self):
         rc, out = self.rep("status")

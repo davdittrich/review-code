@@ -183,6 +183,7 @@ REASONS = {
     "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
     "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
+    "record-unreadable": "a decision record the ledger lists is over the size cap or not text (a NUL byte), so the spec copy guard cannot check a reply against it: shrink it, save it as plain text (UTF-8) or move it out of the record directory, then review again",
     "bad-ledger": "ledger.json or inputs/spec.md cannot be read: run ledger.py build again, or review again",
 }
 
@@ -256,10 +257,11 @@ class _Pinned:
         want = sorted({p for p in map(_norm, paths) if p})
         if not want:
             return
-        blob = {p: oid for p, (_, oid) in ledger.regular_blobs(self.tree, want, self.top).items()}
+        sized = ledger.regular_blobs(self.tree, want, self.top)
+        blob = {p: oid for p, (_, oid) in sized.items()}
         self.files = set(blob)
         need = {p: blob[p] for p in {_norm(c) for c in cited} if p in blob}
-        uniq = sorted(set(need.values()))
+        uniq = sorted({oid for p, oid in need.items() if sized[p][0] <= target.MAX_FILE})  # an oversize blob is never streamed
         text = {oid: None if data is None else ledger._text(data) for oid, data in ledger._blobs(self.top, uniq).items()}
         for p, oid in need.items():
             t = text.get(oid)
@@ -676,7 +678,10 @@ def _spec_copy(run):
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
 
     def with_records(pin, adr):
-        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
+        # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch).
+        # One the pin could not read whole (over MAX_FILE, or not text) refuses: a lane can read it in parts (review-code-py53)
+        if any(pin.rows.get(p, "") is None for p in map(_norm, adr)):
+            raise target.Refuse("record-unreadable", REASONS["record-unreadable"])
         w = spec + [x for p in adr for row in pin.rows.get(_norm(p)) or () for x in _words(row)]
         runs = {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
@@ -1385,27 +1390,35 @@ def _verdicts(run, text, batch, agent=None):
         if objs and not any(isinstance(o.get("id"), str) and o["id"] in calls[batch] for o in objs):  # another batch's reply
             raise _refuse("agent-mismatch")
     store = _replies(run)
-    if batch is None:  # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
-        shutil.rmtree(os.path.dirname(store), ignore_errors=True)
-        for n in _rejected(run)[1]:
-            if n != "serial":
-                os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
-    os.makedirs(store, mode=0o700, exist_ok=True)
-    _put(os.path.join(store, "serial.txt" if batch is None else "%d.txt" % batch), text)
+    new = "serial.txt" if batch is None else "%d.txt" % batch
+    # the single-call path: this reply replaces every stored one, as it always replaced verdicts.json
+    names = [new] + ([] if batch is None or not os.path.isdir(store) else
+                     [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n) and n != new])
     got, foreign, repaired, fixes, lost, disp, rej = {}, 0, 0, {}, 0, [], []
-    names = [n for n in os.listdir(store) if re.fullmatch(r"serial\.txt|[1-9][0-9]*\.txt", n)]
     replies = []
     for n in sorted(names, key=lambda n: (n != "serial.txt", int(n[:-4]) if n[0].isdigit() else 0)):
         k = int(n[:-4]) if n[0].isdigit() else None
         if k is None or k in calls:
-            with open(os.path.join(store, n), encoding="utf-8") as fh:  # each stored batch has its own repair budget
-                replies.append((k, list(_objects(fh.read(), [INGEST_STEPS]))))  # (one hostile batch starves no other)
-    # every stored batch is judged again, so all their cites share one ls-tree and one cat-file
+            if n == new:  # the reply as reading its stored copy back gives it (universal newlines)
+                body = text.replace("\r\n", "\n").replace("\r", "\n")
+            else:
+                with open(os.path.join(store, n), encoding="utf-8") as fh:
+                    body = fh.read()
+            replies.append((k, list(_objects(body, [INGEST_STEPS]))))  # each stored batch has its own repair budget
+    # every stored batch is judged again, so all their cites share one ls-tree and one cat-file; the pin and the record
+    # reads run before the store is touched, so their refusals (pin-pruned, bad-ref, record-unreadable) write nothing
     cited = set(paths.values()) | {e.get("path") for _, parsed in replies for _, o, _ in parsed
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited | set(adr), cited | set(adr))
     copied = spec_text(pin, adr) if spec else None
+    if batch is None:
+        shutil.rmtree(os.path.dirname(store), ignore_errors=True)
+        for n in _rejected(run)[1]:
+            if n != "serial":
+                os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
+    os.makedirs(store, mode=0o700, exist_ok=True)
+    _put(os.path.join(store, new), text)
     for k, parsed in replies:
         f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
         if k == batch:
@@ -1837,7 +1850,7 @@ def main(argv):
         shard, batch = (int(opts[k]) if k in opts else None for k in ("--shard", "--batch"))
         out = ingest(run, text, lane, shard, agent) if sub == "ingest" else verdicts(run, text, batch, agent)
     except target.Refuse as r:
-        out, rc = {"status": "refuse", "reason": r.reason}, 1
+        out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1  # as plan.py; json.dumps escapes it
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:

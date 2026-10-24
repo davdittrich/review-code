@@ -226,7 +226,7 @@ class OldRun(tr.Base):
 
     def test_ingest_refuses_with_one_json_line_naming_the_old_run(self):
         self.age()
-        self.assertEqual(self.refused("ingest", tr.lines(tr.CAND)), {"status": "refuse", "reason": "no-pin"})
+        self.assertEqual(tr.refusal(self.refused("ingest", tr.lines(tr.CAND))), {"status": "refuse", "reason": "no-pin"})
 
     def test_verdicts_refuse_with_one_json_line_naming_the_old_run(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
@@ -234,7 +234,7 @@ class OldRun(tr.Base):
         (i,) = self.ingest(tr.CAND)["ids"]
         self.age()
         out = self.refused("verdicts", tr.lines({"id": i, "verdict": "confirmed", "evidence": [], "reason": "r"}), ["--batch", "1"])
-        self.assertEqual(out, {"status": "refuse", "reason": "no-pin"})
+        self.assertEqual(tr.refusal(out), {"status": "refuse", "reason": "no-pin"})
 
 
 class HiddenName(tr.Base):
@@ -308,7 +308,7 @@ class Worktree(tr.Base):
     def test_a_pruned_pinned_tree_refuses_with_its_own_reason(self):
         self.git("gc", "-q", "--prune=now")
         rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "pin-pruned"}))
+        self.assertEqual((rc, tr.refusal(out)), (1, {"status": "refuse", "reason": "pin-pruned"}))
 
     def test_a_failing_ls_tree_with_the_root_tree_present_stays_bad_ref(self):
         sub = self.git("rev-parse", tp.load(self.run_dir)["pinned_tree"] + ":src")  # a subtree the listing must read: damage it
@@ -316,7 +316,7 @@ class Worktree(tr.Base):
         os.chmod(loose, 0o600)
         os.remove(loose)
         rc, out = self.rep("ingest", tr.lines(tr.cand("return a * a", 8)))
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-ref"}))
+        self.assertEqual((rc, tr.refusal(out)), (1, {"status": "refuse", "reason": "bad-ref"}))
 
 
 class ProcessCount(tr.Base):
