@@ -19,7 +19,7 @@ import shutil
 import stat
 import time
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 import history
@@ -828,16 +828,24 @@ def _is_record(p: str) -> bool:
     return p.lower().endswith(_PROSE_EXT) and bool(_ADR_DIRS & set(p.lower().split("/")[:-1]))
 
 
-def _record_facts(size: int, data: Optional[bytes], spots, issues) -> tuple:
-    """(size, is text, title or None, names a changed file or issue) of one record's bytes."""
+class _Facts(NamedTuple):
+    """What one record's bytes say; the defaults are a record whose blob was never read."""
+    size: int = 0
+    is_text: bool = False
+    title: Optional[str] = None
+    names: bool = False  # names a changed file or issue
+
+
+def _record_facts(size: int, data: Optional[bytes], spots, issues) -> _Facts:
+    """The `_Facts` of one record's bytes."""
     text = _text(data) if data is not None else None
     low = text.lower() if text else ""
     first = next((ln.strip().lstrip("#").strip() for ln in sanitize._BREAK.split(text or "") if ln.strip()), "")
-    return (size, text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
-            bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+    return _Facts(size, text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
+                  bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
 
 
-def _record_row(p: str, facts: tuple, hay: str, toks) -> tuple:
+def _record_row(p: str, facts: _Facts, hay: str, toks) -> tuple:
     """(size, title, why list) of the record at `p` from its `_record_facts`."""
     size, is_text, title, names = facts
     n = re.match(r"[0-9]+", posixpath.basename(p))
@@ -864,12 +872,12 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     hay = hay.lower()
     issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
-    got = {}  # blob id -> (size, text or not, title, names a changed file or issue): one record's bytes held at a time (n4lk.2)
+    got = {}  # blob id -> _Facts: one record's bytes held at a time (n4lk.2)
     for oid, size, data in _blob_stream(repo, oids):
         got[oid] = _record_facts(size, data, spots, issues)
     info = {}
     for p in cand:
-        info[p] = _record_row(p, got.get(reg[p], (0, False, None, False)), hay, toks)
+        info[p] = _record_row(p, got.get(reg[p], _Facts()), hay, toks)
     out = {}
     for p in sorted(cand, key=lambda p: (-len(info[p][2]), p)):
         size, title, why = info[p]
