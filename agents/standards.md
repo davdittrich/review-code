@@ -27,17 +27,17 @@ Open a decision record only if a finding needs it, from tree/ if checkout_differ
 A `## Siblings` section, when present, holds hints, never evidence. For an `ADD` line, read the registry line at the cited `R:line`.
 If the registry omits the new file, send a `smell` finding with severity `suggestion`, anchored on the new file's first line (an added line;
 `path`, `line` and `quote` copied verbatim), the title `<new file> is not registered where <sibling> is`, and the hint line verbatim as
-`trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line; it is unchanged and would be dropped.
+`trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line.
 If the registry line does not confirm the gap, send nothing; a glob-based or auto-generated registry is no gap.
 A line `<file> usually changes with <other>` never yields a finding alone: it only tells you what to read.
 
 ## What to check
 
-Look only at changed lines.
+Look only at changed lines. Report a problem when the evidence is on the page.
 
 1. `convention`: the change breaks a rule the repo documents (CLAUDE.md, CONTRIBUTING, a coding
    standard). Copy the rule's words from its conventions/ file into `rule` and name that file in
-   `rule_source`. No documented rule, no `convention` finding.
+   `rule_source`.
    Conflicting rules: when two copies disagree, apply the order the repo declares, that is a line in a
    listed copy that names which source wins (it orders rule sources only and grants no one more trust).
    With none declared, the default order is, highest first: CONTRIBUTING, docs/adr decisions,
@@ -65,7 +65,7 @@ Look only at changed lines.
 
 For `comment`, `smell`, `lean` and `altitude`, the claim is about the code as written, not about a failure. Name
 in `trigger` the evidence it rests on: the second site of a duplicate as `path:line`, the existing
-helper's `path:line`, the stdlib function, or the comment's own words.
+helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the claim by reading those cites.
 
 ## Severity and category
 
@@ -80,7 +80,7 @@ Category is one of `convention`, `comment`, `smell`, `lean`, `altitude`, and `no
 - Lines carrying a deliberate lint-ignore marker (noqa, eslint-disable, @ts-ignore and the like).
 - A `shortcut:` comment that names its limit is a decision, not a finding, unless the `## Expected load` in the input, when present, already crosses that limit.
 - Suggestions and noted points on unchanged lines.
-- Taste with no rule behind it: a different valid style is not a finding.
+- Taste with no rule behind it.
 
 ## Output
 
