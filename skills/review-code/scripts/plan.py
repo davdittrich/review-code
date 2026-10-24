@@ -148,7 +148,8 @@ def _heads(tj, blobs):
     `cat-file --batch`: the reviewed content, whatever the checkout holds now (review-code-zcrc, l895). A blob over MAX_FILE
     gives neither."""
     uniq = sorted({oid for _, oid in blobs.values()})
-    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n")) for oid, data in ledger._blobs(tj["repo"], uniq).items()}
+    head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))  # reduced per blob: peak memory is one blob
+            for oid, data in ledger._blob_stream(tj["repo"], uniq)}
     have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
     return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
 
@@ -465,9 +466,29 @@ SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing 
                "Spec axis skipped: the main thread never opens inputs/spec.md",
                "SOTA skipped: no isolated web lane"]
 HEURISTIC = "(heuristic: settings env may not reach this script)"
-# Code-navigation MCP tools the skill passes with --tool (the main thread's list: a plugin agent gets one only when the session
-# has it) and what a lane loses without each (gh#48). Fixed text, never repository text.
-TOOLS = {"codegraph": "callers and blast radius", "serena": "symbol and reference lookup"}
+# The tools of gh#47, each described once: `how` agents query it, `runs` (its queries execute repository code or configuration),
+# `knowledge` paths a review never writes, `hooks` it must not trigger, `agent` the tool names an agent gets, `loss` what a lane
+# loses without it (gh#48). Only a record with `agent` is selectable by --tool (the main thread's list: a plugin agent gets one only
+# when the session has it). agents/*.md tool lists are static, so they carry exactly the non-executing records, in this order
+# (tests/test_lanes.py); an executing record has no agent name until the own-trust issue gives it one. llm-tldr is unverified
+# (gh#47), so it counts as executing. Fixed text, never repository text.
+TOOLS = {
+    "serena": {"how": "find_symbol, find_referencing_symbols, get_symbols_overview", "runs": False, "knowledge": (".serena/",), "hooks": (),
+               "agent": ("mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols", "mcp__serena__get_symbols_overview"),
+               "loss": "symbol and reference lookup"},
+    "codegraph": {"how": "codegraph_explore", "runs": False, "knowledge": (".codegraph/",), "hooks": (),
+                  "agent": ("mcp__codegraph__codegraph_explore",), "loss": "callers and blast radius"},
+    "openwolf": {"how": "read .wolf/ files as data", "runs": False, "knowledge": (".wolf/",), "hooks": ("read log", "memory log"),
+                 "agent": ()},
+    "llm-tldr": {"how": "unverified", "runs": True, "knowledge": (), "hooks": (), "agent": ()},
+    "language-server": {"how": "language server queries", "runs": True, "knowledge": (), "hooks": (), "agent": ()},
+    "history": {"how": "git log, blame, a file at a revision, precomputed into the run directory", "runs": False, "knowledge": (),
+                "hooks": (), "agent": ()},
+}
+
+
+def _selectable():
+    return sorted(t for t, r in TOOLS.items() if r["agent"])
 
 
 def _env_lost():
@@ -482,6 +503,7 @@ def _env_lost():
 def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=()):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
+    tools = [t for t in tools if ledger.stored_trust(led) == "own" or not TOOLS[t]["runs"]]  # external code runs nothing of its own
     spec = led.get("spec")
     spec_none = not isinstance(spec, dict) or spec.get("status") == "none"
     t = TIERS[tier]
@@ -569,7 +591,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
            "max_turns": dict(MAX_TURNS),
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
            "shards": shards, "skipped": skipped, "lost_guarantees": lost, "tools": sorted(tools),
-           "lost_capabilities": ["%s: %s" % (t, TOOLS[t]) for t in sorted(TOOLS) if t not in tools],
+           "lost_capabilities": ["%s: %s" % (t, TOOLS[t]["loss"]) for t in _selectable() if t not in tools],
            "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
@@ -590,7 +612,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
 
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--tool codegraph|serena ...]")
+                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--tool %s ...]" % "|".join(_selectable()))
 
 
 def _parse(argv):
@@ -602,7 +624,7 @@ def _parse(argv):
         if a == "--tier" and "tier" not in opts and i + 1 < len(argv) and argv[i + 1] in TIERS:
             opts["tier"] = argv[i + 1]
             i += 2
-        elif a == "--tool" and i + 1 < len(argv) and argv[i + 1] in TOOLS and argv[i + 1] not in opts.get("tools", ()):
+        elif a == "--tool" and i + 1 < len(argv) and argv[i + 1] in _selectable() and argv[i + 1] not in opts.get("tools", ()):
             opts.setdefault("tools", []).append(argv[i + 1])
             i += 2
         elif a in BOOL_FLAGS and BOOL_FLAGS[a][0] not in opts:

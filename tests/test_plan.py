@@ -962,6 +962,65 @@ class ScanHead(Fixture):
         self.assertEqual(owasp["files"], ["near.txt"])
 
 
+BLOB_BYTES = 3 * 10 ** 6  # under target.MAX_FILE (4,000,000)
+
+
+class ScanHeadMemory(ShardBase):
+    """review-code-q35e.2: plan keeps the head bytes and line count of each pinned blob and drops the blob before the next,
+    so peak memory follows one blob (the reader may hold a copy of it), not their sum. Runs in process, so tracemalloc sees it."""
+    base_files = {"f%d.txt" % i: (("%d" % i) * 99 + "\n") * (BLOB_BYTES // 100) for i in range(10)}
+    feat_files = {"z.txt": "z = 1\n"}
+
+    def test_ten_large_blobs_peak_under_three_blobs(self):
+        import tracemalloc
+        tracemalloc.start()
+        try:
+            self.run_plan(shard_bytes=10 ** 9)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 3 * BLOB_BYTES)  # one blob plus the reader's copy; ten held at once is 30 MB
+
+
+class ToolsByTrust(ShardBase):
+    """review-code-q35e.5: plan gives agents the catalogue's tools by stored trust. External code gets no tool whose queries
+    execute repository code or configuration; own code adds them. Plan runs in process so a record can be added to the catalogue."""
+    LSP = {"how": "language server queries", "runs": True, "knowledge": (), "hooks": (), "agent": ("LSP",), "loss": "type-aware lookup"}
+
+    def given(self, trust=None):
+        if trust:
+            rc, out, _ = cli("ledger.py", ["trust", "set", trust, "--run", self.run_dir], self.repo, self.tmp)
+            self.assertEqual(rc, 0, out)
+        import plan as mod
+        with mock.patch.dict(mod.TOOLS, {"lsp": self.LSP}):
+            p = self.run_plan(tools=("codegraph", "serena", "lsp"))
+        self.assertEqual(self.read_json("ledger.json")["tools"], p["tools"])
+        return p["tools"], p["lost_capabilities"]
+
+    def test_external_and_unanswered_trust_get_no_executing_tool(self):
+        for trust in (None, "external"):
+            with self.subTest(trust=trust):
+                self.assertEqual(self.given(trust), (["codegraph", "serena"], ["lsp: type-aware lookup"]))
+
+    def test_own_trust_adds_the_executing_tool(self):
+        self.assertEqual(self.given("own"), (["codegraph", "lsp", "serena"], []))
+
+    def test_the_catalogue_describes_the_six_tools_of_gh47_once_each(self):
+        import plan as mod
+        self.assertEqual(set(mod.TOOLS), {"codegraph", "serena", "openwolf", "llm-tldr", "language-server", "history"})
+        for name, rec in mod.TOOLS.items():
+            self.assertLessEqual({"how", "runs", "knowledge", "hooks", "agent"}, set(rec), name)
+            self.assertIsInstance(rec["runs"], bool, name)
+            self.assertTrue(rec["how"], name)
+        self.assertEqual({n for n, r in mod.TOOLS.items() if r["runs"]}, {"llm-tldr", "language-server"})
+        self.assertEqual({n for n, r in mod.TOOLS.items() if r["agent"]}, {"codegraph", "serena"})
+
+    def test_a_tool_without_an_agent_surface_is_a_usage_error_for_tool(self):
+        for name in ("openwolf", "language-server"):
+            rc, out = self.plan("plan", "--run", self.run_dir, "--tool", name)
+            self.assertEqual((rc, out["reason"]), (1, "usage"), name)
+
+
 class ReadWorking(unittest.TestCase):
     """read_working reads a regular file whole up to `limit`, calls a larger one too large, and refuses a link, a FIFO
     and a missing file."""

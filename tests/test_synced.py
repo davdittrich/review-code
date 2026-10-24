@@ -175,6 +175,26 @@ class Fork(tt.PRWorld):
         self.assertEqual((rc, out["reason"]), (1, "checkout-not-synced"), out)
         self.assertEqual(tp.snapshot(self.repo), before)
 
+    def test_a_fork_default_branch_lacking_the_upstream_tip_refuses_though_local_head_has_it(self):
+        src = os.path.join(self.tmp, "src")
+        gitfix.run(["git", "fetch", "-q", self.bare, "main"], src)
+        gitfix.run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], src)
+        gitfix.commit(src, {"up.py": "u = 1\n"}, "upstream moves on")
+        gitfix.run(["git", "push", "-q", self.up, "HEAD:refs/heads/main"], src)  # the fork's own main stays behind it
+        self.git("fetch", "-q", self.up, "main")
+        self.git("merge", "-q", "--ff-only", "FETCH_HEAD")  # local HEAD now contains the upstream tip
+        before = tp.snapshot(self.repo)
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)
+        self.assertEqual((rc, out["reason"]), (1, "checkout-not-synced"), out)
+        self.assertIn("fork", out["detail"])
+        self.assertEqual(tp.snapshot(self.repo), before)
+
+    def test_an_unreachable_fork_refuses_remote_unreachable(self):
+        self.git("config", "--unset", "url." + self.bare + ".insteadOf")
+        self.git("config", "url." + os.path.join(self.tmp, "gone.git") + ".insteadOf", self.URL)  # only the fork's URL moves
+        rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)
+        self.assertEqual((rc, out["reason"]), (1, "remote-unreachable"), out)
+
     def test_fork_whose_parent_has_no_local_remote_refuses(self):
         self.git("remote", "remove", "upstream")
         rc, out = tt.call(["7"], self.repo, self.tmp, gh=self.fork_gh)

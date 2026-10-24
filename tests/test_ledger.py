@@ -1,4 +1,5 @@
 """ledger.py: context discovery, base-only conventions, head-tree materialization."""
+import ast
 import io
 import json
 import os
@@ -108,6 +109,15 @@ class TestCategoryLists(unittest.TestCase):
     def test_context_categories_are_the_ledger_categories_between_symbols_and_conventions(self):  # review-code-wyb
         cats = ledger.CATEGORIES
         self.assertEqual(list(ledger._CTX), cats[cats.index("symbols") + 1:cats.index("conventions")])
+
+
+class Style(unittest.TestCase):
+    def test_no_membership_test_is_negated_from_outside(self):  # ruff E713: `not x in y` reads `x not in y`
+        with open(ledger.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        bad = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+               and isinstance(n.operand, ast.Compare) and len(n.operand.ops) == 1 and isinstance(n.operand.ops[0], ast.In)]
+        self.assertEqual(bad, [])
 
 
 class TestNames(unittest.TestCase):

@@ -7,13 +7,13 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-MCP_NAV = ("mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols",
-           "mcp__serena__get_symbols_overview", "mcp__codegraph__codegraph_explore")
-NAV_TOOLS = "tools: " + ", ".join(("Read", "Grep", "Glob") + MCP_NAV)
-NAV_LANES = ("finder", "standards", "spec", "verifier", "spec-verifier")
 import paths  # noqa: F401
 
 import plan  # noqa: E402
+# review-code-q35e.5: a lane's frontmatter is static, so it carries the tools safe for external code, from the catalogue
+MCP_NAV = tuple(n for r in plan.TOOLS.values() if r["agent"] and not r["runs"] for n in r["agent"])
+NAV_TOOLS = "tools: " + ", ".join(("Read", "Grep", "Glob") + MCP_NAV)
+NAV_LANES = ("finder", "standards", "spec", "verifier", "spec-verifier")
 import report  # noqa: E402
 import test_report as tr  # noqa: E402
 import test_plan as tp  # noqa: E402  (module import: its test classes are not collected twice)

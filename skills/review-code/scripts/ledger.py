@@ -695,7 +695,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
 
     # a difference path's reviewed content is its pinned blob; the head listing is the pinned tree for ref kinds
     pin = [p for p in jobs if p in copy]
-    pin_ls = listing if listing is not None and not tj["kind"] in target.INPLACE else \
+    pin_ls = listing if listing is not None and tj["kind"] not in target.INPLACE else \
         _pinned_listing(repo, tj["pinned_tree"], pin) if pin else {}
     top = os.path.realpath(repo) + os.sep
     want = {}

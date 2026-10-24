@@ -657,24 +657,36 @@ def _parent_key(kind: str, info: dict, cwd: str) -> Optional[str]:
     return _forge_key(host, name) if isinstance(name, str) else None
 
 
-def _gate(remote: Optional[str], fork: bool, cwd: str) -> None:
-    """gh#49: a head that is not checked out is reviewed only from the main checkout on the upstream default branch at
-    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip. For a fork
-    `remote` is the parent's: the test is that local HEAD contains the live upstream tip, a deliberate local-HEAD reading
-    (gh#49 allows one ls-remote, and the fork's own published main is never resolved or compared)."""
-    if remote is None:
-        raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
+def _default_tip(remote: str, cwd: str) -> Tuple[str, str]:
+    """(default branch, tip) of `remote`, read live with one ls-remote (nothing is written); remote-unreachable when unreadable."""
     rc, out, _ = _run(["ls-remote", "--symref", "--", remote, "HEAD"], cwd, net=True)
     rows = [ln.split("\t")[0] for ln in out.decode("utf-8", "surrogateescape").split("\n")]  # a ref name holds no LF, but may hold NEL, LS or PS
     branch = next((r[len("ref: refs/heads/"):] for r in rows if r.startswith("ref: refs/heads/")), None)
     tip = next((r for r in rows if OID.fullmatch(r)), None)
     if rc != 0 or not branch or not tip:
-        raise Refuse("remote-unreachable", "the upstream default branch tip could not be read live from " + _q(remote))
+        raise Refuse("remote-unreachable", "the default branch tip could not be read live from " + _q(remote))
+    return branch, tip
+
+
+def _gate(remote: Optional[str], fork: Optional[str], cwd: str) -> None:
+    """gh#49: a head that is not checked out is reviewed only from the main checkout on the upstream default branch at
+    its tip, read live with one ls-remote (nothing is written); a fork's checkout may carry commits on that tip. For a fork
+    `remote` is the parent's and `fork` the change's base repository: its default branch tip is read live too (a second
+    ls-remote) and must contain the upstream tip, as must local HEAD. Nothing is fetched, so a fork tip this repository
+    lacks cannot be tested and refuses."""
+    if remote is None:
+        raise Refuse("no-upstream-remote", "no local remote is the upstream repository")
+    branch, tip = _default_tip(remote, cwd)
     linked = os.path.realpath(_rev_path("--absolute-git-dir", cwd)) != os.path.realpath(
         os.path.join(cwd, _rev_path("--git-common-dir", cwd)))
     on = _head_branch(cwd)
     synced = _run(["merge-base", "--is-ancestor", tip, "HEAD"], cwd)[0] == 0 if fork else _head_oid(cwd) == tip
     if synced and on == branch and not linked:
+        if fork:
+            fbranch, ftip = _default_tip(fork, cwd)
+            if _run(["merge-base", "--is-ancestor", tip, ftip], cwd)[0] != 0:
+                raise Refuse("checkout-not-synced", "the fork %s/%s (tip %s%s) does not contain the upstream tip %s of %s/%s; sync the fork first" % (
+                    _q(fork), _q(fbranch), ftip[:12], "" if _have(ftip, cwd) else ", which this repository lacks", tip[:12], _q(remote), _q(branch)))
         return
     rc, out, _ = _run(["rev-list", "--left-right", "--count", tip + "...HEAD"], cwd)
     n = out.decode().split()
@@ -693,7 +705,7 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
         raise Refuse("no-upstream-remote", "no configured remote matches the pull request's base repository")
     if info["head"] != _head_oid(cwd):
         parent = _parent_key(cand["kind"], info, cwd)
-        _gate(next((n for n, k in _remotes(cwd) if k == parent), None) if parent else remote, bool(parent), cwd)
+        _gate(next((n for n, k in _remotes(cwd) if k == parent), None) if parent else remote, remote if parent else None, cwd)
     _fetch(remote, [info["ref"], "refs/heads/" + info["branch"]], cwd)
     if not _have(info["head"], cwd):
         raise Refuse("head-moved", "the pull request head changed after it was read")
@@ -1294,7 +1306,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
                 _run(["config", "--get", "remote.origin.url"], top)[0] != 0:  # no url: ls-remote reads a path `origin`
             raise Refuse("no-upstream-remote", "the upstream is the remote behind origin/HEAD, and there is none "
                                                "(`git remote set-head origin --auto` sets it)")  # gh#49
-        _gate("origin", False, top)
+        _gate("origin", None, top)
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
