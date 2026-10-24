@@ -1,5 +1,6 @@
 """The integrity check (gh#51): what changed in the checkout, its index and tool knowledge while a review ran.
 It reports and never blocks; driven through target.py, ledger.py and report.py on fixture repositories."""
+import hashlib
 import json
 import os
 import subprocess
@@ -114,6 +115,18 @@ class Integrity(tpost.Base):
             snap = target.integrity(self.repo)  # set before the snapshot, cleared during the run
             gitfix.run(["git", "update-index", flag.replace("--", "--no-", 1), "src/calc.py"], self.repo)
             self.assertTrue(target.integrity_changes(self.repo, snap)["index"], flag)
+
+    def test_a_snapshot_from_another_version_skips_the_index_with_a_note(self):  # review-code-87o1.11
+        old = dict(target.integrity(self.repo), version=1, index=hashlib.sha256(self.index_bytes()).hexdigest())
+        with open(os.path.join(self.run_dir, "integrity.json"), "w", encoding="utf-8") as fh:
+            json.dump(old, fh)  # the shape 4504ca6 wrote: version 1, a digest of the raw index file
+        out = self.render().split("\n")
+        self.assertNotIn("integrity warning: index " + CAUSE, out)
+        self.assertNotIn(self.CLEAN, out)  # it would say the index did not change, which was not checked
+        self.assertIn("integrity note: index not compared: snapshot from another version", out)
+        got = self.render("json")["integrity"]
+        self.assertEqual((got["index"], got["working_tree"], got["version_note"]),
+                         (False, [], "index not compared: snapshot from another version"))
 
     def test_a_staged_change_is_an_index_warning(self):
         tp.write(self.repo, "src/calc.py", "edited before the run\n")

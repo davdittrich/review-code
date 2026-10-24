@@ -1203,7 +1203,7 @@ def integrity(top: str) -> dict:
             for f in files:
                 p = os.path.join(root, f)
                 know[shown(os.path.relpath(p, top).replace(os.sep, "/"))] = _stat(p)
-    snap = {"version": 1, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
+    snap = {"version": 2, "status": hashlib.sha256(out).hexdigest(), "index": index, "dirty": dirty, "knowledge": know}
     if len(unt) > UNTRACKED_CAP:
         snap["untracked"] = {"count": len(unt), "digest": dig.hexdigest()}
     if len(trk) > TRACKED_CAP:
@@ -1230,8 +1230,11 @@ def integrity_changes(top: str, snap: dict) -> dict:
         a, b = snap[key], now[key]
         return sorted(p for p in set(a) | set(b) if a.get(p) != b.get(p))
 
-    res = {"working_tree": [p for p in moved("dirty") if not _knowledge(p)], "index": snap["index"] != now["index"],
+    same = snap.get("version") == now["version"]  # 87o1.11: `index` digests another thing in another version
+    res = {"working_tree": [p for p in moved("dirty") if not _knowledge(p)], "index": same and snap["index"] != now["index"],
            "knowledge": moved("knowledge"), "cause": CAUSE}
+    if not same:
+        res["version_note"] = "index not compared: snapshot from another version"
     for k, n in caps.items():  # a side under the cap holds no digest, so it differs from a side over it (the counts differ too)
         res[k] = {"count": n, "changed": snap.get(k) != now.get(k)}
     return res

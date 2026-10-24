@@ -79,7 +79,8 @@ line lists item numbers; it gets no verifier call, class inferred, reason web-so
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
 lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
 checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. render adds
-integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause, and only above 5,000
+integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause, version_note only when the
+snapshot is from another version (index then not compared, false), and only above 5,000
 untracked files untracked{count, changed}, above 5,000 changed tracked files tracked{count, changed} (changed is a warning, not
 itemised)}, or null without a snapshot. A handoff for a file listed by a plan.json pack
 (path inside <run>/inputs/packs) carries that pack's `## Do not flag` section in a fenced do-not-flag: block.
@@ -1642,7 +1643,8 @@ def _text(doc):
     if ig:
         rows = (["integrity warning: %s (working tree) %s" % (e(p), ig["cause"]) for p in ig["working_tree"]]
                 + (["integrity warning: index " + ig["cause"]] if ig["index"] else [])
-                + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]])
+                + ["integrity note: %s %s" % (e(p), ig["cause"]) for p in ig["knowledge"]]
+                + (["integrity note: " + ig["version_note"]] if ig.get("version_note") else []))  # a row: no clean line
         caps = [(k, ig[k]) for k in ("tracked", "untracked") if ig.get(k)]  # over a snapshot cap: a change is detected, not itemised
         rows = ["integrity warning: %s files changed (not fully seen: %d %s files, not itemised) %s" % (k, u["count"], k, ig["cause"])
                 for k, u in caps if u["changed"]] + rows
