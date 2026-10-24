@@ -1649,6 +1649,31 @@ class CorruptTarget(Base):
         self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"), out)
 
 
+class NestedRunFile(gitfix.FeatureRepo):
+    """review-code-oved: a 100000-deep run file refuses as the unparseable file does, never a traceback."""
+    base_files, feat_files = {"README.md": "r\n"}, {"a.txt": "a\n"}
+
+    def pinned(self):
+        rc, out, _ = gitfix.cli("target.py", ["main"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)["run"]
+
+    def build(self, run):
+        return lambda: gitfix.cli("ledger.py", ["build", "--run", run], self.repo, self.tmp)
+
+    def test_a_nested_target_json_refuses_no_target(self):
+        run = self.pinned()
+        rc, out, _ = gitfix.nested_reads_as_corrupt(self, os.path.join(run, "target.json"), self.build(run))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
+
+    def test_a_nested_difference_json_refuses_no_target(self):
+        run = self.pinned()
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            diff = json.load(fh)["difference"]
+        rc, out, _ = gitfix.nested_reads_as_corrupt(self, diff, self.build(run))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "no-target"))
+
+
 class GitProcessCount(Base):
     """review-code-dz5l: symbol refs and commit messages cost one git process each, whatever their number."""
 

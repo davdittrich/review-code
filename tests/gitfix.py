@@ -103,6 +103,19 @@ def cli(script, args, cwd, tmp, stdin=b"", extra=None):
     return p.returncode, p.stdout.decode("utf-8"), p.stderr.decode("utf-8")
 
 
+def nested_reads_as_corrupt(case, path, call):
+    """review-code-oved: a 100000-deep file at `path` must read as any unparseable file does: `call()` (rc, out, err) gives the
+    same rc and stdout as for `{`, and no traceback. Returns the nested result."""
+    got = []
+    for text in ("{", "[" * 100000 + "]" * 100000):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        got.append(call())
+    case.assertEqual(got[1][2], "")  # no traceback
+    case.assertEqual(got[1][:2], got[0][:2])
+    return got[1]
+
+
 def wire(o):
     """dict -> [[key, value], ...], recursively: the brace-free wire form (the Bash guard denies a brace and a quote)."""
     if isinstance(o, dict):

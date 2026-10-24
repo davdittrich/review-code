@@ -594,7 +594,7 @@ def _difference(tj: dict) -> List[str]:
     try:
         with open(tj["difference"], encoding="utf-8") as fh:
             return sorted(e["path"] for e in json.load(fh)["paths"] if e["tag"] != "untracked")
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         raise target.Refuse("no-target", "the run directory has no readable difference.json")
 
 
@@ -1037,7 +1037,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # not load_json: it would refuse bad-target for a file this refuses no-target
         raise target.Refuse("no-target", "the run directory has no target.json")
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
