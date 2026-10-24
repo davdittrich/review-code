@@ -1425,6 +1425,16 @@ class SpecAxis(Base):
         out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "the adder breaks the stated rule"})
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["confirmed"]), ([None], [sid]))  # a paraphrase stands
 
+    def test_a_batch_verdict_reason_copying_a_spec_line_leaves_a_rejected_row(self):  # GitHub #63
+        rows, inner, _, _ = self.spec_rows()
+        self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}), extra=["--batch", "1"])
+        self.assertEqual((rc, [r["check"] for r in json.loads(out)["rejected"]]), (0, ["copied-from-spec"]))
+        with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
+            self.assertRegex(fh.read(), r"\Afailed-validation:copied-from-spec \[.*\n\Z")
+        self.assertEqual(json.loads(self.rep("status")[1])["rejected_batches"], {"1": 1})
+
     def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
         _, inner, _, _ = self.spec_rows()
         (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]

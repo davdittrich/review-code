@@ -1431,6 +1431,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         if fix and any(_hostile(pin, p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
             cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
         if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
+            bad.append(("copied-from-spec", ln))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
             continue
         kind, down = o["verdict"], None  # a downgrade is a refuted verdict that cannot stand, and says why
