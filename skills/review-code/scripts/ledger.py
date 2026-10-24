@@ -879,7 +879,7 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
     """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a token of the
     branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
-    the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
+    the spec finder named (`found`; any other path is dropped, and so is a decision record: the record index lists it), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
