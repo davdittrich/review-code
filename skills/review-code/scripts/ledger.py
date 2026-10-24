@@ -1166,6 +1166,12 @@ def _history_lines(run: str, h: dict) -> str:
                 os.path.join(run, "history"), h["files"]))
 
 
+def difference_path(tj: dict) -> Optional[str]:
+    """The checkout-difference file a run's target.json names: difference_list when present, else the older difference key;
+    None when neither exists (a run pinned before gh#48)."""
+    return tj.get("difference_list", tj.get("difference"))
+
+
 def _basis(tj: dict) -> str:
     """The pin lines every lane input carries: the pinned tree and head, and the difference file by path, never its
     paths (gh#48). Empty for a run pinned before the difference existed."""
@@ -1173,7 +1179,7 @@ def _basis(tj: dict) -> str:
         return ""
     n = tj["difference_count"]
     return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
-        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", tj.get("difference_list", tj["difference"]), n, "" if n == 1 else "s")
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", difference_path(tj), n, "" if n == 1 else "s")
 
 
 def context(run: str) -> dict:
@@ -1184,7 +1190,7 @@ def context(run: str) -> dict:
     tj = target.load_json(run, "target.json")
     flagged, routine = hidden_notes(led["hidden_text"])  # gh#25: signalled spans singly, the rest as a count per file
     n = tj.get("difference_count")
-    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", tj.get("difference_list", tj["difference"]))] if n is not None else []
+    seen = ["checkout difference: %d path%s, listed in %s" % (n, "" if n == 1 else "s", difference_path(tj))] if n is not None else []
     lists = {"excluded": [{"path": e["path"], "reason": e["reason"]} for e in tj["excluded"]],
              "notes": seen + led["notes"], "conventions": [c["file"] for c in led["conventions"]], "ignored": led["ignored"],
              "hidden_text": flagged, "hidden_routine": routine, "hidden_chars": led["hidden_chars"]}

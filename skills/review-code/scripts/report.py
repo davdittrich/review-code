@@ -1218,7 +1218,7 @@ def _ingest(run, text, lane, shard):
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = (lambda t: t.get("difference_list", t.get("difference")))(target.load_json(run, "target.json"))
+    diff = ledger.difference_path(target.load_json(run, "target.json"))
     texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
     try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
         for t in texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)]:  # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
