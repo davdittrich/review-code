@@ -964,10 +964,8 @@ def _section(head: str, items: List[tuple], nonce: str) -> str:
 
 
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
-    try:  # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
-        run.encode("utf-8")
-    except UnicodeEncodeError:
-        raise target.Refuse("non-utf8-name", "the run directory path is not valid UTF-8")
+    # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
+    target.require_utf8([run], "non-utf8-name", "the run directory path is not valid UTF-8")
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)

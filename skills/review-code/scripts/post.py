@@ -694,11 +694,8 @@ def _preview(payload: dict) -> str:
 
 
 def _utf8(paths: List[str]) -> None:
-    try:  # a lone surrogate path would reach the forge as a bogus JSON path and sink the whole review
-        for p in paths:
-            p.encode("utf-8")
-    except UnicodeEncodeError:
-        raise Refuse("non-utf8-name", "a finding path is not valid UTF-8")
+    # a lone surrogate path would reach the forge as a bogus JSON path and sink the whole review
+    target.require_utf8(paths, "non-utf8-name", "a finding path is not valid UTF-8")
 
 
 def build(run: str) -> dict:

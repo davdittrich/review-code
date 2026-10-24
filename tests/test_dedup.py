@@ -27,6 +27,22 @@ class SingleDefinition(unittest.TestCase):
         self.assertEqual(target.REGULAR, ("100644", "100755"))
 
 
+class RequireUtf8(unittest.TestCase):  # 87o1.6
+    def test_a_lone_surrogate_refuses_with_the_callers_reason_and_detail(self):
+        with self.assertRaises(target.Refuse) as cm:
+            target.require_utf8(["fine", "bad\udcff"], "non-utf8-name", "why")
+        self.assertEqual((cm.exception.reason, cm.exception.detail), ("non-utf8-name", "why"))
+
+    def test_valid_text_passes(self):
+        target.require_utf8(["fine", "café", ""], "non-utf8-name", "why")
+
+    def test_the_posting_guard_keeps_its_own_reason(self):
+        import post
+        with self.assertRaises(post.Refuse) as cm:
+            post._checked(["bad\udcff"])
+        self.assertEqual(cm.exception.reason, "unsafe-text")
+
+
 class DifferencePath(unittest.TestCase):  # 87o1.5
     PIN = {"pinned_tree": "t", "pinned_head": "h", "difference_count": 2}
 

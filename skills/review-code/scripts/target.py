@@ -60,6 +60,16 @@ class Refuse(Exception):
         self.detail = detail
 
 
+def require_utf8(texts, reason: str, detail: str) -> None:
+    """Refuse with `reason` when any text holds a lone surrogate (a non-UTF-8 path read lossily, or a JSON \\udcxx escape): it
+    cannot be written out as UTF-8."""
+    try:
+        for t in texts:
+            t.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refuse(reason, detail)
+
+
 _NO_FILTERS: dict = {}  # cwd -> its GIT_CONFIG_* entries (_no_filters); cleared after an outside command (repro._execute)
 
 

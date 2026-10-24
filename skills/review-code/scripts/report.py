@@ -1220,11 +1220,10 @@ def _ingest(run, text, lane, shard):
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
     diff = ledger.difference_path(target.load_json(run, "target.json"))
     texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
-    try:  # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
-        for t in texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)]:  # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
-            t.encode("utf-8")
-    except UnicodeEncodeError:
-        raise target.Refuse("non-utf8-name", "a finding path or text is not valid UTF-8")
+    # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
+    # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
+    target.require_utf8(texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)],
+                        "non-utf8-name", "a finding path or text is not valid UTF-8")
     for stale in ("handoff", "repro", "replies"):
         shutil.rmtree(os.path.join(run, stale), ignore_errors=True)
     for n in _rejected(run)[1]:  # their replies are gone (4gj)
