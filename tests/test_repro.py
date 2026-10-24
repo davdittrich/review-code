@@ -80,6 +80,14 @@ class Tracer(Base):
         rc, out, _ = cli("repro.py", ["run", "--run", run], self.repo, self.tmp)
         self.assertEqual((rc, json.loads(out)["reason"]), (1, "usage"))
 
+    def test_a_nested_target_json_refuses_no_target_like_a_corrupt_one(self):  # review-code-oved
+        run = self.start()
+        rc, out, _ = gitfix.nested_reads_as_corrupt(
+            self, os.path.join(run, "target.json"),
+            lambda: cli("repro.py", ["run", "--run", run, "--id", FID, "--test", "tests/test_calc.py", "--", "true"],
+                        self.repo, self.tmp, PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
+
 
 class Rules(Base):
     def test_env_allowlist_and_home(self):

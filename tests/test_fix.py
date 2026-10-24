@@ -1,6 +1,8 @@
 """fix.py on real gitfix repos: plan, baseline, begin, a simulated fixer edit, finish, report."""
 import ast
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -200,6 +202,45 @@ class Tracer(Base):
         bad = {"commit", "push", "add", "stash", "reset", "checkout", "switch", "merge", "rebase", "tag", "fetch",
                "pull", "am"}
         self.assertEqual([n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and n.value in bad], [])
+
+    def test_a_nested_plan_json_reads_in_the_report_as_a_corrupt_one(self):  # review-code-oved
+        run, _ = self.ready()
+        self.go(run)
+        gitfix.nested_reads_as_corrupt(self, os.path.join(run, "fix", "plan.json"),
+                                       lambda: cli("fix.py", ["report", "--run", run], self.repo, self.tmp))
+
+    def nested_refuses(self, run, args):
+        """review-code-l2sf: a 100000-deep plan.json whose own digest checks out ends in rc 1 and one JSON refuse line, no traceback."""
+        nested = ("[" * 100000 + "]" * 100000).encode("ascii")
+        with open(os.path.join(run, "fix", "plan.json"), "wb") as fh:
+            fh.write(nested)
+        rc, out, err = cli("fix.py", args(hashlib.sha256(nested).hexdigest()), self.repo, self.tmp)
+        self.assertEqual((rc, err), (1, ""))
+        (line,) = out.splitlines()
+        self.assertEqual(json.loads(line)["status"], "refuse")
+
+    def test_baseline_refuses_a_nested_plan_json_with_its_own_digest(self):
+        run = self.pin()
+        (fid,) = self.ingest(run, CAND)
+        self.confirm(run, (fid, CITE))
+        self.assertEqual(self.plan(run)[0], 0)
+        self.nested_refuses(run, lambda d: ["baseline", "--run", run, "--digest", d])
+        self.assertFalse(os.path.exists(os.path.join(run, "fix", "state.json")))
+
+    def test_begin_refuses_a_nested_plan_json_with_its_own_digest(self):
+        run, _ = self.ready()
+        self.go(run)
+        sj = os.path.join(run, "fix", "state.json")
+
+        def args(digest):  # state.json holds the digest begin compares, so the nested file's own is written there
+            with open(sj, encoding="utf-8") as fh:
+                st = json.load(fh)
+            st["digest"] = digest
+            with open(sj, "w", encoding="utf-8") as fh:
+                json.dump(st, fh)
+            return ["begin", "--run", run]
+
+        self.nested_refuses(run, args)
 
 
 def append(path, text):
@@ -408,8 +449,21 @@ class DerivedFixes(Base):
 class SecondFileNamed(Base):
     feat_files = {"src/calc.py": FEAT, "src/dup.py": "def f(x):\n    return x * 2\n", "src/utils.py": "def helper():\n    pass\n"}
 
-    def skipped(self, lane, cand):
+    def pinned_once(self):
+        """pin() once per test; the returned `again()` puts the pinned run dir back as pin() left it (nothing ingested),
+        so each subtest starts from a fresh pin without its three set-up processes."""
         run = self.pin()
+        saved = run + ".pinned"
+        shutil.copytree(run, saved, symlinks=True)
+
+        def again():
+            shutil.rmtree(run)
+            shutil.copytree(saved, run, symlinks=True)
+            return run
+        return again
+
+    def skipped(self, lane, cand, run=None):
+        run = run or self.pin()
         rc, out = self.tool("report.py", ["ingest", "--run", run, "--lane", lane],
                             lines(cand, {"inspected": sorted({cand["path"], "src/calc.py"})}))
         self.assertEqual(rc, 0, out)
@@ -420,14 +474,13 @@ class SecondFileNamed(Base):
 
     def test_fix_naming_a_second_tracked_file_is_kept_for_the_fixer_to_decline_or_apply(self):
         # review-code-3ea.6: a reuse fix names the helper it calls; only finish enforces one edited file
+        again = self.pinned_once()
         for cat, text in (("lean", "call helper in src/utils.py"), ("smell", "call helper in src/utils.py."),
                           ("altitude", "see src/utils.py:1"), ("lean", "call helper in ./src/utils.py")):
             with self.subTest(cat=cat, text=text):
                 cand = two("src/dup.py", 2, "return x * 2", text, category=cat)
-                rc, j = self.skipped("standards", cand)
+                rc, j = self.skipped("standards", cand, again())
                 self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
-                self.tearDown()
-                self.setUp()
 
     def test_comment_finding_naming_a_second_file_is_kept(self):
         cand = two("src/dup.py", 2, "return x * 2", "see src/utils.py", category="comment")
@@ -440,12 +493,11 @@ class SecondFileNamed(Base):
         self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
 
     def test_standards_fix_naming_only_its_own_or_an_untracked_path_is_kept(self):
+        again = self.pinned_once()
         for text in ("inline into src/dup.py", "call helper in src/missing.py"):
             with self.subTest(text=text):
-                rc, j = self.skipped("standards", two("src/dup.py", 2, "return x * 2", text, category="lean"))
+                rc, j = self.skipped("standards", two("src/dup.py", 2, "return x * 2", text, category="lean"), again())
                 self.assertEqual((rc, j["apply"], j["skipped"]), (0, 1, 0), j)
-                self.tearDown()
-                self.setUp()
 
 
 class NoNarrowing(Base):
@@ -598,21 +650,25 @@ class BeginGates(Base):
         self.assertEqual((rc, j), (1, {"status": "refuse", "reason": "in-flight"}))
 
     def test_moved_state_refused(self):
-        for reason, mutate in (
-                ("head-moved", lambda run: self.git("commit", "-q", "--allow-empty", "-m", "later")),
-                ("refs-moved", lambda run: self.git("branch", "other")),
-                ("tree-changed", lambda run: append(os.path.join(self.repo, "src/calc.py"), "# x\n")),
-                ("digest-mismatch", lambda run: append(os.path.join(run, "fix", "plan.json"), " "))):
+        run, _ = self.ready()  # one run for all four cases: each mutation is undone before the next
+        self.go(run)
+        plan = os.path.join(run, "fix", "plan.json")
+        good_plan = slurp(plan)
+        for reason, mutate, undo in (
+                ("head-moved", lambda: self.git("commit", "-q", "--allow-empty", "-m", "later"),
+                 lambda: self.git("reset", "-q", "--hard", "HEAD~1")),
+                ("refs-moved", lambda: self.git("branch", "other"), lambda: self.git("branch", "-q", "-D", "other")),
+                ("tree-changed", lambda: append(os.path.join(self.repo, "src/calc.py"), "# x\n"),
+                 lambda: self.git("checkout", "-q", "--", "src/calc.py")),
+                ("digest-mismatch", lambda: append(plan, " "), lambda: spit(plan, good_plan))):
             with self.subTest(reason=reason):
-                run, _ = self.ready()
-                self.go(run)
-                mutate(run)
-                rc, _, j = self.begin(run)
-                self.assertEqual((rc, j), (1, {"status": "refuse", "reason": reason}))
-                self.git("checkout", "-q", "--", "src/calc.py")
-                self.git("branch", "-q", "-D", "other") if reason == "refs-moved" else None
-                if reason == "head-moved":
-                    self.git("reset", "-q", "--hard", "HEAD~1")
+                mutate()
+                try:
+                    rc, _, j = self.begin(run)
+                    self.assertEqual((rc, j), (1, {"status": "refuse", "reason": reason}))
+                finally:
+                    undo()
+        self.assertEqual(self.begin(run)[2]["status"], "ok")  # no case left residue in the shared run
 
     def test_test_run_cache_is_not_a_change(self):
         run, _ = self.ready()
@@ -789,6 +845,11 @@ LOCK = '{"lock": 1}\n'
 def slurp(path):
     with open(path, "rb") as fh:
         return fh.read()
+
+
+def spit(path, data):
+    with open(path, "wb") as fh:
+        fh.write(data)
 
 
 class Scope(Base):
@@ -1125,6 +1186,22 @@ class Tamper(Scope):
             self.assertEqual(fix._seal(run, fid), bg["seal"])  # the next subtest starts untampered, as a fresh set-up would
         return run, fid, bg, reset
 
+    def inproc(self, args):
+        """fixrun without the interpreter start: fix.main in this process under the isolated git env, signal handlers
+        put back (finish installs its own); the same (rc, output, last JSON line)."""
+        names = [n for n in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, n)]
+        saved = {n: signal.getsignal(getattr(signal, n)) for n in names}
+        buf = io.StringIO()
+        try:
+            with gitfix.isolated(self.tmp), contextlib.redirect_stdout(buf):
+                rc = fix.main(args)
+        finally:
+            for n, h in saved.items():
+                if h is not None:
+                    signal.signal(getattr(signal, n), h)
+        out = buf.getvalue()
+        return rc, out, json.loads([x for x in out.split("\n") if x][-1])
+
     def tampered(self, run, bg, fid):
         calls = []
         orig = target._run
@@ -1253,10 +1330,13 @@ class Tamper(Scope):
                     good = json.load(fh)
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(make(good))
+                # each case runs in this process (the refusal is decided before any git call); the nested case
+                # also runs as a real process, where the interpreter's own recursion limit applies
+                call = self.fixrun if name == "deeply nested" else self.inproc
                 try:
                     for args in (["finish", "--run", run, "--seal", bg["seal"], "--status", "applied"],
                                  ["begin", "--run", run], ["report", "--run", run]):
-                        rc, _, j = self.fixrun(args)
+                        rc, _, j = call(args)
                         self.assertEqual((rc, j["status"], j.get("reason")), (1, "refuse", "tampered"), (args[0], j))
                     self.assertEqual(slurp(self.p("src/calc.py")), edited)
                 finally:

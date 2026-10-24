@@ -19,7 +19,7 @@ import shutil
 import stat
 import time
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 import history
@@ -62,7 +62,8 @@ _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
-ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, so spec.md's length never follows it
+ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, or as ADR_OVER past MAX_FILE, so spec.md's length never follows it
+ADR_OVER = "over %dM" % (target.MAX_FILE // 10 ** 6)  # ADR_WIDTH characters: the size field of a record left unread, whose real size is not printed
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -96,18 +97,18 @@ def _worktree_names(repo: str, untracked: List[str]) -> List[str]:
     return sorted(n for n in set(tracked) | set(untracked) if os.path.lexists(os.path.join(repo, n)))
 
 
-def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, Optional[bytes]]]:
-    """(oid, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
+def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, int, Optional[bytes]]]:
+    """(oid, size, raw bytes) per blob, one object at a time (target.cat_batch): no filters, no textconv, no archive
     attributes; a missing id is skipped, a failing git run refuses, and a blob over target.MAX_FILE comes
     as None, unread (6xl.75)."""
     uniq = sorted(set(oids))
     for f, data in target.cat_batch([o.encode() for o in uniq], repo, True, target.MAX_FILE):
         if len(f) == 3 and f[1] == b"blob":
-            yield f[0].decode(), data
+            yield f[0].decode(), int(f[2]), data
 
 
 def _blobs(repo: str, oids) -> Dict[str, bytes]:
-    return dict(_blob_stream(repo, oids))
+    return {oid: data for oid, _, data in _blob_stream(repo, oids)}
 
 
 def _grep(repo: str, rev: Optional[str], patterns: List[str], names_only: bool = False,
@@ -213,9 +214,16 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
     callers, capped["callers"] = [], False
     # one grep for every symbol; a hit goes to each symbol it holds as a whole word (git's word chars: ASCII alnum, _)
-    rxs = {s["name"]: re.compile("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(s["name"])) for s in symbols}
-    found = {n: [] for n in rxs}
-    for h in _grep(repo, rev, list(rxs)) if rxs else ():
+    names = [s["name"] for s in symbols]
+    found = {n: [] for n in names}
+    # An ASCII name is exactly one maximal [A-Za-z0-9_] run, so two never overlap and one alternation scan finds them all
+    # per hit. A name with a non-ASCII tail can overlap another ("foo", "fooé"), so those keep a regex each.
+    asc = [n for n in names if n.isascii()]
+    comb = re.compile("(?<![A-Za-z0-9_])(?:%s)(?![A-Za-z0-9_])" % "|".join(map(re.escape, asc))) if asc else None
+    rxs = {n: re.compile("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n)) for n in names if not n.isascii()}
+    for h in _grep(repo, rev, names) if names else ():
+        for n in {m.group() for m in comb.finditer(h[2])} if comb else ():
+            found[n].append(h)
         for n, rx in rxs.items():
             if rx.search(h[2]):
                 found[n].append(h)
@@ -586,7 +594,7 @@ def _difference(tj: dict) -> List[str]:
     try:
         with open(tj["difference"], encoding="utf-8") as fh:
             return sorted(e["path"] for e in json.load(fh)["paths"] if e["tag"] != "untracked")
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         raise target.Refuse("no-target", "the run directory has no readable difference.json")
 
 
@@ -720,7 +728,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
             skipped.append({"path": p, "reason": "submodule"})
         elif mode is not None:
             want.setdefault(oid, []).append(p)
-    for oid, data in _blob_stream(repo, want):
+    for oid, _, data in _blob_stream(repo, want):
         for p in want[oid]:
             if data is None:
                 skipped.append({"path": p, "reason": "too-large"})
@@ -827,6 +835,35 @@ def _is_record(p: str) -> bool:
     return p.lower().endswith(_PROSE_EXT) and bool(_ADR_DIRS & set(p.lower().split("/")[:-1]))
 
 
+class _Facts(NamedTuple):
+    """What one record's bytes say; the defaults are a record whose blob was never read."""
+    size: int = 0
+    is_text: bool = False
+    title: Optional[str] = None
+    names: bool = False  # names a changed file or issue
+
+
+def _record_facts(size: int, data: Optional[bytes], spots, issues) -> _Facts:
+    """The `_Facts` of one record's bytes."""
+    text = _text(data) if data is not None else None
+    low = text.lower() if text else ""
+    first = next((ln.strip().lstrip("#").strip() for ln in sanitize._BREAK.split(text or "") if ln.strip()), "")
+    return _Facts(size, text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
+                  bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+
+
+def _record_row(p: str, facts: _Facts, hay: str, toks) -> tuple:
+    """(size, title, why list) of the record at `p` from its `_record_facts`."""
+    size, is_text, title, names = facts
+    n = re.match(r"[0-9]+", posixpath.basename(p))
+    why = [w for w, hit in (
+        ("path named", p.lower() in hay),
+        ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
+        ("names a changed file or issue", names),
+        ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
+    return size, title if is_text else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE, why
+
+
 def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", changed=(), toks=()) -> dict:
     """path -> (size in bytes, title, why) of the decision records: prose files under an adr, adrs, decisions or
     architecture-decisions directory at any depth, and under a directory the spec finder named. Every record is listed and
@@ -842,24 +879,12 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     hay = hay.lower()
     issues = set(_ISSUE.findall(hay))
     spots = [c.lower() for c in changed] + [posixpath.dirname(c).lower() + "/" for c in changed if posixpath.dirname(c)]
-    got = {}  # blob id -> (size, text or not, title, names a changed file or issue): one record's bytes held at a time (n4lk.2)
-    for f, data in target.cat_batch([o.encode() for o in oids], repo, True, target.MAX_FILE):
-        if len(f) == 3 and f[1] == b"blob":
-            text = _text(data) if data is not None else None
-            low = text.lower() if text else ""
-            first = next((ln.strip().lstrip("#").strip() for ln in (text or "").split("\n") if ln.strip()), "")
-            got[f[0].decode()] = (int(f[2]), text is not None, sanitize.sanitize_prose(first[:100]) if text is not None else None,
-                                  bool(text) and (any(c in low for c in spots) or bool(issues & set(_ISSUE.findall(text)))))
+    got = {}  # blob id -> _Facts: one record's bytes held at a time (n4lk.2)
+    for oid, size, data in _blob_stream(repo, oids):
+        got[oid] = _record_facts(size, data, spots, issues)
     info = {}
     for p in cand:
-        size, is_text, title, names = got.get(reg[p], (0, False, None, False))
-        n = re.match(r"[0-9]+", posixpath.basename(p))
-        why = [w for w, hit in (
-            ("path named", p.lower() in hay),
-            ("number named", bool(n and re.search(r"(?<![0-9a-z])adr[-_ ]?0*%d(?![0-9])" % int(n.group()), hay))),
-            ("names a changed file or issue", names),
-            ("branch name", any(t in posixpath.basename(p).lower() for t in toks))) if hit]
-        info[p] = (size, title if is_text else "(not text: a NUL byte or over %d bytes)" % target.MAX_FILE, why)
+        info[p] = _record_row(p, got.get(reg[p], _Facts()), hay, toks)
     out = {}
     for p in sorted(cand, key=lambda p: (-len(info[p][2]), p)):
         size, title, why = info[p]
@@ -870,7 +895,7 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
 def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every: bool = False, skip=(), found=()) -> Dict[str, str]:
     """path -> text of spec files: head files under docs/, specs/ or .scratch/ whose name holds a token of the
     branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
-    the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
+    the spec finder named (`found`; any other path is dropped, and so is a decision record: the record index lists it), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
@@ -884,7 +909,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
             out[p] = text
     for p in found:
         rel = posixpath.normpath(str(p).replace(os.sep, "/"))
-        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out or rel in skip:
+        if len(out) >= CAP_SPEC_FILES or rel not in reg or rel in out or rel in skip or _is_record(rel):
             continue
         data = _blobs(repo, [reg[rel]]).get(reg[rel])
         text = _text(data) if data is not None else None
@@ -1012,7 +1037,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     try:
         with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
             tj = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # not load_json: it would refuse bad-target for a file this refuses no-target
         raise target.Refuse("no-target", "the run directory has no target.json")
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
@@ -1083,7 +1108,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
                       "## Decision records\n" + ("\n\n".join(
-                          "### %s (%0*d bytes): %s\n%s" % (lab, ADR_WIDTH, size, why, block(title, nonce))
+                          "### %s (%s bytes): %s\n%s" % (lab, "%0*d" % (ADR_WIDTH, size) if size <= target.MAX_FILE else ADR_OVER, why, block(title, nonce))
                           for lab, (size, title, why) in sections["adrs"]) or "none") + "\n")) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
@@ -1273,7 +1298,7 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             out = build(argv[2], spec, found, nit)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
-    except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:
         rc = 0

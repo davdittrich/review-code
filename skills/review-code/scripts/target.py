@@ -220,7 +220,7 @@ def load_target(run: str) -> dict:
         tj["repo"], tj["head_sha"], tj["url"]
         if isinstance(tj["kind"], str) and isinstance(tj["included"], list):
             return tj
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         pass
     raise Refuse("no-target", "the run directory has no usable target.json")
 
@@ -1105,7 +1105,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in REGULAR}
     other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
         git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
-    tmp, blobs = [], {}
+    tmp, blobs, idxmode = [], {}, {}
     try:
         if not inplace:
             paths = {p: "absent-in-checkout" if s == "D" else "untracked" if s == "A" else "modified" for s, p in edits}
@@ -1115,8 +1115,14 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
             paths = {p: "absent-in-checkout" if s == "D" else "modified" for s, p in edits}
             paths.update((p, "untracked") for p in other)
             if kind != "staged" and _NO_FILTERS.get(top):  # a filter is configured: an unedited file's blob is filtered
-                attrs = _split(git_bytes(["check-attr", "-z", "--stdin", "filter"], top,
-                                         stdin=git_bytes(["ls-files", "-z"], top, env=env)))
+                # "<mode> <oid> <stage>\t<path>" per entry (an unmerged path repeats); the raw diff lists only edits, so an
+                # unedited file's index mode comes from here, which core.fileMode=false makes the only mode that counts
+                ent = [(e[:6], e.partition("\t")[2]) for e in _split(git_bytes(["ls-files", "-s", "-z"], top, env=env))]
+                for m, p in ent:
+                    if m in REGULAR:
+                        idxmode.setdefault(p, m)
+                attrs = _split(git_bytes(["check-attr", "-z", "--stdin", "filter"], top, stdin="".join(
+                    p + "\0" for p in dict.fromkeys(p for _, p in ent)).encode("utf-8", "surrogateescape")))
                 paths.update((p, "modified") for p, v in zip(attrs[0::3], attrs[2::3])
                              if v not in ("unspecified", "unset") and p not in paths)  # so it is hashed as on disk
             # staged pins the index as it is; every other in-place kind pins the whole checkout, so its difference is empty
@@ -1143,7 +1149,7 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
                     write_atomic(src, data)
                     tmp.append(src)
                 srcs.append((p, "120000" if link else ("100755" if st.st_mode & 0o100 else "100644") if trust
-                             else imode.get(p, "100644"), src))
+                             else imode.get(p) or idxmode.get(p, "100644"), src))
             if srcs:
                 oids = git(["hash-object", "-w", "--no-filters", "--stdin-paths"], top,
                            stdin=b"".join(_c_quoted(s) + b"\n" for _, _, s in srcs)).split()

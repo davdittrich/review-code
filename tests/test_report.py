@@ -231,14 +231,14 @@ class Derivation(Base):
 
     def test_a_base_record_never_upgrades_a_confirmed_finding(self):
         for category in ("bug", "security", "test"):
+            self.rep("discard")  # one ingest per category: the class is read live from repro/ on every render
+            shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
+            self.ingest(cand(Q_ADD, 8, category=category))
+            n = fid("src/calc.py", category, Q_ADD)
+            self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
+            os.makedirs(os.path.join(self.run_dir, "repro"))
             for mode, want in (("base", "traced"), ("run", "reproduced"), (None, "reproduced")):  # None: a legacy record
                 with self.subTest(category=category, mode=mode):
-                    self.rep("discard")
-                    shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
-                    self.ingest(cand(Q_ADD, 8, category=category))
-                    n = fid("src/calc.py", category, Q_ADD)
-                    self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
-                    os.makedirs(os.path.join(self.run_dir, "repro"))
                     with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
                         json.dump(dict({"outcome": "reproduced", "exit": 0}, **({"mode": mode} if mode else {})), fh)
                     self.assertEqual(self.items()[n]["evidence_class"], want)
@@ -915,6 +915,14 @@ class SpecAdrHiddenName(Base):
         self.assertEqual(self.lane("Adders are meant to give whole numbers"), [])
 
 
+    def test_a_nested_marks_file_is_listed_again_like_a_corrupt_one(self):  # review-code-oved
+        self.assertEqual(self.lane("x"), [])
+        rc, out, _ = gitfix.nested_reads_as_corrupt(
+            self, os.path.join(self.run_dir, "marks.json"),
+            lambda: cli("report.py", ["ingest", "--run", self.run_dir, "--lane", "spec"], self.repo, self.tmp,
+                        lines({"inspected": []})))
+        self.assertEqual(rc, 0, out)
+
     def test_an_unreadable_spec_refuses_before_the_marks_file_is_written(self):  # review-code-iawb with a marked ref
         spec = os.path.join(self.run_dir, "inputs", "spec.md")
         os.remove(spec)
@@ -956,6 +964,34 @@ class SpecAdrHiddenName(Base):
             fh.write('{"tree": 1')
         self.assertEqual(self.traced_ingest(2), 1)
         self.assertEqual(self.lane("The adder MUST-RETURN-INT Calls pass ints"), ["declined-invalid:copied-from-spec"])
+
+
+class NestedRunFile(Base):
+    """review-code-oved: a 100000-deep run file reads as the unparseable one does, never a traceback."""
+
+    def confirmed(self):
+        (fid,) = self.ingest(CAND, {"inspected": ["src/calc.py"]})["ids"]
+        self.verdicts({"id": fid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
+        return fid
+
+    def render(self):
+        return lambda: cli("report.py", ["render", "--run", self.run_dir], self.repo, self.tmp)
+
+    def test_a_nested_counters_file_refuses_bad_counters(self):
+        self.confirmed()
+        rc, out, _ = gitfix.nested_reads_as_corrupt(
+            self, os.path.join(self.run_dir, "counters.json"),
+            lambda: cli("report.py", ["ingest", "--run", self.run_dir], self.repo, self.tmp, lines(CAND)))
+        self.assertEqual((rc, refusal(out)), (1, {"status": "refuse", "reason": "bad-counters"}))
+
+    def test_a_nested_repro_record_has_no_outcome(self):
+        fid = self.confirmed()
+        os.makedirs(os.path.join(self.run_dir, "repro"))
+        gitfix.nested_reads_as_corrupt(self, os.path.join(self.run_dir, "repro", fid + ".json"), self.render())
+
+    def test_a_nested_integrity_snapshot_reports_no_changes(self):
+        self.confirmed()
+        gitfix.nested_reads_as_corrupt(self, os.path.join(self.run_dir, "integrity.json"), self.render())
 
 
 class _SpecAdrUnreadable(Base):

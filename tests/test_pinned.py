@@ -419,6 +419,27 @@ class FileMode(tt.Base):
         self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":x.sh"), b"edited\n")
 
 
+    def test_an_unedited_filtered_executable_keeps_its_index_mode(self):  # review-code-4dw7
+        """The raw diff lists only edits, so an unedited filtered file's mode must come from the index."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        self.git("config", "filter.up.clean", "tr a-z A-Z")
+        self.git("config", "filter.up.smudge", "cat")
+        gitfix.commit(self.repo, {".gitattributes": "*.dat filter=up\n", "a.py": "a = 1\n"}, "base")
+        write(self.repo, "run.dat", "abc\n")
+        os.chmod(os.path.join(self.repo, "run.dat"), 0o755)
+        self.git("add", "run.dat")
+        self.git("commit", "-q", "-m", "x")
+        self.git("config", "core.fileMode", "false")
+        os.utime(os.path.join(self.repo, "run.dat"), (1_600_000_000, 1_600_000_000))  # older than the index: never reread
+        self.git("update-index", "-q", "--refresh")
+        write(self.repo, "a.py", "a = 2\n")
+        rc, out = tt.call([], self.repo, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tree = load(out["run"])["pinned_tree"]
+        self.assertEqual(raw(self.repo, "ls-tree", tree, "run.dat").split(b" ")[0], b"100755")
+        self.assertEqual(raw(self.repo, "cat-file", "blob", tree + ":run.dat"), b"abc\n")  # on disk, not the stored ABC
+
+
 class RacyIndex(tt.Base):
     def test_an_edit_racily_clean_against_the_index_enters_the_pinned_tree(self):
         """Same size, mtime and inode as its index entry, which is as new as the index file: only git's racy check,

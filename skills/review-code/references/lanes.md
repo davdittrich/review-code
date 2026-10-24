@@ -40,7 +40,7 @@ Packs are plain Markdown files under `references/packs/`, loaded into the Defect
 - `data-migrations` loads for files on a migration path, or for `.sql` files whose changed lines create, alter or drop; `security-owasp` and `concurrency` load when a changed line matches their patterns.
 - `test-quality` loads by test file names (`test_*.py`, `*_test.*`, `*.test.*`, `*.spec.*`, `*_spec.rb`, `*Tests.cs`) or a `tests/` or `__tests__/` directory.
 - `llm-generated-code` loads only with `--ai` or the deep tier: authorship is not knowable from a diff.
-- Each pack has a `## Do not flag` list. The limit is prompt-level: the list reaches the lane through its prompt and the verifier through the finding's handoff, and no code filters findings by it. A finding that matches the list can still be reported if a lane ignores it.
+- Each pack has a `## Do not flag` list. The limit is prompt-level: the list reaches the lane through its prompt and the verifier through the finding's handoff, and no code filters findings by it.
 - Pack text is plugin-authored data, not instructions from the reviewed code.
 
 When more packs match than the cap allows, packs rank by matched-file count, most files first, with the table order above breaking ties; the lowest-ranked surplus is listed as skipped, so which pack drops depends on the change, not on its name.
@@ -57,7 +57,7 @@ When more packs match than the cap allows, packs rank by matched-file count, mos
   `norm_for` and `norm_against` (literal strings, not patterns) and `norm_glob`; `scripts/nit.py` (the owner of every nit check) counts the lines of
   the pinned tree's files matching the glob that hold each idiom. The finding stands with at least 20 such lines, `norm_for` on
   more lines than `norm_against`, and `norm_against` inside the quote. The counts are the script's, shown in the report.
-  Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-sample-small`, `norm-not-majority`.
+  Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-too-large`, `norm-sample-small`, `norm-not-majority`.
 - Extra rule files with `--nit`, read from the merge base only, kept in this order (path order within a group) up to 40:
   PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/**/*.md|.mdc`, `.okf/**/*.md`.
   The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.

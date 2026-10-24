@@ -1117,6 +1117,37 @@ class PlanProcessCount(tr.Base):
             self.assertEqual(sum(1 for x in argv if "cat-file" in x and "--batch" in x), 1)
 
 
+class PlanCorruptTarget(tr.Base):
+    """review-code-q5wh: a hand-edited target.json refuses as one JSON line out of plan.py, never a traceback."""
+
+    def test_hidden_chars_that_are_not_objects_refuse_in_a_multi_shard_repo_run(self):
+        repo = gitfix.make_repo(os.path.join(self.tmp, "repo"))
+        gitfix.commit(repo, {"a/x.py": "value = 1\n" * 30000, "b/y.py": "value = 1\n" * 30000}, "base")  # 300 kB each
+        rc, out, _ = cli("target.py", ["--repo"], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        run = json.loads(out)["run"]
+        rc, out, _ = cli("ledger.py", ["build", "--run", run], repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        path = os.path.join(run, "target.json")
+        with open(path, encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["hidden_chars"] = ["x"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        rc, out, err = cli("plan.py", ["plan", "--run", run], repo, self.tmp)
+        self.assertEqual(err, "")  # no traceback
+        self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"), out)
+
+    def test_a_deeply_nested_target_json_refuses_as_one_json_line(self):  # review-code-08fy
+        run = os.path.join(self.tmp, "run")
+        os.makedirs(run)
+        with open(os.path.join(run, "target.json"), "w", encoding="utf-8") as fh:
+            fh.write("[" * 100000 + "]" * 100000)
+        rc, out, err = cli("plan.py", ["plan", "--run", run], self.tmp, self.tmp)
+        self.assertEqual(err, "")  # no traceback
+        self.assertEqual((rc, json.loads(out)["status"], json.loads(out)["reason"]), (1, "refuse", "no-target"), out)
+
+
 class ShardsPinnedStat(ShardBase):
     """review-code-l895: shard sizes and the risk ranking read the pinned blobs, not the checkout."""
     base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}

@@ -746,9 +746,9 @@ class Tree(Base):
         oids = subprocess.run(["git", "hash-object", "-w", "--stdin-paths"], cwd=self.repo, env=gitfix.env(),
                               input=("\n".join(paths) + "\n").encode(), stdout=subprocess.PIPE,
                               check=True).stdout.decode().split()
-        got = dict(ledger._blob_stream(self.repo, oids + ["0" * 40]))
+        got = {o: (n, d) for o, n, d in ledger._blob_stream(self.repo, oids + ["0" * 40])}
         self.assertEqual(len(got), 3000)
-        self.assertEqual(got[oids[1234]], b"blob 1234\n")
+        self.assertEqual(got[oids[1234]], (len(b"blob 1234\n"), b"blob 1234\n"))
 
     def test_blob_stream_git_failure_refuses(self):
         # a failing cat-file must not pass as an empty tree/ (the old git_bytes check)
@@ -1171,7 +1171,7 @@ class Spec(Base):
         found, _ = blocks(spec)
         self.assertIn("(not text: a NUL byte or over 40 bytes)", [c for _, c in found])
         self.assertIn("B", [c for _, c in found])
-        self.assertIn("(%07d bytes)" % len(big), spec)
+        self.assertIn("(%s bytes)" % ledger.ADR_OVER, spec)  # review-code-xpwk: over the cap, no size is printed
         self.assertNotIn("Big title", spec)
 
     def test_the_index_says_none_when_no_record_is_listed(self):  # review-code-dd1m: found unpinned by mutation
@@ -1211,6 +1211,61 @@ class Spec(Base):
         gitfix.commit(self.repo, {"src/a.py": "a = 1\n"}, "work")
         self.build()
         self.assertEqual(len(self.read("inputs/spec.md").encode()), small)
+
+    def test_adr_blobs_are_read_through_blob_stream(self):  # review-code-2gz4: one cat_batch loop
+        calls = []  # one list of oids per _blob_stream invocation
+        real = ledger._blob_stream
+
+        def spy(repo, oids):
+            oids = list(oids)
+            calls.append(oids)
+            return real(repo, oids)
+        with mock.patch.object(ledger, "_blob_stream", spy):
+            self.adr_build({"docs/adr/0001-a.md": "# A\n", "docs/adr/0002-b.md": "# B\n"})
+        want = {self.g("rev-parse", "wip:docs/adr/0001-a.md"), self.g("rev-parse", "wip:docs/adr/0002-b.md")}
+        self.assertEqual(len(want), 2)  # distinct bytes, distinct blobs
+        self.assertTrue(any(want <= set(c) for c in calls), calls)  # both records in one call, not one call per record
+
+    def test_a_cr_only_record_gets_a_one_line_title(self):  # review-code-6ean
+        self.adr_build({"docs/adr/0001-a.md": b"# T\rCRBODY\r"})
+        spec = self.read("inputs/spec.md")
+        found, _ = blocks(spec)
+        self.assertIn("T", [c for _, c in found])
+        self.assertNotIn("CRBODY", spec)
+
+    def test_a_record_the_finder_names_is_indexed_not_pasted(self):  # review-code-efro
+        self.base({"README.md": "r\n", "docs/adr/0001-x.md": "# X\nFINDCANARY\n"})
+        self.g("checkout", "-q", "-b", "wip")
+        head = gitfix.commit(self.repo, {"src/b.py": "b = 1\n"}, "work")
+        mb = self.g("merge-base", "main", head)
+        write_target(self.run_dir, self.repo, "branch", mb, head, mb, ["src/b.py"])
+        with redirect_stdout(io.StringIO()), mock.patch.object(sys, "stdin", io.StringIO("docs/adr/0001-x.md\n")):
+            self.assertEqual(ledger.main(["build", "--run", self.run_dir, "--found", "-"]), 0)
+        led = json.load(open(os.path.join(self.run_dir, "ledger.json")))
+        self.assertEqual([(s["kind"], s["ref"]) for s in led["spec"]["sources"]], [("adr", "docs/adr/0001-x.md")])
+        self.assertNotIn("FINDCANARY", self.read("inputs/spec.md"))
+        self.assertIn("docs/adr/0001-x.md", self.index_rows())
+
+    def test_adr_size_field_keeps_its_width_past_the_cap(self):  # review-code-j7sv
+        def spec_len(n):
+            self.adr_build({"docs/adr/0001-a.md": b"\0" + b"x" * (n - 1)})
+            out = len(self.read("inputs/spec.md").encode())
+            self.g("checkout", "-q", "main")
+            self.g("branch", "-q", "-D", "wip")
+            return out
+        self.assertEqual(spec_len(10_000_000), spec_len(4_000_000))
+
+    def test_a_record_over_the_cap_prints_one_marker_not_a_false_size(self):  # review-code-xpwk
+        def size_field(n):
+            self.adr_build({"docs/adr/0001-a.md": b"\0" + b"x" * (n - 1)})
+            out = re.search(r"\(([^)]+) bytes\)", self.read("inputs/spec.md")).group(1)
+            self.g("checkout", "-q", "main")
+            self.g("branch", "-q", "-D", "wip")
+            return out
+        over = size_field(4_000_001)
+        self.assertEqual(over, size_field(12_000_000))
+        self.assertEqual(size_field(4_000_000), "%07d" % 4_000_000)  # exactly the cap is still read: a real size
+        self.assertEqual((over, len(over)), ("over 4M", ledger.ADR_WIDTH))  # not a number the record does not have; as wide as a size
 
     def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
         _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])
@@ -1579,6 +1634,47 @@ class Trust(Base):
         self.assertEqual(cm.exception.reason, "bad-ledger")
 
 
+class CorruptTarget(Base):
+    def test_hidden_chars_that_are_not_objects_refuse_as_one_json_line(self):  # review-code-bb1b
+        self.base({"README.md": "r\n"})
+        self.branch({"a.txt": "a\n"})
+        self.build()
+        path = os.path.join(self.run_dir, "target.json")
+        with open(path, encoding="utf-8") as fh:
+            tj = json.load(fh)
+        tj["hidden_chars"] = ["x"]
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        rc, out, err = gitfix.cli("ledger.py", ["build", "--run", self.run_dir], self.repo, self.tmp)
+        self.assertEqual(err, "")  # no traceback
+        self.assertEqual((rc, json.loads(out)["status"]), (1, "refuse"), out)
+
+
+class NestedRunFile(gitfix.FeatureRepo):
+    """review-code-oved: a 100000-deep run file refuses as the unparseable file does, never a traceback."""
+    base_files, feat_files = {"README.md": "r\n"}, {"a.txt": "a\n"}
+
+    def pinned(self):
+        rc, out, _ = gitfix.cli("target.py", ["main"], self.repo, self.tmp)
+        self.assertEqual(rc, 0, out)
+        return json.loads(out)["run"]
+
+    def build(self, run):
+        return lambda: gitfix.cli("ledger.py", ["build", "--run", run], self.repo, self.tmp)
+
+    def test_a_nested_target_json_refuses_no_target(self):
+        run = self.pinned()
+        rc, out, _ = gitfix.nested_reads_as_corrupt(self, os.path.join(run, "target.json"), self.build(run))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
+
+    def test_a_nested_difference_json_refuses_no_target(self):
+        run = self.pinned()
+        with open(os.path.join(run, "target.json"), encoding="utf-8") as fh:
+            diff = json.load(fh)["difference"]
+        rc, out, _ = gitfix.nested_reads_as_corrupt(self, diff, self.build(run))
+        self.assertEqual((rc, json.loads(out)["reason"]), (1, "no-target"))
+
+
 class GitProcessCount(Base):
     """review-code-dz5l: symbol refs and commit messages cost one git process each, whatever their number."""
 
@@ -1628,6 +1724,74 @@ class GitProcessCount(Base):
         self.assertEqual(sorted((c["file"], c["line"], c["symbol"]) for c in led["callers"]), sorted(want_callers))
         self.assertIn(("src/use.py", 1, "parse_cfg"), want_callers)
         self.assertNotIn(("src/use.py", 3, "parse_cfg"), want_callers)  # xparse_cfg is another word
+
+    def test_symbol_hits_match_the_per_symbol_whole_word_rule_for_prefix_and_non_ascii_names(self):
+        """review-code-fdld: the combined scan finds what one regex per symbol found, for names that are prefixes of
+        each other, adjacent on a line, or differ by a non-ASCII tail (the ASCII-only word rule sees through it)."""
+        names = ["parse", "parse_cfg", "parse_cfg_all", "loader", "loader\u00e9"]
+        self.base({"src/use.py": "parse(parse_cfg) parse_cfg_all\nxparse parse_cfgx parse-cfg\nloader\u00e9 loader\nparse.parse_cfg;parse_cfg_all\n"
+                                 "\u00e9loader x_loader\n"})
+        self.branch({"src/m.py": "".join("def %s():\n    pass\n\n\n" % n for n in names)})
+        _, led = self.build(included=["src/m.py"])
+        rev = led["target"]["head_sha"]
+        got = {s["name"] for s in led["symbols"]}
+        self.assertEqual(got, set(names))
+        hits = ledger._grep(self.repo, rev, sorted(got))
+        found = {n: [] for n in got}
+        for h in hits:  # the loop this scan replaced
+            for n in got:
+                if re.search("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n), h[2]):
+                    found[n].append(h)
+        want_refs = {n: sum(f != "src/m.py" and ledger.defined_name(t) != n for f, _, t in found[n]) for n in got}
+        want_callers = sorted((f, ln, n) for n in got for f, ln, _ in found[n] if f != "src/m.py")
+        self.assertEqual({s["name"]: s["refs"] for s in led["symbols"]}, want_refs)
+        self.assertEqual(sorted((c["file"], c["line"], c["symbol"]) for c in led["callers"]), want_callers)
+        self.assertIn(("src/use.py", 3, "loader"), want_callers)
+        self.assertIn(("src/use.py", 3, "loader\u00e9"), want_callers)  # both match "loader\u00e9": the overlap case
+        self.assertIn(("src/use.py", 2, "parse"), want_callers)  # "parse-cfg": the hyphen ends the word
+
+    def test_symbol_regex_work_does_not_grow_with_the_symbol_count(self):
+        """review-code-fdld: one regex pass per grep hit, not one per hit and symbol (counted, never timed)."""
+        class Counted:
+            n = 0
+
+            def __init__(self, rx):
+                self.rx = rx
+
+            def search(self, *a):
+                Counted.n += 1
+                return self.rx.search(*a)
+
+            def finditer(self, *a):
+                Counted.n += 1
+                return self.rx.finditer(*a)
+
+        class Re:
+            def __getattr__(self, name):
+                return getattr(re, name)
+
+            def compile(self, pat, *a):
+                rx = re.compile(pat, *a)
+                return Counted(rx) if "(?<![A-Za-z0-9_])" in pat else rx
+
+        sizes = []
+        for tag, nsym in (("a1", 1), ("a40", 40)):
+            self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo-" + tag))
+            self.run_dir = os.path.join(self.tmp, "run-" + tag)
+            self.base({"src/use.py": "".join("v%d = fn_%02d()\n" % (i, i) for i in range(nsym))})
+            self.branch({"src/m.py": "".join("def fn_%02d():\n    return 1\n" % i for i in range(nsym))})
+            hits, real, Counted.n = [], ledger._grep, 0
+
+            def spy(*a, **kw):
+                hits.append(real(*a, **kw))
+                return hits[-1]
+            with mock.patch.object(ledger, "re", Re()), mock.patch.object(ledger, "_grep", spy):
+                _, led = self.build(included=["src/m.py"])
+            self.assertEqual(len(led["symbols"]), nsym)
+            self.assertEqual(sum(s["refs"] for s in led["symbols"]), nsym)
+            sizes.append((Counted.n, max(len(h) for h in hits)))
+        for calls, nhits in sizes:
+            self.assertLessEqual(calls, nhits)  # at most one pass per hit, whatever the symbol count
 
     def test_commit_messages_equal_one_log_per_commit_in_the_given_order(self):
         self.base({"a.txt": "0\n"})

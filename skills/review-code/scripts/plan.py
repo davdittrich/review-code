@@ -149,7 +149,7 @@ def _heads(tj, blobs):
     gives neither."""
     uniq = sorted({oid for _, oid in blobs.values()})
     head = {oid: None if data is None else (data[:SCAN_BYTES], data.count(b"\n"))  # reduced per blob: peak memory is one blob
-            for oid, data in ledger._blob_stream(tj["repo"], uniq)}
+            for oid, _, data in ledger._blob_stream(tj["repo"], uniq)}
     have = {p: head[oid] for p, (_, oid) in blobs.items() if head.get(oid) is not None}
     return {p: h for p, (h, _) in have.items()}, {p: n for p, (_, n) in have.items()}
 
@@ -644,7 +644,7 @@ def main(argv):
                        opts.get("ai", False), opts.get("nit", False), opts.get("tools", ())), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
-    except (OSError, KeyError, ValueError, TypeError) as e:  # one JSON line, never a traceback
+    except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # one JSON line, never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     target.emit(out, STDOUT_KEYS)
     return rc

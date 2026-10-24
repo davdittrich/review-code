@@ -16,7 +16,7 @@ Never open a handoff file that is not listed, candidates.json, verdicts.json or 
 
 ## Check
 
-Try to refute the claim. Answer each question by reading the code, not names or comments:
+Answer each question by reading the code, not names or comments:
 
 1. Would the cited line fail as claimed when the trigger occurs?
 2. Which assumptions does the claim rest on, and which of them are unvalidated?
@@ -43,7 +43,7 @@ The handoff may carry more blocks:
 
 ## Verdict
 
-- `confirmed` only with a traced path (for `check: property`, the property shown in the quoted code) and at
+- `confirmed` only with a traced path and at
   least one cite whose quote is copied verbatim from the line.
 - `refuted` needs at least one such cite too, in any file (the code that already covers the claim may live elsewhere), and no cite that another refuted id of your reply also uses (a shared cite voids both); otherwise it counts as `unverifiable`. A repaired line never refutes either: write every `"` as `\u0022` so the line parses as written. Use it when quoted code shows the trigger cannot reach the line or the line does not fail, or
   the claim is on the do-not-flag list: linter-catchable issues, lines with a deliberate lint-ignore

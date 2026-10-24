@@ -20,6 +20,14 @@ class GateMutations(unittest.TestCase):
         os.mkdir(cls.pristine)
         tar = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "HEAD"], stdout=subprocess.PIPE, check=True)
         subprocess.run(["tar", "-x", "-C", cls.pristine], input=tar.stdout, check=True)
+        # The mutation probes assert agent and hygiene FAIL ids, which no `claude` call decides. A stub that answers the
+        # real calls' success shape (validate, add and install exit 0; details lists the skill) skips four node starts
+        # per probe. The clean-tree test runs the real binary, and so does check-package.sh in CI.
+        cls.stub = os.path.join(cls._base.name, "stub")
+        os.mkdir(cls.stub)
+        with open(os.path.join(cls.stub, "claude"), "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/sh\n[ "$2" = details ] && echo "  Skills (1)  review-code"\nexit 0\n')
+        os.chmod(os.path.join(cls.stub, "claude"), 0o755)
 
     def setUp(self):  # the tests only read the pristine tree; each mutates its own copy
         self._td = tempfile.TemporaryDirectory()
@@ -27,13 +35,22 @@ class GateMutations(unittest.TestCase):
         self.tree = os.path.join(self._td.name, "tree")
         shutil.copytree(self.pristine, self.tree, symlinks=True)
 
-    def gate(self):
-        p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    def gate(self, real=False):
+        # the real run skips claude's background network calls (2.4 s down to 1.0 s wall, same four commands and exit codes)
+        env = dict(os.environ, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1") if real else \
+            dict(os.environ, PATH=self.stub + os.pathsep + os.environ["PATH"])
+        p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         return p.returncode, p.stdout.decode("utf-8")
 
     def test_gate_passes_on_clean_tree(self):
+        self.tree = self.pristine  # read-only here: no copy
+        rc, out = self.gate(real=True)
+        self.assertEqual(rc, 0, out)
+
+    def test_stubbed_gate_passes_on_clean_tree(self):  # the probes below mean something only if the stub alone fails nothing
         rc, out = self.gate()
         self.assertEqual(rc, 0, out)
+        self.assertIn("0 FAIL", out)
 
     def test_gate_checks_every_agent_file(self):
         # WR-07: an added lane with Bash must not ship unchecked
@@ -121,7 +138,7 @@ class GateMutations(unittest.TestCase):
             fh.write("#!/bin/sh\nexit 1\n")
         os.chmod(os.path.join(fake, "find"), 0o755)
         p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           env=dict(os.environ, PATH=fake + os.pathsep + os.environ["PATH"]))
+                           env=dict(os.environ, PATH=fake + os.pathsep + self.stub + os.pathsep + os.environ["PATH"]))
         out = p.stdout.decode("utf-8")
         self.assertEqual(p.returncode, 1, out)
         self.assertNotIn("ok - hygiene-tracked", out)
