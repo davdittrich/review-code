@@ -575,13 +575,13 @@ class PostingDocs(unittest.TestCase):
         self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
     def test_every_spec_copy_guard_reason_has_a_retry_hint_and_a_posting_table_row(self):  # review-code-va2s
-        """The literal Refuse reasons of report._spec_copy and of _spec_refs, which reads its ledger (review-code-1zqz), plus
+        """The literal Refuse reasons of report._spec_copy, _spec_prep and _spec_sets, which read the ledger (review-code-1zqz), plus
         no-<stem> and bad-<stem> of each load_json they call."""
         import paths  # noqa: F401  (puts the scripts on sys.path)
         import report
         tree = ast.parse(self.read(os.path.dirname(self.POST), "report.py"))
-        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_spec_copy", "_spec_refs")]
-        self.assertEqual(sorted(n.name for n in fns), ["_spec_copy", "_spec_refs"])
+        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_spec_copy", "_spec_prep", "_spec_sets")]
+        self.assertEqual(sorted(n.name for n in fns), ["_spec_copy", "_spec_prep", "_spec_sets"])
         found = set()
         for node in (x for fn in fns for x in ast.walk(fn)):
             name = getattr(getattr(node, "func", None), "attr", getattr(getattr(node, "func", None), "id", None))

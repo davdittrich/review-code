@@ -917,6 +917,32 @@ class SpecAdrCite(Base):
         self.refuses("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), (), "bad-ledger")
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
+    def once_failing_lookup(self, argv, reply):
+        """report.main in-process, the hidden-name lookup raising on its FIRST call only (a transient failure): (rc, JSON line)."""
+        real, calls = report._hidden_refs, []
+
+        def flaky(*a):
+            calls.append(1)
+            if len(calls) == 1:
+                raise report.target.Refuse("bad-ref", "transient")
+            return real(*a)
+        out = io.StringIO()
+        with gitfix.isolated(self.tmp), mock.patch.object(report, "_hidden_refs", flaky), \
+                mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(reply.encode("utf-8")))), mock.patch("sys.stdout", out):
+            rc = report.main(argv)
+        return rc, json.loads(out.getvalue()), len(calls)
+
+    def test_a_failed_hidden_name_lookup_refuses_spec_ingest_not_a_guard_without_the_hidden_names(self):  # review-code-lfya
+        rc, out, calls = self.once_failing_lookup(["ingest", "--run", self.run_dir, "--lane", "spec"], lines({"inspected": ["src/calc.py"]}))
+        self.assertEqual((rc, out.get("reason"), calls), (1, "bad-ref", 1), out)
+
+    def test_a_failed_hidden_name_lookup_refuses_spec_verdicts_too(self):  # review-code-lfya
+        (sid,) = self.lane(line=3, quote="The adder MUST-RETURN-INT.")["spec_ids"]
+        rc, out, calls = self.once_failing_lookup(
+            ["verdicts", "--run", self.run_dir], lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}))
+        self.assertEqual((rc, out.get("reason"), calls), (1, "bad-ref", 1), out)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
+
     def test_a_failed_tree_read_refuses_a_declined_why_that_no_other_read_would_check(self):  # review-code-27ht
         with open(os.path.join(self.run_dir, "inputs", "spec.md"), encoding="utf-8") as fh:
             row = [n for n, r in enumerate(fh.read().split("\n"), 1) if r == "Integers only"][0]
@@ -1118,8 +1144,8 @@ class SpecAdrGuardMemory(_SpecAdrRecords):
         self.records(n)
         peaks, real = [], report._spec_copy
 
-        def spy(run):
-            build = real(run)
+        def spy(run, *a):
+            build = real(run, *a)
 
             def measured(*a):
                 self.assertFalse(tracemalloc.is_tracing())  # stop() below would end an outer tracer

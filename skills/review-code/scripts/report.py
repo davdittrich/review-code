@@ -708,11 +708,13 @@ def _leaves(o):
             todo.extend(o.values() if isinstance(o, dict) else o)
 
 
-def _spec_refs(run):
-    """The decision records indexed in the ledger, as the paths the pinned tree is asked for. Fails closed (review-code-27ht):
-    an unreadable ledger refuses, since nothing proves the reply copies no record. A record named with a hidden character is
-    listed by its escaped ref (lanes read ledger.json, so no raw name goes there): every tree name that escapes to such a ref is
-    read, a file literally named as the escaped form included (review-code-ktry)."""
+def _spec_sets(run):
+    """(the ledger's decision-record refs, its spec-file refs, the tree names that escape to a hidden-named record, the ones
+    that escape to a hidden-named spec file), from one ledger read and one hidden-name lookup that both guards share
+    (review-code-lfya). Fails closed (review-code-27ht): an unreadable ledger refuses, since nothing proves the reply copies
+    no record, and a failed lookup refuses too, so no hidden-named path is left unbanned. A record named with a hidden
+    character is listed by its escaped ref (lanes read ledger.json, so no raw name goes there): every tree name that escapes
+    to such a ref is read, a file literally named as the escaped form included (review-code-ktry)."""
     led = target.load_json(run, "ledger.json")
     try:
         adr = [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "adr"]
@@ -720,7 +722,26 @@ def _spec_refs(run):
         adr = None
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
-    return adr + _hidden_refs(run, adr, _file_refs(led))[0]
+    files = _file_refs(led)
+    return (adr, files) + tuple(_hidden_refs(run, adr, files))
+
+
+def _spec_prep(run):
+    """(the words inside the UNTRUSTED blocks of inputs/spec.md, `_spec_sets`): spec.md is read first, so an unreadable one
+    refuses before the lookup writes marks.json (review-code-iawb). A caller passes the result to `_spec_copy` and `_spec_refs`."""
+    inside = _spec_lines(run)
+    try:
+        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
+            spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
+    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
+        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
+    return spec, _spec_sets(run)
+
+
+def _spec_refs(run, prep=None):
+    """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`)."""
+    adr, _, hidden, _ = (prep or _spec_prep(run))[1]
+    return adr + hidden
 
 
 def _file_refs(led):
@@ -759,7 +780,7 @@ def _hidden_names(run, shown):
     return names
 
 
-def _spec_copy(run):
+def _spec_copy(run, prep=None):
     """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
     the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
@@ -771,23 +792,8 @@ def _spec_copy(run):
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
-    inside = _spec_lines(run)
-    try:
-        led = target.load_json(run, "ledger.json")["spec"]["sources"]
-        files = {_norm(x["ref"]) for x in led if x.get("kind") in ("adr", "file")}
-    except (target.Refuse, KeyError, TypeError, AttributeError):  # _spec_refs refuses an unreadable ledger
-        files = set()
-    try:
-        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
-            spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
-    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
-        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
-    try:  # the ledger stores a hidden-named spec file by its escaped ref: ban the tree names too, as _spec_refs reads them
-        led = target.load_json(run, "ledger.json")
-        files |= {_norm(n) for n in _hidden_refs(run, [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "adr"],
-                                                 _file_refs(led))[1]}
-    except (target.Refuse, KeyError, TypeError, AttributeError):
-        pass
+    spec, (adr, files, _, hidden_files) = prep or _spec_prep(run)
+    files = {_norm(x) for x in adr + files + hidden_files}
 
     def with_records(pin, adr, said):
         # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
@@ -1243,8 +1249,9 @@ def _read_lane(text, lane, run, shard=None):
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     spec_lane = lane == "spec"  # CTX-03: a rejected row of this lane keeps no wire line
-    spec_text = _spec_copy(run) if lane == "spec" else None  # before _spec_refs, which may write marks.json
-    adr = _spec_refs(run) if lane == "spec" else []
+    prep = _spec_prep(run) if lane == "spec" else None  # one ledger read and one hidden-name lookup for both guards (review-code-lfya)
+    spec_text = _spec_copy(run, prep) if prep else None
+    adr = _spec_refs(run, prep) if prep else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
@@ -1577,8 +1584,9 @@ def _verdicts(run, text, batch, agent=None):
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
-    spec_text = _spec_copy(run) if spec else None  # before any write below, marks.json in _spec_refs included
-    adr = _spec_refs(run) if spec else []
+    prep = _spec_prep(run) if spec else None  # before any write below, marks.json included; one lookup for both guards
+    spec_text = _spec_copy(run, prep) if prep else None
+    adr = _spec_refs(run, prep) if prep else []
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
     if batch is None and calls and _plan(run).get("mode") == "parallel":  # it would replace every stored batch (review-code-3k5)
         raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
