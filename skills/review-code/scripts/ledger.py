@@ -54,7 +54,6 @@ _XREF = re.compile(r"(?<![\w/.-])([A-Za-z0-9][A-Za-z0-9-]{0,38}/[\w.-]{1,100})#(
 _FILE_EXT = re.compile(r"\.(?:py|js|ts|tsx|jsx|md|rst|txt|go|rs|java|c|h|cpp|rb|php|json|ya?ml|toml|sh|cfg|ini|html|css)\Z", re.I)
 _GH_URL = re.compile(r"https?://(%s)/([\w.-]+/[\w.-]+)/issues/([0-9]{1,9})\b" % _HOST)
 _GL_URL = re.compile(r"https?://(%s)/([\w.-]+(?:/[\w.-]+)+?)/-/issues/([0-9]{1,9})\b" % _HOST)
-INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 INDEX = "--cached"  # _grep rev that searches the index (staged target)
 CAP_SYMBOLS, CAP_CALLERS, CAP_FILES = 40, 20, 40
 CAP_ISSUES, CAP_SPEC_FILES = 5, 5
@@ -680,7 +679,7 @@ def _materialize(run: str, repo: str, listing: Optional[dict], included: List[st
 
     # a difference path's reviewed content is its pinned blob; the head listing is the pinned tree for ref kinds
     pin = [p for p in jobs if p in copy]
-    pin_ls = listing if listing is not None and not tj["kind"] in INPLACE else \
+    pin_ls = listing if listing is not None and not tj["kind"] in target.INPLACE else \
         _pinned_listing(repo, tj["pinned_tree"], pin) if pin else {}
     top = os.path.realpath(repo) + os.sep
     want = {}
@@ -977,7 +976,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
         raise target.Refuse("no-target", "the run directory has no target.json")
     repo, mb, head = tj["repo"], tj["merge_base"], tj["head_sha"]
     included = tj["included"]
-    inplace = tj["kind"] in INPLACE
+    inplace = tj["kind"] in target.INPLACE
     head_ls = None if inplace else target.tree_listing(head, repo)
     idx = target.index_listing(repo) if tj["kind"] == "staged" else None
     if idx is not None:
