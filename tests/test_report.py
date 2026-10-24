@@ -1467,8 +1467,34 @@ class SpecAxis(Base):
         rc, out = self.rep("verdicts", lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": rows[inner - 1]}), extra=["--batch", "1"])
         self.assertEqual((rc, [r["check"] for r in json.loads(out)["rejected"]]), (0, ["copied-from-spec:10"]))
         with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
-            self.assertRegex(fh.read(), r"\Afailed-validation:copied-from-spec:10 \[.*\n\Z")
+            self.assertEqual(fh.read(), "failed-validation:copied-from-spec:10 index 1\n")  # review-code-65qz: never the line
         self.assertEqual(json.loads(self.rep("status")[1])["rejected_batches"], {"1": 1})
+        self.assertNotIn(CANARY, out)
+        self.assertEqual(self.rejected_text(), "failed-validation:copied-from-spec:10 index 1\n")
+
+    def rejected_text(self):
+        d = os.path.join(self.run_dir, "rejected")
+        out = []
+        for n in sorted(os.listdir(d)):
+            with open(os.path.join(d, n), encoding="utf-8") as fh:
+                out.append(fh.read())
+        return "".join(out)
+
+    def test_a_copy_dropped_lane_line_stores_index_and_count_never_the_spec_text(self):  # review-code-65qz
+        rows, inner, _, _ = self.spec_rows()
+        rc, out = self.rep("ingest", lines(self.spec(inner, title=rows[inner - 1]), {"inspected": ["src/calc.py"]}), extra=["--lane", "spec"])
+        self.assertNotIn(CANARY, out)
+        self.assertEqual(self.rejected_text(), "failed-validation:copied-from-spec:10 index 1\n")
+        rc, st = self.rep("status")
+        self.assertEqual((json.loads(st)["rejected_total"], CANARY in st), (1, False))
+
+    def test_one_declined_line_with_a_copied_entry_redacts_every_row_of_that_line(self):  # review-code-65qz
+        rows, inner, _, _ = self.spec_rows()
+        bad = {"spec_line": 1, "why": "x"}
+        copy = {"spec_line": inner, "why": rows[inner - 1]}
+        self.rep("ingest", lines({"declined": [bad, copy]}, {"inspected": ["src/calc.py"]}), extra=["--lane", "spec"])
+        self.assertEqual(self.rejected_text(), "failed-validation:declined-invalid:bad-entry index 1\n"
+                                               "failed-validation:declined-invalid:copied-from-spec:10 index 2\n")
 
     def test_a_failed_record_read_refuses_spec_verdicts_before_the_reply_store_is_touched(self):  # review-code-szle
         _, inner, _, _ = self.spec_rows()

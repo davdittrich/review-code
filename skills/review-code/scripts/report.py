@@ -7,7 +7,7 @@ string holds raw double quotes, or a backslash that starts no JSON escape (a reg
 again by _repair; the ingest and verdicts stdout count such lines as `repaired`. A line that parses but is no pair array is
 never repaired.
 
-Gate: every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
+Gate: every rejected line is kept as `<reason> <line>` (a copied-from-spec line: `<reason> index <i>`) in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
 re-ingest of the same lane or batch. A lane line's reason is `invalid-json[:bad-escape]`, `retired-object-form`, or
 `failed-validation:<check>` (see REASONS; the two copy checks end in `:N`, a word count). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
 section and does not go above Needs discussion while either is nonzero.
@@ -1281,12 +1281,14 @@ def _read_lane(text, lane, run, shard=None):
 
 def _reject(run, name, rows):
     """<run>/rejected/<name>.txt holds one `reason line` row per rejected wire line, replaced whole by a re-ingest of
-    the same lane or batch and removed when none is left."""
+    the same lane or batch and removed when none is left. A wire line any row of which failed a copied-from-spec check
+    holds spec text (CTX-03): each of its rows keeps `index <i>` (the `rejected[].index` of stdout) in place of the line."""
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why, ln)
-                                  for why, ln in rows))
+        hot = {ln for why, ln in rows if "copied-from-spec" in why}
+        _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why,
+                                        "index %d" % i if ln in hot else ln) for i, (why, ln) in enumerate(rows, 1)))
     elif os.path.exists(path):
         os.remove(path)
 
