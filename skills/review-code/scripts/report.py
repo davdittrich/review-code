@@ -613,6 +613,10 @@ def _parse(ln, load):
     return False, None
 
 
+_WIRE = re.compile(r'\s*(\{|\[\s*[\["])')  # the start of a wire line; any other line of a reply is prose
+_MARKED = re.compile(r"copied-from-spec:\d+|bad-type|invalid-json(?::bad-escape)?|retired-object-form")  # reasons a stored marker may carry
+
+
 def _objects(text, total=None):
     """(line, dict or None, repaired) of every wire line of the stream (`[[`, `["` or, for the retired object form, `{`):
     the dict is None when it is not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read
@@ -620,7 +624,7 @@ def _objects(text, total=None):
     on `total` (a one-item list, INGEST_STEPS by default) shared by every line of the caller's call."""
     total = [INGEST_STEPS] if total is None else total
     for ln in text.split("\n"):
-        if re.match(r'\s*(\{|\[\s*[\["])', ln):
+        if _WIRE.match(ln):
             # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
             if not parsed:
@@ -1491,6 +1495,11 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
 
     for n, (ln, o, fix) in enumerate(parsed, 1):
         fixed += fix
+        if o is not None and set(o) == {"redacted"}:  # a stored marker of a line that held spec text: it judges as it did
+            why = o["redacted"] if isinstance(o["redacted"], str) and _MARKED.fullmatch(o["redacted"]) else "bad-type"
+            bad.append((why, ln, n, True))
+            disp.append(_disp(n, None, "rejected", why))
+            continue
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
             why = _syntax(ln) if o is None else "bad-type"
@@ -1540,6 +1549,18 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
             got[i].update(verdict="unverifiable", downgraded="shared-cite")  # one cite cannot refute two findings
             disp[at[i]] = _disp(disp[at[i]]["index"], i, "downgraded", "shared-cite")
     return foreign, bad, fixed, disp
+
+
+def _stored(text, marks):
+    """The reply as kept in replies/verify (CTX-03): each wire line at a position of `marks` (position -> reason) becomes a
+    marker wire line that judges again as the same rejection, so the positions after it hold. Prose is dropped: no check
+    judges it and replay ignores it."""
+    n, out = 0, []
+    for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if _WIRE.match(ln):
+            n += 1
+            out.append(json.dumps([["redacted", marks[n]]]) if n in marks else ln)
+    return "\n".join(out)
 
 
 def _verdicts(run, text, batch, agent=None):
@@ -1593,10 +1614,12 @@ def _verdicts(run, text, batch, agent=None):
         for n in _rejected(run)[1]:
             if n != "serial":
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
+    judged = [(k, _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)) for k, parsed in replies]
+    marks = {n: why for k, (_, bad, _, _) in judged if k == batch for why, _, n, red in bad if red}  # judged first: the store keeps no spec text
+    reach = ids if batch is None else calls[batch]
     os.makedirs(store, mode=0o700, exist_ok=True)
-    _put(os.path.join(store, new), text)
-    for k, parsed in replies:
-        f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
+    _put(os.path.join(store, new), _stored(text, marks) if spec & reach else text)
+    for k, (f, bad, fixed, rows) in judged:
         if k == batch:
             disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, *_) in enumerate(bad, 1)]
         _reject(run, "serial" if k is None else "batch-%d" % k, bad)

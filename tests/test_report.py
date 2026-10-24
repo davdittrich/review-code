@@ -1523,6 +1523,30 @@ class SpecAxis(Base):
         self.assertEqual([r["index"] for r in json.loads(vout)["rejected"]], [1])
         self.assertEqual(self.rejected_text(), "failed-validation:copied-from-spec:10 index 2\n")
 
+    def test_the_stored_spec_batch_reply_holds_no_spec_text_and_replays_the_same_row(self):  # review-code-ye7t
+        rows, inner, _, _ = self.spec_rows()
+        copy = rows[inner - 1]
+        self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
+        (fid_,) = self.ingest(CAND)["ids"]
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            calls = {c["agent"].split(":")[1]: c["batch"] for c in json.load(fh)["verify_calls"]}
+        sb, db = str(calls["spec-verifier"]), str(calls["verifier"])
+        before = self.snapshot()
+        reply = lines("prose " + copy, {"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": copy},
+                      '[["id", "%s"], ["verdict", "nope"], ["reason", "%s"]]' % (sid, copy))
+        rc, out = self.rep("verdicts", reply, extra=["--batch", sb])
+        self.assertEqual((rc, [r["check"] for r in json.loads(out)["rejected"]]), (0, ["copied-from-spec:10", "bad-type"]))
+        rows_now = self.rejected_text()
+        self.assertEqual(rows_now, "failed-validation:copied-from-spec:10 index 1\nfailed-validation:bad-type index 2\n")
+        rc, out = self.rep("verdicts", lines({"id": fid_, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), extra=["--batch", db])
+        self.assertEqual(rc, 0, out)  # the other batch's call judges the stored spec batch again
+        after = self.snapshot()
+        self.assertEqual(self.rejected_text(), rows_now)
+        st = json.loads(self.rep("status")[1])
+        self.assertEqual((st["rejected_batches"], st["no_verdict"]), ({sb: 2}, [sid]))
+        self.assertEqual([n for n, b in after.items() if CANARY.encode() in b and before.get(n) != b], [])
+
     def test_a_non_spec_lane_row_keeps_its_line(self):  # review-code-bine
         rc, out = self.rep("ingest", "[[\"path\", 1 2\n", extra=["--lane", "standards"])
         self.assertEqual(rc, 0, out)
