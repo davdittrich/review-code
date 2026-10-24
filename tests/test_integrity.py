@@ -83,12 +83,24 @@ class Integrity(tpost.Base):
         tp.write(self.repo, "src/calc.py", "dirty before the run, edited again during it\n")
         self.assertEqual(self.render("json")["integrity"]["working_tree"], ["src/calc.py"])
 
-    def test_a_changed_index_is_a_warning(self):
-        os.utime(os.path.join(self.repo, "src/calc.py"), ns=(1, 1))
-        gitfix.run(["git", "update-index", "-q", "--refresh"], self.repo)  # rewrites the index's stat data; status output stays the same
-        out = self.render()
-        self.assertIn("integrity warning: index " + CAUSE, out.split("\n"))
-        self.assertEqual(self.render("json")["integrity"]["working_tree"], [])
+    def index_bytes(self):
+        with open(os.path.join(self.repo, ".git", "index"), "rb") as fh:
+            return fh.read()
+
+    def test_a_stat_only_index_refresh_is_no_index_change(self):  # review-code-87o1.1 (F-a47f8a2321)
+        os.utime(os.path.join(self.repo, "src/calc.py"), (1, 1))
+        snap, before = target.integrity(self.repo), self.index_bytes()
+        subprocess.run(["git", "status"], cwd=self.repo, check=True, stdout=subprocess.DEVNULL)  # a prompt's plain status
+        self.assertNotEqual(self.index_bytes(), before)  # it did rewrite the index: refreshed stat data, no entry changed
+        self.assertFalse(target.integrity_changes(self.repo, snap)["index"])
+
+    def test_a_staged_change_is_an_index_warning(self):
+        tp.write(self.repo, "src/calc.py", "edited before the run\n")
+        self.make_run()
+        self.review(5)
+        gitfix.run(["git", "add", "src/calc.py"], self.repo)  # a new blob in the index; the file itself is unchanged
+        self.assertIn("integrity warning: index " + CAUSE, self.render().split("\n"))
+        self.assertTrue(self.render("json")["integrity"]["index"])  # its status record changes too, so working_tree lists it
 
     def test_a_knowledge_write_is_informational_not_a_warning(self):
         tp.write(self.repo, ".wolf/memory.md", "read a.py\nread b.py\n")
