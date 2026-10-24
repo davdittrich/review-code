@@ -82,7 +82,7 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
         with open(os.path.join(run_dir, "target.json"), encoding="utf-8") as fh:
             rec = json.load(fh)
         repo, kind, head, mb = rec["repo"], rec["kind"], rec["head_sha"], rec.get("merge_base")
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         raise target.Refuse("no-target")
     if base and not mb:
         raise target.Refuse("no-merge-base")
