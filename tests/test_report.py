@@ -1547,6 +1547,29 @@ class SpecAxis(Base):
         self.assertEqual((st["rejected_batches"], st["no_verdict"]), ({sb: 2}, [sid]))
         self.assertEqual([n for n, b in after.items() if CANARY.encode() in b and before.get(n) != b], [])
 
+    def test_the_stored_spec_batch_reply_redacts_duplicate_and_other_batch_lines_too(self):  # review-code-ye7t
+        rows, inner, _, _ = self.spec_rows()
+        copy = rows[inner - 1]
+        self.assertEqual(cli("plan.py", ["plan", "--run", self.run_dir], self.repo, self.tmp)[0], 0)
+        (fid_,) = self.ingest(CAND)["ids"]
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            calls = {c["agent"].split(":")[1]: c["batch"] for c in json.load(fh)["verify_calls"]}
+        sb, db = str(calls["spec-verifier"]), str(calls["verifier"])
+        before = self.snapshot()
+        mine = {"id": sid, "verdict": "confirmed", "evidence": [CITE]}
+        reply = lines(dict(mine, reason=copy), dict(mine, reason="the adder breaks the stated rule"), dict(mine, reason=copy),
+                      dict(mine, id="F-0000000000", reason=copy))  # copy-dropped, accepted, duplicate, other-batch
+        rc, out = self.rep("verdicts", reply, extra=["--batch", sb])
+        self.assertEqual((rc, [d["reason"] for d in json.loads(out)["dispositions"]]), (0, ["copied-from-spec:10", None, "duplicate", "other-batch"]))
+        rc, out = self.rep("verdicts", lines({"id": fid_, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}), extra=["--batch", db])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.rejected_text(), "failed-validation:copied-from-spec:10 index 1\n")
+        st = json.loads(self.rep("status")[1])
+        self.assertEqual((st["rejected_batches"], st["no_verdict"]), ({sb: 1}, []))
+        after = self.snapshot()
+        self.assertEqual([n for n, b in after.items() if CANARY.encode() in b and before.get(n) != b], [])
+
     def test_a_non_spec_lane_row_keeps_its_line(self):  # review-code-bine
         rc, out = self.rep("ingest", "[[\"path\", 1 2\n", extra=["--lane", "standards"])
         self.assertEqual(rc, 0, out)

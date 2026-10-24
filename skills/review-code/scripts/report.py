@@ -614,7 +614,10 @@ def _parse(ln, load):
 
 
 _WIRE = re.compile(r'\s*(\{|\[\s*[\["])')  # the start of a wire line; any other line of a reply is prose
-_MARKED = re.compile(r"copied-from-spec:\d+|bad-type|invalid-json(?::bad-escape)?|retired-object-form")  # reasons a stored marker may carry
+_MARKED = re.compile(r"copied-from-spec:\d+|bad-type|invalid-json(?::bad-escape)?|retired-object-form|other-batch|unknown-id|duplicate")  # reasons a stored marker may carry
+
+
+_KEPT = ("other-batch", "unknown-id", "duplicate")  # verdict lines dropped before the copy guard: no rejected row, so no spec check
 
 
 def _objects(text, total=None):
@@ -1497,7 +1500,10 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         fixed += fix
         if o is not None and set(o) == {"redacted"}:  # a stored marker of a line that held spec text: it judges as it did
             why = o["redacted"] if isinstance(o["redacted"], str) and _MARKED.fullmatch(o["redacted"]) else "bad-type"
-            bad.append((why, ln, n, True))
+            if why in _KEPT:  # these lines were never rejected rows: a disposition only
+                foreign += why == "other-batch"
+            else:
+                bad.append((why, ln, n, True))
             disp.append(_disp(n, None, "rejected", why))
             continue
         o = o and {k: o.get(k) for k in VERDICT_KEYS}
@@ -1616,6 +1622,7 @@ def _verdicts(run, text, batch, agent=None):
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
     judged = [(k, _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)) for k, parsed in replies]
     marks = {n: why for k, (_, bad, _, _) in judged if k == batch for why, _, n, red in bad if red}  # judged first: the store keeps no spec text
+    marks.update({d["index"]: d["reason"] for k, (_, _, _, rows) in judged if k == batch for d in rows if d["reason"] in _KEPT})
     reach = ids if batch is None else calls[batch]
     os.makedirs(store, mode=0o700, exist_ok=True)
     _put(os.path.join(store, new), _stored(text, marks) if spec & reach else text)
