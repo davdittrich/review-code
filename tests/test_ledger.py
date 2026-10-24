@@ -1683,6 +1683,74 @@ class GitProcessCount(Base):
         self.assertIn(("src/use.py", 1, "parse_cfg"), want_callers)
         self.assertNotIn(("src/use.py", 3, "parse_cfg"), want_callers)  # xparse_cfg is another word
 
+    def test_symbol_hits_match_the_per_symbol_whole_word_rule_for_prefix_and_non_ascii_names(self):
+        """review-code-fdld: the combined scan finds what one regex per symbol found, for names that are prefixes of
+        each other, adjacent on a line, or differ by a non-ASCII tail (the ASCII-only word rule sees through it)."""
+        names = ["parse", "parse_cfg", "parse_cfg_all", "loader", "loader\u00e9"]
+        self.base({"src/use.py": "parse(parse_cfg) parse_cfg_all\nxparse parse_cfgx parse-cfg\nloader\u00e9 loader\nparse.parse_cfg;parse_cfg_all\n"
+                                 "\u00e9loader x_loader\n"})
+        self.branch({"src/m.py": "".join("def %s():\n    pass\n\n\n" % n for n in names)})
+        _, led = self.build(included=["src/m.py"])
+        rev = led["target"]["head_sha"]
+        got = {s["name"] for s in led["symbols"]}
+        self.assertEqual(got, set(names))
+        hits = ledger._grep(self.repo, rev, sorted(got))
+        found = {n: [] for n in got}
+        for h in hits:  # the loop this scan replaced
+            for n in got:
+                if re.search("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n), h[2]):
+                    found[n].append(h)
+        want_refs = {n: sum(f != "src/m.py" and ledger.defined_name(t) != n for f, _, t in found[n]) for n in got}
+        want_callers = sorted((f, ln, n) for n in got for f, ln, _ in found[n] if f != "src/m.py")
+        self.assertEqual({s["name"]: s["refs"] for s in led["symbols"]}, want_refs)
+        self.assertEqual(sorted((c["file"], c["line"], c["symbol"]) for c in led["callers"]), want_callers)
+        self.assertIn(("src/use.py", 3, "loader"), want_callers)
+        self.assertIn(("src/use.py", 3, "loader\u00e9"), want_callers)  # both match "loader\u00e9": the overlap case
+        self.assertIn(("src/use.py", 2, "parse"), want_callers)  # "parse-cfg": the hyphen ends the word
+
+    def test_symbol_regex_work_does_not_grow_with_the_symbol_count(self):
+        """review-code-fdld: one regex pass per grep hit, not one per hit and symbol (counted, never timed)."""
+        class Counted:
+            n = 0
+
+            def __init__(self, rx):
+                self.rx = rx
+
+            def search(self, *a):
+                Counted.n += 1
+                return self.rx.search(*a)
+
+            def finditer(self, *a):
+                Counted.n += 1
+                return self.rx.finditer(*a)
+
+        class Re:
+            def __getattr__(self, name):
+                return getattr(re, name)
+
+            def compile(self, pat, *a):
+                rx = re.compile(pat, *a)
+                return Counted(rx) if "(?<![A-Za-z0-9_])" in pat else rx
+
+        sizes = []
+        for tag, nsym in (("a1", 1), ("a40", 40)):
+            self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo-" + tag))
+            self.run_dir = os.path.join(self.tmp, "run-" + tag)
+            self.base({"src/use.py": "".join("v%d = fn_%02d()\n" % (i, i) for i in range(nsym))})
+            self.branch({"src/m.py": "".join("def fn_%02d():\n    return 1\n" % i for i in range(nsym))})
+            hits, real, Counted.n = [], ledger._grep, 0
+
+            def spy(*a, **kw):
+                hits.append(real(*a, **kw))
+                return hits[-1]
+            with mock.patch.object(ledger, "re", Re()), mock.patch.object(ledger, "_grep", spy):
+                _, led = self.build(included=["src/m.py"])
+            self.assertEqual(len(led["symbols"]), nsym)
+            self.assertEqual(sum(s["refs"] for s in led["symbols"]), nsym)
+            sizes.append((Counted.n, max(len(h) for h in hits)))
+        for calls, nhits in sizes:
+            self.assertLessEqual(calls, nhits)  # at most one pass per hit, whatever the symbol count
+
     def test_commit_messages_equal_one_log_per_commit_in_the_given_order(self):
         self.base({"a.txt": "0\n"})
         shas = []

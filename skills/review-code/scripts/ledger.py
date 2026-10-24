@@ -214,9 +214,16 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
     callers, capped["callers"] = [], False
     # one grep for every symbol; a hit goes to each symbol it holds as a whole word (git's word chars: ASCII alnum, _)
-    rxs = {s["name"]: re.compile("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(s["name"])) for s in symbols}
-    found = {n: [] for n in rxs}
-    for h in _grep(repo, rev, list(rxs)) if rxs else ():
+    names = [s["name"] for s in symbols]
+    found = {n: [] for n in names}
+    # An ASCII name is exactly one maximal [A-Za-z0-9_] run, so two never overlap and one alternation scan finds them all
+    # per hit. A name with a non-ASCII tail can overlap another ("foo", "fooé"), so those keep a regex each.
+    asc = [n for n in names if n.isascii()]
+    comb = re.compile("(?<![A-Za-z0-9_])(?:%s)(?![A-Za-z0-9_])" % "|".join(map(re.escape, asc))) if asc else None
+    rxs = {n: re.compile("(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n)) for n in names if not n.isascii()}
+    for h in _grep(repo, rev, names) if names else ():
+        for n in {m.group() for m in comb.finditer(h[2])} if comb else ():
+            found[n].append(h)
         for n, rx in rxs.items():
             if rx.search(h[2]):
                 found[n].append(h)
