@@ -62,7 +62,8 @@ _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
-ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, clamped to 10**ADR_WIDTH-1, so spec.md's length never follows it
+ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, or as ADR_OVER past MAX_FILE, so spec.md's length never follows it
+ADR_OVER = "over %dM" % (target.MAX_FILE // 10 ** 6)  # ADR_WIDTH characters: the size field of a record left unread, whose real size is not printed
 _BRANCH_SKIP = frozenset("feat fix bug chore main master dev wip".split())
 _DEF = re.compile(r"\s*(?:def|class|function|func|fn|sub|const|export\s+(?:function|class|const)|pub\s+fn)"
                   r"\s+([A-Za-z_]\w*)")
@@ -1092,7 +1093,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                       _section("Issues", sections["issues"], nonce),
                       _section("Spec files", sections["files"], nonce),
                       "## Decision records\n" + ("\n\n".join(
-                          "### %s (%0*d bytes): %s\n%s" % (lab, ADR_WIDTH, min(size, 10 ** ADR_WIDTH - 1), why, block(title, nonce))
+                          "### %s (%s bytes): %s\n%s" % (lab, "%0*d" % (ADR_WIDTH, size) if size <= target.MAX_FILE else ADR_OVER, why, block(title, nonce))
                           for lab, (size, title, why) in sections["adrs"]) or "none") + "\n")) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()

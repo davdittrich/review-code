@@ -1171,7 +1171,7 @@ class Spec(Base):
         found, _ = blocks(spec)
         self.assertIn("(not text: a NUL byte or over 40 bytes)", [c for _, c in found])
         self.assertIn("B", [c for _, c in found])
-        self.assertIn("(%07d bytes)" % len(big), spec)
+        self.assertIn("(%s bytes)" % ledger.ADR_OVER, spec)  # review-code-xpwk: over the cap, no size is printed
         self.assertNotIn("Big title", spec)
 
     def test_the_index_says_none_when_no_record_is_listed(self):  # review-code-dd1m: found unpinned by mutation
@@ -1253,6 +1253,18 @@ class Spec(Base):
             self.g("branch", "-q", "-D", "wip")
             return out
         self.assertEqual(spec_len(10_000_000), spec_len(4_000_000))
+
+    def test_a_record_over_the_cap_prints_one_marker_not_a_false_size(self):  # review-code-xpwk
+        def size_field(n):
+            self.adr_build({"docs/adr/0001-a.md": b"\0" + b"x" * (n - 1)})
+            out = re.search(r"\(([^)]+) bytes\)", self.read("inputs/spec.md")).group(1)
+            self.g("checkout", "-q", "main")
+            self.g("branch", "-q", "-D", "wip")
+            return out
+        over = size_field(4_000_001)
+        self.assertEqual(over, size_field(12_000_000))
+        self.assertEqual(size_field(4_000_000), "%07d" % 4_000_000)  # exactly the cap is still read: a real size
+        self.assertEqual((over, len(over)), ("over 4M", ledger.ADR_WIDTH))  # not a number the record does not have; as wide as a size
 
     def test_adr_under_review_is_not_its_own_spec_for_a_path_target(self):
         _, led = self.adr_build({"docs/adr/0001-a.md": "ADR\n"}, kind="path", included=["docs/adr/0001-a.md"])
