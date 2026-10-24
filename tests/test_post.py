@@ -821,7 +821,7 @@ class Anchors(Base):
     def test_a_body_or_comment_over_the_limit_refuses_too_large(self):
         for line, where in ((2, "body"), (20, "comment")):
             with self.subTest(where):
-                self.review(line, fix="x " * (post.MAX_BODY // 2 + 1))  # short words: one 60k-letter word makes the reference scan quadratic
+                self.review(line, fix="x " * (post.MAX_BODY // 2 + 1))  # any body over MAX_BODY; the reference scan is linear in word length (ProseLinear), so a long word would do too
                 self.refused_too_large()
 
     def test_a_preview_over_the_cap_refuses_and_writes_nothing(self):

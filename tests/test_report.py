@@ -231,14 +231,14 @@ class Derivation(Base):
 
     def test_a_base_record_never_upgrades_a_confirmed_finding(self):
         for category in ("bug", "security", "test"):
+            self.rep("discard")  # one ingest per category: the class is read live from repro/ on every render
+            shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
+            self.ingest(cand(Q_ADD, 8, category=category))
+            n = fid("src/calc.py", category, Q_ADD)
+            self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
+            os.makedirs(os.path.join(self.run_dir, "repro"))
             for mode, want in (("base", "traced"), ("run", "reproduced"), (None, "reproduced")):  # None: a legacy record
                 with self.subTest(category=category, mode=mode):
-                    self.rep("discard")
-                    shutil.rmtree(os.path.join(self.run_dir, "repro"), ignore_errors=True)
-                    self.ingest(cand(Q_ADD, 8, category=category))
-                    n = fid("src/calc.py", category, Q_ADD)
-                    self.verdicts(dict(verdict((Q_ADD, 8)), id=n))
-                    os.makedirs(os.path.join(self.run_dir, "repro"))
                     with open(os.path.join(self.run_dir, "repro", n + ".json"), "w") as fh:
                         json.dump(dict({"outcome": "reproduced", "exit": 0}, **({"mode": mode} if mode else {})), fh)
                     self.assertEqual(self.items()[n]["evidence_class"], want)
