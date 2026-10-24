@@ -271,7 +271,7 @@ class _Pinned:
             self._every = []
             for mode, oid, name, size in ledger.ls_records(
                     target.git_bytes(["ls-tree", "-r", "-z", "-l", "--full-tree", self.tree], self.top), True):
-                if mode in ("100644", "100755"):  # never a link: its blob is a path, not code
+                if mode in target.REGULAR:  # never a link: its blob is a path, not code
                     self._every.append((name, int(size), oid))
         return self._every
 

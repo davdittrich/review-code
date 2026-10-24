@@ -124,7 +124,6 @@ def _log(repo: str, mb: str, ranges: dict) -> Tuple[Dict[str, List[str]], bool]:
     return rows, ok
 
 
-_REGULAR = ("100644", "100755")
 
 
 def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple[dict, dict]:
@@ -145,7 +144,7 @@ def build(run: str, repo: str, mb: str, put, base_ls: dict, index=None) -> Tuple
     # skipped here: a gitlink, symlink or file the base lacks has no blame, and one such range makes the log call fail for
     # every file; an unstaged file whose index blob differs from the base's has old-side numbers HEAD cannot answer
     live = {n: v for n, v in ranges.items()
-            if base_ls.get(v[0], ("",))[0] in _REGULAR and (index is None or index.get(v[0]) == base_ls[v[0]])}
+            if base_ls.get(v[0], ("",))[0] in target.REGULAR and (index is None or index.get(v[0]) == base_ls[v[0]])}
     failed = len(ranges) - len(live)
     ranges = live
     logs, ok = _log(repo, mb, ranges)

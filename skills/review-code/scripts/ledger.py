@@ -40,7 +40,6 @@ def _nit_rank(p: str) -> int:
         return 0
     return (p.endswith("GLOSSARY.md") and 1) or (p.startswith("docs/adr/") and 2) or (p.startswith(".gemini/") and 3) \
         or (p.startswith(".cursor/") and 4) or 5
-_REGULAR = ("100644", "100755")
 CATEGORIES = ["symbols", "callers", "tests", "fixtures", "config", "ci", "docs", "siblings", "conventions", "ignored"]
 _CTX = ("callers", "tests", "fixtures", "config", "ci", "docs", "siblings")  # the context-file categories of ledger.json
 PIN_KEYS = ("pinned_tree", "pinned_head", "checkout_head", "difference", "difference_list", "difference_count", "integrity")  # gh#48, gh#51
@@ -460,7 +459,7 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         extra = sorted(cand - _conv_paths(base_ls, included), key=lambda p: (_nit_rank(p), p))
         over = extra[_NIT_CAP:]
         want = sorted(cand - set(over))
-    regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in _REGULAR}
+    regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in target.REGULAR}
     blobs = _blobs(repo, regular.values())
     conv, ignored = [], []
     for p in want:
@@ -636,7 +635,7 @@ def regular_blobs(tree: str, paths: Iterable[str], repo: str) -> Dict[str, Tuple
     """{path: (size, blob id)} of the regular files (100644, 100755) among `paths` in `tree`, from ls_tree: a link, a submodule
     or a directory is no file whose content can be read."""
     return {n: (int(size), oid) for mode, oid, n, size in ls_records(ls_tree(tree, paths, repo, long=True), True)
-            if mode in ("100644", "100755")}
+            if mode in target.REGULAR}
 
 
 def _pinned_listing(repo: str, tree: str, paths: List[str]) -> dict:
@@ -812,7 +811,7 @@ def _adr_files(repo: str, head_ls: dict, named, taken, skip, hay: str = "", chan
     directory at any depth, and under a directory the spec finder named. Each record is its own spec entry.
     Returns (path -> text, number of records left out). Records the change names come first: `hay` (change text) holds
     the record's path or number, or the record's text names a changed file, its directory or an issue (`#N`) the change text names; the rest follow in path order."""
-    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
+    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     dirs = {posixpath.normpath(str(p).replace(os.sep, "/")) for p in named}
 
     def record(p: str) -> bool:
@@ -845,7 +844,7 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     branch or of the reviewed paths (every file there when `every`; never a file under review, `skip`), the tracked files
     the spec finder named (`found`; any other path is dropped), plus the --spec file. Branch names stay in
     memory; only paths reach the ledger."""
-    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in _REGULAR}
+    reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and (every or any(t in posixpath.basename(p).lower()
                                                                                          for t in toks)))[:CAP_SPEC_FILES]
     blobs = _blobs(repo, [reg[p] for p in want])
@@ -1050,7 +1049,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                        % sections["adr_omitted"] if sections["adr_omitted"] else ""))) + "\n" + hist)  # after the quoted blocks: spec_line numbers stay
     # a name with a hidden character stays out: the finder could not be told its real spelling, and the script drops it anyway
     prose = sorted(p for p, (mode, _) in tree_ls.items()
-                   if mode in _REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
+                   if mode in target.REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
     write(os.path.join(run, "inputs", "spec-find.md"),
           "# Spec finder input\n\n" + pin + "\n## Reviewed files\n\n%s\n\n## Symbols\n\n%s\n\n## Prose files at head\n\n%s\n" % (
               "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",

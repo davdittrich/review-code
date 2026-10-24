@@ -20,3 +20,8 @@ class SingleDefinition(unittest.TestCase):
         self.assertFalse(hasattr(ledger, "INPLACE"))
         copies = [n for n, t in _scripts_text() if '"staged", "unstaged", "worktree", "path", "repo")' in t]
         self.assertEqual(copies, ["target.py"])
+
+    def test_regular_file_modes_are_spelled_once_in_target(self):  # 87o1.2
+        copies = [n for n, t in _scripts_text() for _ in range(t.count('("100644", "100755")'))]
+        self.assertEqual(copies, ["target.py"])
+        self.assertEqual(target.REGULAR, ("100644", "100755"))
