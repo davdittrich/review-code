@@ -344,6 +344,15 @@ class MainFlags(unittest.TestCase):
         self.assertIn(rc, (0, 1))
         self.assertIn("nodef", out)
 
+    def test_cheap_estimate_is_always_labelled_heuristic(self):
+        with open(ev.BASELINE, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"nodef": {"cost": 2.0}}}, fh)
+        with mock.patch.object(ev.shutil, "which", return_value="/bin/claude"), \
+                mock.patch.object(ev, "run_cases", return_value=None):
+            rc, out, _ = self.main("--cheap", "--yes")
+        self.assertEqual(rc, 2)
+        self.assertIn("(heuristic, no baseline cost)", out)
+
 
 class TiersHash(unittest.TestCase):
     def test_hash_is_a_string_and_follows_tiers(self):

@@ -466,7 +466,7 @@ def main(argv=None):
             return 2
         est = estimate(names, runs, base, a.cheap)
         print("%d case(s) x %d run(s): estimated cost about $%.2f%s" % (
-            len(names), runs, est, "" if all(_known_cost(base["cases"].get(n, {}).get("cost")) for n in names) else " (heuristic, no baseline cost)"))
+            len(names), runs, est, "" if not a.cheap and all(_known_cost(base["cases"].get(n, {}).get("cost")) for n in names) else " (heuristic, no baseline cost)"))
         if not a.yes:
             if not sys.stdin.isatty():
                 print("stdin is not a terminal: pass --yes to run", file=sys.stderr)
