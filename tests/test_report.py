@@ -2783,6 +2783,14 @@ class WireTokenScope(Base):
         self.assertTrue(reason.startswith("cites-dropped-wire-token"), reason)
         self.assertEqual((v["downgraded"], v["cites"]), ("cites-dropped-wire-token", []))
 
+    def test_a_verifier_reason_starting_with_the_token_still_gets_the_note_once(self):  # review-code-lqf5
+        i = self._setup("evidence", dict(CAND, path="src/clean.py", line=1, quote="x = 1", fix=""))
+        line = self._line(i, ("src/calc.py", 5, "return f"), verdict="unverifiable").replace(
+            'says "ok" here', 'cites-dropped-wire-token says "ok" here')  # raw quotes: the line is repaired, its cite dropped
+        self.verdicts(line)
+        (u,) = self.doc()["unverifiable"]
+        self.assertEqual(u["reason"], 'cites-dropped-wire-token; cites-dropped-wire-token says "ok" here')
+
     def test_a_dropped_cite_is_said_on_a_repaired_refuted_verdict_that_stays_repaired(self):
         reason, v = self._dropped("refuted")
         self.assertTrue(reason.startswith("cites-dropped-wire-token"), reason)

@@ -1755,7 +1755,8 @@ def _build(run):
             cls = "inferred" if cites else "speculative"
             reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
-        if v.get("cites_dropped") and not reason.startswith("cites-dropped-wire-token"):  # a partial drop still says so, whatever the class
+        # a partial drop still says so, whatever the class; a confirmed verdict left no cite already has the note as its reason (the recorded state, not a prefix of the verifier's text, review-code-lqf5)
+        if v.get("cites_dropped") and not (kind == "confirmed" and not cites and v.get("downgraded") == "cites-dropped-wire-token"):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
