@@ -77,7 +77,7 @@ Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from
 
 ## Cost preview and headless runs
 
-`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier calls (every candidate is verified, so only the batch size is shown), the lane-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues. Use `--quick` or `max_packs` to bound an unattended run.
+`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier calls (every candidate is verified, so only the batch size is shown), the lane-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues, unbounded. Shards and verifier calls are not capped: each shard of a repo or path target adds a Defects and a Standards lane call (one in `--lean`), and each shard adds one verifier call per 5 candidates. A cheaper tier runs fewer lanes at lower effort, and `max_packs` only limits packs, so neither bounds the cost.
 
 ## Serial mode
 
