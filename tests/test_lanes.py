@@ -510,7 +510,7 @@ class SharedPhrases(unittest.TestCase):
 
     def test_standards_keeps_report_when_evidence_and_verifier_reads_cites(self):  # review-code-h2xg: 22c2568 trimmed both to fit READER_BYTES
         body = " ".join(self.text("standards").split())
-        self.assertIn("Look only at changed lines. Report a problem when the evidence is on the page.", body)
+        self.assertIn("Look only at changed lines (or Included files). Report a problem when the evidence is on the page.", body)
         self.assertIn("or the comment's own words. The verifier confirms the claim by reading those cites.", body)
 
     def test_the_reader_prompts_do_not_grow(self):

@@ -140,7 +140,7 @@ ID_RE = r"F-[0-9a-f]{10}"
 ID_FULL = re.compile(ID_RE)
 LINT_IGNORE = re.compile(r"noqa|type: ?ignore|pylint: ?disable|eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOSONAR|"
                          r"rubocop: ?disable|#\[allow\(|@SuppressWarnings|nosec", re.IGNORECASE)
-WHOLE = ("path", "repo")  # targets that are not a change: every finding is `existing`
+WHOLE = ledger.WHOLE  # targets that are not a change: every finding is `existing`
 # The one closed table of reasons: reason -> retry hint. It feeds the rejected files, the disposition rows of `ingest` and
 # `verdicts`, and the capture reader's refusals. _disp and _refuse look a reason up here, so an emitted reason
 # missing from the table is a KeyError (a test drives it).
@@ -206,8 +206,9 @@ def _disp(index, id, disposition, reason=None):
 
 
 def _defects_skipped(skipped):
-    """True when the plan left the Defects lane out: a tier that never ran it proves nothing about bugs."""
-    return any(x.get("what") == "defects" for x in skipped)
+    """True when the plan left the Defects lane out, or a shard of it (shard cap): a run with an unreviewed part proves
+    nothing about bugs."""
+    return any(x.get("what") == "defects" or str(x.get("what", "")).startswith("shard ") for x in skipped)
 
 
 def _did(x):
@@ -1090,6 +1091,29 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
     return c
 
 
+def _blind_standards(run, tj, cand):
+    """Lost guarantees for each complete standards lane of a repo or path target that inspected no file of its own
+    scope: such a lane has no diff to read, so an empty `inspected` means its axis found nothing because it looked at
+    nothing (gh#69). A shard lane is judged against its shard's `included`, an unreadable shard file is a lost guarantee itself; both as capped in the
+    lane's input (ledger.listed)."""
+    if tj["kind"] not in WHOLE:
+        return []
+    out = []
+    for n, v in sorted(cand.get("lanes", {}).items()):
+        if n.split("@")[0] != "standards" or v.get("complete") is not True:
+            continue
+        inc = tj["included"]
+        if "@" in n:
+            try:
+                inc = target.load_json(os.path.join(run, "shards", n.partition("@")[2]), "target.json")["included"]
+            except (target.Refuse, KeyError):  # not the run's list: that is not what this lane was shown
+                out.append("%s: its shard's included files are unreadable, so what it was shown is unknown" % n)
+                continue
+        if not set(ledger.listed(inc)) & {target.shown(p) for p in map(_norm, v["inspected"]) if p}:  # included holds escaped names
+            out.append("%s read none of its listed included files: its convention and norm findings are missing" % n)
+    return out
+
+
 def _no_verdict(run, cand, ver):
     """Sorted ids of a stored verify batch (or of a serial reply: every queued id) that have no verdict line."""
     store = _replies(run)
@@ -1287,6 +1311,7 @@ def _read_lane(text, lane, run, shard=None):
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named | set(adr), cited, adr)
+    esc = None
     copied = spec_text(pin, adr, (s for _, o, _ in parsed for s in _leaves(o))) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
@@ -1306,6 +1331,13 @@ def _read_lane(text, lane, run, shard=None):
                 got = o["inspected"] if isinstance(o["inspected"], list) else []
                 if lane == "sota":  # item numbers, mapped back to their inventory paths
                     got = [ctx[a][0] for a in got if _int(a) and a in ctx]
+                if lane != "sota" and any(isinstance(a, str) and "<" in a and _norm(a) not in pin.files for a in got):
+                    if esc is None:  # a lane may echo the escaped name it was shown: map it back to the one file it names
+                        by = {}
+                        for f, _, _ in pin.every():
+                            by.setdefault(target.shown(f), []).append(f)
+                        esc = {k: v[0] for k, v in by.items() if len(v) == 1}
+                    areas += [esc[a] for a in got if isinstance(a, str) and _norm(a) not in pin.files and a in esc]
                 areas += [a for a in got if _norm(a) in pin.files]
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
@@ -1826,8 +1858,8 @@ def _build(run):
             "trust": "own" if ledger.stored_trust(led) == "own" else "external",
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
-            "lost_guarantees": [x for x in plan["lost_guarantees"] if isinstance(x, str)]
-            if isinstance(plan.get("lost_guarantees"), list) else [],
+            "lost_guarantees": ([x for x in plan["lost_guarantees"] if isinstance(x, str)]
+                                if isinstance(plan.get("lost_guarantees"), list) else []) + _blind_standards(run, tj, cand),
             "basis": {"pinned_head": tj.get("pinned_head"), "pinned_tree": tj.get("pinned_tree"), "difference": tj.get("difference_count"),
                       "lost_capabilities": [x for x in plan.get("lost_capabilities", []) if isinstance(x, str)]
                       if isinstance(plan.get("lost_capabilities"), list) else []},
@@ -1994,7 +2026,8 @@ def _text(doc):
         out.append(ax.capitalize())
         sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
-        if (ax != "defects" or _defects_skipped(doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
+        # narrower than _defects_skipped on purpose: a Defects lane that ran on the kept shards still prints its empty sections
+        if (ax != "defects" or any(x.get("what") == "defects" for x in doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
             continue

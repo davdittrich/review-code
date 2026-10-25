@@ -126,7 +126,11 @@ class Unreadable(Repo):
         self.build()
         self.assertEqual(self.files(), [FILE + ".txt"])
         self.assertIn("five before", self.history().split("## log")[1])
-        self.assertEqual(self.led["capped"]["history"], {"unread": 1})
+        # target.py drops a tracked gitlink as "submodule" (c9e65fc), so history never sees it: nothing is unread here, and
+        # the user is told through the excluded row (SKILL.md step 4 states each one)
+        self.assertNotIn("history", self.led["capped"])
+        with open(os.path.join(self.run_dir, "target.json"), encoding="utf-8") as fh:
+            self.assertEqual([(e["path"], e["reason"]) for e in json.load(fh)["excluded"]], [("sub", "submodule")])
 
     def test_an_unstaged_file_whose_index_differs_from_head_is_left_out_not_misread(self):
         gitfix.commit(self.repo, {"src/other.py": text({})}, "other")

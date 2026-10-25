@@ -58,7 +58,14 @@ class Fixture(tr.Base):
 
     def handoff(self, i):
         with open(os.path.join(self.run_dir, "handoff", i + ".md"), encoding="utf-8") as fh:
-            return fh.read()
+            return fh.read().replace(self.run_dir, "<run>")  # random tempfile names must not hit the banned-word asserts
+
+
+class Docstring(unittest.TestCase):
+    def test_the_docstring_names_every_stdout_key(self):
+        import plan as mod
+        text = mod.__doc__.split("stdout:")[1].split("stdin")[0]
+        self.assertEqual({w for w in re.findall(r"[a-z_]+", text)} & mod.STDOUT_KEYS, mod.STDOUT_KEYS)
 
 
 class Overrides(Fixture):
@@ -689,6 +696,32 @@ class ShardPacking(unittest.TestCase):
     def test_one_small_group_is_one_shard(self):
         self.assertEqual(self.groups({"a/x": 10, "b/x": 10}), [["a/x", "b/x"]])
 
+    def capped(self, sizes, cap):
+        import ledger
+        with mock.patch.object(ledger, "CAP_FIND", cap):
+            return self.groups(sizes, limit=10 ** 9)
+
+    def test_a_flat_directory_over_the_file_cap_is_sliced_in_path_order(self):  # review-code-5jeu
+        sizes = {"d/f%02d" % i: 1 for i in range(7)}
+        out = self.capped(sizes, 3)
+        self.assertEqual(out, [["d/f00", "d/f01", "d/f02"], ["d/f03", "d/f04", "d/f05"], ["d/f06"]])
+
+    def test_small_directories_are_not_merged_past_the_file_cap(self):
+        sizes = dict({"a/f%d" % i: 1 for i in range(2)}, **{"b/f%d" % i: 1 for i in range(2)}, **{"c/f0": 1})
+        out = self.capped(sizes, 3)
+        self.assertTrue(all(len(g) <= 3 for g in out), out)
+        self.assertEqual(sorted(p for g in out for p in g), sorted(sizes))
+        self.assertEqual(out, sorted(out, key=lambda g: g[0]))
+        self.assertEqual(len(out), 2)
+
+    def test_root_files_and_second_level_groups_are_capped_too(self):
+        sizes = dict({"r%d" % i: 1 for i in range(5)}, **{"big/s/f%d" % i: 100 for i in range(5)})
+        import ledger, plan as mod
+        with mock.patch.object(ledger, "CAP_FIND", 2), mock.patch.object(mod, "SHARD_BYTES", 150):
+            out = mod._groups(sorted(sizes), sizes)
+        self.assertTrue(all(len(g) <= 2 for g in out), out)
+        self.assertEqual(sorted(p for g in out for p in g), sorted(sizes))
+
 
 class ShardMerge(ShardBase):
     base_files = {"big/a/x.py": BIG, "big/b/y.py": BIG, "small1/m.py": SMALL, "small2/n.py": SMALL}
@@ -729,6 +762,61 @@ class ShardMerge(ShardBase):
     def test_one_group_is_not_sharded(self):
         p = self.run_plan(shard_bytes=10 ** 9)
         self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
+
+
+class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instead of building 301 files
+    CAP = 3
+    base_files = {"d/f%d.py" % i: "x = %d\n" % i for i in range(7)}
+    feat_files = {"d/f0.py": "x = 9\n"}
+
+    def cap_plan(self, **kw):
+        import ledger, plan as mod
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP):
+            return self.run_plan(shard_bytes=mod.SHARD_BYTES, **kw)
+
+    def lane_inputs(self, p):
+        return [self.read_text(os.path.relpath(c["input"], self.run_dir)) for c in p["calls"]
+                if c["lane"] in ("defects", "standards")]
+
+    def test_no_spawned_input_is_cut_off_and_shards_cover_included(self):
+        p = self.cap_plan()
+        inc = self.read_json("target.json")["included"]
+        self.assertGreater(len(inc), self.CAP)
+        self.assertGreaterEqual(len(p["shards"]), 2)
+        self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
+        called = [f for s in p["shards"] for f in s["files"]]
+        self.assertEqual(sorted(called), sorted(inc))
+        self.assertTrue(all(len(s["files"]) <= self.CAP for s in p["shards"]))
+
+    def test_skipped_shards_hold_exactly_the_files_not_shown(self):
+        p = self.cap_plan(cfg={"max_shards": 1})
+        inc = self.read_json("target.json")["included"]
+        skipped = sum(x["files"] for x in p["skipped"] if x["what"].startswith("shard "))
+        self.assertEqual(len(p["shards"][0]["files"]) + skipped, len(inc))
+        self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
+
+    def assert_nothing_written(self):  # review-code-1117: the size guard runs before any pack or shard directory exists
+        self.assertEqual([d for d in ("shards", os.path.join("inputs", "packs")) if os.path.exists(os.path.join(self.run_dir, d))], [])
+
+    def test_a_spawned_call_that_would_be_cut_off_is_refused(self):
+        import plan as mod, target, ledger
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP), mock.patch.object(mod, "_groups", lambda f, s: [sorted(f)]):
+            with self.assertRaises(target.Refuse) as cm:
+                self.run_plan(shard_bytes=mod.SHARD_BYTES)
+        self.assertEqual(cm.exception.reason, "internal-error")
+        self.assertNotRegex(cm.exception.detail, r"d/f")  # numbers only
+        self.assert_nothing_written()
+
+    def test_an_oversize_shard_among_valid_ones_is_refused(self):
+        import plan as mod, target, ledger
+        def groups(f, s):
+            f = sorted(f)
+            return [f[:5], f[5:]]
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP), mock.patch.object(mod, "_groups", groups):
+            with self.assertRaises(target.Refuse) as cm:
+                self.run_plan(shard_bytes=mod.SHARD_BYTES)
+        self.assertEqual(cm.exception.reason, "internal-error")
+        self.assert_nothing_written()
 
 
 class ShardNitSources(ShardBase):

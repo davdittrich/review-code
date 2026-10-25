@@ -16,6 +16,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 from typing import List, Optional
 
 import ledger
@@ -23,7 +24,7 @@ import report
 import target
 
 ID_RE = report.ID_RE
-TIMEOUT = 120  # seconds; read at call time
+TIMEOUT = 120  # seconds; read at call time. SKILL.md step 9 gives the Bash call 300000 ms: the rest is setup and cleanup
 ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TERM")
 SENTINEL = "REPRO-"
 USAGE = "usage: repro.py run --run DIR --id ID --test RELPATH [--base] -- CMD [ARG ...]"
@@ -88,6 +89,11 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
         raise target.Refuse("no-merge-base")
     wt, home, tmp = (os.path.join(run_dir, p + fid) for p in ("wt-", "repro-home-", "repro-tmp-"))
     wth = os.path.join(run_dir, "wt-head-" + fid)  # base mode only: where the head's copy of the test is read
+    # review-code-6f3w/vb7w: _term raises SystemExit; a signal inside setup-to-cleanup would leak wt-<id>. Block both from
+    # here: they are delivered only around _execute, and the cleanup below runs masked. Git children started during
+    # setup inherit the blocked mask (harmless).
+    sigs = {getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)}
+    prev = signal.pthread_sigmask(signal.SIG_BLOCK, sigs) if hasattr(signal, "pthread_sigmask") else None
     try:
         target.git_bytes(["worktree", "add", "--detach", wth if base else wt, head], repo)
         if kind in target.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
@@ -116,18 +122,29 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
         os.mkdir(tmp, 0o700)
         env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
         env.update(HOME=home, TMPDIR=tmp)
-        result = _execute(cmd, wt, env, None if base else fid)
+        try:  # unmask before the call: the test's child process inherits the mask
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, prev)
+            result = _execute(cmd, wt, env, None if base else fid)
+        finally:
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_BLOCK, sigs)
     except (target.Refuse, OSError) as e:
         if isinstance(e, target.Refuse) and e.reason in ("bad-test-path", "no-test-at-head"):
             raise
         result = {"outcome": "error", "exit": None}  # a git or OS failure after the gate
     finally:
-        for w in (wt, wth):
-            target.git_bytes(["worktree", "remove", "--force", w], repo, check=False)
-            shutil.rmtree(w, ignore_errors=True)
-        target.git_bytes(["worktree", "prune"], repo, check=False)
-        shutil.rmtree(home, ignore_errors=True)
-        shutil.rmtree(tmp, ignore_errors=True)
+        # masked here (see above): a pending signal is delivered at the unmask, after the cleanup
+        try:
+            for w in (wt, wth):
+                target.git_bytes(["worktree", "remove", "--force", w], repo, check=False)
+                shutil.rmtree(w, ignore_errors=True)
+            target.git_bytes(["worktree", "prune"], repo, check=False)
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(tmp, ignore_errors=True)
+        finally:
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, prev)
     out_dir = os.path.join(run_dir, "repro")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
@@ -136,7 +153,16 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
     return dict(result, status="ok", id=fid)
 
 
+def _term(signum, frame):
+    for name in ("SIGTERM", "SIGHUP"):  # one-shot: a second signal must not abort the cleanup the first one starts
+        if getattr(signal, name, None):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+    raise SystemExit(143)  # unwinds through run()'s finally and _execute's group kill; the default action skips both
+
+
 def main(argv: List[str], stdin: Optional[object] = None) -> int:
+    names = [n for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)]  # Windows has no SIGHUP
+    old = {}
     try:
         if argv[:1] != ["run"] or "--" not in argv:
             raise target.Refuse("usage", USAGE)
@@ -145,12 +171,20 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         opts = [a for a in argv[1:i] if a != "--base"]
         if flag > 1 or len(opts) != 6 or opts[0::2] != ["--run", "--id", "--test"] or i == len(argv) - 1:
             raise target.Refuse("usage", USAGE)
+        if threading.current_thread() is threading.main_thread():  # signal.signal raises elsewhere
+            for n in names:
+                old[n] = signal.signal(getattr(signal, n), _term)
         out = run(opts[1], opts[3], opts[5], argv[i + 1:], b"" if flag else (stdin or sys.stdin.buffer).read(), bool(flag))
         rc = 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
+    except SystemExit:  # _term: cleanup has run; the skill reads stdout, so say why there is no result
+        out, rc = {"status": "refuse", "reason": "interrupted"}, 143
     except (OSError, KeyError, ValueError, TypeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
+    finally:
+        for n, h in old.items():
+            signal.signal(getattr(signal, n), h)
     print(json.dumps({k: v for k, v in out.items() if k in ("status", "reason", "detail", "id", "outcome", "exit")},
                      sort_keys=True))
     return rc

@@ -30,7 +30,7 @@ import sanitize
 import target
 import weaken
 
-TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
+TIMEOUT = 540  # seconds; read at call time. references/fix.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
 _MANIFEST = re.compile(
@@ -400,7 +400,7 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
     tj = target.load_target(run)
     if tj["kind"] in ("staged", "unstaged", "worktree"):
         raise target.Refuse("uncommitted-target")  # UD-3: only a committed target whose HEAD is checked out
-    if tj["kind"] in ("path", "repo") and tj.get("dirty"):
+    if tj["kind"] in ledger.WHOLE and tj.get("dirty"):
         raise target.Refuse("dirty-pin")  # their tree/ held working-copy content
     if any("\0" in w for w in words):
         raise target.Refuse("bad-command")

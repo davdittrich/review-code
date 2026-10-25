@@ -709,6 +709,31 @@ class TestFilter(Local):
         self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "only-excluded"))
         self.assertEqual(self.run_dirs(), before)
 
+    def listing_calls(self, kind, names, dirty=None):
+        """review-code-mosd: the ls-tree / ls-files argvs filter_files spawns for `names`."""
+        self.change({"package-lock.json": "{}\n", "a.py": "a = 1\n"})
+        for n, text in (dirty or {}).items():
+            with open(os.path.join(self.repo, n), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        top = target._toplevel(self.repo)
+        plan = {"mb": self.git("rev-parse", "main"), "head": self.git("rev-parse", "HEAD")}
+        seen, real = [], subprocess.Popen
+
+        def spy(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+
+        with mock.patch.object(target.subprocess, "Popen", side_effect=spy):
+            target.filter_files(kind, plan, names, top)
+        return [a for a in seen if "ls-tree" in a or "ls-files" in a]
+
+    def test_filter_lockfile_only_lists_no_tree(self):
+        self.assertEqual(self.listing_calls("branch", ["package-lock.json"]), [])
+
+    def test_filter_unstaged_lists_the_index_once(self):
+        calls = self.listing_calls("unstaged", ["a.py"], {"a.py": "a = 2\n"})
+        self.assertEqual(len(calls), 1, calls)
+
     def test_filter_diff_chunks(self):
         self.change({"Cargo.lock": "c\n", "src/a.js": "a\n", "src/b.js": "b\n", "src/c.js": "c\n"})
         with mock.patch.object(target, "_ARGV_BUDGET", 8):  # one path per git call
@@ -1019,6 +1044,174 @@ class TestSpecialFiles(Local):
                 self.assertEqual(rc, 0, out)
                 ex = {e["path"]: e["reason"] for e in load(out["run"])["excluded"]}
                 self.assertEqual(ex.get("pipe.txt"), "special", ex)
+
+
+class TestNestedWorktree(Local):
+    def test_untracked_nested_worktree_is_omitted_not_read(self):
+        # review-code-tett: ls-files --others prints a nested worktree as "wt/"; opening it as a file crashed target.py
+        self.git("checkout", "-q", "main")
+        self.git("worktree", "add", "-q", "--detach", os.path.join(self.repo, "wt"))
+        self.assertIn("wt/", self.git("ls-files", "--others", "--exclude-standard").split())
+        self.write("fresh.py", "f = 1\n")
+        for words in (["--repo"], ["--unstaged"], [], ["."]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                rec = load(out["run"])
+                names = list(rec["included"]) + [e["path"] for e in rec["excluded"]]
+                self.assertIn("fresh.py", names)
+                self.assertFalse([n for n in rec["included"] if n == "wt" or n.startswith("wt/")], names)
+                # review-code-qotx: the omission is a per-path excluded row, not silence
+                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "wt"], ["nested-repository"], rec["excluded"])
+                pinned = self.git("ls-tree", "-r", "--name-only", rec["pinned_tree"]).split("\n")
+                self.assertIn("fresh.py", pinned)
+                self.assertFalse([n for n in pinned if n == "wt" or n.startswith("wt/")], pinned)
+
+
+class TestTrackedSubmodule(Local):
+    def test_populated_submodule_is_excluded_not_a_traceback(self):
+        # review-code-blcf: --repo and a path target read the gitlink directory as a file (IsADirectoryError)
+        self.git("checkout", "-q", "main")
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"f": "1\n"}, "s")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "subm")
+        self.git("commit", "-q", "-m", "add submodule")
+        for words in (["--repo"], ["."]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                rec = load(out["run"])
+                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "subm"], ["submodule"])
+                self.assertIn("a.txt", rec["included"])
+
+    def _add_submodule(self):
+        self.git("checkout", "-q", "main")
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"f": "1\n"}, "s")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "subm")
+        self.git("commit", "-q", "-m", "add submodule")
+        return os.path.join(self.repo, "subm")
+
+    def _reasons(self, out, path):
+        return [e["reason"] for e in load(out["run"])["excluded"] if e["path"] == path]
+
+    def test_changed_submodule_pointer_unstaged_and_worktree(self):
+        # review-code-ea83: one reason per cause: a tracked gitlink is "submodule" whatever the kind
+        subdir = self._add_submodule()
+        gitfix.commit(subdir, {"f": "2\n"}, "s2")  # the checked-out commit moves: the pointer changed
+        self.write("fresh.py", "f = 1\n")
+        for words in (["--unstaged"], []):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+                self.assertIn("fresh.py", load(out["run"])["included"])
+
+    def test_staged_gitlink(self):
+        subdir = self._add_submodule()
+        gitfix.commit(subdir, {"f": "2\n"}, "s2")
+        self.git("add", "subm")
+        self.write("fresh.py", "f = 1\n")
+        self.git("add", "fresh.py")
+        rc, out = self.pin("--staged")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+        self.assertIn("fresh.py", load(out["run"])["included"])
+        self.assertNotIn("subm", load(out["run"])["included"])
+
+    def _range_gitlink(self, remove=False):
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,subm" % self.git("rev-parse", "HEAD").strip())
+        if remove:
+            self.git("commit", "-q", "-m", "add gitlink")
+            self.git("rm", "-q", "--cached", "subm")
+        sha = gitfix.commit(self.repo, {"z.py": "z = 1\n"}, "gitlink")
+        return sha
+
+    def test_gitlink_in_a_range_is_submodule_and_matches_the_ledger(self):
+        sha = self._range_gitlink()
+        rc, out = self.pin(sha + "^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+        self.assertNotIn("subm", load(out["run"])["included"])
+
+    def test_removed_gitlink_is_submodule_too(self):
+        sha = self._range_gitlink(remove=True)
+        rc, out = self.pin(sha + "^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+
+    def _link(self):
+        return "160000,%s,subm" % self.git("rev-parse", "HEAD").strip()
+
+    def test_gitlink_replaced_by_a_file_is_reviewed(self):
+        # review-code-yp2j: only a head-side gitlink is a submodule; a file that replaces one must be included
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", self._link())
+        self.git("commit", "-q", "-m", "add gitlink")
+        self.git("rm", "-q", "--cached", "subm")
+        self.write("subm", "s = 1\n")
+        self.git("add", "subm")
+        self.git("commit", "-q", "-m", "gitlink to file")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual((rc, out.get("reason")), (0, None), out)
+        self.assertIn("subm", load(out["run"])["included"])
+        self.assertEqual(self._reasons(out, "subm"), [])
+        self.assertIn("+s = 1", self.diff(out))
+
+    def test_staged_gitlink_replaced_by_a_file_is_reviewed(self):
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", self._link())
+        self.git("commit", "-q", "-m", "add gitlink")
+        self.git("rm", "-q", "--cached", "subm")
+        self.write("subm", "s = 1\n")
+        self.git("add", "subm")
+        rc, out = self.pin("--staged")
+        self.assertEqual((rc, out.get("reason")), (0, None), out)
+        self.assertIn("subm", load(out["run"])["included"])
+
+    def test_file_replaced_by_a_gitlink_stays_submodule(self):
+        self.git("checkout", "-q", "main")
+        self.git("rm", "-q", "a.txt")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,a.txt" % self.git("rev-parse", "HEAD").strip())
+        self.write("z.py", "z = 1\n")
+        self.git("add", "z.py")
+        self.git("commit", "-q", "-m", "file to gitlink")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "a.txt"), ["submodule"])
+        self.assertNotIn("a.txt", load(out["run"])["included"])
+
+    def test_pointer_only_commit_refuses_only_excluded(self):
+        # review-code-ea83: a commit that only moves a submodule pointer has no file to review
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,subm" % self.git("rev-parse", "HEAD").strip())
+        self.git("commit", "-q", "-m", "gitlink only")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual((rc, out.get("reason")), (1, "only-excluded"), out)
+
+    def test_tracked_file_replaced_by_directory_has_its_own_reason(self):
+        self.git("checkout", "-q", "main")
+        os.remove(os.path.join(self.repo, "a.txt"))
+        self.write("a.txt/inner.py", "i = 1\n")
+        for words in (["--unstaged"], [], ["--repo"]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self._reasons(out, "a.txt"), ["replaced-by-directory"])
+
+
+class TestOnlyNestedWorktree(Local):
+    def test_a_nested_worktree_alone_is_not_a_change(self):
+        # review-code-qotx: the new excluded row must not turn "nothing changed" into "every changed file excluded"
+        self.git("checkout", "-q", "main")
+        self.git("worktree", "add", "-q", "--detach", os.path.join(self.repo, "wt"))
+        for words in ([], ["--unstaged"]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual((rc, out.get("reason")), (1, "empty-diff"), out)
+        rc, out = self.pin("--repo")
+        self.assertNotEqual(out.get("reason"), "only-excluded", out)
 
 
 class TestUntrackedDefault(Local):

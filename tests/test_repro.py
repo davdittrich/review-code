@@ -4,7 +4,10 @@ import io
 import json
 import os
 import subprocess
+import re
+import signal
 import sys
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -87,6 +90,93 @@ class Tracer(Base):
             lambda: cli("repro.py", ["run", "--run", run, "--id", FID, "--test", "tests/test_calc.py", "--", "true"],
                         self.repo, self.tmp, PASS_SRC.encode("utf-8")))
         self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
+
+    def test_sigterm_during_cleanup_still_removes_the_worktree(self):
+        # review-code-6f3w: _term raising SystemExit inside run()'s finally aborted the cleanup loop
+        run = self.start()
+        real, hit = repro.target.git_bytes, []
+
+        def term_once(args, *a, **k):
+            if args[:2] == ["worktree", "remove"] and not hit:
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(args, *a, **k)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.target, "git_bytes", side_effect=term_once), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
+        self.assertFalse(os.path.exists(os.path.join(run, "repro", FID + ".json")))
+
+    def test_sigterm_before_the_mask_leaves_no_worktree(self):
+        # review-code-vb7w: the mask used to start inside finally; a signal just before it aborted the cleanup
+        run = self.start()
+        real, hit = signal.pthread_sigmask, []
+
+        def term_before_block(how, mask):
+            if how == signal.SIG_BLOCK and not hit and os.path.isdir(os.path.join(run, "wt-" + FID)):
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(how, mask)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.signal, "pthread_sigmask", side_effect=term_before_block), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
+
+    def test_sigterm_during_setup_is_held_until_the_run_then_cleaned_up(self):
+        run = self.start()
+        real, hit = repro.target.git_bytes, []
+
+        def term_once(args, *a, **k):
+            if args[:2] == ["worktree", "add"] and not hit:
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(args, *a, **k)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.target, "git_bytes", side_effect=term_once), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
+
+    def test_sigterm_cleans_up_and_kills_the_test_group(self):
+        run = self.start()
+        marker = os.path.join(self.tmp, "pid")
+        cmd = ["/bin/sh", "-c", "echo $$ > %s; sleep 30" % marker]
+        e = gitfix.env()
+        e["TMPDIR"] = self.tmp
+        p = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "repro.py"), "run", "--run", run, "--id", FID,
+                              "--test", "t.py", "--"] + cmd, cwd=self.repo, env=e, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdin.write(PASS_SRC.encode("utf-8"))
+        p.stdin.close()
+        p.stdin = None  # review-code-wvw8: Python 3.9's communicate() flushes a closed stdin and raises ValueError
+        deadline = time.monotonic() + 20
+        while not os.path.exists(marker) or not open(marker).read().strip():
+            self.assertLess(time.monotonic(), deadline, "the test never started")
+            time.sleep(0.05)
+        pgid = int(open(marker).read())
+        p.terminate()
+        p.communicate(timeout=20)
+        self.assertEqual(p.returncode, 143)
+        self.assert_clean(run)
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            self.assertLess(time.monotonic(), deadline, "the process group is still alive")
+            time.sleep(0.05)
 
 
 class Rules(Base):
@@ -175,6 +265,38 @@ class Rules(Base):
     def test_py39_grammar(self):
         with open(os.path.join(SCRIPTS, "repro.py"), encoding="utf-8") as fh:
             ast.parse(fh.read(), feature_version=(3, 9))
+
+
+class Signals(unittest.TestCase):
+    ARGV = ["run", "--run", "r", "--id", FID, "--test", "t.py", "--base", "--", "true", "t.py"]
+    OK = {"status": "ok", "id": FID, "outcome": "reproduced", "exit": 1}
+
+    def call(self, **kw):
+        out = io.StringIO()
+        with mock.patch.object(repro, "run", **kw), redirect_stdout(out):
+            rc = repro.main(self.ARGV)
+        return rc, json.loads(out.getvalue())
+
+    def test_handlers_restored_after_main(self):
+        before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP")}
+        self.call(return_value=self.OK)
+        self.assertEqual({n: signal.getsignal(getattr(signal, n)) for n in before}, before)
+
+    def test_non_main_thread_is_not_an_internal_error(self):
+        res = []
+        t = threading.Thread(target=lambda: res.append(self.call(return_value=self.OK)))
+        t.start()
+        t.join()
+        self.assertEqual(res[0][1]["status"], "ok")
+
+    def test_sigterm_prints_a_refusal(self):
+        rc, out = self.call(side_effect=lambda *a: os.kill(os.getpid(), signal.SIGTERM))
+        self.assertEqual((rc, out), (143, {"status": "refuse", "reason": "interrupted"}))
+
+    def test_skill_bash_timeout_fits_timeout(self):
+        with open(os.path.join(os.path.dirname(SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
+            ms = int(re.search(r"Bash `timeout` of (\d+)", fh.read()).group(1))
+        self.assertLessEqual(repro.TIMEOUT + 60, ms // 1000)  # 60 s for the group kill, worktree removal and sweep
 
 
 class Execute(unittest.TestCase):

@@ -733,12 +733,28 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
     return plan
 
 
+def _others(top: str) -> List[str]:
+    return _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
+
+
+def _untracked(top: str, others: Optional[List[str]] = None) -> List[str]:
+    """Untracked, non-ignored names. git prints a nested repository or worktree as `dir/`: a directory, never read as a
+    file and never pinned (the documented "not seen: nested repositories" limit); _nested names it."""
+    return [n for n in (_others(top) if others is None else others) if not n.endswith("/")]
+
+
+def _nested(others: List[str]) -> List[str]:
+    return [n[:-1] for n in others if n.endswith("/")]
+
+
 def _head_plan(top: str, sub: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
     """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
     head = _commit_id("HEAD", top)
     names, renames = _changed(sub, extra, top)
-    other = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
+    raw = _others(top) if untracked else []
+    other = _untracked(top, raw)
     return {"base": head, "head": head, "mb": head, "names": names, "renames": renames, "untracked": other,
+            "nested": _nested(raw),
             "dirty": True,
             "diff_cmd": ["git", sub] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
 
@@ -754,14 +770,16 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
     tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    others = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # pin_tree pins them all
+    raw = _others(top)
+    others = _untracked(top, raw)  # pin_tree pins them all
     # a literal pathspec, in Python: the path itself, or a directory above it ("." is the top)
     other = [n for n in others if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
     present = set(names)
     explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
-            "others": others, "diff_cmd": None, "commits": [], "explicit": explicit}
+            "others": others, "diff_cmd": None, "commits": [], "explicit": explicit,
+            "nested": [n for n in _nested(raw) if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]}
 
 
 def _plan_commit(rev: str, cwd: str) -> dict:
@@ -885,26 +903,48 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     header marker, a directory name, a minified name or a long line (only lockfile names are dropped outright).
     """
     kept, excluded, notes, todo = [], [], [], []
-    mb, explicit = plan["mb"], plan.get("explicit", ())
+    mb, explicit, nested = plan["mb"], plan.get("explicit", ()), set(plan.get("nested", ()))
 
     def drop(n, reason, detail):
         excluded.append({"path": n, "reason": reason, "detail": detail})
 
+    working = kind in ("unstaged", "worktree", "path", "repo")
+    memo = {}
+
+    def lists():  # review-code-mosd: the two tree passes are built on first need, not for a lockfile-only change
+        if not memo:
+            # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger (a lockfile-named one is dropped as a lockfile first); mode 160000 in the index or head tree
+            lst = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
+            # 6xl.88: what the diff compares against; unstaged compares against the index, so one listing serves both
+            bl = lst if kind == "unstaged" else tree_listing(mb, top)
+            # review-code-yp2j: a gitlink at head, or one absent at head (removed); a base gitlink that head replaced by a file is reviewed
+            memo.update(listing=lst, base_listing=bl, links={p for p, (m, _) in lst.items() if m == "160000"}
+                        | {p for p, (m, _) in bl.items() if m == "160000" and p not in lst})
+        return memo
+
     for n in names:
         base = n.rsplit("/", 1)[-1]
-        if n in explicit:
-            todo.append(n)  # only the size cap applies to a file the user named
-        elif base in _LOCKFILES:
-            drop(n, "lockfile", "basename")
+        isdir = working and os.path.isdir(os.path.join(top, n)) and not os.path.islink(os.path.join(top, n))
+        if base in _LOCKFILES and n not in explicit and n not in nested and not isdir:
+            drop(n, "lockfile", "basename")  # a lockfile name that is a gitlink is dropped as a lockfile: never read either way
+        elif n in lists()["links"]:
+            drop(n, "submodule", "a tracked gitlink (submodule), never read")
+        elif n in nested:
+            drop(n, "nested-repository", "an untracked nested repository or worktree, never read")
+        elif isdir:
+            if n in lists()["listing"]:
+                drop(n, "replaced-by-directory", "a tracked file replaced by a directory, never read")
+            else:
+                drop(n, "nested-repository", "a directory (nested repository or worktree), never read")
         else:
-            todo.append(n)  # a minified name is judged below, with the "the change adds it" keep
+            todo.append(n)  # explicit: only the size cap applies; else a minified name is judged below, with the "the change adds it" keep
     if todo:
+        listing, base_listing = lists()["listing"], lists()["base_listing"]
         if kind in ("unstaged", "worktree", "path", "repo"):
             head = _files(todo, top)
         else:
-            head = _blobs(index_listing(top) if kind == "staged" else tree_listing(plan["head"], top), todo, top)
-        # 6xl.88: the base side is what the diff compares against: the index for --unstaged, the merge base else
-        base_ls = _blobs(index_listing(top) if kind == "unstaged" else tree_listing(mb, top), todo, top)
+            head = _blobs(listing, todo, top)
+        base_ls = _blobs(base_listing, todo, top)
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts
@@ -1069,6 +1109,7 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
     return hidden, stripped
 
 
+WHOLE = ("path", "repo")  # targets that are a tree, not a change: no diff, no provenance, every line under review
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 REGULAR = ("100644", "100755")  # the modes of a regular file: never a link (120000) or a submodule (160000)
 _RAW_DIFF = ["--raw", "--no-abbrev", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
@@ -1103,8 +1144,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
     edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
     imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in REGULAR}
-    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
-        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
+    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else \
+        _untracked(top)  # path and repo listed theirs already
     tmp, blobs, idxmode = [], {}, {}
     try:
         if not inplace:
@@ -1303,7 +1344,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     elif kind == "worktree":
         head = _commit_id("HEAD", top)
         plan = _head_plan(top, "diff-index", [head], True, [head])
-    elif kind in ("path", "repo"):
+    elif kind in WHOLE:
         plan = _plan_files(candidate.get("paths", []), cwd, top)
     else:
         raise Refuse("bad-ref", "unknown target kind")
@@ -1315,9 +1356,9 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         _gate("origin", None, top)
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
-        raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
-                     "the target has no files" if kind in ("path", "repo") else "the change has no differences")
-    names, excluded, fnotes = filter_files(kind, plan, names, top)
+        raise Refuse("no-files" if kind in WHOLE else "empty-diff",
+                     "the target has no files" if kind in WHOLE else "the change has no differences")
+    names, excluded, fnotes = filter_files(kind, plan, names + plan.get("nested", []), top)  # a nested repo is no change
     if not names:
         counts = {}
         for e in excluded:

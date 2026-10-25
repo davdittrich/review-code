@@ -60,7 +60,8 @@ _LOAD_FILE = re.compile(r"(?:Dockerfile(?:\.[\w-]+)?|docker-compose.*\.ya?ml|Pro
                         r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.(?:py|js|ts|rb|go|java|php|rs|cs|ex))\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
-CAP_FIND = 300  # lines per list in inputs/spec-find.md
+WHOLE = target.WHOLE
+CAP_FIND = 300  # lines per list in inputs/spec-find.md, and included files listed in inputs/defects.md and standards.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
 ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, or as ADR_OVER past MAX_FILE, so spec.md's length never follows it
 ADR_OVER = "over %dM" % (target.MAX_FILE // 10 ** 6)  # ADR_WIDTH characters: the size field of a record left unread, whose real size is not printed
@@ -567,7 +568,7 @@ def _provenance(run: str, kind: str):
     """f(path, line) -> provenance `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
     the change adds, or the file has no diff at all (touched, no provenance known); None is routine. A target that is no
     change (path, repo) has no provenance."""
-    if kind in ("path", "repo"):
+    if kind in WHOLE:
         return lambda p, n: None
     added, seen = {}, set()
     try:
@@ -984,7 +985,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     sources += [{"kind": "issue", "ref": x[3], "fetched": x[3] in xtexts} for x in xrefs]
 
     # bd tickets named `<repo-dir>-xyz` in the commit messages (a whole-file target reads the recent history instead)
-    recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in ("path", "repo") else ""
+    recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in WHOLE else ""
     pre = re.escape(os.path.basename(tj["repo"]).lower())
     refs = sorted({m for t in prose + [recent] for m in re.findall(r"\b(%s-[a-z0-9]{2,5})\b" % pre, t.lower())})[:CAP_ISSUES]
     tickets = {r: t for r in refs for t in [_bd_show(tj["repo"], r)] if t is not None}
@@ -1029,6 +1030,23 @@ def _commit_messages(repo: str, commits: List[str]) -> List[str]:
     if len(parts) != len(commits):
         raise target.Refuse("internal-error", "git log returned an unexpected number of messages")
     return [sanitize.sanitize_prose(p.decode("utf-8", "surrogateescape") + "\n") for p in parts]  # +LF: the old per-commit tail
+
+
+def listed(paths):
+    """The included paths the Defects and Standards inputs name: the first CAP_FIND."""
+    return paths[:CAP_FIND]
+
+
+def _included_section(paths):
+    """At most CAP_FIND included paths, one per line, and the count left out (a whole-tree run can hold thousands)."""
+    out = "\n".join("- " + json.dumps(p) for p in listed(paths))
+    return out + "\n(+%d more included files: see the included list of target.json beside change_diff)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
+
+
+def _find_list(paths, what):
+    """The first CAP_FIND paths for the spec finder, and a fixed-word line with the count left out (it has no other way to know)."""
+    out = "\n".join("- " + json.dumps(p) for p in paths[:CAP_FIND]) or "none"
+    return out + "\n(+%d more %s files not listed: find them with Glob and Grep over the repository)" % (len(paths) - CAP_FIND, what) if len(paths) > CAP_FIND else out
 
 
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
@@ -1115,16 +1133,16 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                    if mode in target.REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
     write(os.path.join(run, "inputs", "spec-find.md"),
           "# Spec finder input\n\n" + pin + "\n## Reviewed files\n\n%s\n\n## Symbols\n\n%s\n\n## Prose files at head\n\n%s\n" % (
-              "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
+              _find_list(tj["included"], "reviewed"),
               "\n".join("- " + json.dumps(s["name"]) for s in led["symbols"]) or "none",
-              "\n".join("- " + json.dumps(p) for p in prose[:CAP_FIND]) or "none"))
+              _find_list(prose, "prose")))
     load_sec = "\n## Expected load\n\n%s\n\nSignals:\n%s\n" % (
         led["load"]["load"], "\n".join("- " + json.dumps(p) for p in led["load"]["files"]) or "none")
     write(os.path.join(run, "inputs", "defects.md"),
            "# Defects input\n\n" + pin + hist + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
-               "\n".join("- " + json.dumps(p) for p in tj["included"])) +
+               _included_section(tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\ntree/ holds the pinned copy of each checkout-difference file (hidden text stripped from "
            "prose and markup files, hidden characters escaped in all); read every other file from the repository. A file under "
            "Skipped has no readable copy. Never read a path listed under Skipped, in the repository or anywhere else: it may be a link into the host.\n\n## Skipped\n\n%s\n" % (
@@ -1137,12 +1155,15 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
+    whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
+             "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files, \"unchanged lines\" none.\n\n%s\n" %
+             _included_section(tj["included"])) if tj["kind"] in WHOLE else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
                led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
-               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + sib_sec)
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + whole + sib_sec)
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
             "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {})}

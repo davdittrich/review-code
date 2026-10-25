@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 import tracemalloc
+import types
 from unittest import mock
 import unittest
 
@@ -811,6 +812,116 @@ class RepoTarget(Base):
                          ("existing", "suggestion", True, 0))
         rc, out = self.rep("render")
         self.assertIn("Target is not a change: whole-file findings", out)
+
+class StandardsLaneReadNothing(Base):  # review-code-lrrx, gh#69
+    pin_args = ["--repo"]
+
+    def standards(self, inspected):
+        rc, out = self.rep("ingest", lines({"inspected": inspected}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        return [g for g in self.doc()["lost_guarantees"] if "standards" in g]
+
+    def test_repo_standards_lane_naming_no_included_file_is_a_lost_guarantee(self):
+        (g,) = self.standards([])
+        self.assertIn("none of its listed included files", g)
+        rc, out = self.rep("render")
+        self.assertIn("lost guarantee: " + g, out)
+
+    def test_the_blind_lane_is_a_lost_guarantee_not_a_verdict_change(self):  # review-code-vw34: owner decision, Standards does not gate
+        self.assertEqual(len(self.standards([])), 1)
+        self.assertEqual(self.doc()["verdict"], "No blocking findings")
+
+    def test_repo_standards_lane_naming_an_included_file_loses_nothing(self):
+        self.assertEqual(self.standards(["src/calc.py"]), [])
+
+
+    def test_an_incomplete_standards_lane_is_reported_elsewhere_not_here(self):
+        rc, out = self.rep("ingest", lines({"summary": "no inspected line"}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        d = self.doc()
+        self.assertEqual((d["lanes"], d["lost_guarantees"]), ({"standards": "incomplete"}, []))
+
+
+class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_standards on its inputs
+    def run_dir(self, shards):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        for i, inc in shards.items():
+            os.makedirs(os.path.join(d, "shards", str(i)))
+            with open(os.path.join(d, "shards", str(i), "target.json"), "w") as fh:
+                json.dump({"included": inc}, fh)
+        return d
+
+    @staticmethod
+    def cand(**lanes):
+        return {"lanes": {n: {"complete": True, "inspected": v} for n, v in lanes.items()}}
+
+    def test_a_shard_lane_that_read_only_another_shards_file_is_blind(self):
+        d = self.run_dir({1: ["a.py"], 2: ["b.py"]})
+        tj = {"kind": "repo", "included": ["a.py", "b.py"]}
+        got = report._blind_standards(d, tj, self.cand(**{"standards@1": ["a.py"], "standards@2": ["a.py"]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn("standards@2", got[0])
+
+    def test_a_shard_lane_whose_shard_file_is_unreadable_is_reported_not_judged_by_the_run(self):  # review-code-5jeu
+        d = self.run_dir({1: ["a.py"]})  # no shards/2/target.json
+        tj = {"kind": "repo", "included": ["a.py", "b.py"]}
+        got = report._blind_standards(d, tj, self.cand(**{"standards@1": ["a.py"], "standards@2": ["b.py"]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn("standards@2", got[0])
+
+    def test_a_hidden_character_name_the_lane_read_is_not_blind(self):
+        raw = "a\u202eb.py"
+        d = self.run_dir({})
+        tj = {"kind": "repo", "included": [report.target.shown(raw)]}
+        self.assertEqual(report._blind_standards(d, tj, self.cand(standards=[raw])), [])
+
+    def test_every_whole_tree_kind_is_checked_and_a_change_is_not(self):  # review-code-0aw5
+        c = self.cand(standards=[])
+        self.assertIs(report.WHOLE, report.ledger.WHOLE)
+        for kind in report.ledger.WHOLE:
+            self.assertEqual(len(report._blind_standards("x", {"kind": kind, "included": ["a"]}, c)), 1, kind)
+        self.assertEqual(report._blind_standards("x", {"kind": "branch", "included": ["a"]}, c), [])
+
+    def test_a_lane_is_judged_against_the_included_files_it_was_shown(self):  # review-code-5jeu
+        names = ["f%03d.py" % i for i in range(report.ledger.CAP_FIND + 5)]
+        tj = {"kind": "repo", "included": names}
+        d = self.run_dir({})
+        self.assertEqual(report._blind_standards(d, tj, self.cand(standards=[names[0]])), [])
+        self.assertEqual(len(report._blind_standards(d, tj, self.cand(standards=[names[-1]]))), 1)
+
+
+class StandardsLaneEchoesAHiddenName(Base):  # review-code-kt4w
+    pin_args = ["--repo"]
+    raw = "src/a\u202eb.py"
+    base_files, feat_files = {raw: "x = 1\n"}, {raw: "x = 2\n"}
+
+    def test_the_raw_and_the_escaped_name_both_count_as_read(self):
+        for name in (self.raw, report.target.shown(self.raw)):
+            rc, out = self.rep("ingest", lines({"inspected": [name]}), extra=["--lane", "standards"])
+            self.assertEqual(rc, 0, out)
+            d = self.doc()
+            self.assertEqual([g for g in d["lost_guarantees"] if "standards" in g], [], name)
+            self.assertEqual(d["inspected"]["areas"], [self.raw], name)
+
+
+class StandardsLaneEchoesAnAmbiguousName(Base):  # a file literally named like the escape of another
+    pin_args = ["--repo"]
+    raw, lone = "src/a\u202eb.py", "src/a<U+202E>b.py"
+    base_files, feat_files = {raw: "x = 1\n", lone: "x = 1\n"}, {raw: "x = 2\n", lone: "x = 1\n"}
+
+    def test_the_echo_names_the_file_it_spells_and_never_guesses_the_other(self):
+        rc, out = self.rep("ingest", lines({"inspected": [self.lone]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.doc()["inspected"]["areas"], [self.lone])
+
+
+class StandardsLaneReadNothingOnADiff(Base):
+    def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):
+        rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.doc()["lost_guarantees"], [])
+
 
 CANARY = "CANARY-SPEC-TEXT-7731"
 
@@ -2107,6 +2218,20 @@ class Shards(Lanes):
         rc, text = self.rep("render")
         self.assertIn("shards reviewed: 1 (2 files)", text)
         self.assertIn("shard skipped: shard 3 (over the shard cap) 7 files", text)
+
+    def test_a_run_with_a_skipped_shard_never_reports_the_all_clear(self):  # review-code-5jeu
+        self.shard(1, {"inspected": ["src/only.py"]})
+        self.shard(2, {"inspected": ["src/calc.py"]})
+        self.assertEqual(set(self.doc()["lanes"].values()), {"complete"})  # so only the skipped shard can block the all-clear
+        self.assertEqual(self.doc()["verdict"], "Needs discussion")
+        rc, text = self.rep("render")
+        self.assertIn("shard skipped: shard 3", text)
+        self.assertRegex(text, r"\nDefects\nBlocking\n")  # the Defects section keeps its sections: a shard is not the lane
+
+    def test_defects_skipped_names_a_lane_left_out_and_a_shard_left_out(self):
+        self.assertTrue(report._defects_skipped([{"what": "defects", "why": "tier lean"}]))
+        self.assertTrue(report._defects_skipped([{"what": "shard 2", "why": "shard cap: 3 files", "files": 3}]))
+        self.assertFalse(report._defects_skipped([{"what": "pack x", "why": "cap"}]))
 
     def test_no_shards_means_empty_lists(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
@@ -3424,6 +3549,60 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+    def test_every_reason_the_checks_return_is_in_the_table(self):
+        """Drive _cite, _rule and _candidate over bad inputs: a reason returned through a variable still has to be in REASONS."""
+        with tempfile.TemporaryDirectory() as run:
+            os.makedirs(os.path.join(run, "conventions"))
+            with open(os.path.join(run, "conventions", "c.md"), "w", encoding="utf-8") as fh:
+                fh.write("always name every module in lower case\n")
+            pin = types.SimpleNamespace(files={"a.py", "b.py"}, rows={"a.py": ["x = 1", "y = 2"]}, top=run)
+            good = dict(CAND, path="a.py", line=1, quote="x = 1")
+
+            def normed(size, blob, **kw):  # a pin whose one 'a.py' counts for nit.norm; a valid cite, so norm is reached
+                p = types.SimpleNamespace(files=pin.files, rows=pin.rows, top=run, every=lambda: [("a.py", size, "k")],
+                                          blobs=lambda keys: {"k": blob})
+                c = dict(good, severity="nit", category="norm", **dict(dict(norm_for="FOO", norm_against="x = 1", norm_glob="*.py"), **kw))
+                return report._candidate(c, p, "standards", run, nit_mode=True)
+            rule = {"rule": "always name every module in lower case", "rule_source": "conventions/c.md"}
+            got = {}
+            for name, fn in {
+                "cite-long": lambda: report._cite(pin, "d" * 5000, 1, 1, "x"),
+                "cite-tree": lambda: report._cite(pin, "z.py", 1, 1, "x"),
+                "cite-range": lambda: report._cite(pin, "a.py", 0, 1, "x"),
+                "cite-past-end": lambda: report._cite(pin, "a.py", 1, 9, "x"),
+                "cite-unreadable": lambda: report._cite(pin, "b.py", 1, 1, "x"),
+                "cite-quote": lambda: report._cite(pin, "a.py", 1, 1, "nope"),
+                "rule-short": lambda: report._rule({"rule": "two words", "rule_source": "conventions/c.md"}, run),
+                "rule-src-type": lambda: report._rule(dict(rule, rule_source=1), run),
+                "rule-src-dir": lambda: report._rule(dict(rule, rule_source="other/c.md"), run),
+                "rule-src-file": lambda: report._rule(dict(rule, rule_source="conventions/none.md"), run),
+                "rule-absent": lambda: report._rule(dict(rule, rule="never name a module in upper case"), run),
+                "cand-missing": lambda: report._candidate({}, pin, "defects", run),
+                "cand-type": lambda: report._candidate(dict(good, severity="bogus"), pin, "defects", run),
+                "cand-nit-off": lambda: report._candidate(dict(good, severity="nit", category="smell"), pin, "standards", run),
+                "cand-spec": lambda: report._candidate(dict(good, category="spec-wrong"), pin, "spec", run, ctx={}),
+                "cand-tree": lambda: report._candidate(dict(good, path="z.py"), pin, "defects", run),
+                "cand-quote": lambda: report._candidate(dict(good, quote="nope"), pin, "defects", run),
+                "nit-basis": lambda: report._candidate(dict(good, severity="nit", category="smell"), pin, "standards", run,
+                                                       nit_mode=True),
+                "nit-only": lambda: report._candidate(good, pin, "defects", run, nit_mode="only"),
+                "norm-malformed": lambda: normed(10, b"", norm_for=""),
+                "norm-quote-mismatch": lambda: normed(10, b"", norm_against="zzz"),
+                "norm-too-large": lambda: normed(9 << 20, b""),
+                "norm-sample-small": lambda: normed(10, b"x = 1\nFOO\n"),
+                "norm-not-majority": lambda: normed(10, b"x = 1\n" * 20),
+            }.items():
+                result, why = fn()
+                self.assertIsNone(result, name)
+                got[name] = why
+            for name, why in got.items():
+                self.assertIn(why, report.REASONS, name)
+            self.assertEqual(set(got.values()), {  # the table cannot shrink: each reason below is returned by a named row
+                "path-too-long", "path-not-in-tree", "line-out-of-range", "unreadable", "quote-not-at-line", "rule-malformed",
+                "rule-source-unknown", "rule-not-in-conventions", "missing-field", "bad-type", "nit-not-enabled", "spec-line-invalid",
+                "nit-basis", "nit-only", "norm-malformed", "norm-quote-mismatch", "norm-too-large", "norm-sample-small",
+                "norm-not-majority"})
 
 
 class LoneSurrogate(Base):

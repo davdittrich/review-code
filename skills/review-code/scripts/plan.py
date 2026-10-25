@@ -1,14 +1,16 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
     plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit]
-                                    stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
-                                    skipped, lost_guarantees, confirm, preview)
+                                    stdout: one JSON line (status, reason, detail, tier, mode, calls (the entries
+                                    {lane, agent, prompt, model, effort, shard[, input: serial mode only]}), skipped,
+                                    lost_guarantees, lost_capabilities, confirm, preview, wave_size, verifier,
+                                    spec_verifier)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
-plan.json (sort_keys): version, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
+plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_shards, max_packs,
-wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, sota_inventory, preview,
+wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
 confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
 """
 import sys
@@ -158,7 +160,7 @@ def _scan_lines(run, tj, blobs):
     """({path: [(line number, text)]}, {path: pinned line count}) of included files (counts only for path and repo): added lines of change.diff, or the head of each file's pinned blob,
     stripped and escaped as tree/ copies are (ledger._scan). `blobs` is ledger.regular_blobs of the included files."""
     inc, out = set(tj["included"]), {}
-    if tj["kind"] in ("path", "repo"):
+    if tj["kind"] in ledger.WHOLE:
         heads, counts = _heads(tj, blobs)
         for p, data in sorted(heads.items()):
             text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
@@ -243,8 +245,9 @@ CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when
 
 def _groups(files, size):
     """Ordered file lists: top-level directory groups (root files form "."), a group above SHARD_BYTES split by its
-    second path component, small groups packed first-fit decreasing up to SHARD_BYTES (shards ordered by first path). shortcut: one level of
-    split only, so a single huge directory below that stays one shard; upgrade when one appears."""
+    second path component, a group over ledger.CAP_FIND paths cut into runs of at most that many in path order, small groups packed
+    first-fit decreasing up to SHARD_BYTES and CAP_FIND paths (shards ordered by first path), so no shard's input list is cut off.
+    shortcut: one level of byte split only, so a single huge directory below that stays one shard; upgrade when one appears."""
     by = {}
     for p in sorted(files):
         by.setdefault(p.split("/")[0] if "/" in p else ".", []).append(p)
@@ -258,10 +261,12 @@ def _groups(files, size):
             groups += [sub[k] for k in sorted(sub)]
         else:
             groups.append(by[top])
+    cap = ledger.CAP_FIND
+    groups = [g[i:i + cap] for g in groups for i in range(0, len(g), cap)]
     bins = []  # first-fit decreasing: a small group fills an earlier gap, so fewer shards (each pays a fixed start)
     for g in sorted(groups, key=lambda g: -sum(size[p] for p in g)):
         n = sum(size[p] for p in g)
-        b = next((b for b in bins if b[1] + n <= SHARD_BYTES), None)
+        b = next((b for b in bins if b[1] + n <= SHARD_BYTES and len(b[0]) + len(g) <= cap), None)
         if b:
             b[0], b[1] = b[0] + g, b[1] + n
         else:
@@ -550,11 +555,17 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     packs, dropped = ranked[:caps["max_packs"]], ranked[caps["max_packs"]:]
     skipped += [{"what": "pack " + n, "why": "pack cap"} for n, _ in dropped]
     nit_text = ((NIT_MODE + NIT_ONLY) if tier == "lean" else NIT_MODE) if nit else None
-    _install_packs(run, packs, nit_text)
-    shards = []
-    if tj["kind"] in ("path", "repo"):
+    groups = None
+    if tj["kind"] in ledger.WHOLE:
         stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p)) for p in tj["included"]}  # (bytes, lines or None) as pinned
         groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
+        big = max(map(len, groups), default=0)  # review-code-1117: refuse before any pack or shard directory is written
+        for lane in ("defects", "standards"):
+            if lane in lanes and big > ledger.CAP_FIND:
+                raise target.Refuse("internal-error", "a %s call would list %d included files, above the cap of %d" % (lane, big, ledger.CAP_FIND))
+    _install_packs(run, packs, nit_text)
+    shards = []
+    if groups is not None:
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
             os.makedirs(os.path.join(run, "shards"), mode=0o700)
@@ -592,7 +603,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
            "shards": shards, "skipped": skipped, "lost_guarantees": lost, "tools": sorted(tools),
            "lost_capabilities": ["%s: %s" % (t, TOOLS[t]["loss"]) for t in _selectable() if t not in tools],
-           "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
+           "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ledger.WHOLE, "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
     if nit:  # absent otherwise, so existing plan.json files stay byte-identical

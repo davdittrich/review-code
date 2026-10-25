@@ -86,7 +86,7 @@ def rows(nits, e):
     (e escapes a text); the JSON report keeps every nit."""
     groups = {}
     for i in nits:
-        groups.setdefault("rule: " + basis_text(i), []).append(i)
+        groups.setdefault(("rule: " if i.get("basis") == "rule" else "") + basis_text(i) or "no stated rule or norm", []).append(i)
     out = []
     for key, items in list(groups.items())[:NIT_RULE_CAP]:
         out.append("- %s (%d finding%s)" % (e(key), len(items), "" if len(items) == 1 else "s"))

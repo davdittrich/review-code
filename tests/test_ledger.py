@@ -134,6 +134,35 @@ class Categories(Base):
         self.assertEqual(files_of(led, "tests"), ["tests/test_a.py"])
         self.assertEqual(led["tests"][0]["how"], "test file in the target")
 
+    def test_whole_tree_standards_input_lists_the_files_to_review(self):  # review-code-lrrx, gh#69
+        self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
+        for kind in ("repo", "path"):
+            self.build(kind=kind, included=["src/a.py", "tests/test_a.py"])
+            text = self.read("inputs/standards.md")
+            self.assertIn("## Included files\n", text, kind)
+            self.assertIn('\n- "src/a.py"\n- "tests/test_a.py"\n', text, kind)
+            self.assertIn("every line of an included file is under review", text, kind)
+
+    def test_the_whole_tree_override_defines_unchanged_lines_too(self):  # review-code-x9ku
+        self.base({"src/a.py": "x = 1\n"})
+        self.build(kind="repo", included=["src/a.py"])
+        self.assertIn('"unchanged lines" none', self.read("inputs/standards.md"))
+
+    def test_both_included_file_lists_are_capped(self):  # review-code-5jeu
+        names = ["src/f%03d.py" % i for i in range(ledger.CAP_FIND + 5)]
+        self.base({n: "x = 1\n" for n in names})
+        self.build(kind="repo", included=names)
+        for f in ("defects", "standards"):
+            sec = self.read("inputs/%s.md" % f).split("## Included files\n\n", 1)[1].split("\n## ", 1)[0]
+            self.assertEqual(sec.count('- "src/f'), ledger.CAP_FIND, f)
+            self.assertIn("(+5 more included files: see the included list of target.json beside change_diff)", sec, f)
+
+    def test_a_diff_standards_input_has_no_included_files_section(self):
+        self.base({"src/a.py": "x = 1\n"})
+        self.branch({"src/a.py": "x = 2\n"})
+        self.build()
+        self.assertNotIn("## Included files", self.read("inputs/standards.md"))
+
     def test_a_diff_still_lists_only_tests_it_did_not_change(self):
         self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
         self.branch({"src/a.py": "x = 2\n", "tests/test_a.py": "import unittest\n# edit\n"})
@@ -633,6 +662,9 @@ class Tree(Base):
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "sub")))
         self.assertEqual(sorted((e["path"], e["reason"]) for e in led["tree"]["skipped"]),
                          [("leak", "symlink"), ("sub", "submodule")])
+        import target  # review-code-ea83: one reason per cause across target and ledger
+        _, excluded, _ = target.filter_files("commit", {"mb": self.g("rev-parse", "HEAD~1").strip(), "head": "HEAD"}, ["sub"], self.repo)
+        self.assertEqual([(e["path"], e["reason"]) for e in excluded], [("sub", "submodule")])
         defects = self.read("inputs/defects.md")
         self.assertIn(json.dumps("leak"), defects)
         for d, _, names in os.walk(self.run_dir):
@@ -1323,6 +1355,29 @@ class Spec(Base):
         for want in ("## Reviewed files", '"src/a.py"', "## Prose files at head", '"notes/prd.md"', "alpha_fn"):
             self.assertIn(want, text)
         self.assertNotIn("src/a.py\n- \"README", text)
+
+    def test_spec_find_input_marks_a_cut_prose_list_and_leaves_a_full_one(self):
+        def prose_section(n):
+            self.tearDown(), self.setUp()
+            self.base({"README.md": "r\n", **{"docs/p%03d.md" % i: "x\n" for i in range(n)}})
+            self.branch({"src/a.py": "a = 1\n"})
+            self.build()
+            return self.read("inputs/spec-find.md").split("## Prose files at head\n\n")[1]
+        full = prose_section(299)  # README.md + 299 = 300: exactly the cap
+        want = ["README.md"] + ["docs/p%03d.md" % i for i in range(299)]
+        self.assertEqual(full, "".join("- " + json.dumps(w) + "\n" for w in want))  # byte for byte the old output
+        cut = prose_section(304)  # 305 prose files
+        lines = cut.rstrip("\n").split("\n")
+        self.assertEqual(len(lines), ledger.CAP_FIND + 1)
+        self.assertEqual(lines[:ledger.CAP_FIND - 1], full.rstrip("\n").split("\n")[:ledger.CAP_FIND - 1])
+        self.assertEqual(lines[-1], "(+5 more prose files not listed: find them with Glob and Grep over the repository)")
+
+    def test_spec_find_input_marks_a_cut_reviewed_list(self):
+        self.base({"README.md": "r\n"})
+        self.branch({"src/f%03d.py" % i: "x = 1\n" for i in range(305)})
+        self.build()
+        text = self.read("inputs/spec-find.md")
+        self.assertIn("(+5 more reviewed files not listed: find them with Glob and Grep over the repository)\n\n## Symbols", text)
 
     def test_spec_flag_refuses_missing_and_escaping_paths(self):
         self.base({"README.md": "r\n"})

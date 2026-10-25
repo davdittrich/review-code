@@ -94,6 +94,13 @@ class Score(unittest.TestCase):
         agg = ev.aggregate([ev.score(doc(), case)] * 2)
         self.assertEqual(ev.gate(agg, case, None)[0], "GREEN")
 
+    def test_no_defect_case_in_lane_mode_is_never_above_amber(self):
+        case = dict(CASE, defects=[], decoys=[], accept=[])
+        clean = ev.aggregate([ev.score(doc(), case, "standards")] * 2)
+        self.assertEqual(ev.gate(clean, case, None, "standards")[0], "AMBER")
+        dirty = ev.aggregate([ev.score(doc(f(3)), case, "standards")])
+        self.assertEqual(ev.gate(dirty, case, None, "standards")[0], "RED")
+
     def test_aggregate_pools_and_flags_errors(self):
         a = ev.aggregate([ev.score(doc(f(10), f(39)), CASE), None, ev.score(doc(f(30)), CASE)])
         self.assertEqual((a["n_runs"], a["errors"], a["hits"], a["n"]), (2, 1, 2, 4))
@@ -143,6 +150,11 @@ class Cases(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(ev.main(["lint"]), 0)
         self.assertIn("0 problem", out.getvalue())
+
+    def test_non_string_change_message_is_a_schema_error_not_a_crash(self):
+        self.assertEqual(ev.lint_case("a-b", CASE), [])
+        for v in (1, None, ["x"]):
+            self.assertEqual(ev.lint_case("a-b", dict(CASE, change_message=v)), ["change_message must be a string"])
 
     def test_lint_rejects_decoy_within_tolerance_of_a_defect(self):
         c = json.loads(json.dumps(CASE))
@@ -226,15 +238,15 @@ class Paid(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def fake(self, fail_on=()):
+    def fake(self, fail_on=(), cost=1.0):
         calls = []
 
-        def run_claude(repo, plugin, case, lean, budget):
+        def run_claude(repo, plugin, case, lean):
             self.repos.append(repo)
             calls.append(repo)
             if len(calls) in fail_on:
                 raise RuntimeError("boom")
-            return "```json\n" + json.dumps(doc()) + "\n```", 1.0
+            return "```json\n" + json.dumps(doc()) + "\n```", cost
         ev.run_claude = run_claude
 
     def main(self, *args):
@@ -276,12 +288,99 @@ class Paid(unittest.TestCase):
         self.assertEqual(w, ["baseline a predates per-case meta: re-accept it", "baseline b predates per-case meta: re-accept it"])
         self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
 
+    def test_run_cases_sums_the_reported_cost_per_case(self):
+        self.fake(cost=0.25)
+        _, costs = ev.run_cases(["clean-diff-negative"], ev.load_cases(), 3, False, "s")
+        self.assertEqual(costs, {"clean-diff-negative": 0.75})
+        self.assertEqual(len(self.repos), 3)
+
+    def test_an_errored_run_does_not_stop_the_sweep_and_makes_the_case_cost_unknown(self):
+        self.fake(fail_on=(2,), cost=0.1)
+        _, costs = ev.run_cases(["clean-diff-negative"], ev.load_cases(), 3, False, "s")
+        self.assertEqual(len(self.repos), 3)
+        self.assertIsNone(costs["clean-diff-negative"])
+
+    def test_unknown_cost_is_stored_as_none_not_zero(self):
+        self.fake(cost=None)
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            self.assertIsNone(json.load(fh)["cases"]["clean-diff-negative"]["cost"])
+
+    def test_one_unknown_cost_among_three_runs_makes_the_case_cost_none_not_a_partial_mean(self):
+        # review-code-ym4k: by design (a timed-out run would be understated); pins the --runs 3 partial case
+        self.fake()
+        costs = iter((0.25, None, 0.25))
+        ev.run_claude = lambda repo, plugin, case, lean: ("```json\n" + json.dumps(doc()) + "\n```", next(costs))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = ev.main(["--yes", "--runs", "3", "--case", "clean-diff-negative", "--accept"])
+        self.assertEqual(rc, 0)
+        with open(self.base) as fh:
+            self.assertIsNone(json.load(fh)["cases"]["clean-diff-negative"]["cost"])
+
+    def test_a_zero_or_missing_baseline_cost_estimates_as_the_heuristic(self):
+        for c in (0.0, None):
+            base = {"cases": {"a": {"cost": c}}}
+            self.assertEqual(ev.estimate(["a"], 2, base, False), 2 * ev.HEURISTIC_USD["full"])
+        self.assertEqual(ev.estimate(["a"], 2, {"cases": {"a": {"cost": 0.5}}}, False), 1.0)
+
+    def test_estimate_line_is_labelled_for_a_zero_baseline_cost(self):
+        with open(self.base, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"clean-diff-negative": {"cost": 0.0}}}, fh)
+        self.fake()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            ev.main(["--yes", "--runs", "1", "--case", "clean-diff-negative"])
+        self.assertIn("heuristic", out.getvalue().splitlines()[0])
+
     def test_repo_dir_does_not_name_the_case(self):
         self.fake()
         self.main("--case", "defects-py-seeded")
         self.assertEqual(len(self.repos), 2)
         for r in self.repos:
             self.assertNotRegex(r, r"defects|seeded|stale|enum|clean")
+
+
+class MainFlags(unittest.TestCase):
+    """main() argument handling on a tmp case dir and baseline, with `claude` never touched."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        os.makedirs(os.path.join(self.tmp, "cases"))
+        with open(os.path.join(self.tmp, "cases", "nodef.json"), "w") as fh:
+            json.dump({"prompt": "p", "base_files": {}, "change_files": {"a.py": "x\n"}}, fh)  # no "defects" key
+        self.empty = os.path.join(self.tmp, "empty")
+        os.makedirs(self.empty)
+        for name, val in (("CASES", os.path.join(self.tmp, "cases")), ("BASELINE", os.path.join(self.tmp, "b.json")),
+                          ("claude_version", lambda: None)):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+
+    def main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ev.main(list(args))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_cheap_accepts_a_case_without_a_defects_key(self):
+        rc, out, _ = self.main("--cheap", "--rescore", self.empty)
+        self.assertIn(rc, (0, 1))
+        self.assertIn("nodef", out)
+
+    def test_cheap_estimate_is_always_labelled_heuristic(self):
+        with open(ev.BASELINE, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"nodef": {"cost": 2.0}}}, fh)
+        with mock.patch.object(ev.shutil, "which", return_value="/bin/claude"), \
+                mock.patch.object(ev, "run_cases", return_value=({"nodef": []}, {"nodef": 0.0})):
+            rc, out, _ = self.main("--cheap", "--yes")
+        self.assertIn(rc, (0, 1))
+        self.assertIn("(heuristic, no baseline cost)", out)
+
+    def test_accept_with_rescore_is_rejected(self):
+        rc, _, err = self.main("--rescore", self.empty, "--accept")
+        self.assertEqual(rc, 2)
+        self.assertIn("--accept", err)
+        self.assertFalse(os.path.exists(ev.BASELINE))
 
 
 class TiersHash(unittest.TestCase):

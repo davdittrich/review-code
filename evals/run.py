@@ -68,6 +68,8 @@ def check_case(case):
     errs = ["unknown key %s" % k for k in case if k not in keys]
     if not isinstance(case.get("prompt"), str) or not case["prompt"]:
         errs.append("prompt must be a non-empty string")
+    if "change_message" in case and not isinstance(case["change_message"], str):
+        errs.append("change_message must be a string")
     for k in ("base_files", "change_files"):
         v = case.get(k)
         if not isinstance(v, dict) or not all(isinstance(a, str) and isinstance(b, str) for a, b in v.items()):
@@ -188,7 +190,7 @@ def gate(agg, case, base, lane=None):
     if agg["n_runs"] == 0:
         return "ERROR", None
     if not any(d for d in case.get("defects", []) if lane in (None, d["lane"])):
-        return ("RED" if agg["fp"] else "GREEN"), None  # no-defect case: zero findings in every run
+        return ("RED" if agg["fp"] else "AMBER" if lane else "GREEN"), None  # no-defect case: zero findings in every run; a cheap run is never above AMBER
     if not base:
         return "NEW", None
     if lane:  # compare only the lane's defects against the baseline's per-defect counts
@@ -274,7 +276,7 @@ def meta_warnings(base):
 
 # ---- ADAPTER: the only code that touches the live `claude` CLI (all of it UNVERIFIED, see README) --------
 
-def run_claude(repo, plugin, case, lean, budget):
+def run_claude(repo, plugin, case, lean):
     """Run one headless review in repo; returns (text, cost_usd or None). Raises on a failed or unparsable call."""
     flags = "--json --own" + (" --lean" if lean else "")
     prompt = ("%s Use the review-code skill on the last commit (HEAD~1..HEAD) with %s. "
@@ -283,8 +285,6 @@ def run_claude(repo, plugin, case, lean, budget):
     # and the lanes only need to read. UNVERIFIED against a live run: --allowedTools is variadic, so it goes last.
     cmd = ["claude", "-p", prompt, "--plugin-dir", plugin, "--output-format", "json", "--no-session-persistence",
            "--permission-mode", "dontAsk"]
-    if budget:
-        cmd += ["--max-budget-usd", "%.2f" % budget]
     cmd += ["--allowedTools", "Read", "Grep", "Glob", "Agent"]
     p = subprocess.run(cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
     out = p.stdout.decode("utf-8", "replace")
@@ -334,11 +334,16 @@ def copy_plugin(dest):
             shutil.copy2(os.path.join(ROOT, rel), os.path.join(dest, rel))
 
 
+def _known_cost(c):
+    """A baseline cost is usable only when positive; None and 0.0 both mean unknown."""
+    return isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+
+
 def estimate(names, runs, base, cheap):
     tot = 0.0
     for n in names:
         c = (base["cases"].get(n) or {}).get("cost")
-        tot += runs * (c if c is not None and not cheap else HEURISTIC_USD["cheap" if cheap else "full"])
+        tot += runs * (c if _known_cost(c) and not cheap else HEURISTIC_USD["cheap" if cheap else "full"])
     return tot
 
 
@@ -371,9 +376,9 @@ def rescore(path, names, cases, lane):
     return out
 
 
-def run_cases(names, cases, runs, lane, max_cost, stamp):
-    """The paid loop: (scores_by, costs) per case, or None when --max-cost-usd was exceeded. Raw documents go to OUT/stamp."""
-    scores_by, costs, spent, k = {}, {}, 0.0, 0
+def run_cases(names, cases, runs, lane, stamp):
+    """The paid loop: (scores_by, costs) per case. Raw documents go to OUT/stamp."""
+    scores_by, costs, k = {}, {}, 0
     with tempfile.TemporaryDirectory() as tmp:
         plugin = os.path.join(tmp, "plugin")
         copy_plugin(plugin)
@@ -386,8 +391,7 @@ def run_cases(names, cases, runs, lane, max_cost, stamp):
                 build_repo(cases[n], repo)
                 raw = {"case": n, "run": i}
                 try:
-                    raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane),
-                                                          None if max_cost is None else max(max_cost - spent, 0.01))
+                    raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane))
                 except Exception as e:  # an errored run is excluded from n and flagged
                     raw["text"], raw["cost"], raw["error"] = "", None, str(e)
                 d = os.path.join(OUT, stamp, n)
@@ -395,11 +399,7 @@ def run_cases(names, cases, runs, lane, max_cost, stamp):
                 with open(os.path.join(d, "run%d.json" % i), "w", encoding="utf-8") as fh:
                     json.dump(raw, fh, indent=1)
                 scores_by[n].append(score(extract_doc(raw["text"]), cases[n], lane))
-                spent += raw["cost"] or 0.0
-                costs[n] += raw["cost"] or 0.0
-                if max_cost is not None and spent > max_cost:
-                    print("aborted: spent $%.2f over --max-cost-usd %.2f; raw documents in %s" % (spent, max_cost, os.path.join(OUT, stamp)), file=sys.stderr)
-                    return None
+                costs[n] = None if costs[n] is None or raw["cost"] is None else costs[n] + raw["cost"]
     return scores_by, costs
 
 
@@ -408,7 +408,7 @@ def write_baseline(base, names, scores_by, costs):
     meta = {"git_sha": git_sha(), "claude_version": claude_version(), "tiers_hash": tiers_hash()}
     for n in names:
         agg = aggregate(scores_by[n])
-        agg["cost"] = costs[n] / agg["n_runs"]
+        agg["cost"] = None if costs[n] is None else costs[n] / agg["n_runs"]  # None: some run's cost was unknown
         agg["meta"] = meta
         agg.pop("recall"), agg.pop("precision")
         base["cases"][n] = agg
@@ -425,7 +425,6 @@ def main(argv=None):
     ap.add_argument("--case")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--yes", action="store_true", help="skip the cost question")
-    ap.add_argument("--max-cost-usd", type=float)
     ap.add_argument("--rescore", metavar="DIR", help="score saved documents again, free")
     ap.add_argument("--accept", action="store_true", help="write this run to evals/baseline.json")
     a = ap.parse_args(argv)
@@ -442,11 +441,14 @@ def main(argv=None):
         print("lint: %d case(s), %d problem(s)" % (len(cases), bad))
         return 1 if bad else 0
     lane = "standards" if a.cheap else None
-    names = [n for n, c in cases.items() if not lane or not c["defects"] or any(d["lane"] == lane for d in c["defects"])]
+    names = [n for n, c in cases.items() if not lane or not c.get("defects") or any(d["lane"] == lane for d in c["defects"])]
     base = load_baseline()
     for w in meta_warnings(base):
         print("warning: " + w, file=sys.stderr)
     runs = 1 if a.cheap else a.runs
+    if a.rescore and a.accept:
+        print("--accept needs a paid run, not --rescore", file=sys.stderr)
+        return 2
     if a.rescore:
         scores_by = rescore(a.rescore, names, cases, lane)
         costs = None
@@ -459,7 +461,7 @@ def main(argv=None):
             return 2
         est = estimate(names, runs, base, a.cheap)
         print("%d case(s) x %d run(s): estimated cost about $%.2f%s" % (
-            len(names), runs, est, "" if all(base["cases"].get(n, {}).get("cost") for n in names) else " (heuristic, no baseline cost)"))
+            len(names), runs, est, "" if not a.cheap and all(_known_cost(base["cases"].get(n, {}).get("cost")) for n in names) else " (heuristic, no baseline cost)"))
         if not a.yes:
             if not sys.stdin.isatty():
                 print("stdin is not a terminal: pass --yes to run", file=sys.stderr)
@@ -467,10 +469,7 @@ def main(argv=None):
             if input("Run? [y/N] ").strip().lower() != "y":
                 return 2
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        res = run_cases(names, cases, runs, lane, a.max_cost_usd, stamp)
-        if res is None:
-            return 2
-        scores_by, costs = res
+        scores_by, costs = run_cases(names, cases, runs, lane, stamp)
         print("raw documents: %s" % os.path.join(OUT, stamp))
     code = report(names, cases, scores_by, base, lane)
     if a.accept and not a.rescore:
