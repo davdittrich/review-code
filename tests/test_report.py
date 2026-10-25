@@ -1777,6 +1777,33 @@ class SpecVerdictCites(Base):
         self.assertEqual((ok, why), (False, ["copied-from-spec:8"]))
 
 
+class SpecVerdictRepairedCites(Base):
+    """review-code-j959: a repaired line's cite in a file holding a verdict-key token is dropped, but a quote it validated
+    still exempts its own run; a quote whose cite failed validation does not."""
+    LIT = SpecCodeRun.LIT
+    spec_text = LIT + "\n"
+    feat_files = {"src/calc.py": FEAT, "src/h.py": 'T = ["quote", 1]\nS = \'' + LIT + "'\n"}
+    pin, spec_rows, lane, spec = SpecAxis.pin, SpecAxis.spec_rows, SpecAxis.lane, SpecAxis.spec
+
+    def line(self, quote):
+        sid = self.lane(self.spec(self.spec_rows()[1], title="paraphrase"), {"inspected": ["src/calc.py"]})["spec_ids"][0]
+        return sid, ('[["id","%s"],["verdict","confirmed"],["reason","says "ok" here"],'
+                     '["evidence",[[["path","src/h.py"],["line",2],["quote","%s"]]]]]' % (sid, quote))
+
+    def test_a_dropped_but_validated_cite_still_exempts_its_quote(self):
+        sid, ln = self.line("S = '" + self.LIT + "'")
+        out = self.verdicts(ln)
+        self.assertEqual((out["confirmed"], out["repaired"], [d["reason"] for d in out["dispositions"]]), ([], 1, ["cites-dropped-wire-token"]))  # accepted, kind kept below confirmed
+        with open(os.path.join(self.run_dir, "verdicts.json"), encoding="utf-8") as fh:
+            got = json.load(fh)[sid]
+        self.assertEqual((got["cites"], got["cites_dropped"], got["downgraded"]), ([], 1, "cites-dropped-wire-token"))
+
+    def test_a_quote_whose_cite_failed_validation_stays_rejected(self):
+        sid, ln = self.line("x " + self.LIT)
+        out = self.verdicts(ln)
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:11"], [sid]))
+
+
 class SpecFileCite(Base):
     """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
     SPEC = "docs/specs/feat.md"

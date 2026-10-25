@@ -1532,10 +1532,10 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
                 for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)}
         cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict) and rows[id(e)] is not None]
         reason = o.get("reason")
+        pairs = [(e["path"], rows[id(e)]) for e in cites]  # every validated cite exempts its own quote, dropped below or not (review-code-j959)
         # dc5: a repaired line carries no cite out of its candidate's file, nor out of a cite file holding a verdict-key token
         kept = [] if fix and _hostile(pin, paths[o["id"]], _VTOKEN) else [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
-        pairs = [(e["path"], rows[id(e)]) for e in kept]
         rev = raw.get("evidence")  # a cite that validated names a path of the pinned tree: that path is no spec copy (review-code-rae6)
         body = dict(raw, evidence=[{k: v for k, v in r.items() if k != "path"} if isinstance(r, dict) and rows.get(id(e)) is not None
                                    and isinstance(r.get("path"), str) else r for r, e in zip(rev, ev)]) if isinstance(rev, list) else raw
