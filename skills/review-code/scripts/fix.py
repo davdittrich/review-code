@@ -30,7 +30,7 @@ import sanitize
 import target
 import weaken
 
-TIMEOUT = 540  # seconds; read at call time. SKILL.md sets a 600000 ms Bash call: 60 s left for the kill and restore
+TIMEOUT = 540  # seconds; read at call time. references/fix.md sets a 600000 ms Bash call: 60 s left for the kill and restore
 MAX_CHANGED = 60  # changed lines per fix: the + and - lines of a zero-context diff
 TIERS = {"simple": ("sonnet", "medium"), "complex": ("opus", "high")}
 _MANIFEST = re.compile(
