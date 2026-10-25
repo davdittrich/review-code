@@ -457,6 +457,16 @@ class DefectsNit(DefectsMixin, NitBase):
         self.assertIn("nits: 1", text)
         self.assertIn("- bug (1 finding)", text)
 
+    def test_a_defects_nit_handoff_asks_for_the_property_check_so_trivial_impact_does_not_refute_it(self):
+        out = self.lane(self.defect(), dict(self.defect("a0"), severity="required"), {"inspected": ["src/calc.py"]})
+        read = {}
+        for i in out["ids"]:
+            with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
+                text = fh.read()
+            read['"src/calc.py:%d"' % self.line_of("b0") in text] = text
+        self.assertIn("check: property\n", read[True])
+        self.assertNotIn("check:", read[False])  # an ordinary Defects handoff is unchanged
+
     def test_a_defects_nit_is_refused_without_the_flag(self):
         write_plan(self.run_dir)
         self.assertEqual([r["check"] for r in self.lane(self.defect())["rejected"]], ["nit-not-enabled"])
@@ -474,6 +484,13 @@ class DefectsNit(DefectsMixin, NitBase):
         d = self.doc()
         (u,) = d["unverifiable"]
         self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "noted", 0, "Needs discussion"))  # the Defects gate, unchanged
+
+    def test_an_unverifiable_defects_nit_with_a_cite_keeps_severity_nit_and_moves_the_verdict(self):  # the Defects gate, unchanged: for the owner (also serial mode)
+        out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
+        self.verdicts({"id": out["ids"][0], "verdict": "unverifiable", "reason": "r", "evidence": [self.cite()]})
+        d = self.doc()
+        (u,) = d["unverifiable"]
+        self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "nit", 0, "Needs discussion"))
 
     def test_a_defects_nit_in_a_lean_run_is_the_only_severity_allowed(self):
         write_plan(self.run_dir, nit=True, tier="lean")
