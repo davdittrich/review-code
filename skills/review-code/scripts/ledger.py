@@ -1032,9 +1032,14 @@ def _commit_messages(repo: str, commits: List[str]) -> List[str]:
     return [sanitize.sanitize_prose(p.decode("utf-8", "surrogateescape") + "\n") for p in parts]  # +LF: the old per-commit tail
 
 
+def listed(paths):
+    """The included paths the Defects and Standards inputs name: the first CAP_FIND."""
+    return paths[:CAP_FIND]
+
+
 def _listed(paths):
     """At most CAP_FIND included paths, one per line, and the count left out (a whole-tree run can hold thousands)."""
-    out = "\n".join("- " + json.dumps(p) for p in paths[:CAP_FIND])
+    out = "\n".join("- " + json.dumps(p) for p in listed(paths))
     return out + "\n(+%d more included files: see the included list of target.json beside change_diff)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
 
 

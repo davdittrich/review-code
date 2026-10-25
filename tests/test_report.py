@@ -823,7 +823,7 @@ class StandardsLaneReadNothing(Base):  # review-code-lrrx, gh#69
 
     def test_repo_standards_lane_naming_no_included_file_is_a_lost_guarantee(self):
         (g,) = self.standards([])
-        self.assertIn("no included file", g)
+        self.assertIn("none of its listed included files", g)
         rc, out = self.rep("render")
         self.assertIn("lost guarantee: " + g, out)
 
@@ -871,6 +871,13 @@ class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_s
         for kind in report.ledger.WHOLE:
             self.assertEqual(len(report._blind_standards("x", {"kind": kind, "included": ["a"]}, c)), 1, kind)
         self.assertEqual(report._blind_standards("x", {"kind": "branch", "included": ["a"]}, c), [])
+
+    def test_a_lane_is_judged_against_the_included_files_it_was_shown(self):  # review-code-5jeu
+        names = ["f%03d.py" % i for i in range(report.ledger.CAP_FIND + 5)]
+        tj = {"kind": "repo", "included": names}
+        d = self.run_dir({})
+        self.assertEqual(report._blind_standards(d, tj, self.cand(standards=[names[0]])), [])
+        self.assertEqual(len(report._blind_standards(d, tj, self.cand(standards=[names[-1]]))), 1)
 
 
 class StandardsLaneEchoesAHiddenName(Base):  # review-code-kt4w
