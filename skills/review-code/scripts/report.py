@@ -116,7 +116,7 @@ import target
 
 MAX_HIDDEN = 40
 MAX_AREAS = 20  # areas inspected shown in a PR/MR body and in SARIF; the text report lists all
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: shards.skipped removed (gh#71); an added key keeps the version
 VERIFY_BATCH = 5  # handoffs per verifier call; shortcut: fixed, raise it if verifier replies stay reliable past 5
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
 CANDIDATE_OPTIONAL = ("end_line", "fix")

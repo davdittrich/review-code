@@ -93,7 +93,7 @@ class Tracer(Base):
         v = self.verdicts({"id": fid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"})
         self.assertEqual((v["status"], v["confirmed"]), ("ok", [fid]))
         d = self.doc()
-        self.assertEqual(d["schema_version"], 1)
+        self.assertEqual(d["schema_version"], 2)
         (f,) = d["findings"]
         self.assertEqual((f["id"], f["evidence_class"], f["score"], f["verified"], f["origin"]),
                          (fid, "traced", 75, True, "introduced"))
