@@ -454,6 +454,9 @@ def main(argv=None):
     for w in meta_warnings(base):
         print("warning: " + w, file=sys.stderr)
     runs = 1 if a.cheap else a.runs
+    if a.rescore and a.accept:
+        print("--accept needs a paid run, not --rescore", file=sys.stderr)
+        return 2
     if a.rescore:
         scores_by = rescore(a.rescore, names, cases, lane)
         costs = None

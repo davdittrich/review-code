@@ -353,6 +353,12 @@ class MainFlags(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("(heuristic, no baseline cost)", out)
 
+    def test_accept_with_rescore_is_rejected(self):
+        rc, _, err = self.main("--rescore", self.empty, "--accept")
+        self.assertEqual(rc, 2)
+        self.assertIn("--accept", err)
+        self.assertFalse(os.path.exists(ev.BASELINE))
+
 
 class TiersHash(unittest.TestCase):
     def test_hash_is_a_string_and_follows_tiers(self):
