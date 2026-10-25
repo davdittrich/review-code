@@ -1060,6 +1060,19 @@ class TestTrackedSubmodule(Local):
                 self.assertIn("a.txt", rec["included"])
 
 
+class TestOnlyNestedWorktree(Local):
+    def test_a_nested_worktree_alone_is_not_a_change(self):
+        # review-code-qotx: the new excluded row must not turn "nothing changed" into "every changed file excluded"
+        self.git("checkout", "-q", "main")
+        self.git("worktree", "add", "-q", "--detach", os.path.join(self.repo, "wt"))
+        for words in ([], ["--unstaged"]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual((rc, out.get("reason")), (1, "empty-diff"), out)
+        rc, out = self.pin("--repo")
+        self.assertNotEqual(out.get("reason"), "only-excluded", out)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

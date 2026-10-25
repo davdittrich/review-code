@@ -737,23 +737,24 @@ def _others(top: str) -> List[str]:
     return _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))
 
 
-def _untracked(top: str) -> List[str]:
+def _untracked(top: str, others: Optional[List[str]] = None) -> List[str]:
     """Untracked, non-ignored names. git prints a nested repository or worktree as `dir/`: a directory, never read as a
     file and never pinned (the documented "not seen: nested repositories" limit); _nested names it."""
-    return [n for n in _others(top) if not n.endswith("/")]
+    return [n for n in (_others(top) if others is None else others) if not n.endswith("/")]
 
 
-def _nested(top: str) -> List[str]:
-    return [n[:-1] for n in _others(top) if n.endswith("/")]
+def _nested(others: List[str]) -> List[str]:
+    return [n[:-1] for n in others if n.endswith("/")]
 
 
 def _head_plan(top: str, sub: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
     """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
     head = _commit_id("HEAD", top)
     names, renames = _changed(sub, extra, top)
-    other = _untracked(top) if untracked else []
+    raw = _others(top) if untracked else []
+    other = _untracked(top, raw)
     return {"base": head, "head": head, "mb": head, "names": names, "renames": renames, "untracked": other,
-            "nested": _nested(top) if untracked else [],
+            "nested": _nested(raw),
             "dirty": True,
             "diff_cmd": ["git", sub] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
 
@@ -769,7 +770,8 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
     tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    others = _untracked(top)  # pin_tree pins them all
+    raw = _others(top)
+    others = _untracked(top, raw)  # pin_tree pins them all
     # a literal pathspec, in Python: the path itself, or a directory above it ("." is the top)
     other = [n for n in others if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
@@ -777,7 +779,7 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
     explicit = {sp for sp in specs if not os.path.isdir(os.path.join(top, sp))}  # named files bypass every rule
     return {"base": head, "head": head, "mb": head, "names": names, "untracked": [n for n in other if n in present],
             "others": others, "diff_cmd": None, "commits": [], "explicit": explicit,
-            "nested": [n for n in _nested(top) if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]}
+            "nested": [n for n in _nested(raw) if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]}
 
 
 def _plan_commit(rev: str, cwd: str) -> dict:
@@ -910,7 +912,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         base = n.rsplit("/", 1)[-1]
         if n in nested or (kind in ("unstaged", "worktree", "path", "repo") and os.path.isdir(os.path.join(top, n))
                            and not os.path.islink(os.path.join(top, n))):  # a tracked gitlink is a directory too
-            drop(n, "nested-repository", "a directory with its own repository, never read")
+            drop(n, "nested-repository", "a directory (nested repository, worktree or submodule), never read")
         elif n in explicit:
             todo.append(n)  # only the size cap applies to a file the user named
         elif base in _LOCKFILES:
@@ -1332,11 +1334,11 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
             raise Refuse("no-upstream-remote", "the upstream is the remote behind origin/HEAD, and there is none "
                                                "(`git remote set-head origin --auto` sets it)")  # gh#49
         _gate("origin", None, top)
-    names = sorted(set(plan["names"]) | set(plan["untracked"]) | set(plan.get("nested", ())))
+    names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
         raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
                      "the target has no files" if kind in ("path", "repo") else "the change has no differences")
-    names, excluded, fnotes = filter_files(kind, plan, names, top)
+    names, excluded, fnotes = filter_files(kind, plan, names + plan.get("nested", []), top)  # a nested repo is no change
     if not names:
         counts = {}
         for e in excluded:
