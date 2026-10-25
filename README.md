@@ -47,7 +47,7 @@ These values are unvalidated defaults: `evals/` holds a harness but no baseline 
 
 ## Cost and caps
 
-Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. A headless run cannot be asked: it prints the preview and runs inside the caps, so bound an unattended run with `--quick` or the cap settings.
+Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. Cost scales with the repository and the selected tier: each shard of a repo or path target gets a Defects and a Standards lane call, and every candidate is verified, one verifier call per 5 candidates of a shard and verifier agent. A cheaper tier (`--lean`, `--quick`) runs fewer lanes at lower effort, but it does not cap the shards or the verifier calls. The interactive preview states the shard count and the lane calls; a headless run cannot be asked, so it prints the preview and runs on without a bound.
 
 ## Spec discovery
 
@@ -70,7 +70,7 @@ Reopen them with `/plugin configure review-code@<marketplace>`; empty means the 
 - `finder_model`, `finder_effort`: model (an alias or a full model ID) and effort for the finder lanes.
 - `standards_model`, `standards_effort`: model and effort for the Standards lane only; empty means `haiku` and `medium` in every tier. The Standards lane never reports Blocking and its findings still go through a verifier, so a smaller model there costs recall on convention and lean-code findings, not precision. That recall has not been measured. The report flags a Standards model equal to the verifier's.
 - `verifier_model`, `verifier_effort`: the same for the verifiers.
-- `max_verifier_calls` (1 to 200): cap on the findings sent to verifiers per run (ids, not calls; a call holds up to 5 handoffs of one shard). `max_packs` (1 to 9): cap per run.
+- `max_packs` (1 to 9): cap per run.
 - `agent_prefix`: plugin whose agents run the lanes (`<prefix>:finder`, `standards`, `spec`, `sota`, `verifier`, `spec-verifier`, `spec-finder`, `fixer`); default `review-code`. Lowercase letters, digits and hyphens, at most 64.
 - `nav_hint`: one line (at most 300 characters, `${` removed) added to each lane's input as `Navigation preference: ...`. The lanes treat it as a preference; it never widens their `tools:` list.
 

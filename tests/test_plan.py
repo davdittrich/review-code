@@ -205,19 +205,19 @@ class Overrides(Fixture):
         self.assertLessEqual(self.plan_json()["caps"]["wave_size"], 8)
 
     def test_caps(self):
-        self.run_plan([("max_verifier_calls", "5"), ("max_packs", "9")])
+        self.run_plan([("max_packs", "9")])
         caps = self.plan_json()["caps"]
-        self.assertEqual((caps["max_verifier_calls"], caps["max_packs"]), (5, 9))
+        self.assertEqual((caps["max_packs"], sorted(caps)), (9, ["max_packs", "wave_size"]))  # gh#73: no verifier cap
 
     def test_bad_config_refuses_and_never_echoes(self):
         bad = [("bogus", "1"), ("finder_effort", "turbo"), ("standards_effort", "turbo"), ("standards_model", "a b"), ("finder_model", "a b"), ("finder_model", "$(id)"),
-               ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "6"), ("max_verifier_calls", "2.5"),
-               ("max_verifier_calls", "201"), ("default_tier", "huge"), ("max_packs", "\u00b2")]
+               ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "6"), ("max_verifier_calls", "77"),
+               ("max_verifier_calls", ""), ("default_tier", "huge"), ("max_packs", "\u00b2")]
         for kv in bad:
             rc, out = self.run_plan([kv])
             self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "bad-config"), kv)
-            self.assertNotIn(kv[1], json.dumps(out), kv)
-            if kv[0] not in ("bogus", "max_shards"):  # unknown keys are never named
+            self.assertNotIn(kv[1] or "\0", json.dumps(out), kv)
+            if kv[0] not in ("bogus", "max_shards", "max_verifier_calls"):  # unknown keys are never named
                 self.assertIn(kv[0], out["detail"])
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="no equals sign\n")
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))
@@ -271,6 +271,7 @@ class Tiers(Fixture):
     def test_lean_tier_runs_only_the_standards_lane_and_the_verifier(self):
         out, p = self.lanes("--tier", "lean")
         self.assertEqual((out["tier"], [c["lane"] for c in p["calls"]]), ("lean", ["standards"]))
+        self.assertNotIn("max_verifier_calls", p["caps"])  # gh#73
         self.assertEqual((p["calls"][0]["model"], p["calls"][0]["effort"]), ("haiku", "medium"))
         self.assertEqual((p["verifier"]["agent"], p["verifier"]["model"]), ("review-code:verifier", "sonnet"))
         self.assertEqual({s["what"]: s["why"] for s in p["skipped"]}, {"defects": "tier lean", "spec": "tier lean"})
@@ -281,15 +282,15 @@ class Tiers(Fixture):
             self.assertEqual({"defects", "spec"} - {s["what"] for s in p["skipped"]}, set(), extra)
 
     def test_tier_table(self):
-        for tier, fin, ver, cap in (("quick", ("sonnet", "low"), ("opus", "medium"), 10),
-                                    ("standard", ("opus", "medium"), ("sonnet", "high"), 25),
-                                    ("deep", ("opus", "xhigh"), ("sonnet", "high"), 60)):
+        for tier, fin, ver in (("quick", ("sonnet", "low"), ("opus", "medium")),
+                               ("standard", ("opus", "medium"), ("sonnet", "high")),
+                               ("deep", ("opus", "xhigh"), ("sonnet", "high"))):
             _, p = self.lanes("--tier", tier)
             self.assertEqual({(c["model"], c["effort"]) for c in p["calls"] if c["lane"] != "standards"}, {fin}, tier)
             self.assertEqual({(c["model"], c["effort"]) for c in p["calls"] if c["lane"] == "standards"}, {("haiku", "medium")}, tier)
             for v in (p["verifier"], p["spec_verifier"]):
                 self.assertEqual((v["model"], v["effort"]), ver, tier)
-            self.assertEqual((p["caps"]["max_verifier_calls"], p["lost_guarantees"]), (cap, []), tier)
+            self.assertEqual((p["caps"].get("max_verifier_calls"), p["lost_guarantees"]), (None, []), tier)
 
     def test_equal_models_lose_the_guarantee(self):
         out, p = self.lanes(stdin="verifier_model=opus\n")
@@ -383,7 +384,7 @@ class Tracer(Fixture):
         self.assertEqual(p["calls"][0]["input"], os.path.join(self.run_dir, "inputs", "defects.md"))
         self.assertEqual(p["calls"][1]["prompt"], "Standards lane. Input: " + p["calls"][1]["input"])
         self.assertEqual((p["verifier"]["model"], p["verifier"]["effort"]), ("sonnet", "high"))
-        self.assertEqual(p["caps"]["max_verifier_calls"], 25)
+        self.assertNotIn("max_verifier_calls", p["caps"])
         self.assertEqual((p["mode"], p["confirm"], [x["name"] for x in p["packs"]], p["shards"]), ("parallel", False, ["python"], []))
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.run_dir, "plan.json")).st_mode), 0o600)
 
@@ -1272,8 +1273,8 @@ class Preview(Fixture):
         self.assertEqual((out["confirm"], p["confirm"], out["preview"]), (True, True, p["preview"]))
         pv = "\n".join(p["preview"])
         self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
-        for want in ("Call defects: opus/xhigh", "Call standards: haiku/medium", "Verifier ids: up to 60 (calls of up to 5 ids in one shard, so 12 to 60 calls), sonnet/high",
-                     "Agent calls: %d" % (len(p["calls"]) + 60), "finder 40", "verifier 30", "Packs: python"):
+        for want in ("Call defects: opus/xhigh", "Call standards: haiku/medium", "Verifier ids: every candidate (calls of up to 5 ids in one shard), sonnet/high",
+                     "Agent calls: %d lane calls plus verifier calls of up to 5 candidates per shard and verifier agent" % len(p["calls"]), "finder 40", "verifier 30", "Packs: python"):
             self.assertIn(want, pv)
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")
         self.assertNotRegex(pv, r"[$]|USD|EUR|price per")

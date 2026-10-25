@@ -9,9 +9,9 @@
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
 plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
-prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_packs,
+prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
-confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
+confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads skipped.
 """
 import sys
 
@@ -37,13 +37,13 @@ DEFAULT_TIER = "standard"
 # is opus so it differs from the sonnet finder: the verifier must not share the finder's model.
 TIERS = {
     "lean": {"lanes": ("standards",), "finder": ("opus", "medium"), "verifier": ("sonnet", "high"),
-             "max_verifier_calls": 10, "max_packs": 2},  # cleanup only: no Defects or Spec lane
+             "max_packs": 2},  # cleanup only: no Defects or Spec lane
     "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("opus", "medium"),
-              "max_verifier_calls": 10, "max_packs": 2},
+              "max_packs": 2},
     "standard": {"lanes": ("defects", "standards", "spec"), "finder": ("opus", "medium"),
-                 "verifier": ("sonnet", "high"), "max_verifier_calls": 25, "max_packs": 4},
+                 "verifier": ("sonnet", "high"), "max_packs": 4},
     "deep": {"lanes": ("defects", "standards", "spec", "sota"), "finder": ("opus", "xhigh"),
-             "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_packs": 9},
+             "verifier": ("sonnet", "high"), "max_packs": 9},
 }
 SETTING_TIERS = tuple(t for t in TIERS if t != "lean")  # lean is flag-only: a setting may not hold it
 STANDARDS_DEFAULT = ("haiku", "medium")  # the Standards lane never reports Blocking and its findings are verified; every tier
@@ -56,7 +56,7 @@ MAX_TURNS = {"finder": 40, "standards": 60, "spec": 30, "sota": 20, "verifier": 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
-CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_packs": (1, 9)}
+CAP_BOUNDS = {"max_packs": (1, 9)}
 CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "standards_model", "standards_effort", "verifier_model",
                "verifier_effort", "agent_prefix", "nav_hint"} | set(CAP_BOUNDS)
 MAX_STDIN = 65536
@@ -435,9 +435,9 @@ def _files_ceiling(call, included):
 
 def _preview(doc, sizes):
     """Lines built only from numbers, fixed words, tier, model and effort values, lane and pack names and shard ids."""
-    ver, calls, caps = doc["verifier"], doc["calls"], doc["caps"]
+    ver, calls = doc["verifier"], doc["calls"]
     agents = sum(1 for c in calls if c["agent"] != "main-thread")
-    verifier_cap = caps["max_verifier_calls"] if doc["mode"] == "parallel" else 0
+    serial = doc["mode"] != "parallel"
     out = ["Tier %s, mode %s" % (doc["tier"], doc["mode"])]
     if doc["shards"]:
         out.append("Shards: %d" % len(doc["shards"]))
@@ -453,10 +453,12 @@ def _preview(doc, sizes):
             warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
                          "and the skill then resumes it once" % (name, fc[0], fc[1]))
     out += warns
-    b = report.VERIFY_BATCH  # the cap counts ids; a call holds up to b ids of one shard, so calls lie between cap/b and cap
-    out.append("Verifier ids: up to %d (calls of up to %d ids in one shard, so %d to %d calls), %s" % (
-        verifier_cap, b, -(-verifier_cap // b), verifier_cap, "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"))
-    out.append("Agent calls: %d (%d lane calls plus up to %d verifier calls)" % (agents + verifier_cap, agents, verifier_cap))
+    model = "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"
+    if serial:
+        out += ["Verifier ids: every candidate, self-scored by the main thread, %s" % model, "Agent calls: 0 (0 lane calls plus 0 verifier calls)"]
+    else:  # gh#73: the candidate count is unknown until the lanes report, so no number is promised
+        out += ["Verifier ids: every candidate (calls of up to %d ids in one shard), %s" % (report.VERIFY_BATCH, model),
+                "Agent calls: %d lane calls plus verifier calls of up to %d candidates per shard and verifier agent" % (agents, report.VERIFY_BATCH)]
     out.append("Turn ceilings: " + ", ".join("%s %d" % kv for kv in sorted(doc["max_turns"].items())))
     out.append("Packs: " + (", ".join(x["name"] for x in doc["packs"]) or "none"))
     return out + ["Estimate only: real token use varies; no prices are shown."]

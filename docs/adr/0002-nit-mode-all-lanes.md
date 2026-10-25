@@ -43,8 +43,8 @@ The lane keeps its gate; only the severity drops.
 
 ## Consequences
 
-- More candidates reach the verifiers under `--nit`. Until #73 removes the per-run cap (`max_verifier_calls`), the cap
-  would drop nits first, so the implementation lands after #73.
+- More candidates reach the verifiers under `--nit`. The per-run verifier cap, which would have dropped nits first, went with #73,
+  so the implementation lands after it.
 - `scripts/nit.py`, `scripts/plan.py` (lane-specific `## Nit mode` sections), `scripts/report.py` (the
   `bad-type` check), `references/lanes.md` and the reason table change. The pinned size caps stay; wording is
   shortened to fit, and a cap is not raised without the owner.

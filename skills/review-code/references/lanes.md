@@ -6,12 +6,12 @@ Load this when you need to know which lanes a run has, what a tier changes, what
 
 `--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: `evals/` holds a harness but no baseline has been recorded to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
-| Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Packs |
-|------|-------|---------------------|-----------------------|----------------|-------|
-| lean | standards | none (no Defects or Spec lane) | sonnet/high | 10 | 2 |
-| quick | defects, standards | sonnet/low | opus/medium | 10 | 2 |
-| standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 4 |
-| deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 9 |
+| Tier | Lanes | Finder model/effort | Verifier model/effort | Packs |
+|------|-------|---------------------|-----------------------|-------|
+| lean | standards | none (no Defects or Spec lane) | sonnet/high | 2 |
+| quick | defects, standards | sonnet/low | opus/medium | 2 |
+| standard | defects, standards, spec | opus/medium | sonnet/high | 4 |
+| deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 9 |
 
 `--lean` is the cleanup tier: it runs only the Standards lane and its verifier, so Defects and Spec never run, the plan lists both as skipped with the reason `tier lean`. Use it to tidy a change, alone or with `--fix`; fix mode keeps its own gates. `--sota` adds nothing to it.
 
@@ -69,16 +69,15 @@ When more packs match than the cap allows, packs rank by matched-file count, mos
 
 | Cap | Meaning | Bounds |
 |-----|---------|--------|
-| `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one shard per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `SIB_*` (`ledger.py`) | The `siblings` context category: for a new shipped file (at most 5 per run) with up to 3 unchanged siblings, `git grep` finds registries that name at least 2 siblings but not the file (a new file with fewer than 2 siblings finds none; at most 8 per file; a sibling token in more than 12 files is dropped as too common; 20 s wall clock, recorded as `capped`), plus files that changed together in at least 3 of the last 1000 commits of the past year (ratio 0.6 or more, 12 at most). Hits are listed as at most 19 hint lines in a `## Siblings` section of the Standards input, as hints a finding must cite, never evidence. The lane may send a `smell` finding at `suggestion` from a confirmed registry gap, anchored on the new file's first line (an added line, so it is not dropped as pre-existing) with the hint as `trigger` | fixed |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
 
-Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 60, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Caps and ceilings together bound a run: agent calls are at most lane calls plus `max_verifier_calls` (each call holds at least one id), each at most its ceiling in turns.
+Turn ceilings are fixed per agent, not per tier, because `maxTurns` is read from agent frontmatter only: finder 40, standards 60, spec 30, sota 20, verifier 30, spec-verifier 30. A lane whose agent stops at its ceiling sends no report: that is a capped lane. The skill resumes it once (SendMessage, "Stop exploring and send your full report now.") without spending one of the lane's 2 tries; a lane capped again stays in `missing_lanes` and is named as lost. The preview prints each call's file count and ceiling and warns when its files exceed half the ceiling; it is informational and changes no tier, shard or ceiling. Agent calls are lane calls plus verifier calls (one per up to 5 candidates of a shard), each at most its ceiling in turns.
 
 ## Cost preview and headless runs
 
-`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier-id cap and the range of calls it gives, the agent-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues inside the caps. Use `--quick` or the cap settings to bound an unattended run.
+`plan.py` always writes a preview into `plan.json`: the tier and mode, each call with its model, effort and an input estimate (bytes over 4, an estimate only), the verifier calls (every candidate is verified, so only the batch size is shown), the lane-call total, the turn ceilings and the packs. It shows calls and tokens, never prices. `confirm` is true for the `deep` tier and for path and repo targets; then the skill shows the preview in one question with options Run and Stop before any lane starts. A headless run has no one to ask: it prints the preview and continues, unbounded. Shards and verifier calls are not capped: each shard of a repo or path target adds a Defects and a Standards lane call (one in `--lean`), and each shard adds one verifier call per 5 candidates. A cheaper tier runs fewer lanes at lower effort, and `max_packs` only limits packs, so neither bounds the cost.
 
 ## Serial mode
 

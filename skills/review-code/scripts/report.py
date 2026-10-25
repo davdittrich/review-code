@@ -63,10 +63,10 @@ Document also: not_run[] (closed words: a lane name with optional @shard, `shard
 A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
-cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
-cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
-[{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
-unverifiable with reason verifier-cap.
+every non-SOTA candidate; spec_ids holds the Spec candidates for review-code:spec-verifier; SOTA candidates are in
+neither), dropped, handoff, lanes, merged, repaired, rejected
+[{lane, index (1-based row of that lane's rejected file), check}], never the wire line. A candidates.json from before
+gh#73 may list capped_ids: those render as unverifiable with reason verifier-cap and reach no verifier.
 
 Spec lane: a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
 UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
@@ -116,7 +116,7 @@ import target
 
 MAX_HIDDEN = 40
 MAX_AREAS = 20  # areas inspected shown in a PR/MR body and in SARIF; the text report lists all
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: shards.skipped removed (gh#71); an added key keeps the version
 VERIFY_BATCH = 5  # handoffs per verifier call; shortcut: fixed, raise it if verifier replies stay reliable past 5
 CANDIDATE_REQUIRED = ("path", "line", "severity", "category", "title", "trigger", "quote")
 CANDIDATE_OPTIONAL = ("end_line", "fix")
@@ -205,10 +205,15 @@ def _disp(index, id, disposition, reason=None):
     return {"index": index, "id": id, "disposition": disposition, "reason": reason}
 
 
+def _shard_skip(x):
+    """True for a legacy plan's skipped shard, spelled 'shard N'; one predicate for the all-clear guard and the text report."""
+    return str(x.get("what", "")).startswith("shard ")
+
+
 def _defects_skipped(skipped):
     """True when the plan left the Defects lane out, or a shard of it (a legacy plan's shard cap): a run with an unreviewed part proves
     nothing about bugs."""
-    return any(x.get("what") == "defects" or str(x.get("what", "")).startswith("shard ") for x in skipped)
+    return any(x.get("what") == "defects" or _shard_skip(x) for x in skipped)
 
 
 def _did(x):
@@ -1256,18 +1261,6 @@ def _packs(run):
     return out
 
 
-def _cap_of(run):
-    """caps.max_verifier_calls of plan.json, None when there is no plan.json (no cap)."""
-    plan = _plan(run)
-    if not plan:
-        return None
-    caps = plan.get("caps")
-    n = caps.get("max_verifier_calls") if isinstance(caps, dict) else None
-    if not _int(n) or n < 1:
-        raise target.Refuse("bad-plan", "plan.json caps.max_verifier_calls is not a positive integer")
-    return n
-
-
 def _declined(o, ctx, copied):
     """(valid entries, reasons of the invalid ones) of a {"declined": [{spec_line, why}]} trailer."""
     if not isinstance(o["declined"], list):
@@ -1478,7 +1471,6 @@ def _ingest(run, text, lane, shard):
     except target.Refuse:
         lanes = None
     lanes = lanes if isinstance(lanes, dict) else {}
-    cap = _cap_of(run)
     key = lane if shard is None else "%s@%d" % (lane, shard)
     new = _read_lane(text, lane, run, shard)
     if (lanes.get(key, {}).get("complete") is True and new.get("complete") is not True
@@ -1494,7 +1486,6 @@ def _ingest(run, text, lane, shard):
     cands = sorted(cands + list(down.values()), key=lambda c: c["id"])
     doomed = _doomed(run, cands)
     queue = _queue(cands, doomed)
-    queue, cut = (queue, []) if cap is None else (queue[:cap], [c["id"] for c in queue[cap:]])
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
@@ -1522,11 +1513,11 @@ def _ingest(run, text, lane, shard):
     state = {n: "complete" if lanes[n].get("complete") is True else "incomplete" for n in sorted(lanes)}
     _put(os.path.join(run, "candidates.json"), json.dumps(
         {"candidates": cands, "dropped": dropped, "inspected": [a for n in sorted(lanes) for a in lanes[n]["inspected"]],
-         "lanes": lanes, "lane_state": state, "merged": merged, "capped_ids": sorted(cut), "doomed_ids": sorted(doomed),
+         "lanes": lanes, "lane_state": state, "merged": merged, "doomed_ids": sorted(doomed),
          "verify_calls": _batches(queue, hand, _plan(run).get("agent_prefix", "review-code"))}, sort_keys=True, indent=2))
     return {"status": "ok", "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
-            "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired, "dispositions": disp,
+            "lanes": state, "merged": merged, "repaired": repaired, "dispositions": disp,
             "lane_dropped": lanes[key]["dropped"],
             "rejected": [{"lane": key, "index": i, "check": why} for i, (why, *_) in enumerate(rejected, 1)]}
 
@@ -1995,7 +1986,7 @@ def _text(doc):
     sh = doc["shards"]
     out += ["shards reviewed: " + ", ".join("%d (%s files)" % (n, sh["files"].get(str(n), "?")) for n in sh["reviewed"])] if sh["reviewed"] else []
     out += ["shard skipped: %s (%s)%s" % (e(x.get("what")), e(x.get("why")), " %s files" % x["files"] if _int(x.get("files")) else "")
-            for x in doc["skipped"] if str(x.get("what", "")).startswith("shard")]  # legacy plans, from before the shard cap went (gh#71)
+            for x in doc["skipped"] if _shard_skip(x)]  # legacy plans, from before the shard cap went (gh#71)
     out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
