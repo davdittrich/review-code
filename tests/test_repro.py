@@ -88,6 +88,35 @@ class Tracer(Base):
                         self.repo, self.tmp, PASS_SRC.encode("utf-8")))
         self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
 
+    def test_sigterm_cleans_up_and_kills_the_test_group(self):
+        run = self.start()
+        marker = os.path.join(self.tmp, "pid")
+        cmd = ["/bin/sh", "-c", "echo $$ > %s; sleep 30" % marker]
+        e = gitfix.env()
+        e["TMPDIR"] = self.tmp
+        p = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "repro.py"), "run", "--run", run, "--id", FID,
+                              "--test", "t.py", "--"] + cmd, cwd=self.repo, env=e, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p.stdin.write(PASS_SRC.encode("utf-8"))
+        p.stdin.close()
+        deadline = time.monotonic() + 20
+        while not os.path.exists(marker) or not open(marker).read().strip():
+            self.assertLess(time.monotonic(), deadline, "the test never started")
+            time.sleep(0.05)
+        pgid = int(open(marker).read())
+        p.terminate()
+        p.communicate(timeout=20)
+        self.assertEqual(p.returncode, 143)
+        self.assert_clean(run)
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            self.assertLess(time.monotonic(), deadline, "the process group is still alive")
+            time.sleep(0.05)
+
 
 class Rules(Base):
     def test_env_allowlist_and_home(self):

@@ -23,7 +23,7 @@ import report
 import target
 
 ID_RE = report.ID_RE
-TIMEOUT = 120  # seconds; read at call time
+TIMEOUT = 120  # seconds; read at call time. SKILL.md step 9 gives the Bash call 300000 ms: the rest is setup and cleanup
 ENV_KEEP = ("PATH", "LANG", "LC_ALL", "TERM")
 SENTINEL = "REPRO-"
 USAGE = "usage: repro.py run --run DIR --id ID --test RELPATH [--base] -- CMD [ARG ...]"
@@ -136,6 +136,13 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
     return dict(result, status="ok", id=fid)
 
 
+def _term(signum, frame):
+    for name in ("SIGTERM", "SIGHUP"):  # one-shot: a second signal must not abort the cleanup the first one starts
+        if getattr(signal, name, None):
+            signal.signal(getattr(signal, name), signal.SIG_IGN)
+    raise SystemExit(143)  # unwinds through run()'s finally and _execute's group kill; the default action skips both
+
+
 def main(argv: List[str], stdin: Optional[object] = None) -> int:
     try:
         if argv[:1] != ["run"] or "--" not in argv:
@@ -145,6 +152,9 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         opts = [a for a in argv[1:i] if a != "--base"]
         if flag > 1 or len(opts) != 6 or opts[0::2] != ["--run", "--id", "--test"] or i == len(argv) - 1:
             raise target.Refuse("usage", USAGE)
+        for name in ("SIGTERM", "SIGHUP"):  # Windows has no SIGHUP
+            if getattr(signal, name, None):
+                signal.signal(getattr(signal, name), _term)
         out = run(opts[1], opts[3], opts[5], argv[i + 1:], b"" if flag else (stdin or sys.stdin.buffer).read(), bool(flag))
         rc = 0
     except target.Refuse as r:

@@ -210,12 +210,12 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    with `REPRO-<id>` in its failure message, at a new relative path. Make one AskUserQuestion that
    shows the exact command and the full test source, options "Run it" and "Skip". Only on "Run it", call
    `python3 ${CLAUDE_SKILL_DIR}/scripts/repro.py run --run <run> --id <id> --test <relpath> -- <command>`
-   with the test source in a `REPRO_TEST` here-document (stdin rule); the harness asks permission because repro.py is not pre-approved.
+   with the test source in a `REPRO_TEST` here-document (stdin rule) and a Bash `timeout` of 300000 (its test budget is 120 s); the harness asks permission (not pre-approved).
    Every other outcome, including headless runs, skips it and the finding stays `traced`.
    The candidates also include each `unverifiable` `test` id with cites (a finding that the change's own test passes on the merge base).
-   For those, same gates and same confirmation (show the command): `repro.py run --run <run> --id <id> --test <relpath> --base -- <command>`
+   For those, same gates, timeout and confirmation (show command): `repro.py run --run <run> --id <id> --test <relpath> --base -- <command>`
    (no stdin; the command must name the test). It runs the head's copy of that test on the merge base; `reproduced` means it passed there.
-   The finding then reports as `reproduced` and any other outcome leaves it unverifiable, so step 10 relays it like any finding.
+   The finding then reports as `reproduced` and any other outcome leaves it unverifiable.
 10. Report. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/report.py render --run <run>`, adding
    `--format json` or `--format sarif` when step 1 removed that flag. Relay stdout, including its `Not run:` line. In serial mode also state `mode: serial` and the lost guarantees from step 5.
 11. Post, when step 1 removed `--comment`: Read the first 30 lines of `references/posting.md` (limit 30) and
