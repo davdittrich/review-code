@@ -554,24 +554,44 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
-    def test_nit_flag_sets_plan_json_and_the_standards_section_only(self):
+    def test_nit_flag_sets_plan_json_and_a_section_in_the_defects_standards_and_spec_inputs(self):
         self.assertNotIn("nit", self.run_plan())
-        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+        for lane in ("standards", "defects", "spec"):
+            self.assertNotIn("## Nit mode", self.read("inputs/%s.md" % lane))
+        before = {lane: self.read("inputs/%s.md" % lane) for lane in ("standards", "defects", "spec")}
         p = self.run_plan("--nit")
         self.assertIs(p["nit"], True)
         std = self.read("inputs/standards.md")
         for want in ("## Nit mode", "norm_for", "norm_against", "norm_glob", "20 lines"):
             self.assertIn(want, std)
-        self.assertNotIn("## Nit mode", self.read("inputs/defects.md"))
+        for lane in ("defects", "spec"):
+            text = self.read("inputs/%s.md" % lane)
+            self.assertEqual(text.count("## Nit mode"), 1, lane)
+            self.assertIn("Severity `nit`", text)
+            self.assertNotIn("norm_for", text)
+        self.assertIn("`spec_line`", self.read("inputs/spec.md"))
         self.run_plan("--nit")
-        self.assertEqual(self.read("inputs/standards.md").count("## Nit mode"), 1)
-        self.assertNotIn("nit", self.run_plan())  # a rerun without the flag drops the section
-        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+        for lane in ("standards", "defects", "spec"):
+            self.assertEqual(self.read("inputs/%s.md" % lane).count("## Nit mode"), 1, lane)
+        self.assertNotIn("nit", self.run_plan())  # a rerun without the flag drops every section, byte for byte
+        for lane, text in before.items():
+            self.assertEqual(self.read("inputs/%s.md" % lane), text, lane)
+
+    def test_a_spec_text_holding_a_nit_mode_heading_survives_a_plan_with_or_without_the_flag(self):
+        path = os.path.join(self.run_dir, "inputs", "spec.md")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n## Nit mode\nauthor text\n")
+        before = self.read("inputs/spec.md")
+        self.run_plan()
+        self.assertEqual(self.read("inputs/spec.md"), before)
+        self.run_plan("--nit")
+        self.assertTrue(self.read("inputs/spec.md").startswith(before))
 
     def test_nit_combines_with_lean(self):
         p = self.run_plan("--tier", "lean", "--nit")
         self.assertEqual((p["tier"], p["nit"]), ("lean", True))
         self.assertIn("## Nit mode", self.read("inputs/standards.md"))
+        self.assertNotIn("reports nits only", self.read("inputs/defects.md"))  # lean runs no Defects lane
 
     def test_only_a_lean_nit_run_tells_the_lane_it_reports_nits_only(self):
         self.run_plan("--tier", "lean", "--nit")
