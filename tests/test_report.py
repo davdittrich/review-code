@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 import tracemalloc
+import types
 from unittest import mock
 import unittest
 
@@ -3424,6 +3425,44 @@ class Dispositions(Lanes):
             self.assertTrue(isinstance(hint, str) and hint, r)
         with self.assertRaises(KeyError):
             report._disp(1, None, "rejected", "not-a-reason")
+
+    def test_every_reason_the_checks_return_is_in_the_table(self):
+        """Drive _cite, _rule and _candidate over bad inputs: a reason returned through a variable still has to be in REASONS."""
+        with tempfile.TemporaryDirectory() as run:
+            os.makedirs(os.path.join(run, "conventions"))
+            with open(os.path.join(run, "conventions", "c.md"), "w", encoding="utf-8") as fh:
+                fh.write("always name every module in lower case\n")
+            pin = types.SimpleNamespace(files={"a.py", "b.py"}, rows={"a.py": ["x = 1", "y = 2"]}, top=run)
+            good = dict(CAND, path="a.py", line=1, quote="x = 1")
+            rule = {"rule": "always name every module in lower case", "rule_source": "conventions/c.md"}
+            got = {}
+            for name, fn in {
+                "cite-long": lambda: report._cite(pin, "d" * 5000, 1, 1, "x"),
+                "cite-tree": lambda: report._cite(pin, "z.py", 1, 1, "x"),
+                "cite-range": lambda: report._cite(pin, "a.py", 0, 1, "x"),
+                "cite-past-end": lambda: report._cite(pin, "a.py", 1, 9, "x"),
+                "cite-unreadable": lambda: report._cite(pin, "b.py", 1, 1, "x"),
+                "cite-quote": lambda: report._cite(pin, "a.py", 1, 1, "nope"),
+                "rule-short": lambda: report._rule({"rule": "two words", "rule_source": "conventions/c.md"}, run),
+                "rule-src-type": lambda: report._rule(dict(rule, rule_source=1), run),
+                "rule-src-dir": lambda: report._rule(dict(rule, rule_source="other/c.md"), run),
+                "rule-src-file": lambda: report._rule(dict(rule, rule_source="conventions/none.md"), run),
+                "rule-absent": lambda: report._rule(dict(rule, rule="never name a module in upper case"), run),
+                "cand-missing": lambda: report._candidate({}, pin, "defects", run),
+                "cand-type": lambda: report._candidate(dict(good, severity="bogus"), pin, "defects", run),
+                "cand-nit-off": lambda: report._candidate(dict(good, severity="nit", category="smell"), pin, "standards", run),
+                "cand-spec": lambda: report._candidate(dict(good, category="spec-wrong"), pin, "spec", run, ctx={}),
+                "cand-tree": lambda: report._candidate(dict(good, path="z.py"), pin, "defects", run),
+                "cand-quote": lambda: report._candidate(dict(good, quote="nope"), pin, "defects", run),
+            }.items():
+                result, why = fn()
+                self.assertIsNone(result, name)
+                got[name] = why
+            for name, why in got.items():
+                self.assertIn(why, report.REASONS, name)
+            self.assertEqual(set(got.values()), {  # the table cannot shrink: each reason below is returned by a named row
+                "path-too-long", "path-not-in-tree", "line-out-of-range", "unreadable", "quote-not-at-line", "rule-malformed",
+                "rule-source-unknown", "rule-not-in-conventions", "missing-field", "bad-type", "nit-not-enabled", "spec-line-invalid"})
 
 
 class LoneSurrogate(Base):
