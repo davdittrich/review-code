@@ -859,6 +859,13 @@ class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_s
         self.assertEqual(len(got), 1)
         self.assertIn("standards@2", got[0])
 
+    def test_a_shard_lane_whose_shard_file_is_unreadable_is_reported_not_judged_by_the_run(self):  # review-code-5jeu
+        d = self.run_dir({1: ["a.py"]})  # no shards/2/target.json
+        tj = {"kind": "repo", "included": ["a.py", "b.py"]}
+        got = report._blind_standards(d, tj, self.cand(**{"standards@1": ["a.py"], "standards@2": ["b.py"]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn("standards@2", got[0])
+
     def test_a_hidden_character_name_the_lane_read_is_not_blind(self):
         raw = "a\u202eb.py"
         d = self.run_dir({})

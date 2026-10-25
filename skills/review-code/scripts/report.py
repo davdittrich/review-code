@@ -1094,7 +1094,7 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
 def _blind_standards(run, tj, cand):
     """Lost guarantees for each complete standards lane of a repo or path target that inspected no file of its own
     scope: such a lane has no diff to read, so an empty `inspected` means its axis found nothing because it looked at
-    nothing (gh#69). A shard lane is judged against its shard's `included`, an unreadable shard file leaves the run's; both as capped in the
+    nothing (gh#69). A shard lane is judged against its shard's `included`, an unreadable shard file is a lost guarantee itself; both as capped in the
     lane's input (ledger.listed)."""
     if tj["kind"] not in WHOLE:
         return []
@@ -1106,8 +1106,9 @@ def _blind_standards(run, tj, cand):
         if "@" in n:
             try:
                 inc = target.load_json(os.path.join(run, "shards", n.partition("@")[2]), "target.json")["included"]
-            except (target.Refuse, KeyError):
-                pass
+            except (target.Refuse, KeyError):  # not the run's list: that is not what this lane was shown
+                out.append("%s: its shard's included files are unreadable, so what it was shown is unknown" % n)
+                continue
         if not set(ledger.listed(inc)) & {target.shown(p) for p in map(_norm, v["inspected"]) if p}:  # included holds escaped names
             out.append("%s read none of its listed included files: its convention and norm findings are missing" % n)
     return out
