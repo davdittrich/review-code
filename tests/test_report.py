@@ -2218,6 +2218,7 @@ class Shards(Lanes):
     def test_a_run_with_a_skipped_shard_never_reports_the_all_clear(self):  # review-code-5jeu
         self.shard(1, {"inspected": ["src/only.py"]})
         self.shard(2, {"inspected": ["src/calc.py"]})
+        self.assertEqual(set(self.doc()["lanes"].values()), {"complete"})  # so only the skipped shard can block the all-clear
         self.assertEqual(self.doc()["verdict"], "Needs discussion")
         rc, text = self.rep("render")
         self.assertIn("shard skipped: shard 3", text)
