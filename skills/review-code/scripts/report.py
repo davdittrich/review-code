@@ -105,6 +105,7 @@ try:
     import fcntl
 except ImportError:  # shortcut: no fcntl (Windows) means no run lock, so two concurrent ingests can lose a lane; add msvcrt.locking if Windows is ever supported
     fcntl = None
+from typing import NamedTuple
 from urllib.parse import quote, urlsplit
 
 import capture
@@ -711,6 +712,18 @@ def _leaves(o, keys=False):
             todo.extend(o.values() if isinstance(o, dict) else o)
 
 
+class SpecSets(NamedTuple):
+    adr: list
+    files: list
+    hidden: list
+    hidden_files: list
+
+
+class SpecPrep(NamedTuple):
+    words: list
+    sets: SpecSets
+
+
 def _spec_sets(run):
     """(the ledger's decision-record refs, its spec-file refs, the tree names that escape to a hidden-named record, the ones
     that escape to a hidden-named spec file), from one ledger read and one hidden-name lookup that both guards share
@@ -726,7 +739,7 @@ def _spec_sets(run):
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
     files = _file_refs(led)
-    return (adr, files) + tuple(_hidden_refs(run, adr, files))
+    return SpecSets(adr, files, *_hidden_refs(run, adr, files))
 
 
 def _spec_prep(run, inside):
@@ -737,13 +750,12 @@ def _spec_prep(run, inside):
             spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
     except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
         raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
-    return spec, _spec_sets(run)
+    return SpecPrep(spec, _spec_sets(run))
 
 
-def _spec_refs(run, prep=None):
+def _spec_refs(run, prep):
     """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`)."""
-    adr, _, hidden, _ = (prep or _spec_prep(run, _spec_lines(run)))[1]
-    return adr + hidden
+    return prep.sets.adr + prep.sets.hidden
 
 
 def _file_refs(led):
@@ -782,7 +794,7 @@ def _hidden_names(run, shown):
     return names
 
 
-def _spec_copy(run, prep=None):
+def _spec_copy(run, prep):
     """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
     the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
@@ -795,8 +807,8 @@ def _spec_copy(run, prep=None):
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
-    spec, (adr, files, _, hidden_files) = prep or _spec_prep(run, _spec_lines(run))
-    files = {_norm(x) for x in adr + files + hidden_files}
+    spec, adr = prep.words, prep.sets.adr
+    files = {_norm(x) for x in adr + prep.sets.files + prep.sets.hidden_files}
 
     def with_records(pin, adr, said):
         # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)

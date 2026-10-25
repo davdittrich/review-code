@@ -1178,7 +1178,7 @@ class SpecAdrGuardMemory(_SpecAdrRecords):
         copy = " ".join(rows["docs/adr/0017-a.md"].split("\n")[1].split()[7:13])
         with gitfix.isolated(self.tmp):
             pin = report._Pinned(self.run_dir, rows, rows)
-            copied = report._spec_copy(self.run_dir)(pin, list(rows), ["unrelated words only here"])
+            copied = report._spec_copy(self.run_dir, report._spec_prep(self.run_dir, report._spec_lines(self.run_dir)))(pin, list(rows), ["unrelated words only here"])
         self.assertEqual((copied(copy), copied("Adders are meant to give whole numbers")), (6, 0))
 
 
