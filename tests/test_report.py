@@ -2208,6 +2208,19 @@ class Shards(Lanes):
         self.assertIn("shards reviewed: 1 (2 files)", text)
         self.assertIn("shard skipped: shard 3 (over the shard cap) 7 files", text)
 
+    def test_a_run_with_a_skipped_shard_never_reports_the_all_clear(self):  # review-code-5jeu
+        self.shard(1, {"inspected": ["src/only.py"]})
+        self.shard(2, {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.doc()["verdict"], "Needs discussion")
+        rc, text = self.rep("render")
+        self.assertIn("shard skipped: shard 3", text)
+        self.assertRegex(text, r"\nDefects\nBlocking\n")  # the Defects section keeps its sections: a shard is not the lane
+
+    def test_defects_skipped_names_a_lane_left_out_and_a_shard_left_out(self):
+        self.assertTrue(report._defects_skipped([{"what": "defects", "why": "tier lean"}]))
+        self.assertTrue(report._defects_skipped([{"what": "shard 2", "why": "shard cap: 3 files", "files": 3}]))
+        self.assertFalse(report._defects_skipped([{"what": "pack x", "why": "cap"}]))
+
     def test_no_shards_means_empty_lists(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
         self.lane("defects", mc(3))

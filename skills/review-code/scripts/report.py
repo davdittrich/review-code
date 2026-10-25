@@ -206,8 +206,9 @@ def _disp(index, id, disposition, reason=None):
 
 
 def _defects_skipped(skipped):
-    """True when the plan left the Defects lane out: a tier that never ran it proves nothing about bugs."""
-    return any(x.get("what") == "defects" for x in skipped)
+    """True when the plan left the Defects lane out, or a shard of it (shard cap): a run with an unreviewed part proves
+    nothing about bugs."""
+    return any(x.get("what") == "defects" or str(x.get("what", "")).startswith("shard ") for x in skipped)
 
 
 def _did(x):
@@ -2024,7 +2025,7 @@ def _text(doc):
         out.append(ax.capitalize())
         sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
-        if (ax != "defects" or _defects_skipped(doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
+        if (ax != "defects" or any(x.get("what") == "defects" for x in doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
             continue
