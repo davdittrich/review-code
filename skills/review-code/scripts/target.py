@@ -908,11 +908,19 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     def drop(n, reason, detail):
         excluded.append({"path": n, "reason": reason, "detail": detail})
 
+    working = kind in ("unstaged", "worktree", "path", "repo")
+    # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger; mode 160000 in the index or head tree
+    listing = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
+    base_listing = index_listing(top) if kind == "unstaged" else tree_listing(mb, top)  # 6xl.88: what the diff compares against
+    links = {p for ls in (listing, base_listing) for p, (m, _) in ls.items() if m == "160000"}  # a removed gitlink too
     for n in names:
         base = n.rsplit("/", 1)[-1]
-        if n in nested or (kind in ("unstaged", "worktree", "path", "repo") and os.path.isdir(os.path.join(top, n))
-                           and not os.path.islink(os.path.join(top, n))):  # a tracked gitlink is a directory too
-            drop(n, "nested-repository", "a directory (nested repository, worktree or submodule), never read")
+        if n in links:
+            drop(n, "submodule", "a tracked gitlink (submodule), never read")
+        elif n in nested:
+            drop(n, "nested-repository", "an untracked nested repository or worktree, never read")
+        elif working and os.path.isdir(os.path.join(top, n)) and not os.path.islink(os.path.join(top, n)):
+            drop(n, "nested-repository", "a directory (nested repository or worktree), never read")
         elif n in explicit:
             todo.append(n)  # only the size cap applies to a file the user named
         elif base in _LOCKFILES:
@@ -923,9 +931,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         if kind in ("unstaged", "worktree", "path", "repo"):
             head = _files(todo, top)
         else:
-            head = _blobs(index_listing(top) if kind == "staged" else tree_listing(plan["head"], top), todo, top)
-        # 6xl.88: the base side is what the diff compares against: the index for --unstaged, the merge base else
-        base_ls = _blobs(index_listing(top) if kind == "unstaged" else tree_listing(mb, top), todo, top)
+            head = _blobs(listing, todo, top)
+        base_ls = _blobs(base_listing, todo, top)
         for n in todo:
             parts = n.split("/")[:-1]
             migration = "migrations" in parts

@@ -662,6 +662,9 @@ class Tree(Base):
         self.assertFalse(os.path.lexists(os.path.join(self.run_dir, "tree", "sub")))
         self.assertEqual(sorted((e["path"], e["reason"]) for e in led["tree"]["skipped"]),
                          [("leak", "symlink"), ("sub", "submodule")])
+        import target  # review-code-ea83: one reason per cause across target and ledger
+        _, excluded, _ = target.filter_files("commit", {"mb": self.g("rev-parse", "HEAD~1").strip(), "head": "HEAD"}, ["sub"], self.repo)
+        self.assertEqual([(e["path"], e["reason"]) for e in excluded], [("sub", "submodule")])
         defects = self.read("inputs/defects.md")
         self.assertIn(json.dumps("leak"), defects)
         for d, _, names in os.walk(self.run_dir):

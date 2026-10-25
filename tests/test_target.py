@@ -1056,8 +1056,73 @@ class TestTrackedSubmodule(Local):
                 rc, out = self.pin(*words)
                 self.assertEqual(rc, 0, out)
                 rec = load(out["run"])
-                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "subm"], ["nested-repository"])
+                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "subm"], ["submodule"])
                 self.assertIn("a.txt", rec["included"])
+
+    def _add_submodule(self):
+        self.git("checkout", "-q", "main")
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"f": "1\n"}, "s")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "subm")
+        self.git("commit", "-q", "-m", "add submodule")
+        return os.path.join(self.repo, "subm")
+
+    def _reasons(self, out, path):
+        return [e["reason"] for e in load(out["run"])["excluded"] if e["path"] == path]
+
+    def test_changed_submodule_pointer_unstaged_and_worktree(self):
+        # review-code-ea83: one reason per cause: a tracked gitlink is "submodule" whatever the kind
+        subdir = self._add_submodule()
+        gitfix.commit(subdir, {"f": "2\n"}, "s2")  # the checked-out commit moves: the pointer changed
+        self.write("fresh.py", "f = 1\n")
+        for words in (["--unstaged"], []):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+                self.assertIn("fresh.py", load(out["run"])["included"])
+
+    def test_staged_gitlink(self):
+        subdir = self._add_submodule()
+        gitfix.commit(subdir, {"f": "2\n"}, "s2")
+        self.git("add", "subm")
+        self.write("fresh.py", "f = 1\n")
+        self.git("add", "fresh.py")
+        rc, out = self.pin("--staged")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+        self.assertIn("fresh.py", load(out["run"])["included"])
+        self.assertNotIn("subm", load(out["run"])["included"])
+
+    def _range_gitlink(self, remove=False):
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,subm" % self.git("rev-parse", "HEAD").strip())
+        if remove:
+            self.git("commit", "-q", "-m", "add gitlink")
+            self.git("rm", "-q", "--cached", "subm")
+        sha = gitfix.commit(self.repo, {"z.py": "z = 1\n"}, "gitlink")
+        return sha
+
+    def test_gitlink_in_a_range_is_submodule_and_matches_the_ledger(self):
+        sha = self._range_gitlink()
+        rc, out = self.pin(sha + "^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+        self.assertNotIn("subm", load(out["run"])["included"])
+
+    def test_removed_gitlink_is_submodule_too(self):
+        sha = self._range_gitlink(remove=True)
+        rc, out = self.pin(sha + "^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "subm"), ["submodule"])
+
+    def test_pointer_only_commit_refuses_only_excluded(self):
+        # review-code-ea83: a commit that only moves a submodule pointer has no file to review
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,subm" % self.git("rev-parse", "HEAD").strip())
+        self.git("commit", "-q", "-m", "gitlink only")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual((rc, out.get("reason")), (1, "only-excluded"), out)
 
 
 class TestOnlyNestedWorktree(Local):
