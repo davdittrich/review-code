@@ -159,6 +159,7 @@ class Tracer(Base):
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         p.stdin.write(PASS_SRC.encode("utf-8"))
         p.stdin.close()
+        p.stdin = None  # review-code-wvw8: Python 3.9's communicate() flushes a closed stdin and raises ValueError
         deadline = time.monotonic() + 20
         while not os.path.exists(marker) or not open(marker).read().strip():
             self.assertLess(time.monotonic(), deadline, "the test never started")
