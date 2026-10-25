@@ -1366,6 +1366,13 @@ class CeilingWarning(Fixture):
         self.assertEqual([x for x in pv if x.startswith("Warning:")], [])
 
 
+class NitGuidance(unittest.TestCase):  # review-code-71v9: no example may contradict the gate it sits beside
+    def test_the_defects_nit_examples_all_have_a_trigger(self):
+        import plan as mod
+        self.assertNotIn("no realistic trigger", mod.NIT_DEFECTS)
+        self.assertIn("concrete trigger", mod.NIT_DEFECTS)
+
+
 class EverythingReviewed(ShardBase):  # gh#71: no cap on the shards a repo target builds
     base_files = {"d%d/a.py" % i: "x = %d\n" % i for i in range(8)}
     feat_files = {"d0/a.py": "x = 9\n"}

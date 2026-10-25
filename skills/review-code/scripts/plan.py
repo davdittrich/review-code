@@ -232,7 +232,7 @@ NIT_MODE = """The lane may also report `nit` findings, of two kinds.
   either idiom and `norm_for` the majority, so do not send a norm you did not see on many lines.
 Changed lines only (a repo or path target: the files under review). Never report what a linter, formatter or CI of the repo enforces. No rule and no counted norm means no finding."""
 NIT_DEFECTS = """Severity `nit` is allowed here, in addition to the severities in your prompt. A nit is a defect of trivial impact that you traced: a misleading name,
-dead code, a branch nothing reaches, an unchecked edge with no realistic trigger. It keeps its own category and the whole gate
+dead code, a branch nothing reaches, an unchecked edge that a reachable input trips. It keeps its own category and the whole gate
 (file:line, quote, concrete trigger, evidence). A concern you could not trace is not a nit. Changed lines only (a repo or path target: the files under review)."""
 NIT_SPEC = """Severity `nit` is allowed here, beside the severities above: a minor deviation from a quoted spec line, with its `spec_line`
 and a `spec-*` category as for any Spec finding. Changed lines only (a repo or path target: the files under review)."""
