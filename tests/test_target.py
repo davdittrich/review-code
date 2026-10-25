@@ -1036,6 +1036,9 @@ class TestNestedWorktree(Local):
                 names = list(rec["included"]) + [e["path"] for e in rec["excluded"]]
                 self.assertIn("fresh.py", names)
                 self.assertFalse([n for n in names if n == "wt" or n.startswith("wt/")], names)
+                pinned = self.git("ls-tree", "-r", "--name-only", rec["pinned_tree"]).split("\n")
+                self.assertIn("fresh.py", pinned)
+                self.assertFalse([n for n in pinned if n == "wt" or n.startswith("wt/")], pinned)
 
 
 class TestUntrackedDefault(Local):
