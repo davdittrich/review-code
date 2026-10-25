@@ -1337,8 +1337,9 @@ class EverythingReviewed(ShardBase):  # gh#71: no cap on the shards a repo targe
                 p = self.run_plan(tier=tier)
                 self.assertEqual(len(p["shards"]), 8)
                 self.assertEqual([x for x in p["skipped"] if x["what"].startswith("shard ")], [])
-                lanes = [c["lane"] for c in p["calls"] if c["lane"] in ("defects", "standards")]
-                self.assertEqual(len(lanes), 8 * (1 if tier == "lean" else 2))
+                got = sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] in ("defects", "standards"))
+                want = sorted((lane, i) for i in range(1, 9) for lane in (("standards",) if tier == "lean" else ("defects", "standards")))
+                self.assertEqual(got, want)
                 self.assertNotIn("max_shards", p["caps"])
 
 
