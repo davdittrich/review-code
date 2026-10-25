@@ -697,14 +697,17 @@ def _runs(s):
     return {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
 
-def _leaves(o):
-    """Every string inside a parsed reply object; a stack, not recursion, so nesting depth cannot raise."""
+def _leaves(o, keys=False):
+    """Every string inside a parsed reply object, the key names of its dicts too when `keys` (a verdict line is stored as
+    sent, so a key name can leak spec text, review-code-dcul); a stack, not recursion, so nesting depth cannot raise."""
     todo = [o]
     while todo:
         o = todo.pop()
         if isinstance(o, str):
             yield o
         elif isinstance(o, (dict, list)):
+            if keys and isinstance(o, dict):
+                yield from o
             todo.extend(o.values() if isinstance(o, dict) else o)
 
 
@@ -1541,7 +1544,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         ok_ev = [isinstance(r, dict) and rows.get(id(e)) is not None and isinstance(r.get("path"), str) for r, e in zip(rev, ev)] if isinstance(rev, list) else []
         body = dict(raw, evidence=[{k: v for k, v in r.items() if k not in ("path", "quote")} if ok else r
                                    for r, ok in zip(rev, ok_ev)]) if ok_ev else raw
-        dup = sum(copied(x, pairs) for x in _leaves(body)) + sum(copied(e["quote"], pairs, True) for e, ok in zip(ev, ok_ev) if ok) if o["id"] in spec else 0
+        dup = sum(copied(x, pairs) for x in _leaves(body, True)) + sum(copied(e["quote"], pairs, True) for e, ok in zip(ev, ok_ev) if ok) if o["id"] in spec else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
             bad.append(("copied-from-spec:%d" % dup, ln, n, True))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
@@ -1628,7 +1631,7 @@ def _verdicts(run, text, batch, agent=None):
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited | set(adr), cited, adr)
-    copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o))) if spec else None
+    copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o, True))) if spec else None
     if batch is None:
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
         for n in _rejected(run)[1]:
