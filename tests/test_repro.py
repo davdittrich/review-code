@@ -231,6 +231,15 @@ class Signals(unittest.TestCase):
         t.join()
         self.assertEqual(res[0][1]["status"], "ok")
 
+    def test_sigterm_prints_a_refusal(self):
+        rc, out = self.call(side_effect=lambda *a: os.kill(os.getpid(), signal.SIGTERM))
+        self.assertEqual((rc, out), (143, {"status": "refuse", "reason": "interrupted"}))
+
+    def test_skill_bash_timeout_fits_timeout(self):
+        with open(os.path.join(os.path.dirname(SCRIPTS), "SKILL.md"), encoding="utf-8") as fh:
+            ms = int(re.search(r"Bash `timeout` of (\d+)", fh.read()).group(1))
+        self.assertLessEqual(repro.TIMEOUT + 60, ms // 1000)  # 60 s for the group kill, worktree removal and sweep
+
 
 class Execute(unittest.TestCase):
     def test_interrupt_kills_process_group(self):

@@ -162,6 +162,8 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         rc = 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
+    except SystemExit:  # _term: cleanup has run; the skill reads stdout, so say why there is no result
+        out, rc = {"status": "refuse", "reason": "interrupted"}, 143
     except (OSError, KeyError, ValueError, TypeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     finally:
