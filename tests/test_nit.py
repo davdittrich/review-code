@@ -121,6 +121,13 @@ class NormBasis(NitBase):
         self.assertEqual(nit.rows([norm], str)[0], '- norm "x" over "y" (22 of 25 lines) (1 finding)')
         self.assertEqual(nit.rows([rule], str)[0], "- rule: %s (1 finding)" % RULE)
 
+    def test_a_nit_with_no_known_basis_is_not_listed_under_an_empty_label(self):  # review-code-ivga
+        base = {"path": "a.py", "line": 1, "title": "t", "id": "F-0123456789"}
+        for extra in ({}, {"basis": "other"}):
+            (row, _) = nit.rows([dict(base, **extra)], str)
+            self.assertNotEqual(row.split(" (1 finding)")[0], "-", extra)
+            self.assertIn("no stated rule or norm", row, extra)
+
     def test_a_norm_needs_a_missing_field_named(self):
         out = self.lane({k: v for k, v in self.nit().items() if k != "norm_glob"})
         self.assertEqual([r["check"] for r in out["rejected"]], ["norm-malformed"])
