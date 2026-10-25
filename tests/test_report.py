@@ -1843,6 +1843,11 @@ class SpecVerdictAdrQuote(Base):
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:%d" % n], [sid]))
 
 
+class SpecVerdictHiddenQuoteInSpec(SpecVerdictHiddenQuote):
+    """review-code-6u3h: the same quotes when the spec holds the hidden character too (its text is escaped as the rows are)."""
+    spec_text = "".join("%s%s always\n" % (SpecCodeRun.LIT.rsplit(" ", 1)[0], c) for c in SpecVerdictHiddenQuote.HID)
+
+
 class SpecFileCite(Base):
     """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
     SPEC = "docs/specs/feat.md"
