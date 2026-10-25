@@ -33,7 +33,7 @@ A line `<file> usually changes with <other>` never yields a finding alone: it on
 
 ## What to check
 
-Look only at changed lines. Report a problem when the evidence is on the page.
+Look only at changed lines (or Included files). Report a problem when the evidence is on the page.
 
 1. `convention`: the change breaks a rule the repo documents (CLAUDE.md, CONTRIBUTING, a coding
    standard). Copy the rule's words from its conventions/ file into `rule` and name that file in

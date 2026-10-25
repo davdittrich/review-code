@@ -1145,7 +1145,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
-             "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files.\n\n%s\n" %
+             "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files, \"unchanged lines\" none.\n\n%s\n" %
              _listed(tj["included"])) if tj["kind"] in WHOLE else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"

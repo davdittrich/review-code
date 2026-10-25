@@ -5,7 +5,7 @@ Baseline for the Standards axis. It applies even when the repo documents no stan
 - Smells are judgement calls. Label each as a possibility ("possible Feature Envy"), never as a hard violation. They are never a Blocking or Required finding, and the ceiling is Suggestions.
 - A repo standard overrides this list: when a documented repo standard endorses what a smell would flag, suppress the smell. Skip anything the repo's tooling already enforces.
 
-Match each smell against the changed lines. Each bullet reads what it is -> how to fix it.
+Match each smell against the changed lines (or Included files). Each bullet reads what it is -> how to fix it.
 
 ## Smells
 

@@ -143,6 +143,11 @@ class Categories(Base):
             self.assertIn('\n- "src/a.py"\n- "tests/test_a.py"\n', text, kind)
             self.assertIn("every line of an included file is under review", text, kind)
 
+    def test_the_whole_tree_override_defines_unchanged_lines_too(self):  # review-code-x9ku
+        self.base({"src/a.py": "x = 1\n"})
+        self.build(kind="repo", included=["src/a.py"])
+        self.assertIn('"unchanged lines" none', self.read("inputs/standards.md"))
+
     def test_both_included_file_lists_are_capped(self):  # review-code-5jeu
         names = ["src/f%03d.py" % i for i in range(ledger.CAP_FIND + 5)]
         self.base({n: "x = 1\n" for n in names})
