@@ -4,7 +4,10 @@ import io
 import json
 import os
 import subprocess
+import re
+import signal
 import sys
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -204,6 +207,29 @@ class Rules(Base):
     def test_py39_grammar(self):
         with open(os.path.join(SCRIPTS, "repro.py"), encoding="utf-8") as fh:
             ast.parse(fh.read(), feature_version=(3, 9))
+
+
+class Signals(unittest.TestCase):
+    ARGV = ["run", "--run", "r", "--id", FID, "--test", "t.py", "--base", "--", "true", "t.py"]
+    OK = {"status": "ok", "id": FID, "outcome": "reproduced", "exit": 1}
+
+    def call(self, **kw):
+        out = io.StringIO()
+        with mock.patch.object(repro, "run", **kw), redirect_stdout(out):
+            rc = repro.main(self.ARGV)
+        return rc, json.loads(out.getvalue())
+
+    def test_handlers_restored_after_main(self):
+        before = {n: signal.getsignal(getattr(signal, n)) for n in ("SIGTERM", "SIGHUP")}
+        self.call(return_value=self.OK)
+        self.assertEqual({n: signal.getsignal(getattr(signal, n)) for n in before}, before)
+
+    def test_non_main_thread_is_not_an_internal_error(self):
+        res = []
+        t = threading.Thread(target=lambda: res.append(self.call(return_value=self.OK)))
+        t.start()
+        t.join()
+        self.assertEqual(res[0][1]["status"], "ok")
 
 
 class Execute(unittest.TestCase):

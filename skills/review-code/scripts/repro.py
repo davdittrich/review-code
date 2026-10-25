@@ -16,6 +16,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 from typing import List, Optional
 
 import ledger
@@ -144,6 +145,8 @@ def _term(signum, frame):
 
 
 def main(argv: List[str], stdin: Optional[object] = None) -> int:
+    names = [n for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)]  # Windows has no SIGHUP
+    old = {}
     try:
         if argv[:1] != ["run"] or "--" not in argv:
             raise target.Refuse("usage", USAGE)
@@ -152,15 +155,18 @@ def main(argv: List[str], stdin: Optional[object] = None) -> int:
         opts = [a for a in argv[1:i] if a != "--base"]
         if flag > 1 or len(opts) != 6 or opts[0::2] != ["--run", "--id", "--test"] or i == len(argv) - 1:
             raise target.Refuse("usage", USAGE)
-        for name in ("SIGTERM", "SIGHUP"):  # Windows has no SIGHUP
-            if getattr(signal, name, None):
-                signal.signal(getattr(signal, name), _term)
+        if threading.current_thread() is threading.main_thread():  # signal.signal raises elsewhere
+            for n in names:
+                old[n] = signal.signal(getattr(signal, n), _term)
         out = run(opts[1], opts[3], opts[5], argv[i + 1:], b"" if flag else (stdin or sys.stdin.buffer).read(), bool(flag))
         rc = 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1
     except (OSError, KeyError, ValueError, TypeError) as e:
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
+    finally:
+        for n, h in old.items():
+            signal.signal(getattr(signal, n), h)
     print(json.dumps({k: v for k, v in out.items() if k in ("status", "reason", "detail", "id", "outcome", "exit")},
                      sort_keys=True))
     return rc
