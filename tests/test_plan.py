@@ -795,6 +795,9 @@ class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instea
         self.assertEqual(len(p["shards"][0]["files"]) + skipped, len(inc))
         self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
 
+    def assert_nothing_written(self):  # review-code-1117: the size guard runs before any pack or shard directory exists
+        self.assertEqual([d for d in ("shards", os.path.join("inputs", "packs")) if os.path.exists(os.path.join(self.run_dir, d))], [])
+
     def test_a_spawned_call_that_would_be_cut_off_is_refused(self):
         import plan as mod, target, ledger
         with mock.patch.object(ledger, "CAP_FIND", self.CAP), mock.patch.object(mod, "_groups", lambda f, s: [sorted(f)]):
@@ -802,6 +805,7 @@ class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instea
                 self.run_plan(shard_bytes=mod.SHARD_BYTES)
         self.assertEqual(cm.exception.reason, "internal-error")
         self.assertNotRegex(cm.exception.detail, r"d/f")  # numbers only
+        self.assert_nothing_written()
 
     def test_an_oversize_shard_among_valid_ones_is_refused(self):
         import plan as mod, target, ledger
@@ -812,6 +816,7 @@ class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instea
             with self.assertRaises(target.Refuse) as cm:
                 self.run_plan(shard_bytes=mod.SHARD_BYTES)
         self.assertEqual(cm.exception.reason, "internal-error")
+        self.assert_nothing_written()
 
 
 class ShardNitSources(ShardBase):
