@@ -205,10 +205,15 @@ def _disp(index, id, disposition, reason=None):
     return {"index": index, "id": id, "disposition": disposition, "reason": reason}
 
 
+def _shard_skip(x):
+    """True for a legacy plan's skipped shard, spelled 'shard N'; one predicate for the all-clear guard and the text report."""
+    return str(x.get("what", "")).startswith("shard ")
+
+
 def _defects_skipped(skipped):
     """True when the plan left the Defects lane out, or a shard of it (a legacy plan's shard cap): a run with an unreviewed part proves
     nothing about bugs."""
-    return any(x.get("what") == "defects" or str(x.get("what", "")).startswith("shard ") for x in skipped)
+    return any(x.get("what") == "defects" or _shard_skip(x) for x in skipped)
 
 
 def _did(x):
@@ -1981,7 +1986,7 @@ def _text(doc):
     sh = doc["shards"]
     out += ["shards reviewed: " + ", ".join("%d (%s files)" % (n, sh["files"].get(str(n), "?")) for n in sh["reviewed"])] if sh["reviewed"] else []
     out += ["shard skipped: %s (%s)%s" % (e(x.get("what")), e(x.get("why")), " %s files" % x["files"] if _int(x.get("files")) else "")
-            for x in doc["skipped"] if str(x.get("what", "")).startswith("shard")]  # legacy plans, from before the shard cap went (gh#71)
+            for x in doc["skipped"] if _shard_skip(x)]  # legacy plans, from before the shard cap went (gh#71)
     out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())

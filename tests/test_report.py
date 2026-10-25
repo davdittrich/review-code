@@ -2230,6 +2230,14 @@ class Shards(Lanes):
         self.assertTrue(report._defects_skipped([{"what": "shard 2", "why": "shard cap: 3 files", "files": 3}]))
         self.assertFalse(report._defects_skipped([{"what": "pack x", "why": "cap"}]))
 
+    def test_one_predicate_decides_what_is_a_shard_skip(self):  # review-code-fj19.6: 'shards' is no legacy shard skip for either user
+        item = {"what": "shards", "why": "x"}
+        self.assertFalse(report._defects_skipped([item]))
+        write_plan(self.run_dir, shards=[{"id": 1, "run": "shards/1", "files": ["src/calc.py"], "risk": 1}], skipped=[item])
+        self.shard(1, {"inspected": ["src/calc.py"]})
+        rc, text = self.rep("render")
+        self.assertNotIn("shard skipped", text)
+
     def plan_calls(self, *keys):
         write_plan(self.run_dir, shards=[{"id": n, "run": "shards/%d" % n, "files": ["src/calc.py"], "risk": 1} for n in (1, 2)],
                    calls=[{"lane": k.partition("@")[0], "shard": int(k.partition("@")[2]) if "@" in k else None} for k in keys])
