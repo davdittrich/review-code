@@ -317,6 +317,34 @@ class Paid(unittest.TestCase):
             self.assertNotRegex(r, r"defects|seeded|stale|enum|clean")
 
 
+class MainFlags(unittest.TestCase):
+    """main() argument handling on a tmp case dir and baseline, with `claude` never touched."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        os.makedirs(os.path.join(self.tmp, "cases"))
+        with open(os.path.join(self.tmp, "cases", "nodef.json"), "w") as fh:
+            json.dump({"prompt": "p", "base_files": {}, "change_files": {"a.py": "x\n"}}, fh)  # no "defects" key
+        self.empty = os.path.join(self.tmp, "empty")
+        os.makedirs(self.empty)
+        for name, val in (("CASES", os.path.join(self.tmp, "cases")), ("BASELINE", os.path.join(self.tmp, "b.json")),
+                          ("claude_version", lambda: None)):
+            self.addCleanup(setattr, ev, name, getattr(ev, name))
+            setattr(ev, name, val)
+
+    def main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ev.main(list(args))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_cheap_accepts_a_case_without_a_defects_key(self):
+        rc, out, _ = self.main("--cheap", "--rescore", self.empty)
+        self.assertIn(rc, (0, 1))
+        self.assertIn("nodef", out)
+
+
 class TiersHash(unittest.TestCase):
     def test_hash_is_a_string_and_follows_tiers(self):
         h = ev.tiers_hash()

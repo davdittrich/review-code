@@ -449,7 +449,7 @@ def main(argv=None):
         print("lint: %d case(s), %d problem(s)" % (len(cases), bad))
         return 1 if bad else 0
     lane = "standards" if a.cheap else None
-    names = [n for n, c in cases.items() if not lane or not c["defects"] or any(d["lane"] == lane for d in c["defects"])]
+    names = [n for n, c in cases.items() if not lane or not c.get("defects") or any(d["lane"] == lane for d in c["defects"])]
     base = load_baseline()
     for w in meta_warnings(base):
         print("warning: " + w, file=sys.stderr)
