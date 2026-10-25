@@ -106,6 +106,7 @@ def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, int, Optional[bytes]]]:
     for f, data in target.cat_batch([o.encode() for o in uniq], repo, True, target.MAX_FILE):
         if len(f) == 3 and f[1] == b"blob":
             yield f[0].decode(), int(f[2]), data
+        data = None  # the consumer is done with it: the next blob is read while none is held here (n4lk.2.1)
 
 
 def _blobs(repo: str, oids) -> Dict[str, bytes]:
@@ -476,33 +477,45 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         over = extra[_NIT_CAP:]
         want = sorted(cand - set(over))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in target.REGULAR}
-    blobs = _blobs(repo, regular.values())
-    conv, ignored = [], []
+    by_oid = {}
     for p in want:
-        if target.shown(p) != p:  # 6xl.51: a hidden-character name never becomes a run-dir path
-            ignored.append({"file": target.shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
-            continue
-        if regular.get(p) in blobs and blobs[regular[p]] is None:
-            ignored.append({"file": p, "reason": "too-large", "how": "base entry over %d bytes" % target.MAX_FILE})
-            continue
-        data = blobs.get(regular.get(p, ""))
-        text = None if data is None else _text(data)
-        if data is not None and text is None:  # NUL data is never copied raw (6xl.48)
-            ignored.append({"file": p, "reason": "binary", "how": "base entry holds a NUL byte"})
-            continue
-        if text is not None:  # stripped like tree/; base rules are not part of the change, so hits go unlisted
-            data = _scan(p, text)[0].encode("utf-8")
-        if data is None or not _put(os.path.join(run, "conventions"), p, data):
-            ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
-            continue
+        if target.shown(p) == p and p in regular:  # 6xl.51: a hidden-character name never becomes a run-dir path
+            by_oid.setdefault(regular[p], []).append(p)
+
+    def copy(p: str, data: bytes) -> Tuple[bool, dict]:
+        """(is_ignored, entry) of the rule file at p: its conv entry, or its ignored entry."""
+        text = _text(data)
+        if text is None:  # NUL data is never copied raw (6xl.48)
+            return True, {"file": p, "reason": "binary", "how": "base entry holds a NUL byte"}
+        # stripped like tree/; base rules are not part of the change, so hits go unlisted
+        if not _put(os.path.join(run, "conventions"), p, _scan(p, text)[0].encode("utf-8")):
+            return True, {"file": p, "reason": "not-regular", "how": "base entry is not a plain file"}
         if head_ls is not None:
             diff = head_ls.get(p, (None, None))[1] != base_ls[p][1]
         else:
             fp = os.path.join(repo, p)
             ok = os.path.lexists(fp) and stat.S_ISREG(os.lstat(fp).st_mode)
             diff = not ok or target.git(["hash-object", "--no-filters", "--", p], repo).strip() != base_ls[p][1]
-        conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
-                     "how": "base-ref"})
+        return False, {"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff, "how": "base-ref"}
+
+    res, big = {}, set()  # path -> its entry; oids over MAX_FILE. One blob's bytes are held at a time (n4lk.2)
+    for oid, _, data in _blob_stream(repo, by_oid):
+        if data is None:
+            big.add(oid)
+        else:
+            for p in by_oid[oid]:
+                res[p] = copy(p, data)
+        data = None  # drop this blob before the stream reads the next (n4lk.2.1)
+    conv, ignored = [], []
+    for p in want:
+        if target.shown(p) != p:
+            ignored.append({"file": target.shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
+        elif regular.get(p) in big:
+            ignored.append({"file": p, "reason": "too-large", "how": "base entry over %d bytes" % target.MAX_FILE})
+        elif p not in res:  # no blob came back, or the entry is no plain file
+            ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
+        else:
+            (ignored if res[p][0] else conv).append(res[p][1])
     for p in over:
         ignored.append({"file": target.shown(p), "reason": "nit-cap", "how": "over the %d extra --nit rule files" % _NIT_CAP})
     for p in sorted(_conv_paths(files, included, nit) - cand):
@@ -901,11 +914,13 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
                                                                                          for t in toks)))[:CAP_SPEC_FILES]
-    blobs = _blobs(repo, [reg[p] for p in want])
+    texts = {}  # oid -> text; each blob is decoded and dropped as it streams in (n4lk.2.5)
+    for oid, _, data in _blob_stream(repo, [reg[p] for p in want]):
+        texts[oid] = _text(data) if data is not None else None  # an oversized spec file is left out
+        data = None  # release the blob before the stream reads the next
     out = {}
     for p in want:
-        data = blobs.get(reg[p])
-        text = _text(data) if data is not None else None  # an oversized spec file is left out
+        text = texts.get(reg[p])
         if text is not None:
             out[p] = text
     for p in found:

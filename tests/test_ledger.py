@@ -461,6 +461,72 @@ class Conventions(Base):
                     self.assertNotIn(b"INJECT-RULE", fh.read())
         self.assertTrue(base)
 
+    def _fresh(self, name):
+        """A new repo and run dir inside the same isolated environment (no second setUp)."""
+        self.repo = gitfix.make_repo(os.path.join(self.tmp, "repo" + name))
+        self.run_dir = os.path.join(self.tmp, "run" + name)
+
+    def _conv_peak(self, rules):
+        """Peak traced memory above the entry level while _conventions runs, with tracemalloc started only if it is off."""
+        self._fresh(str(len(rules)) + str(len(next(iter(rules.values())))))
+        self.base({"src/d%d/a.py" % i: "pass\n" for i in range(len(rules))} | rules)
+        self.branch({"src/d%d/a.py" % i: "x = 1\n" for i in range(len(rules))})
+        peaks, real = [], ledger._conventions
+        was = tracemalloc.is_tracing()
+
+        def spy(*a, **k):
+            tracemalloc.reset_peak()
+            start = tracemalloc.get_traced_memory()[0]
+            try:
+                return real(*a, **k)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1] - start)
+        if not was:
+            tracemalloc.start()
+        try:
+            with mock.patch.object(ledger, "_conventions", spy):
+                _, led = self.build()
+        finally:
+            if not was:
+                tracemalloc.stop()
+        self.assertEqual(len(led["conventions"]), len(rules))
+        return peaks[0]
+
+    def test_conventions_peak_does_not_grow_with_the_rule_file_count(self):  # review-code-n4lk.2
+        """Copying 3 rule files of 500 KB and 30 of them peaks the same: each blob is read, scanned, written and dropped
+        before the next (a dict of every rule file's bytes was about 13 MB more at 30)."""
+        def rules(n):
+            return {"src/d%d/CLAUDE.md" % i: "".join("rule %d-%d keep names short\n" % (i, k) for k in range(20000))
+                    for i in range(n)}
+        small, big = self._conv_peak(rules(3)), self._conv_peak(rules(30))
+        self.assertLess(big, small + 1_000_000, (small, big))
+
+    def test_conventions_hold_one_blob_not_two(self):  # review-code-n4lk.2.1
+        """When the second of two distinct near-MAX_FILE rule blobs has been read, the first is no longer held by the
+        consumer or the stream wrapper (the peak alone hides it: copying one blob costs more than holding two)."""
+        self._fresh("hold")
+        rules = {"src/d%d/CLAUDE.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(2)}
+        self.base({"src/d%d/a.py" % i: "pass\n" for i in range(2)} | rules)
+        self.branch({"src/d%d/a.py" % i: "x = 1\n" for i in range(2)})
+        seen, real = [], target.cat_batch
+
+        def spy(*a, **k):
+            for f, data in real(*a, **k):
+                if data is not None and len(data) > target.MAX_FILE // 2:  # the rule blobs only
+                    seen.append(tracemalloc.get_traced_memory()[0])
+                yield f, data
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            with mock.patch.object(target, "cat_batch", spy):
+                self.build()
+        finally:
+            if not was:
+                tracemalloc.stop()
+        self.assertEqual(len(seen), 2)
+        self.assertLess(seen[1], seen[0] + target.MAX_FILE // 2, seen)
+
     def test_conventions_nested(self):
         self.base({"src/AGENTS.md": "agents\n", "src/pkg/REVIEW.md": "review\n", "src/pkg/x.py": "a = 1\n",
                    "other/AGENTS.md": "elsewhere\n"})
@@ -789,17 +855,68 @@ class Tree(Base):
         with self.assertRaises(target.Refuse):
             list(ledger._blob_stream(bare, ["0" * 40]))
 
+    def test_spec_files_peak_stays_near_the_text_it_returns(self):  # review-code-n4lk.2.5
+        """Five distinct near-MAX_FILE spec files peak within 1.6x of the text returned: each blob is decoded and dropped
+        (a dict of every blob's bytes first made the peak about 2x)."""
+        n = ledger.CAP_SPEC_FILES
+        self.base({"a.py": "p\n"} | {"docs/feat-%d.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(n)})
+        self.branch({"a.py": "q\n"})
+        head_ls = target.tree_listing("HEAD", self.repo)
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            start = tracemalloc.get_traced_memory()[0]
+            out = ledger._spec_files(self.repo, head_ls, None, {"feat"})
+            peak = tracemalloc.get_traced_memory()[1] - start
+        finally:
+            if not was:
+                tracemalloc.stop()
+        total = sum(len(v) for v in out.values())
+        self.assertEqual(len(out), n)
+        self.assertLess(peak, total * 1.6, (peak, total))
+
+    def test_spec_files_hold_one_blob_not_two(self):  # review-code-n4lk.2.5
+        """When the second near-MAX_FILE spec blob has been read, the first is no longer held as a blob (its text is)."""
+        self.base({"a.py": "p\n"} | {"docs/feat-%d.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(2)})
+        self.branch({"a.py": "q\n"})
+        head_ls = target.tree_listing("HEAD", self.repo)
+        seen, real = [], target.cat_batch
+
+        def spy(*a, **k):
+            for f, data in real(*a, **k):
+                if data is not None and len(data) > target.MAX_FILE // 2:
+                    seen.append(tracemalloc.get_traced_memory()[0])
+                yield f, data
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            with mock.patch.object(target, "cat_batch", spy):
+                ledger._spec_files(self.repo, head_ls, None, {"feat"})
+        finally:
+            if not was:
+                tracemalloc.stop()
+        # blob 1's text (1 byte per char here) is the product and stays; a held blob 1 would add MAX_FILE again
+        self.assertLess(seen[1], seen[0] + target.MAX_FILE * 1.5, seen)
+
     def test_tree_skips_huge_referenced_file(self):
         # 6xl.75: a difference file over the cap is skipped with a reason, never read whole
         line = "x" * 99 + "\n"
         self.base({"README.md": line * (target.MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
-        tracemalloc.start()
+        started = not tracemalloc.is_tracing()  # review-code-n4lk.2.6: PYTHONTRACEMALLOC already traces, and its peak spans the fixture
+        if started:
+            tracemalloc.start()
         try:
+            tracemalloc.reset_peak()
+            before = tracemalloc.get_traced_memory()[0]
             _, led = self.build(difference=["README.md"])
-            peak = tracemalloc.get_traced_memory()[1]
+            peak = tracemalloc.get_traced_memory()[1] - before
         finally:
-            tracemalloc.stop()
+            if started:
+                tracemalloc.stop()
         self.assertIn({"path": "README.md", "reason": "too-large"}, led["tree"]["skipped"])
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "README.md")))
         self.assertLess(peak, target.MAX_FILE)
