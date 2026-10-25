@@ -709,6 +709,31 @@ class TestFilter(Local):
         self.assertEqual((rc, out["status"], out["reason"]), (1, "skip", "only-excluded"))
         self.assertEqual(self.run_dirs(), before)
 
+    def listing_calls(self, kind, names, dirty=None):
+        """review-code-mosd: the ls-tree / ls-files argvs filter_files spawns for `names`."""
+        self.change({"package-lock.json": "{}\n", "a.py": "a = 1\n"})
+        for n, text in (dirty or {}).items():
+            with open(os.path.join(self.repo, n), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        top = target._toplevel(self.repo)
+        plan = {"mb": self.git("rev-parse", "main"), "head": self.git("rev-parse", "HEAD")}
+        seen, real = [], subprocess.Popen
+
+        def spy(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+
+        with mock.patch.object(target.subprocess, "Popen", side_effect=spy):
+            target.filter_files(kind, plan, names, top)
+        return [a for a in seen if "ls-tree" in a or "ls-files" in a]
+
+    def test_filter_lockfile_only_lists_no_tree(self):
+        self.assertEqual(self.listing_calls("branch", ["package-lock.json"]), [])
+
+    def test_filter_unstaged_lists_the_index_once(self):
+        calls = self.listing_calls("unstaged", ["a.py"], {"a.py": "a = 2\n"})
+        self.assertEqual(len(calls), 1, calls)
+
     def test_filter_diff_chunks(self):
         self.change({"Cargo.lock": "c\n", "src/a.js": "a\n", "src/b.js": "b\n", "src/c.js": "c\n"})
         with mock.patch.object(target, "_ARGV_BUDGET", 8):  # one path per git call

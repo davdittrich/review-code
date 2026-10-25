@@ -909,30 +909,37 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         excluded.append({"path": n, "reason": reason, "detail": detail})
 
     working = kind in ("unstaged", "worktree", "path", "repo")
-    # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger; mode 160000 in the index or head tree
-    listing = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
-    base_listing = index_listing(top) if kind == "unstaged" else tree_listing(mb, top)  # 6xl.88: what the diff compares against
-    # review-code-yp2j: a gitlink at head, or one absent at head (removed); a base gitlink that head replaced by a file is reviewed
-    links = {p for p, (m, _) in listing.items() if m == "160000"} | {p for p, (m, _) in base_listing.items()
-                                                                   if m == "160000" and p not in listing}
+    memo = {}
+
+    def lists():  # review-code-mosd: the two tree passes are built on first need, not for a lockfile-only change
+        if not memo:
+            # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger; mode 160000 in the index or head tree
+            lst = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
+            # 6xl.88: what the diff compares against; unstaged compares against the index, so one listing serves both
+            bl = lst if kind == "unstaged" else tree_listing(mb, top)
+            # review-code-yp2j: a gitlink at head, or one absent at head (removed); a base gitlink that head replaced by a file is reviewed
+            memo.update(listing=lst, base_listing=bl, links={p for p, (m, _) in lst.items() if m == "160000"}
+                        | {p for p, (m, _) in bl.items() if m == "160000" and p not in lst})
+        return memo
+
     for n in names:
         base = n.rsplit("/", 1)[-1]
-        if n in links:
+        isdir = working and os.path.isdir(os.path.join(top, n)) and not os.path.islink(os.path.join(top, n))
+        if base in _LOCKFILES and n not in explicit and n not in nested and not isdir:
+            drop(n, "lockfile", "basename")  # a lockfile name that is a gitlink is dropped as a lockfile: never read either way
+        elif n in lists()["links"]:
             drop(n, "submodule", "a tracked gitlink (submodule), never read")
         elif n in nested:
             drop(n, "nested-repository", "an untracked nested repository or worktree, never read")
-        elif working and os.path.isdir(os.path.join(top, n)) and not os.path.islink(os.path.join(top, n)):
-            if n in listing:
+        elif isdir:
+            if n in lists()["listing"]:
                 drop(n, "replaced-by-directory", "a tracked file replaced by a directory, never read")
             else:
                 drop(n, "nested-repository", "a directory (nested repository or worktree), never read")
-        elif n in explicit:
-            todo.append(n)  # only the size cap applies to a file the user named
-        elif base in _LOCKFILES:
-            drop(n, "lockfile", "basename")
         else:
-            todo.append(n)  # a minified name is judged below, with the "the change adds it" keep
+            todo.append(n)  # explicit: only the size cap applies; else a minified name is judged below, with the "the change adds it" keep
     if todo:
+        listing, base_listing = lists()["listing"], lists()["base_listing"]
         if kind in ("unstaged", "worktree", "path", "repo"):
             head = _files(todo, top)
         else:
