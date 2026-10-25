@@ -50,14 +50,6 @@ class BigRun(tr.Base):
     base_files = {"src/big.py": "def f(a):\n    return a\n"}
     feat_files = {"src/big.py": BIG, "src/other.py": OTHER}
 
-    def setUp(self):
-        super().setUp()
-        self.set_cap(60)
-
-    def set_cap(self, n):
-        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": n}}, fh)
-
     def calls(self):
         with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
             return json.load(fh)["verify_calls"]
@@ -77,13 +69,24 @@ class Batches(BigRun):
                 os.path.join(hand, i + ".md") for i in c["ids"]))
             self.assertTrue(all(os.path.isfile(os.path.join(hand, i + ".md")) for i in c["ids"]))
 
-    def test_one_shard_shares_calls_across_paths_and_the_cap_still_cuts_ids(self):  # review-code-25q
+    def test_one_shard_shares_calls_across_paths(self):  # review-code-25q
         other = dict(tr.CAND, path="src/other.py", line=2, quote="w1 = a + 1")
         out = self.ingest(big(1), big(2), other, big(3))
         self.assertEqual([len(c["ids"]) for c in self.calls()], [4])
-        self.set_cap(2)
-        out = self.ingest(big(1), big(2), other, big(3))
-        self.assertEqual((len(out["ids"]), out["capped"], sum(len(c["ids"]) for c in self.calls())), (2, 2, 2))
+
+    def test_every_candidate_is_verified_on_every_tier(self):  # gh#73: no cap cuts the queue, whatever the tier
+        for tier, n in (("lean", 11), ("quick", 11), ("standard", 26), ("deep", 61)):
+            tr.write_plan(self.run_dir, tier=tier)
+            out = self.ingest(*[big(i) for i in range(1, min(n, 60) + 1)])
+            self.assertEqual(len(out["ids"]), min(n, 60), tier)
+            self.assertNotIn("capped", out)
+            calls = self.calls()
+            self.assertEqual(sum(len(c["ids"]) for c in calls), len(out["ids"]), tier)
+            self.assertEqual(max(len(c["ids"]) for c in calls), 5)
+            with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+                self.assertNotIn("capped_ids", json.load(fh))
+            self.assertNotIn("verifier-cap", [i["reason"] for i in self.doc()["unverifiable"]], tier)
+            self.rep("discard")
 
     def test_a_call_lists_one_paths_ids_together(self):
         paths = {"F-a": "b.py", "F-b": "a.py", "F-c": "b.py", "F-d": "a.py"}
@@ -221,7 +224,7 @@ class Verdicts(BigRun):
     def test_verdicts_without_batch_refuse_in_a_parallel_plan(self):  # review-code-3k5
         self.batch(1, *[self.line(i) for i in self.first])
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"mode": "parallel", "caps": {"max_verifier_calls": 60}}, fh)
+            json.dump({"mode": "parallel"}, fh)
         r, out = self.rep("verdicts", tr.lines(self.line(self.second[0])))
         self.assertEqual((r, json.loads(out)["reason"]), (1, "batch-required"))
         self.assertEqual(sorted(self.stored()), sorted(self.first))  # the stored batches survive
@@ -282,8 +285,7 @@ class Status(Verdicts):
 
     def test_a_planned_lane_never_ingested_renders_not_ingested(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 60},
-                       "calls": [{"lane": "defects", "shard": None}, {"lane": "standards", "shard": None},
+            json.dump({"calls": [{"lane": "defects", "shard": None}, {"lane": "standards", "shard": None},
                                  {"lane": "defects", "shard": 2}]}, fh)
         self.assertEqual(self.status()["missing_lanes"], ["defects@2", "standards"])
         self.assertEqual(self.doc()["lanes"], {"defects": "incomplete", "defects@2": "not-ingested",
@@ -300,7 +302,7 @@ for _name in [n for n in dir(Verdicts) if n.startswith("test_") and n not in Sta
 class CleanGate(tr.Lanes):  # review-code-0c4
     def plan(self, *lanes):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 10}, "calls": [{"lane": n, "shard": None} for n in lanes]}, fh)
+            json.dump({"calls": [{"lane": n, "shard": None} for n in lanes]}, fh)
 
     def verdict(self):
         d = self.doc()

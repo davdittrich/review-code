@@ -78,7 +78,7 @@ class Context(tr.Base):
 
     def test_a_verdict_citing_the_called_helper_is_confirmed(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+            json.dump({}, fh)
         (i,) = self.ingest(tr.cand("return norm(a)", 9, title="safe(None) returns 0", trigger="safe(None)"))["ids"]
         helper = {"path": "src/util.py", "line": 2, "quote": "return x or 0"}
         rc, out = self.rep("verdicts", tr.lines({"id": i, "verdict": "confirmed", "evidence": [helper], "reason": "r"}),

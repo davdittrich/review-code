@@ -585,10 +585,6 @@ class Lanes(Base):
 
 
 class MultiLane(Lanes):
-    def set_cap(self, n):
-        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": n}}, fh)
-
     def test_dedupe_merges_the_more_severe_and_names_the_other_lane(self):
         got, merged = report._dedupe([node("sota", 5, "suggestion"), node("standards", 6, "required")])
         (s,) = got
@@ -711,47 +707,48 @@ class MultiLane(Lanes):
         out = self.lane("standards", [["summary", "s"]])  # only the Defects lane summarises
         self.assertEqual((out["dropped"]["invalid"], self.doc()["summary"]), (1, []))  # a rejected row: missing-field
 
-    def test_cap_keeps_the_most_severe_and_marks_the_rest(self):
-        self.set_cap(1)
-        out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"))
-        self.assertEqual((len(out["ids"]), out["capped"]), (1, 1))
-        kept = out["ids"][0]
-        self.assertEqual(sorted(os.listdir(out["handoff"])), [kept + ".md"])
-        by = {i["reason"]: i["id"] for i in self.doc()["unverifiable"]}
-        self.assertEqual(sorted(by), ["no-verdict", "verifier-cap"])
-        self.assertEqual(by["no-verdict"], kept)
-        cite = [dict(CITE, line=5, quote=MQ[5])]
-        v = self.verdicts({"id": kept, "verdict": "confirmed", "evidence": cite, "reason": "r"},
-                          {"id": by["verifier-cap"], "verdict": "confirmed", "evidence": cite, "reason": "r"})
-        self.assertEqual(v["confirmed"], [kept])  # a cut candidate never reached a verifier, so a verdict for it is noise
-        d = self.doc()
-        self.assertEqual([i["id"] for i in d["findings"]], [kept])
-        self.assertEqual([(i["id"], i["reason"]) for i in d["unverifiable"]], [(by["verifier-cap"], "verifier-cap")])
+    def legacy_cut(self):
+        """A run from before gh#73: the second candidate was cut (capped_ids, no handoff, no verify call), plan.json held a cap."""
+        with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
+            json.dump({"caps": {"max_verifier_calls": 1}}, fh)
+        out = self.lane("defects", mc(5, severity="blocking", category="security"),
+                        dict(CAND, line=1, quote="def f(a):", severity="required"))  # line 1 is unchanged
+        kept, cut = out["ids"]
+        path = os.path.join(self.run_dir, "candidates.json")
+        with open(path, encoding="utf-8") as fh:
+            cand = json.load(fh)
+        cand["capped_ids"] = [cut]
+        cand["verify_calls"] = [dict(c, ids=[kept]) for c in cand["verify_calls"]]
+        os.remove(os.path.join(out["handoff"], cut + ".md"))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(cand, fh)
+        return kept, cut
 
-    def test_cap_cut_on_an_unchanged_line_still_renders_verifier_cap(self):  # CR-02
-        self.set_cap(1)
-        self.lane("defects", mc(5, severity="blocking", category="security"),
-                  dict(CAND, line=1, quote="def f(a):", severity="required"))  # line 1 is unchanged
+    def test_every_candidate_reaches_a_verifier_and_none_is_cut(self):  # gh#73
+        out = self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="blocking", category="security"), mc(8))
+        self.assertEqual((len(out["ids"]), "capped" in out), (3, False))
+        self.assertEqual(sorted(os.listdir(out["handoff"])), sorted(i + ".md" for i in out["ids"]))
+        with open(os.path.join(self.run_dir, "candidates.json"), encoding="utf-8") as fh:
+            self.assertNotIn("capped_ids", json.load(fh))
+        self.assertEqual({i["reason"] for i in self.doc()["unverifiable"]}, {"no-verdict"})
+
+    def test_a_pre_gh73_cut_id_still_renders_verifier_cap_and_never_reaches_a_verifier(self):
+        kept, cut = self.legacy_cut()
+        self.assertEqual(json.loads(self.rep("status")[1])["ids"], [kept])
         d = self.doc()
         self.assertEqual(sorted((i["line"], i["reason"]) for i in d["unverifiable"]), [(1, "verifier-cap"), (5, "no-verdict")])
-        self.assertEqual(d["dropped"]["do_not_flag"], 0)
+        self.assertEqual(d["dropped"]["do_not_flag"], 0)  # the cut one on an unchanged line is shown, not dropped as pre-existing
+        cite = [dict(CITE, line=5, quote=MQ[5])]
+        v = self.verdicts({"id": kept, "verdict": "confirmed", "evidence": cite, "reason": "r"},
+                          {"id": cut, "verdict": "confirmed", "evidence": cite, "reason": "r"})
+        self.assertEqual(v["confirmed"], [kept])  # a cut candidate never reached a verifier, so a verdict for it is noise
+        self.assertEqual([(i["id"], i["reason"]) for i in self.doc()["unverifiable"]], [(cut, "verifier-cap")])
 
-    def test_cap_order_is_severity_axis_path_line_id(self):
-        self.set_cap(3)
-        self.lane("defects", mc(2, severity="suggestion"), mc(5, severity="required"))
-        out = self.lane("standards", mc(3, "lean", severity="required"), mc(6, "smell", severity="suggestion"))
-        self.assertEqual((len(out["ids"]), out["capped"]), (3, 1))
-        (cut,) = [i for i in self.doc()["unverifiable"] if i["reason"] == "verifier-cap"]
-        self.assertEqual((cut["axis"], cut["line"]), ("standards", 6))
-        self.assertEqual([self.doc()["unverifiable"][k]["line"] for k in range(3)], [2, 5, 3])  # axis first
-
-    def test_no_plan_json_means_no_cap_and_a_bad_plan_refuses(self):
-        out = self.lane("defects", mc(2), mc(5), mc(8))
-        self.assertEqual((len(out["ids"]), out["capped"]), (3, 0))
-        for caps in ({"max_verifier_calls": 0}, {"max_verifier_calls": True}, {"max_verifier_calls": "3"}, {}):
+    def test_a_stale_cap_in_plan_json_is_ignored_and_a_non_object_plan_refuses(self):
+        for caps in ({"max_verifier_calls": 0}, {"max_verifier_calls": "3"}, {}):
             with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
                 json.dump({"caps": caps}, fh)
-            self.assertEqual(self.lane("defects", mc(2), rc=1)["reason"], "bad-plan", caps)
+            self.assertEqual(len(self.lane("defects", mc(2), mc(5))["ids"]), 2, caps)
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
             fh.write("[1]")
         self.assertEqual(self.lane("defects", mc(2), rc=1)["reason"], "bad-plan")
@@ -1820,7 +1817,6 @@ class SpecAxis(Base):
 
 
 def write_plan(run, **plan):
-    plan.setdefault("caps", {"max_verifier_calls": 50})  # 04-01: a plan.json without caps is bad-plan
     with open(os.path.join(run, "plan.json"), "w") as fh:
         json.dump(plan, fh)
 
@@ -2107,11 +2103,11 @@ class Serial(Lanes):
         for need in ("mode: serial", "tier: quick", "lost guarantee: no independent verifier", "lost guarantee: no repro"):
             self.assertIn(need, text)
 
-    def test_serial_cap_bounds_the_self_scored_batch(self):  # IN-04: documented in lanes.md, not dropped
-        write_plan(self.run_dir, mode="serial", caps={"max_verifier_calls": 1})
+    def test_serial_self_scores_every_candidate(self):  # gh#73: the serial batch is not cut either
+        write_plan(self.run_dir, mode="serial")
         out = self.lane("defects", mc(2), mc(5, severity="blocking", category="security"))
-        self.assertEqual((len(out["ids"]), out["capped"]), (1, 1))
-        self.assertIn("verifier-cap", [i["reason"] for i in self.doc()["unverifiable"]])
+        self.assertEqual(len(out["ids"]), 2)
+        self.assertNotIn("verifier-cap", [i["reason"] for i in self.doc()["unverifiable"]])
 
     def test_unrecognised_mode_and_malformed_fields_default(self):
         write_plan(self.run_dir, mode="SERIAL", lost_guarantees="x", tier=3)
@@ -2335,7 +2331,7 @@ class Ctx06Integration(Lanes):  # CTX-06 across ledger.py, plan.py and report.py
 class CaptureOnePair(Captured, Lanes):  # gh-14: the --agent path, where the lane's inspected line is the single-bracket pair
     def test_a_capture_of_three_findings_and_a_one_pair_inspected_line_ingests(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w", encoding="utf-8") as fh:
-            json.dump({"caps": {"max_verifier_calls": 9}, "calls": [{"lane": "defects", "agent": "review-code:finder", "shard": None}]}, fh)
+            json.dump({"calls": [{"lane": "defects", "agent": "review-code:finder", "shard": None}]}, fh)
         self.capture(lines(mc(2), mc(5), mc(8), '["inspected",["src/calc.py"]]'))
         rc, out = self.rep("ingest", extra=["--lane", "defects", "--agent", AID])
         self.assertEqual(rc, 0, out)

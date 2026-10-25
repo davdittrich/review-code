@@ -51,7 +51,7 @@ class Outside(tr.Base):
 
     def test_a_refuted_verdict_citing_a_file_outside_the_copy_is_stored_refuted(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+            json.dump({}, fh)
         (i,) = self.ingest(tr.CAND)["ids"]
         rc, out = self.rep("verdicts", tr.lines({"id": i, "verdict": "refuted", "evidence": [FAR_CITE], "reason": "r"}),
                            extra=["--batch", "1"])
@@ -63,7 +63,7 @@ class Outside(tr.Base):
 
     def test_a_refuted_verdict_citing_only_the_checkout_is_downgraded_with_its_own_reason(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+            json.dump({}, fh)
         (i,) = self.ingest(tr.CAND)["ids"]
         tp.write(self.repo, "pkg/far.py", "def far():\n    return 7\n")
         rc, out = self.rep("verdicts", tr.lines({"id": i, "verdict": "refuted", "reason": "r",
@@ -105,7 +105,7 @@ class Invisible(tr.Base):
 
     def test_a_verdict_cite_with_a_raw_invisible_character_is_stored_escaped(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+            json.dump({}, fh)
         (i,) = self.ingest(tr.CAND)["ids"]
         rc, out = self.rep("verdicts", tr.lines({"id": i, "verdict": "refuted", "reason": "r",
                                                  "evidence": [{"path": "pkg/zw.py", "line": 1, "quote": "x = 1​"}]}),
@@ -230,7 +230,7 @@ class OldRun(tr.Base):
 
     def test_verdicts_refuse_with_one_json_line_naming_the_old_run(self):
         with open(os.path.join(self.run_dir, "plan.json"), "w") as fh:
-            json.dump({"caps": {"max_verifier_calls": 5}}, fh)
+            json.dump({}, fh)
         (i,) = self.ingest(tr.CAND)["ids"]
         self.age()
         out = self.refused("verdicts", tr.lines({"id": i, "verdict": "confirmed", "evidence": [], "reason": "r"}), ["--batch", "1"])
