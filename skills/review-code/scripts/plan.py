@@ -203,14 +203,17 @@ def _put_sections(path, sections):
     target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections if hb[1] is not None))
 
 
+NIT_MARK = "\n<!-- review-code:nit-mode -->\n"  # spec.md prose passes sanitize_prose, which removes every HTML comment: author text cannot hold this
+
+
 def _put_spec_nit(path, body):
-    """The Spec lane's `## Nit mode` section, appended as one exact suffix and removed only by that suffix: spec.md holds change-author
-    text, which a heading-based strip could eat."""
+    """The Spec lane's `## Nit mode` section, appended after NIT_MARK and removed from the last mark to the end, whatever
+    wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
-    tail = "\n## Nit mode\n\n%s\n" % NIT_SPEC
-    text = text[:-len(tail)] if text.endswith(tail) else text
-    target.write_private(path, text + (tail if body else ""))
+    i = text.rfind(NIT_MARK)
+    text = text[:i] if i >= 0 else text
+    target.write_private(path, text + (NIT_MARK + "## Nit mode\n\n%s\n" % NIT_SPEC if body else ""))
 
 
 def _put_nav(path, hint):

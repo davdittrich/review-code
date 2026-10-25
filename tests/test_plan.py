@@ -587,6 +587,24 @@ class Packs(Fixture):
         self.run_plan("--nit")
         self.assertTrue(self.read("inputs/spec.md").startswith(before))
 
+    def test_a_rerun_after_the_spec_nit_wording_changed_leaves_exactly_one_section_and_the_author_text(self):  # review-code-hnai.7
+        path = os.path.join(self.run_dir, "inputs", "spec.md")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n## Nit mode\nauthor text\n")
+        before = self.read("inputs/spec.md")
+        self.run_plan("--nit")
+        text = self.read("inputs/spec.md")
+        old = text.replace("Severity `nit` is allowed here", "Old wording of the section")  # what an earlier release wrote
+        self.assertNotEqual(old, text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(old)
+        self.run_plan("--nit")
+        again = self.read("inputs/spec.md")
+        self.assertEqual((again.count("Severity `nit` is allowed here"), again.count("Old wording"), again.count("author text")), (1, 0, 1))
+        self.assertEqual(again, text)
+        self.run_plan()
+        self.assertEqual(self.read("inputs/spec.md"), before)
+
     def test_nit_combines_with_lean(self):
         p = self.run_plan("--tier", "lean", "--nit")
         self.assertEqual((p["tier"], p["nit"]), ("lean", True))
