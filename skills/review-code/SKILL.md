@@ -156,7 +156,6 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    standards_effort=${user_config.standards_effort}
    verifier_model=${user_config.verifier_model}
    verifier_effort=${user_config.verifier_effort}
-   max_verifier_calls=${user_config.max_verifier_calls}
    max_packs=${user_config.max_packs}
    agent_prefix=${user_config.agent_prefix}
    nav_hint=${user_config.nav_hint}
