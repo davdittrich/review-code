@@ -733,11 +733,17 @@ def _plan_forge(cand: dict, cwd: str, since_last: bool = False) -> dict:
     return plan
 
 
+def _untracked(top: str) -> List[str]:
+    """Untracked, non-ignored names. git prints a nested repository or worktree as `dir/`: a directory, never read as a
+    file and never pinned, which is the documented "not seen: nested repositories" limit."""
+    return [n for n in _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if not n.endswith("/")]
+
+
 def _head_plan(top: str, sub: str, extra: List[str], untracked: bool, diff_extra: List[str]) -> dict:
     """staged, unstaged and worktree: base = merge_base = head = HEAD, the change is the tree state."""
     head = _commit_id("HEAD", top)
     names, renames = _changed(sub, extra, top)
-    other = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top)) if untracked else []
+    other = _untracked(top) if untracked else []
     return {"base": head, "head": head, "mb": head, "names": names, "renames": renames, "untracked": other,
             "dirty": True,
             "diff_cmd": ["git", sub] + _DIFF_FLAGS + diff_extra + ["--"], "commits": []}
@@ -754,7 +760,7 @@ def _plan_files(paths: List[str], cwd: str, top: str) -> dict:
             raise Refuse("outside-repo", "the path is outside the repository")
         specs.append(os.path.relpath(rp, root))
     tracked = _split(git_bytes(["--literal-pathspecs", "ls-files", "-z", "--"] + specs, top))
-    others = _split(git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # pin_tree pins them all
+    others = _untracked(top)  # pin_tree pins them all
     # a literal pathspec, in Python: the path itself, or a directory above it ("." is the top)
     other = [n for n in others if not specs or any(sp == "." or n == sp or n.startswith(sp + "/") for sp in specs)]
     names = sorted(n for n in set(tracked) | set(other) if os.path.lexists(os.path.join(top, n)))
@@ -1103,8 +1109,8 @@ def pin_tree(kind: str, plan: dict, run: str, top: str) -> dict:
     f = _split(git_bytes(["diff"] + _RAW_DIFF + ([tree] if tree else []) + ["--"], top, env=env))
     edits = [(m.split()[4], p) for m, p in zip(f[0::2], f[1::2])]  # ":<index mode> <mode> <oid> <oid> <status>"
     imode = {p: m[1:7] for m, p in zip(f[0::2], f[1::2]) if m[1:7] in REGULAR}
-    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else _split(
-        git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], top))  # path and repo listed theirs already
+    other = plan["untracked"] if kind in ("unstaged", "worktree") else plan["others"] if "others" in plan else \
+        _untracked(top)  # path and repo listed theirs already
     tmp, blobs, idxmode = [], {}, {}
     try:
         if not inplace:

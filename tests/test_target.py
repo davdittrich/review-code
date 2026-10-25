@@ -1021,6 +1021,23 @@ class TestSpecialFiles(Local):
                 self.assertEqual(ex.get("pipe.txt"), "special", ex)
 
 
+class TestNestedWorktree(Local):
+    def test_untracked_nested_worktree_is_omitted_not_read(self):
+        # review-code-tett: ls-files --others prints a nested worktree as "wt/"; opening it as a file crashed target.py
+        self.git("checkout", "-q", "main")
+        self.git("worktree", "add", "-q", "--detach", os.path.join(self.repo, "wt"))
+        self.assertIn("wt/", self.git("ls-files", "--others", "--exclude-standard").split())
+        self.write("fresh.py", "f = 1\n")
+        for words in (["--repo"], ["--unstaged"], [], ["."]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                rec = load(out["run"])
+                names = list(rec["included"]) + [e["path"] for e in rec["excluded"]]
+                self.assertIn("fresh.py", names)
+                self.assertFalse([n for n in names if n == "wt" or n.startswith("wt/")], names)
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target
