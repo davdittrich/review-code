@@ -114,6 +114,13 @@ class NormBasis(NitBase):
         self.assertEqual((f["severity"], f["basis"]), ("nit", "norm"))
         self.assertEqual(f["norm"], {"for": 22, "against": 3, "total": 25})
 
+    def test_rows_label_a_rule_group_rule_and_a_norm_group_norm(self):
+        base = {"path": "a.py", "line": 1, "title": "t", "id": "F-0123456789"}
+        norm = dict(base, basis="norm", norm_for="x", norm_against="y", norm={"for": 22, "total": 25})
+        rule = dict(base, basis="rule", rule=RULE)
+        self.assertEqual(nit.rows([norm], str)[0], '- norm "x" over "y" (22 of 25 lines) (1 finding)')
+        self.assertEqual(nit.rows([rule], str)[0], "- rule: %s (1 finding)" % RULE)
+
     def test_a_norm_needs_a_missing_field_named(self):
         out = self.lane({k: v for k, v in self.nit().items() if k != "norm_glob"})
         self.assertEqual([r["check"] for r in out["rejected"]], ["norm-malformed"])
