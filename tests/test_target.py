@@ -1035,7 +1035,9 @@ class TestNestedWorktree(Local):
                 rec = load(out["run"])
                 names = list(rec["included"]) + [e["path"] for e in rec["excluded"]]
                 self.assertIn("fresh.py", names)
-                self.assertFalse([n for n in names if n == "wt" or n.startswith("wt/")], names)
+                self.assertFalse([n for n in rec["included"] if n == "wt" or n.startswith("wt/")], names)
+                # review-code-qotx: the omission is a per-path excluded row, not silence
+                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "wt"], ["nested-repository"], rec["excluded"])
                 pinned = self.git("ls-tree", "-r", "--name-only", rec["pinned_tree"]).split("\n")
                 self.assertIn("fresh.py", pinned)
                 self.assertFalse([n for n in pinned if n == "wt" or n.startswith("wt/")], pinned)
