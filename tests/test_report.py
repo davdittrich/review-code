@@ -1804,6 +1804,25 @@ class SpecVerdictRepairedCites(Base):
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:11"], [sid]))
 
 
+class SpecVerdictHiddenQuote(Base):
+    """review-code-6u3h: the pinned rows hold a quote's hidden character escaped, so the copy check reads the quote as the
+    rows do: a run the escape breaks is no copy, and the pinned code holds the same run for the exemption."""
+    LIT = SpecCodeRun.LIT
+    HID = ["\u200b", "\u202e", "\x1b"]
+    spec_text = LIT + "\n"
+    feat_files = {"src/calc.py": FEAT, "src/h.py": "".join("S = '%s%s always'\n" % (SpecCodeRun.LIT.rsplit(" ", 1)[0], c) for c in HID)}
+    pin, spec_rows, lane, spec = SpecAxis.pin, SpecAxis.spec_rows, SpecAxis.lane, SpecAxis.spec
+
+    def test_a_quote_with_a_hidden_character_inside_a_spec_run_is_accepted(self):
+        for n, c in enumerate(self.HID, 1):
+            with self.subTest(hidden=hex(ord(c))):
+                sid = self.lane(self.spec(self.spec_rows()[1], title="paraphrase"), {"inspected": ["src/calc.py"]})["spec_ids"][0]
+                q = "S = '%s%s always'" % (self.LIT.rsplit(" ", 1)[0], c)
+                out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [{"path": "src/h.py", "line": n, "quote": q}], "reason": "r"})
+                self.rep("discard")
+                self.assertEqual((out["confirmed"], [d["reason"] for d in out["dispositions"]]), ([sid], [None]))
+
+
 class SpecFileCite(Base):
     """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
     SPEC = "docs/specs/feat.md"

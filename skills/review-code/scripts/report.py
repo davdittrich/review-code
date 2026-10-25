@@ -1536,10 +1536,11 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         # dc5: a repaired line carries no cite out of its candidate's file, nor out of a cite file holding a verdict-key token
         kept = [] if fix and _hostile(pin, paths[o["id"]], _VTOKEN) else [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]
         dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
-        rev = raw.get("evidence")  # a cite that validated names a path of the pinned tree: that path is no spec copy (review-code-rae6)
-        body = dict(raw, evidence=[{k: v for k, v in r.items() if k != "path"} if isinstance(r, dict) and rows.get(id(e)) is not None
-                                   and isinstance(r.get("path"), str) else r for r, e in zip(rev, ev)]) if isinstance(rev, list) else raw
-        dup = sum(copied(x, pairs) for x in _leaves(body)) if o["id"] in spec else 0
+        rev = raw.get("evidence")  # a validated cite is no copy by its path (review-code-rae6), and its quote is read escaped, as the rows hold it (review-code-6u3h)
+        ok_ev = [isinstance(r, dict) and rows.get(id(e)) is not None and isinstance(r.get("path"), str) for r, e in zip(rev, ev)] if isinstance(rev, list) else []
+        body = dict(raw, evidence=[{k: v for k, v in r.items() if k not in ("path", "quote")} if ok else r
+                                   for r, ok in zip(rev, ok_ev)]) if ok_ev else raw
+        dup = sum(copied(x, pairs) for x in itertools.chain(_leaves(body), (e["quote"] for e, ok in zip(ev, ok_ev) if ok))) if o["id"] in spec else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
             bad.append(("copied-from-spec:%d" % dup, ln, n, True))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
