@@ -581,6 +581,9 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
                                                                            for i in inventory], sort_keys=True, separators=(",", ":"))})
         else:
             for sh in (shards if lane in ("defects", "standards") else None) or [None]:
+                n = len(sh["files"] if sh else tj["included"])
+                if lane in ("defects", "standards") and tj["kind"] in ledger.WHOLE and n > ledger.CAP_FIND:
+                    raise target.Refuse("internal-error", "a %s call would list %d included files, above the cap of %d" % (lane, n, ledger.CAP_FIND))
                 path = os.path.join(sh["run"] if sh else run, "inputs", lane + ".md")
                 _put_nav(path, hint)
                 lm, le = lane_me.get(lane, (fm, fe))

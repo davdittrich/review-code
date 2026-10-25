@@ -764,6 +764,56 @@ class ShardMerge(ShardBase):
         self.assertEqual((p["shards"], [c["shard"] for c in p["calls"]]), ([], [None] * len(p["calls"])))
 
 
+class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instead of building 301 files
+    CAP = 3
+    base_files = {"d/f%d.py" % i: "x = %d\n" % i for i in range(7)}
+    feat_files = {"d/f0.py": "x = 9\n"}
+
+    def cap_plan(self, **kw):
+        import ledger, plan as mod
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP):
+            return self.run_plan(shard_bytes=mod.SHARD_BYTES, **kw)
+
+    def lane_inputs(self, p):
+        return [self.read_text(os.path.relpath(c["input"], self.run_dir)) for c in p["calls"]
+                if c["lane"] in ("defects", "standards")]
+
+    def test_no_spawned_input_is_cut_off_and_shards_cover_included(self):
+        p = self.cap_plan()
+        inc = self.read_json("target.json")["included"]
+        self.assertGreater(len(inc), self.CAP)
+        self.assertGreaterEqual(len(p["shards"]), 2)
+        self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
+        called = [f for s in p["shards"] for f in s["files"]]
+        self.assertEqual(sorted(called), sorted(inc))
+        self.assertTrue(all(len(s["files"]) <= self.CAP for s in p["shards"]))
+
+    def test_skipped_shards_hold_exactly_the_files_not_shown(self):
+        p = self.cap_plan(cfg={"max_shards": 1})
+        inc = self.read_json("target.json")["included"]
+        skipped = sum(x["files"] for x in p["skipped"] if x["what"].startswith("shard "))
+        self.assertEqual(len(p["shards"][0]["files"]) + skipped, len(inc))
+        self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
+
+    def test_a_spawned_call_that_would_be_cut_off_is_refused(self):
+        import plan as mod, target, ledger
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP), mock.patch.object(mod, "_groups", lambda f, s: [sorted(f)]):
+            with self.assertRaises(target.Refuse) as cm:
+                self.run_plan(shard_bytes=mod.SHARD_BYTES)
+        self.assertEqual(cm.exception.reason, "internal-error")
+        self.assertNotRegex(cm.exception.detail, r"d/f")  # numbers only
+
+    def test_an_oversize_shard_among_valid_ones_is_refused(self):
+        import plan as mod, target, ledger
+        def groups(f, s):
+            f = sorted(f)
+            return [f[:5], f[5:]]
+        with mock.patch.object(ledger, "CAP_FIND", self.CAP), mock.patch.object(mod, "_groups", groups):
+            with self.assertRaises(target.Refuse) as cm:
+                self.run_plan(shard_bytes=mod.SHARD_BYTES)
+        self.assertEqual(cm.exception.reason, "internal-error")
+
+
 class ShardNitSources(ShardBase):
     base_files = dict(ShardMerge.base_files, **{".gemini/styleguide.md": "Prefer small functions.\n"})
     feat_files = ShardMerge.feat_files
