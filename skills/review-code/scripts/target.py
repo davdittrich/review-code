@@ -920,7 +920,10 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
         elif n in nested:
             drop(n, "nested-repository", "an untracked nested repository or worktree, never read")
         elif working and os.path.isdir(os.path.join(top, n)) and not os.path.islink(os.path.join(top, n)):
-            drop(n, "nested-repository", "a directory (nested repository or worktree), never read")
+            if n in listing:
+                drop(n, "replaced-by-directory", "a tracked file replaced by a directory, never read")
+            else:
+                drop(n, "nested-repository", "a directory (nested repository or worktree), never read")
         elif n in explicit:
             todo.append(n)  # only the size cap applies to a file the user named
         elif base in _LOCKFILES:

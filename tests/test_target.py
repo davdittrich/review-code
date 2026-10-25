@@ -1124,6 +1124,16 @@ class TestTrackedSubmodule(Local):
         rc, out = self.pin("HEAD^!")
         self.assertEqual((rc, out.get("reason")), (1, "only-excluded"), out)
 
+    def test_tracked_file_replaced_by_directory_has_its_own_reason(self):
+        self.git("checkout", "-q", "main")
+        os.remove(os.path.join(self.repo, "a.txt"))
+        self.write("a.txt/inner.py", "i = 1\n")
+        for words in (["--unstaged"], [], ["--repo"]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self._reasons(out, "a.txt"), ["replaced-by-directory"])
+
 
 class TestOnlyNestedWorktree(Local):
     def test_a_nested_worktree_alone_is_not_a_change(self):
