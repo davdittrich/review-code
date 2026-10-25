@@ -58,7 +58,7 @@ class Fixture(tr.Base):
 
     def handoff(self, i):
         with open(os.path.join(self.run_dir, "handoff", i + ".md"), encoding="utf-8") as fh:
-            return fh.read()
+            return fh.read().replace(self.run_dir, "<run>")  # random tempfile names must not hit the banned-word asserts
 
 
 class Docstring(unittest.TestCase):
