@@ -813,6 +813,38 @@ class RepoTarget(Base):
         rc, out = self.rep("render")
         self.assertIn("Target is not a change: whole-file findings", out)
 
+class StandardsLaneReadNothing(Base):  # review-code-lrrx, gh#69
+    pin_args = ["--repo"]
+
+    def standards(self, inspected):
+        rc, out = self.rep("ingest", lines({"inspected": inspected}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        return [g for g in self.doc()["lost_guarantees"] if "standards" in g]
+
+    def test_repo_standards_lane_naming_no_included_file_is_a_lost_guarantee(self):
+        (g,) = self.standards([])
+        self.assertIn("no included file", g)
+        rc, out = self.rep("render")
+        self.assertIn("lost guarantee: " + g, out)
+
+    def test_repo_standards_lane_naming_an_included_file_loses_nothing(self):
+        self.assertEqual(self.standards(["src/calc.py"]), [])
+
+
+    def test_an_incomplete_standards_lane_is_reported_elsewhere_not_here(self):
+        rc, out = self.rep("ingest", lines({"summary": "no inspected line"}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        d = self.doc()
+        self.assertEqual((d["lanes"], d["lost_guarantees"]), ({"standards": "incomplete"}, []))
+
+
+class StandardsLaneReadNothingOnADiff(Base):
+    def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):
+        rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.doc()["lost_guarantees"], [])
+
+
 CANARY = "CANARY-SPEC-TEXT-7731"
 
 
