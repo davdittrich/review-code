@@ -334,11 +334,16 @@ def copy_plugin(dest):
             shutil.copy2(os.path.join(ROOT, rel), os.path.join(dest, rel))
 
 
+def _known_cost(c):
+    """A baseline cost is usable only when positive; None and 0.0 both mean unknown."""
+    return isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+
+
 def estimate(names, runs, base, cheap):
     tot = 0.0
     for n in names:
         c = (base["cases"].get(n) or {}).get("cost")
-        tot += runs * (c if c is not None and not cheap else HEURISTIC_USD["cheap" if cheap else "full"])
+        tot += runs * (c if _known_cost(c) and not cheap else HEURISTIC_USD["cheap" if cheap else "full"])
     return tot
 
 
@@ -396,7 +401,7 @@ def run_cases(names, cases, runs, lane, max_cost, stamp):
                     json.dump(raw, fh, indent=1)
                 scores_by[n].append(score(extract_doc(raw["text"]), cases[n], lane))
                 spent += raw["cost"] or 0.0
-                costs[n] += raw["cost"] or 0.0
+                costs[n] = None if costs[n] is None or raw["cost"] is None else costs[n] + raw["cost"]
                 if max_cost is not None and spent > max_cost:
                     print("aborted: spent $%.2f over --max-cost-usd %.2f; raw documents in %s" % (spent, max_cost, os.path.join(OUT, stamp)), file=sys.stderr)
                     return None
@@ -408,7 +413,7 @@ def write_baseline(base, names, scores_by, costs):
     meta = {"git_sha": git_sha(), "claude_version": claude_version(), "tiers_hash": tiers_hash()}
     for n in names:
         agg = aggregate(scores_by[n])
-        agg["cost"] = costs[n] / agg["n_runs"]
+        agg["cost"] = None if costs[n] is None else costs[n] / agg["n_runs"]  # None: some run's cost was unknown
         agg["meta"] = meta
         agg.pop("recall"), agg.pop("precision")
         base["cases"][n] = agg
@@ -459,7 +464,7 @@ def main(argv=None):
             return 2
         est = estimate(names, runs, base, a.cheap)
         print("%d case(s) x %d run(s): estimated cost about $%.2f%s" % (
-            len(names), runs, est, "" if all(base["cases"].get(n, {}).get("cost") for n in names) else " (heuristic, no baseline cost)"))
+            len(names), runs, est, "" if all(_known_cost(base["cases"].get(n, {}).get("cost")) for n in names) else " (heuristic, no baseline cost)"))
         if not a.yes:
             if not sys.stdin.isatty():
                 print("stdin is not a terminal: pass --yes to run", file=sys.stderr)

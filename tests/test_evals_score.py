@@ -283,6 +283,27 @@ class Paid(unittest.TestCase):
         self.assertEqual(w, ["baseline a predates per-case meta: re-accept it", "baseline b predates per-case meta: re-accept it"])
         self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
 
+    def test_unknown_cost_is_stored_as_none_not_zero(self):
+        self.fake(cost=None)
+        self.assertEqual(self.main("--case", "clean-diff-negative", "--accept"), 0)
+        with open(self.base) as fh:
+            self.assertIsNone(json.load(fh)["cases"]["clean-diff-negative"]["cost"])
+
+    def test_a_zero_or_missing_baseline_cost_estimates_as_the_heuristic(self):
+        for c in (0.0, None):
+            base = {"cases": {"a": {"cost": c}}}
+            self.assertEqual(ev.estimate(["a"], 2, base, False), 2 * ev.HEURISTIC_USD["full"])
+        self.assertEqual(ev.estimate(["a"], 2, {"cases": {"a": {"cost": 0.5}}}, False), 1.0)
+
+    def test_estimate_line_is_labelled_for_a_zero_baseline_cost(self):
+        with open(self.base, "w") as fh:
+            json.dump({"version": 1, "meta": {}, "cases": {"clean-diff-negative": {"cost": 0.0}}}, fh)
+        self.fake()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            ev.main(["--yes", "--runs", "1", "--case", "clean-diff-negative"])
+        self.assertIn("heuristic", out.getvalue().splitlines()[0])
+
     def test_repo_dir_does_not_name_the_case(self):
         self.fake()
         self.main("--case", "defects-py-seeded")
