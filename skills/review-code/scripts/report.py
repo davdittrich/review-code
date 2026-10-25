@@ -992,7 +992,7 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
-    if c["axis"] == "defects" and c["severity"] != "nit":  # a Defects nit has trivial impact: judged as a property, not as a failure
+    if c["axis"] == "defects":  # a Defects nit gets the same failure check as any Defects finding (review-code-hnai.2)
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")

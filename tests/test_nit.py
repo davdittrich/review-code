@@ -457,15 +457,15 @@ class DefectsNit(DefectsMixin, NitBase):
         self.assertIn("nits: 1", text)
         self.assertIn("- bug (1 finding)", text)
 
-    def test_a_defects_nit_handoff_asks_for_the_property_check_so_trivial_impact_does_not_refute_it(self):
+    def test_a_defects_nit_handoff_is_the_ordinary_defects_handoff_with_no_check_line(self):  # owner decision on review-code-hnai.2: the normal failure check
         out = self.lane(self.defect(), dict(self.defect("a0"), severity="required"), {"inspected": ["src/calc.py"]})
         read = {}
         for i in out["ids"]:
             with open(os.path.join(out["handoff"], i + ".md"), encoding="utf-8") as fh:
                 text = fh.read()
             read['"src/calc.py:%d"' % self.line_of("b0") in text] = text
-        self.assertIn("check: property\n", read[True])
-        self.assertNotIn("check:", read[False])  # an ordinary Defects handoff is unchanged
+        self.assertNotIn("check:", read[True])
+        self.assertNotIn("check:", read[False])
 
     def test_a_defects_nit_is_refused_without_the_flag(self):
         write_plan(self.run_dir)
