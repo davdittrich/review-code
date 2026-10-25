@@ -743,8 +743,10 @@ def _spec_sets(run):
 
 
 def _spec_prep(run, inside):
-    """(the words inside the UNTRUSTED blocks of inputs/spec.md, `_spec_sets`): spec.md is read first, so an unreadable one
-    refuses before the lookup writes marks.json (review-code-iawb). A caller passes the result to `_spec_copy` and `_spec_refs`."""
+    """SpecPrep(the words inside the UNTRUSTED blocks of inputs/spec.md, `_spec_sets`). `inside` is the line set of
+    `_spec_lines`, which the caller already holds (review-code-le7m). spec.md is read here first, so an unreadable one
+    refuses before the lookup writes marks.json (review-code-iawb). A caller passes the result as `prep` to `_spec_copy` and
+    `_spec_refs`."""
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
@@ -754,7 +756,8 @@ def _spec_prep(run, inside):
 
 
 def _spec_refs(run, prep):
-    """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`)."""
+    """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`); `prep` is
+    the `_spec_prep` result."""
     return prep.sets.adr + prep.sets.hidden
 
 
@@ -795,8 +798,9 @@ def _hidden_names(run, shown):
 
 
 def _spec_copy(run, prep):
-    """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
-    the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
+    """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: `prep`, the
+    result of `_spec_prep` (which read spec.md and the ledger), holds the words inside the UNTRUSTED blocks of
+    inputs/spec.md and the ledger's ref sets, and this call reads nothing; the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
     ls-tree and cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
     SPEC_RUN consecutive words (case and punctuation ignored) of either text, and the predicate returns how many of the
