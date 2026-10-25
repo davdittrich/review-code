@@ -9,7 +9,7 @@ import paths  # noqa: F401
 from gitfix import lines  # noqa: E402
 import nit  # noqa: E402
 import report  # noqa: E402
-from test_report import Base, write_plan  # noqa: E402
+from test_report import CANARY, INV, Base, SpecAxis, mc, write_plan  # noqa: E402
 
 RULE = "Never subtract operands."
 DOMINANT, DEVIANT = "= []", "= list()"
@@ -51,14 +51,16 @@ class NitBase(Base):
     def rule_nit(self, **kw):
         return dict(self.nit(), **dict({"category": "convention", "rule": RULE, "rule_source": "conventions/CLAUDE.md"}, **kw))
 
+    LANE = "standards"
+
     def lane(self, *objs, rc=0):
-        code, out = self.rep("ingest", lines(*objs), extra=["--lane", "standards"])
+        code, out = self.rep("ingest", lines(*objs), extra=["--lane", self.LANE])
         self.assertEqual(code, rc, out)
         return json.loads(out)
 
     def confirm(self, out, cites):
         """Confirm the accepted ids in input order (out["ids"] is sorted) with these cites, one verdicts call per verify batch."""
-        ids = list(dict.fromkeys(d["id"] for d in out["dispositions"] if d["id"] in out["ids"]))
+        ids = list(dict.fromkeys(d["id"] for d in out["dispositions"] if d["id"] in out["ids"] + out.get("spec_ids", [])))
         cite = dict(zip(ids, cites))
         for call in json.loads(self.rep("status")[1])["verify_calls"]:
             text = lines(*({"id": i, "verdict": "confirmed", "evidence": [cite[i]], "reason": "r"} for i in call["ids"]))
@@ -428,6 +430,107 @@ class Render(NitBase):
         res = self.sarif_result()
         self.assertEqual(res["ruleId"], "review-code/norm")
         self.assertEqual(res["properties"]["basis"], "norm")
+
+
+class DefectsMixin:
+    LANE = "defects"
+
+    def defect(self, prefix="b0", **kw):
+        return dict({k: v for k, v in self.nit(prefix).items() if not k.startswith("norm_")}, category="bug", title="misleading name", **kw)
+
+    def calls(self):
+        return [i for c in json.loads(self.rep("status")[1])["verify_calls"] for i in c["ids"]]
+
+
+class DefectsNit(DefectsMixin, NitBase):
+    """gh#76: the Defects lane may send a nit on the evidence of its finding; the verifier judges it like any finding."""
+
+    def test_a_defects_nit_is_reported_with_the_evidence_basis_and_never_changes_the_verdict(self):
+        out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["rejected"], out["dropped"]["invalid"]), ([], 0))
+        self.confirm(out, [self.cite()])
+        d = self.doc()
+        (f,) = d["findings"]
+        self.assertEqual((f["severity"], f["category"], f["basis"], f["axis"]), ("nit", "bug", "evidence", "defects"))
+        self.assertEqual((d["verdict"], d["nit"]), ("No blocking findings", 1))
+        text = self.rep("render")[1]
+        self.assertIn("nits: 1", text)
+        self.assertIn("- bug (1 finding)", text)
+
+    def test_a_defects_nit_is_refused_without_the_flag(self):
+        write_plan(self.run_dir)
+        self.assertEqual([r["check"] for r in self.lane(self.defect())["rejected"]], ["nit-not-enabled"])
+
+    def test_a_defects_nit_reaches_the_verifier_and_a_refuted_one_is_dropped(self):
+        out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
+        self.assertEqual(self.calls(), out["ids"])
+        self.verdicts({"id": out["ids"][0], "verdict": "refuted", "reason": "not trivia", "evidence": [self.cite()]})
+        d = self.doc()
+        self.assertEqual((d["findings"], d["unverifiable"], d["dropped"]["refuted"]), ([], [], 1))
+
+    def test_a_defects_nit_below_traced_is_no_nit_but_follows_the_unverifiable_rule(self):
+        out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
+        self.confirm(out, [dict(self.cite(), quote="not on that line")])
+        d = self.doc()
+        (u,) = d["unverifiable"]
+        self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "noted", 0, "Needs discussion"))  # the Defects gate, unchanged
+
+    def test_a_defects_nit_in_a_lean_run_is_the_only_severity_allowed(self):
+        write_plan(self.run_dir, nit=True, tier="lean")
+        self.assertEqual([r["check"] for r in self.lane(dict(self.defect(), severity="suggestion"))["rejected"]], ["nit-only"])
+
+
+class SotaNit(NitBase):
+    LANE = "sota"
+
+    def test_a_sota_nit_is_refused(self):
+        write_plan(self.run_dir, nit=True, sota_inventory=[INV])
+        line = {k: v for k, v in mc(3, "sota", severity="nit").items() if k not in ("path", "line")}
+        out = self.lane(dict(line, item=1, sources=["https://example.com/a", "https://example.org/b"]))
+        self.assertEqual([r["check"] for r in out["rejected"]], ["bad-type"])
+
+
+class SpecNit(NitBase):
+    """gh#76: the Spec lane may send a nit: a minor deviation from a cited spec line."""
+    LANE = "spec"
+    spec_text = "The adder must " + CANARY + " operands.\n"
+    pin, spec_rows = SpecAxis.pin, SpecAxis.spec_rows
+    calls = DefectsMixin.calls
+
+    def spec_nit(self, **kw):
+        inner = self.spec_rows()[1]
+        return dict({k: v for k, v in self.nit().items() if not k.startswith("norm_")}, **dict(
+            {"category": "spec-wrong", "title": "minor", "spec_line": inner}, **kw))
+
+    def test_a_spec_nit_is_verified_like_any_finding_and_counted(self):
+        out = self.lane(self.spec_nit(), {"inspected": ["src/calc.py"]})
+        self.assertEqual((out["rejected"], self.calls()), ([], out["spec_ids"]))
+        self.confirm(out, [self.cite()])
+        d = self.doc()
+        (f,) = d["findings"]
+        self.assertEqual((f["severity"], f["basis"], f["axis"], d["nit"], d["verdict"]), ("nit", "evidence", "spec", 1, "No blocking findings"))
+        self.assertIn("- spec-wrong (1 finding)", self.rep("render")[1])
+
+    def test_a_spec_nit_needs_a_valid_spec_line_and_the_flag(self):
+        self.assertEqual([r["check"] for r in self.lane(self.spec_nit(spec_line=1))["rejected"]], ["spec-line-invalid"])
+        write_plan(self.run_dir)
+        self.assertEqual([r["check"] for r in self.lane(self.spec_nit())["rejected"]], ["nit-not-enabled"])
+
+
+class DefectsNitOnDiffAndRepo(UnchangedFiles, DefectsMixin, NitBase):
+    def test_a_defects_nit_on_an_unchanged_line_is_dropped_on_a_diff(self):
+        out = self.lane(self.defect())
+        d = self.doc()
+        self.assertEqual((out["ids"], d["findings"], d["dropped"]["do_not_flag"]), ([], [], 1))
+
+
+class DefectsNitOnRepo(UnchangedFiles, DefectsMixin, NitBase):
+    pin_args = ["--repo"]
+
+    def test_a_defects_nit_on_a_repo_is_kept_as_existing(self):
+        self.confirm(self.lane(self.defect()), [self.cite()])
+        (f,) = self.doc()["findings"]
+        self.assertEqual((f["severity"], f["origin"]), ("nit", "existing"))
 
 
 class Unit(unittest.TestCase):
