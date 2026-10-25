@@ -873,6 +873,31 @@ class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_s
         self.assertEqual(report._blind_standards("x", {"kind": "branch", "included": ["a"]}, c), [])
 
 
+class StandardsLaneEchoesAHiddenName(Base):  # review-code-kt4w
+    pin_args = ["--repo"]
+    raw = "src/a\u202eb.py"
+    base_files, feat_files = {raw: "x = 1\n"}, {raw: "x = 2\n"}
+
+    def test_the_raw_and_the_escaped_name_both_count_as_read(self):
+        for name in (self.raw, report.target.shown(self.raw)):
+            rc, out = self.rep("ingest", lines({"inspected": [name]}), extra=["--lane", "standards"])
+            self.assertEqual(rc, 0, out)
+            d = self.doc()
+            self.assertEqual([g for g in d["lost_guarantees"] if "standards" in g], [], name)
+            self.assertEqual(d["inspected"]["areas"], [self.raw], name)
+
+
+class StandardsLaneEchoesAnAmbiguousName(Base):  # a file literally named like the escape of another
+    pin_args = ["--repo"]
+    raw, lone = "src/a\u202eb.py", "src/a<U+202E>b.py"
+    base_files, feat_files = {raw: "x = 1\n", lone: "x = 1\n"}, {raw: "x = 2\n", lone: "x = 1\n"}
+
+    def test_the_echo_names_the_file_it_spells_and_never_guesses_the_other(self):
+        rc, out = self.rep("ingest", lines({"inspected": [self.lone]}), extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.doc()["inspected"]["areas"], [self.lone])
+
+
 class StandardsLaneReadNothingOnADiff(Base):
     def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):
         rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "standards"])

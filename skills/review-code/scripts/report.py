@@ -1308,6 +1308,7 @@ def _read_lane(text, lane, run, shard=None):
                          if (lane == "sota" and _int(a) and a in ctx) or (lane != "sota" and isinstance(a, str)))
         named.update(_claimed(o))
     pin = _Pinned(run, cited | named | set(adr), cited, adr)
+    esc = None
     copied = spec_text(pin, adr, (s for _, o, _ in parsed for s in _leaves(o))) if lane == "spec" else None
     for n, (ln, o, fixed) in enumerate(parsed, 1):
         repaired += fixed
@@ -1327,6 +1328,13 @@ def _read_lane(text, lane, run, shard=None):
                 got = o["inspected"] if isinstance(o["inspected"], list) else []
                 if lane == "sota":  # item numbers, mapped back to their inventory paths
                     got = [ctx[a][0] for a in got if _int(a) and a in ctx]
+                if lane != "sota" and any(isinstance(a, str) and "<" in a and _norm(a) not in pin.files for a in got):
+                    if esc is None:  # a lane may echo the escaped name it was shown: map it back to the one file it names
+                        by = {}
+                        for f, _, _ in pin.every():
+                            by.setdefault(target.shown(f), []).append(f)
+                        esc = {k: v[0] for k, v in by.items() if len(v) == 1}
+                    areas += [esc[a] for a in got if isinstance(a, str) and _norm(a) not in pin.files and a in esc]
                 areas += [a for a in got if _norm(a) in pin.files]
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
