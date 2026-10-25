@@ -160,7 +160,7 @@ def _scan_lines(run, tj, blobs):
     """({path: [(line number, text)]}, {path: pinned line count}) of included files (counts only for path and repo): added lines of change.diff, or the head of each file's pinned blob,
     stripped and escaped as tree/ copies are (ledger._scan). `blobs` is ledger.regular_blobs of the included files."""
     inc, out = set(tj["included"]), {}
-    if tj["kind"] in ("path", "repo"):
+    if tj["kind"] in ledger.WHOLE:
         heads, counts = _heads(tj, blobs)
         for p, data in sorted(heads.items()):
             text = ledger._scan(p, data.decode("utf-8", "replace"))[0]
@@ -554,7 +554,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
     nit_text = ((NIT_MODE + NIT_ONLY) if tier == "lean" else NIT_MODE) if nit else None
     _install_packs(run, packs, nit_text)
     shards = []
-    if tj["kind"] in ("path", "repo"):
+    if tj["kind"] in ledger.WHOLE:
         stats = {p: (blobs[p][0] if p in blobs else 0, counts.get(p)) for p in tj["included"]}  # (bytes, lines or None) as pinned
         groups = _groups(tj["included"], {p: v[0] for p, v in stats.items()})
         if len(groups) > 1:  # one group is the parent run itself
@@ -594,7 +594,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
            "packs": [{"name": n, "path": os.path.join("inputs", "packs", n + ".md"), "files": f} for n, f in packs],
            "shards": shards, "skipped": skipped, "lost_guarantees": lost, "tools": sorted(tools),
            "lost_capabilities": ["%s: %s" % (t, TOOLS[t]["loss"]) for t in _selectable() if t not in tools],
-           "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ("path", "repo"), "ai": ai,
+           "sota_inventory": inventory, "preview": [], "confirm": tier == "deep" or tj["kind"] in ledger.WHOLE, "ai": ai,
            "effective_overrides": {k: v for k, v in sorted(cfg.items())  # the declared default is no override
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
     if nit:  # absent otherwise, so existing plan.json files stay byte-identical

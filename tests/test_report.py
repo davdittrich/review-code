@@ -865,6 +865,13 @@ class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_s
         tj = {"kind": "repo", "included": [report.target.shown(raw)]}
         self.assertEqual(report._blind_standards(d, tj, self.cand(standards=[raw])), [])
 
+    def test_every_whole_tree_kind_is_checked_and_a_change_is_not(self):  # review-code-0aw5
+        c = self.cand(standards=[])
+        self.assertIs(report.WHOLE, report.ledger.WHOLE)
+        for kind in report.ledger.WHOLE:
+            self.assertEqual(len(report._blind_standards("x", {"kind": kind, "included": ["a"]}, c)), 1, kind)
+        self.assertEqual(report._blind_standards("x", {"kind": "branch", "included": ["a"]}, c), [])
+
 
 class StandardsLaneReadNothingOnADiff(Base):
     def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):

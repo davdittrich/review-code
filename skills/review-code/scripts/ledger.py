@@ -60,6 +60,7 @@ _LOAD_FILE = re.compile(r"(?:Dockerfile(?:\.[\w-]+)?|docker-compose.*\.ya?ml|Pro
                         r"netlify\.toml|Chart\.yaml|(?:server|app|wsgi|asgi|worker|daemon)\.(?:py|js|ts|rb|go|java|php|rs|cs|ex))\Z")
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
+WHOLE = target.WHOLE
 CAP_FIND = 300  # lines per list in inputs/spec-find.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
 ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, or as ADR_OVER past MAX_FILE, so spec.md's length never follows it
@@ -567,7 +568,7 @@ def _provenance(run: str, kind: str):
     """f(path, line) -> provenance `added`, `touched` or None: whether a hidden span found in a whole file of the change lies on a line
     the change adds, or the file has no diff at all (touched, no provenance known); None is routine. A target that is no
     change (path, repo) has no provenance."""
-    if kind in ("path", "repo"):
+    if kind in WHOLE:
         return lambda p, n: None
     added, seen = {}, set()
     try:
@@ -984,7 +985,7 @@ def _gather_spec(tj: dict, spec: Optional[str], head_ls: dict, messages: List[st
     sources += [{"kind": "issue", "ref": x[3], "fetched": x[3] in xtexts} for x in xrefs]
 
     # bd tickets named `<repo-dir>-xyz` in the commit messages (a whole-file target reads the recent history instead)
-    recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in ("path", "repo") else ""
+    recent = target.git(["log", "-30", "--format=%B"], tj["repo"], check=False) if kind in WHOLE else ""
     pre = re.escape(os.path.basename(tj["repo"]).lower())
     refs = sorted({m for t in prose + [recent] for m in re.findall(r"\b(%s-[a-z0-9]{2,5})\b" % pre, t.lower())})[:CAP_ISSUES]
     tickets = {r: t for r in refs for t in [_bd_show(tj["repo"], r)] if t is not None}
@@ -1139,7 +1140,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
              "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files.\n\n%s\n" %
-             "\n".join("- " + json.dumps(p) for p in tj["included"])) if tj["kind"] in ("repo", "path") else ""
+             "\n".join("- " + json.dumps(p) for p in tj["included"])) if tj["kind"] in WHOLE else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (

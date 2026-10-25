@@ -140,7 +140,7 @@ ID_RE = r"F-[0-9a-f]{10}"
 ID_FULL = re.compile(ID_RE)
 LINT_IGNORE = re.compile(r"noqa|type: ?ignore|pylint: ?disable|eslint-disable|@ts-ignore|@ts-expect-error|nolint|NOSONAR|"
                          r"rubocop: ?disable|#\[allow\(|@SuppressWarnings|nosec", re.IGNORECASE)
-WHOLE = ("path", "repo")  # targets that are not a change: every finding is `existing`
+WHOLE = ledger.WHOLE  # targets that are not a change: every finding is `existing`
 # The one closed table of reasons: reason -> retry hint. It feeds the rejected files, the disposition rows of `ingest` and
 # `verdicts`, and the capture reader's refusals. _disp and _refuse look a reason up here, so an emitted reason
 # missing from the table is a KeyError (a test drives it).
@@ -1094,7 +1094,7 @@ def _blind_standards(run, tj, cand):
     """Lost guarantees for each complete standards lane of a repo or path target that inspected no file of its own
     scope: such a lane has no diff to read, so an empty `inspected` means its axis found nothing because it looked at
     nothing (gh#69). A shard lane is judged against its shard's `included`; an unreadable shard file leaves the run's."""
-    if tj["kind"] not in ("repo", "path"):
+    if tj["kind"] not in WHOLE:
         return []
     out = []
     for n, v in sorted(cand.get("lanes", {}).items()):
