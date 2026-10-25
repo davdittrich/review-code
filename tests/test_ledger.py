@@ -855,6 +855,52 @@ class Tree(Base):
         with self.assertRaises(target.Refuse):
             list(ledger._blob_stream(bare, ["0" * 40]))
 
+    def test_spec_files_peak_stays_near_the_text_it_returns(self):  # review-code-n4lk.2.5
+        """Five distinct near-MAX_FILE spec files peak within 1.6x of the text returned: each blob is decoded and dropped
+        (a dict of every blob's bytes first made the peak about 2x)."""
+        n = ledger.CAP_SPEC_FILES
+        self.base({"a.py": "p\n"} | {"docs/feat-%d.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(n)})
+        self.branch({"a.py": "q\n"})
+        head_ls = target.tree_listing("HEAD", self.repo)
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            start = tracemalloc.get_traced_memory()[0]
+            out = ledger._spec_files(self.repo, head_ls, None, {"feat"})
+            peak = tracemalloc.get_traced_memory()[1] - start
+        finally:
+            if not was:
+                tracemalloc.stop()
+        total = sum(len(v) for v in out.values())
+        self.assertEqual(len(out), n)
+        self.assertLess(peak, total * 1.6, (peak, total))
+
+    def test_spec_files_hold_one_blob_not_two(self):  # review-code-n4lk.2.5
+        """When the second near-MAX_FILE spec blob has been read, the first is no longer held as a blob (its text is)."""
+        self.base({"a.py": "p\n"} | {"docs/feat-%d.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(2)})
+        self.branch({"a.py": "q\n"})
+        head_ls = target.tree_listing("HEAD", self.repo)
+        seen, real = [], target.cat_batch
+
+        def spy(*a, **k):
+            for f, data in real(*a, **k):
+                if data is not None and len(data) > target.MAX_FILE // 2:
+                    seen.append(tracemalloc.get_traced_memory()[0])
+                yield f, data
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            with mock.patch.object(target, "cat_batch", spy):
+                ledger._spec_files(self.repo, head_ls, None, {"feat"})
+        finally:
+            if not was:
+                tracemalloc.stop()
+        # blob 1's text (1 byte per char here) is the product and stays; a held blob 1 would add MAX_FILE again
+        self.assertLess(seen[1], seen[0] + target.MAX_FILE * 1.5, seen)
+
     def test_tree_skips_huge_referenced_file(self):
         # 6xl.75: a difference file over the cap is skipped with a reason, never read whole
         line = "x" * 99 + "\n"

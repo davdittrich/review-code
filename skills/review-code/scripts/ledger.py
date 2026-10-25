@@ -914,11 +914,13 @@ def _spec_files(repo: str, head_ls: dict, spec: Optional[str], toks: set, every:
     reg = {p: oid for p, (mode, oid) in head_ls.items() if mode in target.REGULAR}
     want = sorted(p for p in reg if p.startswith(_SPEC_DIRS) and p not in skip and not _is_record(p) and (every or any(t in posixpath.basename(p).lower()
                                                                                          for t in toks)))[:CAP_SPEC_FILES]
-    blobs = _blobs(repo, [reg[p] for p in want])
+    texts = {}  # oid -> text; each blob is decoded and dropped as it streams in (n4lk.2.5)
+    for oid, _, data in _blob_stream(repo, [reg[p] for p in want]):
+        texts[oid] = _text(data) if data is not None else None  # an oversized spec file is left out
+        data = None  # release the blob before the stream reads the next
     out = {}
     for p in want:
-        data = blobs.get(reg[p])
-        text = _text(data) if data is not None else None  # an oversized spec file is left out
+        text = texts.get(reg[p])
         if text is not None:
             out[p] = text
     for p in found:
