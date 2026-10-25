@@ -91,7 +91,7 @@
 | L105 | Tone and delivery sub-heading | adapt | Tone block is kept, minus theatre (D-14). | SKILL.md tone | Posit v1.2 |
 | L106 | Explain why: state the failure mode | keep | Becomes the `evidence` field of a finding. | finding schema (OUT-02) | Posit v1.2 |
 | L107 | Be specific: quote lines and give a fix | keep | Becomes the `file`, `line` and `fix` fields. | finding schema (OUT-02) | Posit v1.2 |
-| L108 | Exit rule: say so when the code is genuinely strong; do not invent issues | drop | A lane with nothing to report emits only its inspected line, and the report labels an empty result "No blocking findings" (report.py); lanes carry no prose. | report.py | Posit v1.2 |
+| L108 | Exit rule: say so when the code is genuinely strong; do not invent issues | drop | A lane with nothing to report emits no finding lines, only its own closing lines (Defects: summary and inspected; Standards and sota: inspected; Spec: inspected and declined), and the report labels an empty result "No blocking findings" (report.py); lanes carry no prose. | report.py | Posit v1.2 |
 | L110 | Final review check heading | adapt | Becomes the verifier checklist. | verifier prompt (VERI-01) | Posit v1.2 |
 | L111 | Is a production incident likely? | adapt | Used by the verifier as an impact question. | verifier prompt | Posit v1.2 |
 | L112 | Which assumptions are unvalidated? | adapt | Used by the verifier; unvalidated assumptions yield `inferred` evidence. | verifier prompt | Posit v1.2 |
