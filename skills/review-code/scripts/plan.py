@@ -1,14 +1,16 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
     plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit]
-                                    stdout: one JSON line (status, reason, detail, tier, mode, calls (count),
-                                    skipped, lost_guarantees, confirm, preview)
+                                    stdout: one JSON line (status, reason, detail, tier, mode, calls (the entries
+                                    {lane, agent, prompt, model, effort, shard[, input: serial mode only]}), skipped,
+                                    lost_guarantees, lost_capabilities, confirm, preview, wave_size, verifier,
+                                    spec_verifier)
     stdin (optional, not a TTY): key=value lines, keys in CONFIG_KEYS; empty values and `${...}` (an unset
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
-plan.json (sort_keys): version, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
+plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_shards, max_packs,
-wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, sota_inventory, preview,
+wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
 confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
 """
 import sys

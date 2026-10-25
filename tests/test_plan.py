@@ -61,6 +61,13 @@ class Fixture(tr.Base):
             return fh.read()
 
 
+class Docstring(unittest.TestCase):
+    def test_the_docstring_names_every_stdout_key(self):
+        import plan as mod
+        text = mod.__doc__.split("stdout:")[1].split("stdin")[0]
+        self.assertEqual({w for w in re.findall(r"[a-z_]+", text)} & mod.STDOUT_KEYS, mod.STDOUT_KEYS)
+
+
 class Overrides(Fixture):
     def run_plan(self, cfg, *args):
         rc, out = self.plan("plan", "--run", self.run_dir, *args, stdin="".join(k + "=" + v + "\n" for k, v in cfg))
