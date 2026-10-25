@@ -1043,6 +1043,12 @@ def _listed(paths):
     return out + "\n(+%d more included files: see the included list of target.json beside change_diff)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
 
 
+def _find_list(paths, what):
+    """The first CAP_FIND paths for the spec finder, and a fixed-word line with the count left out (it has no other way to know)."""
+    out = "\n".join("- " + json.dumps(p) for p in paths[:CAP_FIND]) or "none"
+    return out + "\n(+%d more %s files not listed: find them with Glob and Grep over the repository)" % (len(paths) - CAP_FIND, what) if len(paths) > CAP_FIND else out
+
+
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
     # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
     target.require_utf8([run], "non-utf8-name", "the run directory path is not valid UTF-8")
@@ -1127,9 +1133,9 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                    if mode in target.REGULAR and p.lower().endswith(_PROSE_EXT) and sanitize.escape_for_code(p)[0] == p)
     write(os.path.join(run, "inputs", "spec-find.md"),
           "# Spec finder input\n\n" + pin + "\n## Reviewed files\n\n%s\n\n## Symbols\n\n%s\n\n## Prose files at head\n\n%s\n" % (
-              "\n".join("- " + json.dumps(p) for p in tj["included"][:CAP_FIND]) or "none",
+              _find_list(tj["included"], "reviewed"),
               "\n".join("- " + json.dumps(s["name"]) for s in led["symbols"]) or "none",
-              "\n".join("- " + json.dumps(p) for p in prose[:CAP_FIND]) or "none"))
+              _find_list(prose, "prose")))
     load_sec = "\n## Expected load\n\n%s\n\nSignals:\n%s\n" % (
         led["load"]["load"], "\n".join("- " + json.dumps(p) for p in led["load"]["files"]) or "none")
     write(os.path.join(run, "inputs", "defects.md"),

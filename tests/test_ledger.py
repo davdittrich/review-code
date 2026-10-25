@@ -1356,6 +1356,29 @@ class Spec(Base):
             self.assertIn(want, text)
         self.assertNotIn("src/a.py\n- \"README", text)
 
+    def test_spec_find_input_marks_a_cut_prose_list_and_leaves_a_full_one(self):
+        def prose_section(n):
+            self.tearDown(), self.setUp()
+            self.base({"README.md": "r\n", **{"docs/p%03d.md" % i: "x\n" for i in range(n)}})
+            self.branch({"src/a.py": "a = 1\n"})
+            self.build()
+            return self.read("inputs/spec-find.md").split("## Prose files at head\n\n")[1]
+        full = prose_section(299)  # README.md + 299 = 300: exactly the cap
+        want = ["README.md"] + ["docs/p%03d.md" % i for i in range(299)]
+        self.assertEqual(full, "".join("- " + json.dumps(w) + "\n" for w in want))  # byte for byte the old output
+        cut = prose_section(304)  # 305 prose files
+        lines = cut.rstrip("\n").split("\n")
+        self.assertEqual(len(lines), ledger.CAP_FIND + 1)
+        self.assertEqual(lines[:ledger.CAP_FIND - 1], full.rstrip("\n").split("\n")[:ledger.CAP_FIND - 1])
+        self.assertEqual(lines[-1], "(+5 more prose files not listed: find them with Glob and Grep over the repository)")
+
+    def test_spec_find_input_marks_a_cut_reviewed_list(self):
+        self.base({"README.md": "r\n"})
+        self.branch({"src/f%03d.py" % i: "x = 1\n" for i in range(305)})
+        self.build()
+        text = self.read("inputs/spec-find.md")
+        self.assertIn("(+5 more reviewed files not listed: find them with Glob and Grep over the repository)\n\n## Symbols", text)
+
     def test_spec_flag_refuses_missing_and_escaping_paths(self):
         self.base({"README.md": "r\n"})
         self.branch({"a.txt": "a\n"})
