@@ -68,6 +68,8 @@ def check_case(case):
     errs = ["unknown key %s" % k for k in case if k not in keys]
     if not isinstance(case.get("prompt"), str) or not case["prompt"]:
         errs.append("prompt must be a non-empty string")
+    if "change_message" in case and not isinstance(case["change_message"], str):
+        errs.append("change_message must be a string")
     for k in ("base_files", "change_files"):
         v = case.get(k)
         if not isinstance(v, dict) or not all(isinstance(a, str) and isinstance(b, str) for a, b in v.items()):

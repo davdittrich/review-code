@@ -151,6 +151,11 @@ class Cases(unittest.TestCase):
             self.assertEqual(ev.main(["lint"]), 0)
         self.assertIn("0 problem", out.getvalue())
 
+    def test_non_string_change_message_is_a_schema_error_not_a_crash(self):
+        self.assertEqual(ev.lint_case("a-b", CASE), [])
+        for v in (1, None, ["x"]):
+            self.assertEqual(ev.lint_case("a-b", dict(CASE, change_message=v)), ["change_message must be a string"])
+
     def test_lint_rejects_decoy_within_tolerance_of_a_defect(self):
         c = json.loads(json.dumps(CASE))
         for line in (10 - ev.TOL, 12 + ev.TOL):
