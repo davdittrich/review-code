@@ -1116,6 +1116,47 @@ class TestTrackedSubmodule(Local):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self._reasons(out, "subm"), ["submodule"])
 
+    def _link(self):
+        return "160000,%s,subm" % self.git("rev-parse", "HEAD").strip()
+
+    def test_gitlink_replaced_by_a_file_is_reviewed(self):
+        # review-code-yp2j: only a head-side gitlink is a submodule; a file that replaces one must be included
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", self._link())
+        self.git("commit", "-q", "-m", "add gitlink")
+        self.git("rm", "-q", "--cached", "subm")
+        self.write("subm", "s = 1\n")
+        self.git("add", "subm")
+        self.git("commit", "-q", "-m", "gitlink to file")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual((rc, out.get("reason")), (0, None), out)
+        self.assertIn("subm", load(out["run"])["included"])
+        self.assertEqual(self._reasons(out, "subm"), [])
+        self.assertIn("+s = 1", self.diff(out))
+
+    def test_staged_gitlink_replaced_by_a_file_is_reviewed(self):
+        self.git("checkout", "-q", "main")
+        self.git("update-index", "--add", "--cacheinfo", self._link())
+        self.git("commit", "-q", "-m", "add gitlink")
+        self.git("rm", "-q", "--cached", "subm")
+        self.write("subm", "s = 1\n")
+        self.git("add", "subm")
+        rc, out = self.pin("--staged")
+        self.assertEqual((rc, out.get("reason")), (0, None), out)
+        self.assertIn("subm", load(out["run"])["included"])
+
+    def test_file_replaced_by_a_gitlink_stays_submodule(self):
+        self.git("checkout", "-q", "main")
+        self.git("rm", "-q", "a.txt")
+        self.git("update-index", "--add", "--cacheinfo", "160000,%s,a.txt" % self.git("rev-parse", "HEAD").strip())
+        self.write("z.py", "z = 1\n")
+        self.git("add", "z.py")
+        self.git("commit", "-q", "-m", "file to gitlink")
+        rc, out = self.pin("HEAD^!")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self._reasons(out, "a.txt"), ["submodule"])
+        self.assertNotIn("a.txt", load(out["run"])["included"])
+
     def test_pointer_only_commit_refuses_only_excluded(self):
         # review-code-ea83: a commit that only moves a submodule pointer has no file to review
         self.git("checkout", "-q", "main")

@@ -912,7 +912,9 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
     # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger; mode 160000 in the index or head tree
     listing = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
     base_listing = index_listing(top) if kind == "unstaged" else tree_listing(mb, top)  # 6xl.88: what the diff compares against
-    links = {p for ls in (listing, base_listing) for p, (m, _) in ls.items() if m == "160000"}  # a removed gitlink too
+    # review-code-yp2j: a gitlink at head, or one absent at head (removed); a base gitlink that head replaced by a file is reviewed
+    links = {p for p, (m, _) in listing.items() if m == "160000"} | {p for p, (m, _) in base_listing.items()
+                                                                   if m == "160000" and p not in listing}
     for n in names:
         base = n.rsplit("/", 1)[-1]
         if n in links:
