@@ -1,6 +1,6 @@
 # 0001: `--nit` mode reports rule-cited nits, never gates
 
-Status: accepted (2026-10-22). Ticket: review-code-ilzp.
+Status: accepted (2026-10-22). Ticket: review-code-ilzp. Amended by [0002](0002-nit-mode-all-lanes.md): nits come from every lane that reads repository evidence, not only the Standards lane.
 
 ## Context
 
