@@ -476,33 +476,44 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         over = extra[_NIT_CAP:]
         want = sorted(cand - set(over))
     regular = {p: base_ls[p][1] for p in want if base_ls[p][0] in target.REGULAR}
-    blobs = _blobs(repo, regular.values())
-    conv, ignored = [], []
+    by_oid = {}
     for p in want:
-        if target.shown(p) != p:  # 6xl.51: a hidden-character name never becomes a run-dir path
-            ignored.append({"file": target.shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
-            continue
-        if regular.get(p) in blobs and blobs[regular[p]] is None:
-            ignored.append({"file": p, "reason": "too-large", "how": "base entry over %d bytes" % target.MAX_FILE})
-            continue
-        data = blobs.get(regular.get(p, ""))
-        text = None if data is None else _text(data)
-        if data is not None and text is None:  # NUL data is never copied raw (6xl.48)
-            ignored.append({"file": p, "reason": "binary", "how": "base entry holds a NUL byte"})
-            continue
-        if text is not None:  # stripped like tree/; base rules are not part of the change, so hits go unlisted
-            data = _scan(p, text)[0].encode("utf-8")
-        if data is None or not _put(os.path.join(run, "conventions"), p, data):
-            ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
-            continue
+        if target.shown(p) == p and p in regular:  # 6xl.51: a hidden-character name never becomes a run-dir path
+            by_oid.setdefault(regular[p], []).append(p)
+
+    def copy(p: str, data: bytes) -> dict:
+        """The conv entry of the rule file at p, or its ignored entry (it has a "reason")."""
+        text = _text(data)
+        if text is None:  # NUL data is never copied raw (6xl.48)
+            return {"file": p, "reason": "binary", "how": "base entry holds a NUL byte"}
+        # stripped like tree/; base rules are not part of the change, so hits go unlisted
+        if not _put(os.path.join(run, "conventions"), p, _scan(p, text)[0].encode("utf-8")):
+            return {"file": p, "reason": "not-regular", "how": "base entry is not a plain file"}
         if head_ls is not None:
             diff = head_ls.get(p, (None, None))[1] != base_ls[p][1]
         else:
             fp = os.path.join(repo, p)
             ok = os.path.lexists(fp) and stat.S_ISREG(os.lstat(fp).st_mode)
             diff = not ok or target.git(["hash-object", "--no-filters", "--", p], repo).strip() != base_ls[p][1]
-        conv.append({"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff,
-                     "how": "base-ref"})
+        return {"file": p, "source": "base", "copy": "conventions/" + p, "differs_on_head": diff, "how": "base-ref"}
+
+    res, big = {}, set()  # path -> its entry; oids over MAX_FILE. One blob's bytes are held at a time (n4lk.2)
+    for oid, _, data in _blob_stream(repo, by_oid):
+        if data is None:
+            big.add(oid)
+        else:
+            for p in by_oid[oid]:
+                res[p] = copy(p, data)
+    conv, ignored = [], []
+    for p in want:
+        if target.shown(p) != p:
+            ignored.append({"file": target.shown(p), "reason": "hidden-name", "how": "the name holds hidden characters"})
+        elif regular.get(p) in big:
+            ignored.append({"file": p, "reason": "too-large", "how": "base entry over %d bytes" % target.MAX_FILE})
+        elif p not in res:  # no blob came back, or the entry is no plain file
+            ignored.append({"file": p, "reason": "not-regular", "how": "base entry is not a plain file"})
+        else:
+            (ignored if "reason" in res[p] else conv).append(res[p])
     for p in over:
         ignored.append({"file": target.shown(p), "reason": "nit-cap", "how": "over the %d extra --nit rule files" % _NIT_CAP})
     for p in sorted(_conv_paths(files, included, nit) - cand):

@@ -461,6 +461,29 @@ class Conventions(Base):
                     self.assertNotIn(b"INJECT-RULE", fh.read())
         self.assertTrue(base)
 
+    def test_conventions_peak_does_not_grow_with_the_rule_file_count(self):  # review-code-n4lk.2
+        """Copying 3 rule files of 500 KB and 30 of them peaks the same: each blob is read, scanned, written and dropped
+        before the next (a dict of every rule file's bytes was about 13 MB more at 30)."""
+        peaks, real = [], ledger._conventions
+
+        def spy(*a, **k):
+            tracemalloc.start()
+            try:
+                return real(*a, **k)
+            finally:
+                peaks.append(tracemalloc.get_traced_memory()[1])
+                tracemalloc.stop()
+        for n in (3, 30):
+            self.setUp()  # a fresh repo and run dir per size
+            rules = {"src/d%d/CLAUDE.md" % i: "".join("rule %d-%d keep names short\n" % (i, k) for k in range(20000))
+                     for i in range(n)}
+            self.base({"src/d%d/a.py" % i: "pass\n" for i in range(n)} | rules)
+            self.branch({"src/d%d/a.py" % i: "x = 1\n" for i in range(n)})
+            with mock.patch.object(ledger, "_conventions", spy):
+                _, led = self.build()
+            self.assertEqual(len(led["conventions"]), n)
+        self.assertLess(peaks[1], peaks[0] + 1_000_000, peaks)
+
     def test_conventions_nested(self):
         self.base({"src/AGENTS.md": "agents\n", "src/pkg/REVIEW.md": "review\n", "src/pkg/x.py": "a = 1\n",
                    "other/AGENTS.md": "elsewhere\n"})
