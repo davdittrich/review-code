@@ -4,9 +4,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "scripts", "check-package.sh")
+
+
+GATE_TIMEOUT = 120  # seconds; the real gate takes about 1 s
 
 
 @unittest.skipUnless(all(shutil.which(t) for t in ("git", "jq", "claude", "tar")), "package gate tools missing")
@@ -39,8 +43,17 @@ class GateMutations(unittest.TestCase):
         # the real run skips claude's background network calls (2.4 s down to 1.0 s wall, same four commands and exit codes)
         env = dict(os.environ, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1") if real else \
             dict(os.environ, PATH=self.stub + os.pathsep + os.environ["PATH"])
-        p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+        try:  # the real run calls the claude CLI: a stalled CLI must fail this test, not hang the suite
+            p = subprocess.run(["sh", SCRIPT, self.tree], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=GATE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.fail("the package gate did not finish in %d s" % GATE_TIMEOUT)
         return p.returncode, p.stdout.decode("utf-8")
+
+    def test_a_hung_gate_fails_the_test_instead_of_hanging_the_suite(self):  # review-code-1b4g
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sh", 1)) as run:
+            with self.assertRaises(AssertionError):
+                self.gate(real=True)
+        self.assertIsNotNone(run.call_args.kwargs.get("timeout"))
 
     def test_gate_passes_on_clean_tree(self):
         self.tree = self.pristine  # read-only here: no copy
