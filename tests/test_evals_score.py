@@ -306,6 +306,17 @@ class Paid(unittest.TestCase):
         with open(self.base) as fh:
             self.assertIsNone(json.load(fh)["cases"]["clean-diff-negative"]["cost"])
 
+    def test_one_unknown_cost_among_three_runs_makes_the_case_cost_none_not_a_partial_mean(self):
+        # review-code-ym4k: by design (a timed-out run would be understated); pins the --runs 3 partial case
+        self.fake()
+        costs = iter((0.25, None, 0.25))
+        ev.run_claude = lambda repo, plugin, case, lean: ("```json\n" + json.dumps(doc()) + "\n```", next(costs))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = ev.main(["--yes", "--runs", "3", "--case", "clean-diff-negative", "--accept"])
+        self.assertEqual(rc, 0)
+        with open(self.base) as fh:
+            self.assertIsNone(json.load(fh)["cases"]["clean-diff-negative"]["cost"])
+
     def test_a_zero_or_missing_baseline_cost_estimates_as_the_heuristic(self):
         for c in (0.0, None):
             base = {"cases": {"a": {"cost": c}}}
