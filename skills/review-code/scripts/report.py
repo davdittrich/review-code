@@ -78,7 +78,7 @@ and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (
 any path or line in the line is overwritten), quote = the item name, with 1 to 5 https `sources`, and its inspected
 line lists item numbers; it gets no verifier call, class inferred, reason web-sourced, and never counts toward the verdict. With
 plan.json mode serial a confirmed verdict is only inferred (self-scored). Document keys mode (parallel|serial), tier,
-lost_guarantees[], shards{reviewed[ids], files{id: n}, skipped[]}, basis{pinned_head (null in place), pinned_tree, difference (the
+lost_guarantees[], shards{reviewed[ids], files{id: n}}, basis{pinned_head (null in place), pinned_tree, difference (the
 checkout difference size), lost_capabilities[] (plan.json; a code-navigation tool the plan step was not given)}. render adds
 integrity{working_tree[] (warnings), index (bool, a warning), knowledge[] (informational), cause, version_note only when the
 snapshot is from another version (index then not compared, false), and only above 5,000
@@ -206,7 +206,7 @@ def _disp(index, id, disposition, reason=None):
 
 
 def _defects_skipped(skipped):
-    """True when the plan left the Defects lane out, or a shard of it (shard cap): a run with an unreviewed part proves
+    """True when the plan left the Defects lane out, or a shard of it (a legacy plan's shard cap): a run with an unreviewed part proves
     nothing about bugs."""
     return any(x.get("what") == "defects" or str(x.get("what", "")).startswith("shard ") for x in skipped)
 
@@ -1827,8 +1827,8 @@ def _build(run):
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
              or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
     lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
-    if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] in ("defects", "spec")):
-        label = "Needs discussion"  # a defects or spec lane that was never ingested or never finished proves nothing (review-code-0c4)
+    if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] != "sota"):
+        label = "Needs discussion"  # a planned lane, sota aside, that was never ingested or never finished proves nothing (review-code-0c4, gh#71)
     (rej, rejb), lost = _rejected(run), _no_verdict(run, cand, ver)
     cnt = _counts(run)
     repaired, gone = ({n: k for n, k in cnt[w].items() if k} for w in ("repaired", "lost"))
@@ -1843,8 +1843,7 @@ def _build(run):
     sh = plan.get("shards") if isinstance(plan.get("shards"), list) else []
     count = {x["id"]: len(x["files"]) if isinstance(x.get("files"), list) else x.get("files") for x in sh
              if isinstance(x, dict) and _int(x.get("id"))}
-    shards = {"reviewed": done, "files": {str(n): count[n] for n in done if _int(count.get(n))},
-              "skipped": [x for x in skipped if str(x.get("what", "")).startswith("shard")]}
+    shards = {"reviewed": done, "files": {str(n): count[n] for n in done if _int(count.get(n))}}
     spec = led.get("spec")
     if (not isinstance(spec, dict) or spec.get("status") == "none") and not any(s.get("what") == "spec" for s in skipped):
         skipped.append({"what": "spec", "why": "no spec"})
@@ -1996,7 +1995,7 @@ def _text(doc):
     sh = doc["shards"]
     out += ["shards reviewed: " + ", ".join("%d (%s files)" % (n, sh["files"].get(str(n), "?")) for n in sh["reviewed"])] if sh["reviewed"] else []
     out += ["shard skipped: %s (%s)%s" % (e(x.get("what")), e(x.get("why")), " %s files" % x["files"] if _int(x.get("files")) else "")
-            for x in sh["skipped"]]
+            for x in doc["skipped"] if str(x.get("what", "")).startswith("shard")]  # legacy plans, from before the shard cap went (gh#71)
     out += ["lane %s incomplete: reply had no inspected line" % e(n) for n, v in sorted(doc["lanes"].items())
             if v == "incomplete"]
     out += ["lane %s not-ingested: its reply was never ingested" % e(n) for n, v in sorted(doc["lanes"].items())
@@ -2026,7 +2025,7 @@ def _text(doc):
         out.append(ax.capitalize())
         sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
-        # narrower than _defects_skipped on purpose: a Defects lane that ran on the kept shards still prints its empty sections
+        # narrower than _defects_skipped on purpose: a Defects lane that ran on some shards still prints its empty sections
         if (ax != "defects" or any(x.get("what") == "defects" for x in doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]

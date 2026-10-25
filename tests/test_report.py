@@ -2209,15 +2209,16 @@ class Shards(Lanes):
         out = self.shard(2, mc(3))
         self.assertEqual((len(out["ids"]), out["merged"]), (1, 1))
 
-    def test_render_lists_reviewed_and_skipped_shards(self):
+    def test_a_legacy_plan_with_a_shard_skip_still_renders(self):  # gh#71: run dirs written before the cap went away
         self.shard(1, mc(3), {"inspected": ["src/only.py", "gone.py"]})
         d = self.doc()
-        self.assertEqual(d["shards"], {"reviewed": [1], "files": {"1": 2},
-                                       "skipped": [{"what": "shard 3", "why": "over the shard cap", "files": 7}]})
+        self.assertEqual(d["shards"], {"reviewed": [1], "files": {"1": 2}})
+        self.assertEqual([x for x in d["skipped"] if x["what"] == "shard 3"], [{"what": "shard 3", "why": "over the shard cap", "files": 7}])
         self.assertEqual(d["inspected"]["areas"], ["src/only.py"])
         rc, text = self.rep("render")
         self.assertIn("shards reviewed: 1 (2 files)", text)
         self.assertIn("shard skipped: shard 3 (over the shard cap) 7 files", text)
+        self.assertIn("shard 3", self.doc()["not_run"])  # the closed word post.py's guard and prior.py still accept
 
     def test_a_run_with_a_skipped_shard_never_reports_the_all_clear(self):  # review-code-5jeu
         self.shard(1, {"inspected": ["src/only.py"]})
@@ -2233,10 +2234,32 @@ class Shards(Lanes):
         self.assertTrue(report._defects_skipped([{"what": "shard 2", "why": "shard cap: 3 files", "files": 3}]))
         self.assertFalse(report._defects_skipped([{"what": "pack x", "why": "cap"}]))
 
+    def plan_calls(self, *keys):
+        write_plan(self.run_dir, shards=[{"id": n, "run": "shards/%d" % n, "files": ["src/calc.py"], "risk": 1} for n in (1, 2)],
+                   calls=[{"lane": k.partition("@")[0], "shard": int(k.partition("@")[2]) if "@" in k else None} for k in keys])
+
+    def all_but(self, *lost):
+        for lane, n in (("defects", 1), ("defects", 2), ("standards", 1), ("standards", 2)):
+            if "%s@%d" % (lane, n) not in lost:
+                self.shard(n, {"inspected": ["src/calc.py"]}, lane=lane)
+
+    def test_a_lost_standards_shard_lane_alone_reads_needs_discussion(self):  # gh#71
+        keys = ("defects@1", "defects@2", "standards@1", "standards@2")
+        self.plan_calls(*keys)
+        self.all_but("standards@2")
+        self.assertEqual(self.doc()["verdict"], "Needs discussion")
+        self.shard(2, {"inspected": ["src/calc.py"]}, lane="standards")
+        self.assertEqual(self.doc()["verdict"], "No blocking findings")
+
+    def test_a_lost_sota_lane_alone_changes_nothing(self):  # gh#71
+        self.plan_calls("defects@1", "defects@2", "standards@1", "standards@2", "sota")
+        self.all_but()
+        self.assertEqual((self.doc()["lanes"]["sota"], self.doc()["verdict"]), ("not-ingested", "No blocking findings"))
+
     def test_no_shards_means_empty_lists(self):
         os.remove(os.path.join(self.run_dir, "plan.json"))
         self.lane("defects", mc(3))
-        self.assertEqual(self.doc()["shards"], {"reviewed": [], "files": {}, "skipped": []})
+        self.assertEqual(self.doc()["shards"], {"reviewed": [], "files": {}})
 
     def test_shard_conventions_come_from_the_shard_dir(self):
         cdir = os.path.join(self.run_dir, "shards", "1", "conventions")
