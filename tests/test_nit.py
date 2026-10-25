@@ -485,12 +485,26 @@ class DefectsNit(DefectsMixin, NitBase):
         (u,) = d["unverifiable"]
         self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "noted", 0, "Needs discussion"))  # the Defects gate, unchanged
 
-    def test_an_unverifiable_defects_nit_with_a_cite_keeps_severity_nit_and_moves_the_verdict(self):  # the Defects gate, unchanged: for the owner (also serial mode)
+    def test_an_unverifiable_defects_nit_with_a_cite_keeps_severity_nit_and_leaves_the_verdict(self):  # no nit changes the verdict (ADR 0002); a noted item (failed cite) still does, above
         out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
         self.verdicts({"id": out["ids"][0], "verdict": "unverifiable", "reason": "r", "evidence": [self.cite()]})
         d = self.doc()
         (u,) = d["unverifiable"]
-        self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "nit", 0, "Needs discussion"))
+        self.assertEqual((d["findings"], u["severity"], d["nit"], d["verdict"]), ([], "nit", 0, "No blocking findings"))
+
+    def test_a_serial_runs_self_scored_defects_nit_leaves_the_verdict(self):  # serial mode scores every confirmed item `inferred`
+        write_plan(self.run_dir, nit=True, mode="serial")
+        out = self.lane(self.defect(), {"inspected": ["src/calc.py"]})
+        self.verdicts({"id": out["ids"][0], "verdict": "confirmed", "reason": "r", "evidence": [self.cite()]})
+        d = self.doc()
+        (u,) = d["unverifiable"]
+        self.assertEqual((d["findings"], u["severity"], u["reason"], d["verdict"]), ([], "nit", "self-scored", "No blocking findings"))
+
+    def test_an_unverifiable_defects_item_above_nit_still_needs_discussion(self):
+        out = self.lane(dict(self.defect(), severity="required"), {"inspected": ["src/calc.py"]})
+        self.verdicts({"id": out["ids"][0], "verdict": "unverifiable", "reason": "r", "evidence": [self.cite()]})
+        d = self.doc()
+        self.assertEqual((d["unverifiable"][0]["severity"], d["verdict"]), ("suggestion", "Needs discussion"))
 
     def test_a_defects_nit_in_a_lean_run_is_the_only_severity_allowed(self):
         write_plan(self.run_dir, nit=True, tier="lean")

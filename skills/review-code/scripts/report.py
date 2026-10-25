@@ -1812,11 +1812,11 @@ def _build(run):
         i["impact"] = i["reason"]  # the verifier names the production impact in its reason (verifier.md)
     unverifiable = [i for i in items if not i["verified"]]
     rank = {i["severity"] for i in findings}
-    # Defects: any unverifiable item needs discussion. Standards and Spec: only an item at required does, so
+    # Defects: any unverifiable item but a nit needs discussion (no nit changes the verdict, ADR 0002). Standards and Spec: only an item at required does, so
     # unverifiable smell, lean and comment suggestions never flip the verdict; SOTA never counts (its ceiling is suggestion).
     label = ("Needs changes" if "blocking" in rank else
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
-             or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
+             or "required" in rank or any(i["axis"] == "defects" and i["severity"] != "nit" for i in unverifiable) else "No blocking findings")
     lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
     if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] != "sota"):
         label = "Needs discussion"  # a planned lane, sota aside, that was never ingested or never finished proves nothing (review-code-0c4, gh#71)
