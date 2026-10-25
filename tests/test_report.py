@@ -859,6 +859,12 @@ class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_s
         self.assertEqual(len(got), 1)
         self.assertIn("standards@2", got[0])
 
+    def test_a_hidden_character_name_the_lane_read_is_not_blind(self):
+        raw = "a\u202eb.py"
+        d = self.run_dir({})
+        tj = {"kind": "repo", "included": [report.target.shown(raw)]}
+        self.assertEqual(report._blind_standards(d, tj, self.cand(standards=[raw])), [])
+
 
 class StandardsLaneReadNothingOnADiff(Base):
     def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):

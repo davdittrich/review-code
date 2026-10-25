@@ -1106,7 +1106,7 @@ def _blind_standards(run, tj, cand):
                 inc = target.load_json(os.path.join(run, "shards", n.partition("@")[2]), "target.json")["included"]
             except (target.Refuse, KeyError):
                 pass
-        if not set(inc) & {_norm(a) for a in v["inspected"]}:
+        if not set(inc) & {target.shown(p) for p in map(_norm, v["inspected"]) if p}:  # included holds escaped names
             out.append("%s read no included file: its convention and norm findings are missing" % n)
     return out
 
