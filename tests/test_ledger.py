@@ -134,6 +134,21 @@ class Categories(Base):
         self.assertEqual(files_of(led, "tests"), ["tests/test_a.py"])
         self.assertEqual(led["tests"][0]["how"], "test file in the target")
 
+    def test_whole_tree_standards_input_lists_the_files_to_review(self):  # review-code-lrrx, gh#69
+        self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
+        for kind in ("repo", "path"):
+            self.build(kind=kind, included=["src/a.py", "tests/test_a.py"])
+            text = self.read("inputs/standards.md")
+            self.assertIn("## Included files\n", text, kind)
+            self.assertIn('\n- "src/a.py"\n- "tests/test_a.py"\n', text, kind)
+            self.assertIn("every line of an included file is under review", text, kind)
+
+    def test_a_diff_standards_input_has_no_included_files_section(self):
+        self.base({"src/a.py": "x = 1\n"})
+        self.branch({"src/a.py": "x = 2\n"})
+        self.build()
+        self.assertNotIn("## Included files", self.read("inputs/standards.md"))
+
     def test_a_diff_still_lists_only_tests_it_did_not_change(self):
         self.base({"src/a.py": "x = 1\n", "tests/test_a.py": "import unittest\n"})
         self.branch({"src/a.py": "x = 2\n", "tests/test_a.py": "import unittest\n# edit\n"})

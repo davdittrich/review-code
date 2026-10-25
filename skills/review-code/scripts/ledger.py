@@ -1137,12 +1137,15 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
     contrib = next((copies[n] for n in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
                     if n in copies), None) or next((v for k, v in sorted(copies.items())
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
+    whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
+             "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files.\n\n%s\n" %
+             "\n".join("- " + json.dumps(p) for p in tj["included"])) if tj["kind"] in ("repo", "path") else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
                led["label"], diff, "\n".join("- " + v for v in copies.values()) or "none",
                copies.get("CODING_STANDARDS.md", "absent at base"), contrib,
-               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + sib_sec)
+               "\n".join("- %s: %s" % (json.dumps(i["file"]), i["reason"]) for i in ignored) or "none", load_sec) + whole + sib_sec)
     return {"status": "ok", "run": run, "label": led["label"], "spec_status": spec_status,
             "counts": {c: len(led[c]) for c in CATEGORIES},
             "trust": stored_trust(led), "asked": led["trust_asked"] is True, **_source(led), **({"adr_only": True} if adr_only else {})}
