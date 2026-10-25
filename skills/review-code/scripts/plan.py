@@ -458,7 +458,7 @@ def _preview(doc, sizes):
         out += ["Verifier ids: every candidate, self-scored by the main thread, %s" % model, "Agent calls: 0 (0 lane calls plus 0 verifier calls)"]
     else:  # gh#73: the candidate count is unknown until the lanes report, so no number is promised
         out += ["Verifier ids: every candidate (calls of up to %d ids in one shard), %s" % (report.VERIFY_BATCH, model),
-                "Agent calls: %d lane calls plus one verifier call per %d candidates of a shard" % (agents, report.VERIFY_BATCH)]
+                "Agent calls: %d lane calls plus verifier calls of up to %d candidates per shard and verifier agent" % (agents, report.VERIFY_BATCH)]
     out.append("Turn ceilings: " + ", ".join("%s %d" % kv for kv in sorted(doc["max_turns"].items())))
     out.append("Packs: " + (", ".join(x["name"] for x in doc["packs"]) or "none"))
     return out + ["Estimate only: real token use varies; no prices are shown."]

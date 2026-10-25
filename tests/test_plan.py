@@ -1274,7 +1274,7 @@ class Preview(Fixture):
         pv = "\n".join(p["preview"])
         self.assertTrue(p["preview"][0].startswith("Tier deep, mode parallel"))
         for want in ("Call defects: opus/xhigh", "Call standards: haiku/medium", "Verifier ids: every candidate (calls of up to 5 ids in one shard), sonnet/high",
-                     "Agent calls: %d lane calls plus one verifier call per 5 candidates of a shard" % len(p["calls"]), "finder 40", "verifier 30", "Packs: python"):
+                     "Agent calls: %d lane calls plus verifier calls of up to 5 candidates per shard and verifier agent" % len(p["calls"]), "finder 40", "verifier 30", "Packs: python"):
             self.assertIn(want, pv)
         self.assertEqual(p["preview"][-1], "Estimate only: real token use varies; no prices are shown.")
         self.assertNotRegex(pv, r"[$]|USD|EUR|price per")

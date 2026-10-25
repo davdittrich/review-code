@@ -47,7 +47,7 @@ These values are unvalidated defaults: `evals/` holds a harness but no baseline 
 
 ## Cost and caps
 
-Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. Cost scales with the repository, not the tier: each shard of a repo or path target gets a Defects and a Standards lane call, and every candidate is verified, one verifier call per 5 candidates of a shard. A cheaper tier (`--lean`, `--quick`) runs fewer lanes at lower effort, but it does not cap the shards or the verifier calls. The interactive preview states the shard count and the lane calls; a headless run cannot be asked, so it prints the preview and runs on without a bound.
+Calls and token estimates are shown, never prices. The `deep` tier and path and repo targets show a preview and ask Run or Stop before any lane starts. Cost scales with the repository and the selected tier: each shard of a repo or path target gets a Defects and a Standards lane call, and every candidate is verified, one verifier call per 5 candidates of a shard and verifier agent. A cheaper tier (`--lean`, `--quick`) runs fewer lanes at lower effort, but it does not cap the shards or the verifier calls. The interactive preview states the shard count and the lane calls; a headless run cannot be asked, so it prints the preview and runs on without a bound.
 
 ## Spec discovery
 
