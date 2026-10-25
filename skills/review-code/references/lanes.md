@@ -63,8 +63,8 @@ Decision records: `docs/adr/0001-nit-mode.md`, `docs/adr/0002-nit-mode-all-lanes
 - Extra rule files with `--nit`, read from the merge base only, kept in this order (path order within a group) up to 40:
   PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/**/*.md|.mdc`, `.okf/**/*.md`.
   The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
-- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
-  rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
+- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule, norm or category and lists 15
+  groups at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
   nit on an unchanged line; a repo or path target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
 
 ## Caps and turn ceilings
