@@ -85,7 +85,7 @@ class Severity(NitBase):
         out = self.lane(dict(self.nit(), severity="suggestion"))
         self.assertEqual([r["check"] for r in out["rejected"]], ["nit-basis"])
 
-    def test_only_the_standards_lane_may_report_a_nit(self):
+    def test_only_the_standards_lane_may_report_a_norm(self):
         code, out = self.rep("ingest", lines(self.nit()), extra=["--lane", "defects"])
         self.assertEqual([r["check"] for r in json.loads(out)["rejected"]], ["bad-type"])
 
@@ -473,7 +473,13 @@ class Unit(unittest.TestCase):
     def test_check_order_and_basis(self):
         nitc, normc, sug = [{"severity": s, "category": c} for s, c in (("nit", "convention"), ("nit", "norm"), ("suggestion", "convention"))]
         self.assertEqual([nit.check(c, "standards", True) for c in (nitc, normc, sug)], [None, None, None])
-        self.assertEqual(nit.check(nitc, "defects", True), "bad-type")
+        self.assertEqual(nit.check(nitc, "sota", True), "bad-type")
+        self.assertEqual(nit.check(normc, "defects", True), "bad-type")  # a norm is Standards-only
+        bug, spec = {"severity": "nit", "category": "bug"}, {"severity": "nit", "category": "spec-wrong"}
+        self.assertEqual([nit.check(c, ln, True) for c, ln in ((bug, "defects"), (spec, "spec"))], [None, None])
+        self.assertEqual(nit.check(bug, "defects", False), "nit-not-enabled")
+        self.assertEqual(nit.check(bug, "standards", True), "nit-basis")  # Standards keeps its rule-or-norm basis
+        self.assertEqual((nit.basis(bug), nit.basis(spec)), ("evidence", "evidence"))
         self.assertEqual(nit.check(nitc, "standards", False), "nit-not-enabled")
         self.assertEqual(nit.check({"severity": "suggestion", "category": "norm"}, "standards", True), "nit-basis")
         self.assertEqual(nit.check(sug, "standards", "only"), "nit-only")
@@ -485,6 +491,11 @@ class Unit(unittest.TestCase):
         self.assertEqual(nit.basis_text(norm), 'norm "= []" over "= list()" (22 of 25 lines)')
         self.assertEqual(nit.basis_text({"basis": "rule", "rule": RULE}), RULE)
         self.assertEqual(nit.basis_text({"severity": "required"}), "")
+        self.assertEqual(nit.basis_text({"basis": "evidence", "category": "bug"}), "bug")  # a Defects or Spec nit: its category
+
+    def test_rows_group_an_evidence_nit_by_its_category(self):
+        mk = lambda i: {"basis": "evidence", "category": "spec-wrong", "path": "p.py", "line": i, "title": "t", "id": "F-%d" % i}  # noqa: E731
+        self.assertEqual(nit.rows([mk(1), mk(2)], str)[0], "- spec-wrong (2 findings)")
 
     def test_rows_group_by_basis_and_cap_the_groups(self):
         mk = lambda k, j: {"basis": "rule", "rule": "Rule %d." % k, "path": "p.py", "line": j + 1, "title": "t", "id": "F-%d%d" % (k, j)}  # noqa: E731
