@@ -53,6 +53,11 @@ class Procedure(unittest.TestCase):
         with open(SKILL, encoding="utf-8") as fh:
             self.text = fh.read()
 
+    def test_step_7_says_a_row_ending_index_holds_no_line(self):  # review-code-o2gb, review-code-tf7k
+        flat = " ".join(self.text.split())
+        self.assertIn("a row ending `index <i>` holds no line: name <i>, its JSON line number, word count", flat)
+        self.assertNotIn("a `copied-from-spec` row holds none", flat)
+
     def allowed(self):
         fm = self.text.split("\n---", 1)[0]
         m = re.search(r"^allowed-tools:[ \t]*\n((?:[ \t]+- .*\n)+)", fm + "\n", re.M)
@@ -570,13 +575,13 @@ class PostingDocs(unittest.TestCase):
         self.assertEqual(sorted(r for r in found if r not in rows), [], "posting.md has no table row for these _Pinned reasons")
 
     def test_every_spec_copy_guard_reason_has_a_retry_hint_and_a_posting_table_row(self):  # review-code-va2s
-        """The literal Refuse reasons of report._spec_copy and of _spec_refs, which reads its ledger (review-code-1zqz), plus
+        """The literal Refuse reasons of report._spec_copy, _spec_prep and _spec_sets, which read the ledger (review-code-1zqz), plus
         no-<stem> and bad-<stem> of each load_json they call."""
         import paths  # noqa: F401  (puts the scripts on sys.path)
         import report
         tree = ast.parse(self.read(os.path.dirname(self.POST), "report.py"))
-        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_spec_copy", "_spec_refs")]
-        self.assertEqual(sorted(n.name for n in fns), ["_spec_copy", "_spec_refs"])
+        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_spec_copy", "_spec_prep", "_spec_sets")]
+        self.assertEqual(sorted(n.name for n in fns), ["_spec_copy", "_spec_prep", "_spec_sets"])
         found = set()
         for node in (x for fn in fns for x in ast.walk(fn)):
             name = getattr(getattr(node, "func", None), "attr", getattr(getattr(node, "func", None), "id", None))

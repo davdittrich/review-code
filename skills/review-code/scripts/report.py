@@ -7,13 +7,13 @@ string holds raw double quotes, or a backslash that starts no JSON escape (a reg
 again by _repair; the ingest and verdicts stdout count such lines as `repaired`. A line that parses but is no pair array is
 never repaired.
 
-Gate: every rejected line is kept as `<reason> <line>` in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
+Gate: every rejected line is kept as `<reason> <line>` (a spec-axis line: `<reason> index <i>`, <i> its place among the reply's wire lines as in `dispositions[].index`) in <run>/rejected/<lane or batch>.txt (batch-K, serial), replaced by a
 re-ingest of the same lane or batch. A lane line's reason is `invalid-json[:bad-escape]`, `retired-object-form`, or
-`failed-validation:<check>` (see REASONS). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
+`failed-validation:<check>` (see REASONS; the two copy checks end in `:N`, a word count). `status` shows rejected, rejected_total and no_verdict; `render` shows a Warning
 section and does not go above Needs discussion while either is nonzero.
 
 Ingest and verdicts stdout carry `dispositions`, one row {index, id|null, disposition, reason} per wire line of that call
-(prose is skipped): accepted, rejected or downgraded, with a key of REASONS (the closed reason -> retry hint table) or
+(prose is skipped): accepted, rejected or downgraded, with a key of REASONS (the closed reason -> retry hint table; the two copy keys end in `:N`) or
 null. Cumulative figures stay cumulative: `dropped` sums every stored lane (`lane_dropped` is the ingested lane's own
 count) and verdicts.json holds every stored batch. In `verdicts` stdout, confirmed, refuted and unverifiable are
 cumulative over the stored batches (`cumulative` names them); `batch_ids` names the ids this call covers (every queued id for
@@ -62,7 +62,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
 A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
-folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[]. Ingest stdout: status, ids (queue order,
+folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
 cut at plan.json caps.max_verifier_calls; spec_ids holds the Spec candidates for review-code:spec-verifier and is
 cut by the same budget; SOTA candidates are in neither), dropped, handoff, capped, lanes, merged, repaired, rejected
 [{lane, index (1-based row of that lane's rejected file), check}], never the wire line; cut ids render as
@@ -70,8 +70,9 @@ unverifiable with reason verifier-cap.
 
 Spec lane: a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
 UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
-consecutive words of spec text counts invalid (verdicts: the line is dropped), so no output carries such a run; a
-paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
+consecutive words of spec text counts invalid (verdicts: the line is dropped), unless the cited lines (never a decision
+record or spec file, except for a verdict cite's own quote) hold the same run, a code quote; the check is `copied-from-spec:N`, N the count of words in such runs,
+never the text, so no output carries such a run; a paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
 and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (its path and line come from there;
 any path or line in the line is overwritten), quote = the item name, with 1 to 5 https `sources`, and its inspected
@@ -104,6 +105,7 @@ try:
     import fcntl
 except ImportError:  # shortcut: no fcntl (Windows) means no run lock, so two concurrent ingests can lose a lane; add msvcrt.locking if Windows is ever supported
     fcntl = None
+from typing import NamedTuple
 from urllib.parse import quote, urlsplit
 
 import capture
@@ -152,8 +154,10 @@ REASONS = {
     "sota-invalid": "cite a checklist item, its name as the quote and 1 to 5 https sources",
     "declined-invalid:bad-entry": "send each declined entry as spec_line (inside an UNTRUSTED block) and a why",
     "declined-invalid:too-long": "keep a declined why to 300 characters",
-    "declined-invalid:copied-from-spec": "paraphrase the declined why: it holds a run of words copied from the spec",
-    "copied-from-spec": "paraphrase: the text holds a run of words copied from the spec",
+    # a copy reason ends in `:N`, the count of its words in a run of SPEC_RUN copied from the spec, never the text; a run the
+    # cited lines also hold is the quote of a code finding and is not counted (GitHub #62)
+    "declined-invalid:copied-from-spec": "reword the declined why: N of its words sit in a run copied from the spec",
+    "copied-from-spec": "reword the text: N of its words sit in a run copied from the spec and not in the cited lines",
     "path-not-in-tree": "cite a file that is in the reviewed content (the pinned tree)",
     "path-too-long": "cite a path of fewer than 4096 bytes: the skill looks up no longer one in the pinned tree",
     "quote-from-checkout": "quote the reviewed content (the pinned tree; tree/ for a checkout-difference file): the checkout's copy of the file holds the quote, the reviewed version does not",
@@ -172,6 +176,7 @@ REASONS = {
     "norm-sample-small": "the two idioms occur on fewer than 20 lines of the reviewed files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
     "norm-too-large": "the files norm_glob matches hold more text than the skill will count: narrow norm_glob to the files you counted",
     "norm-not-majority": "norm_for must occur on more lines than norm_against: if the repo writes norm_against more often there is no norm, so drop the finding",
+    "cites-dropped-wire-token": "the cited file holds text shaped like a verdict key (a quoted key and a comma): cite another file, or send the line without raw double quotes so it is not repaired",
     "repaired": "the line was read only after its raw double quotes were repaired: write each as \\\"",
     "do-not-flag": "the cited code carries a lint-ignore marker: the author ignored it on purpose",
     "duplicate": "the line repeats an earlier one; nothing is lost",
@@ -194,8 +199,8 @@ REASONS = {
 
 def _disp(index, id, disposition, reason=None):
     """One disposition row: the `index`th wire line of a call, the finding id it names (or None), what became of it
-    (accepted, rejected or downgraded) and why (a REASONS key, or None for a plain accept)."""
-    if reason is not None and reason not in REASONS:
+    (accepted, rejected or downgraded) and why (a REASONS key, a copy key with a `:N` count, or None for a plain accept)."""
+    if reason is not None and re.sub(r"(?<=copied-from-spec):\d+\Z", "", reason) not in REASONS:
         raise KeyError("reason missing from REASONS: %r" % (reason,))
     return {"index": index, "id": id, "disposition": disposition, "reason": reason}
 
@@ -389,6 +394,16 @@ def _relocate(pin, path, line, end, quote):
     return lo + 1, hi
 
 
+def _quote_rows(rows, quote):
+    """`rows` trimmed from both ends to the lines the quote itself needs: the width a verifier cite has (gj6i)."""
+    q, lo, hi = _ws(quote), 0, len(rows)
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo + 1:hi])):
+        lo += 1
+    while hi - lo > 1 and q in _ws(" ".join(rows[lo:hi - 1])):
+        hi -= 1
+    return rows[lo:hi]
+
+
 def _cited(pin, path, line, end, quote):
     """The cited lines when path, range and quote all hold in the pinned tree, else None."""
     return _cite(pin, path, line, end, quote)[0]
@@ -454,6 +469,7 @@ LITERAL = ("title", "trigger", "quote", "fix", "reason", "summary")  # the only 
 KEYS = frozenset(CANDIDATE_REQUIRED + CANDIDATE_OPTIONAL + VERDICT_KEYS + CITE_KEYS + tuple(k for v in LANE_OPTIONAL.values() for k in v) + (
     "item", "inspected", "declined", "why", "summary"))
 _TOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(KEYS)))
+_VTOKEN = re.compile(r'\[\s*"(%s)"\s*,' % "|".join(sorted(VERDICT_KEYS + CITE_KEYS)))  # keys a verdict line carries
 _ESC = re.compile(r'(\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))|\\|"')  # a valid escape (kept), else a lone backslash or quote
 _CONTROL = {8: "\\b", 9: "\\t", 10: "\\n", 12: "\\f", 13: "\\r"}  # the control characters a lone \b \t \n \f \r in a quote decodes to
 _NUM = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
@@ -572,11 +588,11 @@ def _repair_one(s, budget):
     raise _unrepairable(s)
 
 
-def _hostile(pin, path):
-    """True when the cited file holds a known-key wire token: a quote copied from it could carry keys into a repaired
-    line, so such a line keeps no fix, end_line or evidence (dc5)."""
+def _hostile(pin, path, token=_TOKEN):
+    """True when the file holds a wire token of `token` (default: any known key): a quote copied from it could carry keys
+    into a repaired line, so such a line keeps no fix, end_line or evidence (dc5)."""
     rows = pin.rows.get(_norm(path))
-    return rows is not None and _TOKEN.search("\n".join(rows)) is not None
+    return rows is not None and token.search("\n".join(rows)) is not None
 
 
 def _parse(ln, load):
@@ -598,6 +614,13 @@ def _parse(ln, load):
     return False, None
 
 
+_WIRE = re.compile(r'\s*(\{|\[\s*[\["])')  # the start of a wire line; any other line of a reply is prose
+_MARKED = re.compile(r"copied-from-spec:\d+|bad-type|invalid-json(?::bad-escape)?|retired-object-form|other-batch|unknown-id|duplicate")  # reasons a stored marker may carry
+
+
+_KEPT = ("other-batch", "unknown-id", "duplicate")  # verdict lines dropped before the copy guard: no rejected row, so no spec check
+
+
 def _objects(text, total=None):
     """(line, dict or None, repaired) of every wire line of the stream (`[[`, `["` or, for the retired object form, `{`):
     the dict is None when it is not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read
@@ -605,7 +628,7 @@ def _objects(text, total=None):
     on `total` (a one-item list, INGEST_STEPS by default) shared by every line of the caller's call."""
     total = [INGEST_STEPS] if total is None else total
     for ln in text.split("\n"):
-        if re.match(r'\s*(\{|\[\s*[\["])', ln):
+        if _WIRE.match(ln):
             # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
             if not parsed:
@@ -675,22 +698,39 @@ def _runs(s):
     return {tuple(w[i:i + SPEC_RUN]) for i in range(len(w) - SPEC_RUN + 1)}
 
 
-def _leaves(o):
-    """Every string inside a parsed reply object; a stack, not recursion, so nesting depth cannot raise."""
+def _leaves(o, keys=False):
+    """Every string inside a parsed reply object, the key names of its dicts too when `keys` (a verdict line is stored as
+    sent, so a key name can leak spec text, review-code-dcul); a stack, not recursion, so nesting depth cannot raise."""
     todo = [o]
     while todo:
         o = todo.pop()
         if isinstance(o, str):
             yield o
         elif isinstance(o, (dict, list)):
+            if keys and isinstance(o, dict):
+                yield from o
             todo.extend(o.values() if isinstance(o, dict) else o)
 
 
-def _spec_refs(run):
-    """The decision records indexed in the ledger, as the paths the pinned tree is asked for. Fails closed (review-code-27ht):
-    an unreadable ledger refuses, since nothing proves the reply copies no record. A record named with a hidden character is
-    listed by its escaped ref (lanes read ledger.json, so no raw name goes there): every tree name that escapes to such a ref is
-    read, a file literally named as the escaped form included (review-code-ktry)."""
+class SpecSets(NamedTuple):
+    adr: list
+    files: list
+    hidden: list
+    hidden_files: list
+
+
+class SpecPrep(NamedTuple):
+    words: list
+    sets: SpecSets
+
+
+def _spec_sets(run):
+    """(the ledger's decision-record refs, its spec-file refs, the tree names that escape to a hidden-named record, the ones
+    that escape to a hidden-named spec file), from one ledger read and one hidden-name lookup that both guards share
+    (review-code-lfya). Fails closed (review-code-27ht): an unreadable ledger refuses, since nothing proves the reply copies
+    no record, and a failed lookup refuses too, so no hidden-named path is left unbanned. A record named with a hidden
+    character is listed by its escaped ref (lanes read ledger.json, so no raw name goes there): every tree name that escapes
+    to such a ref is read, a file literally named as the escaped form included (review-code-ktry)."""
     led = target.load_json(run, "ledger.json")
     try:
         adr = [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "adr"]
@@ -698,8 +738,43 @@ def _spec_refs(run):
         adr = None
     if adr is None or not all(map(_norm, adr)):
         raise target.Refuse("bad-ledger", "ledger.json cannot be read")
-    shown = {p for p in adr if _ESCAPED.search(p)}
-    return adr + (_hidden_names(run, shown) if shown else [])
+    files = _file_refs(led)
+    return SpecSets(adr, files, *_hidden_refs(run, adr, files))
+
+
+def _spec_prep(run, inside):
+    """SpecPrep(the words inside the UNTRUSTED blocks of inputs/spec.md, `_spec_sets`). `inside` is the line set of
+    `_spec_lines`, which the caller already holds (review-code-le7m). spec.md is read here first, so an unreadable one
+    refuses before the lookup writes marks.json (review-code-iawb). A caller passes the result as `prep` to `_spec_copy` and
+    `_spec_refs`."""
+    try:
+        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
+            spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
+    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
+        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
+    return SpecPrep(spec, _spec_sets(run))
+
+
+def _spec_refs(run, prep):
+    """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`); `prep` is
+    the `_spec_prep` result."""
+    return prep.sets.adr + prep.sets.hidden
+
+
+def _file_refs(led):
+    """The refs of the ledger's spec files; [] when the ledger is unreadable (`_spec_refs` refuses that on its own)."""
+    try:
+        return [x["ref"] for x in led["spec"]["sources"] if x.get("kind") == "file" and isinstance(x.get("ref"), str)]
+    except (KeyError, TypeError, AttributeError):
+        return []
+
+
+def _hidden_refs(run, adr, files):
+    """(the tree names that escape to a hidden-named decision record, the ones that escape to a hidden-named spec file): one
+    listing and one marks.json for both, keyed by the union of their escaped refs, so neither call evicts the other's cache."""
+    shown = {p for p in adr + files if _ESCAPED.search(p)}
+    names = _hidden_names(run, shown) if shown else []
+    return [[n for n in names if sanitize.escape_for_code(n)[0] in refs] for refs in (adr, files)]
 
 
 def _hidden_names(run, shown):
@@ -722,21 +797,22 @@ def _hidden_names(run, shown):
     return names
 
 
-def _spec_copy(run):
-    """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: this call reads
-    the words inside the UNTRUSTED blocks of inputs/spec.md, and the function it returns takes the reply's pin, the
+def _spec_copy(run, prep):
+    """The spec copy guard, in two steps so an unreadable spec.md refuses before the caller writes anything: `prep`, the
+    result of `_spec_prep` (which read spec.md and the ledger), holds the words inside the UNTRUSTED blocks of
+    inputs/spec.md and the ledger's ref sets, and this call reads nothing; the function it returns takes the reply's pin, the
     indexed decision records `adr` (gh#57), which the pin reads one at a time after the reply's own cites in the same
     ls-tree and cat-file (review-code-1zqz), and the strings of the reply (`said`). That gives the predicate: True when a string holds
-    SPEC_RUN consecutive words (case and punctuation ignored) of either text. The text stays inside these closures (CTX-03).
+    SPEC_RUN consecutive words (case and punctuation ignored) of either text, and the predicate returns how many of the
+    string's words sit in such runs (0: none; the count may leave, the text never, CTX-03). A run the string's `cites` (pairs of
+    path and cited lines) also hold is ignored, a spec finding's quote being code (GitHub #62); a cite into a decision
+    record or a spec file earns no such exemption, or a line could cite the spec itself, except for the quote of a verdict's
+    own validated cite, which the lane path never checks (`quote=True`, review-code-slwe).
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
-    inside = _spec_lines(run)
-    try:
-        with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
-            spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
-    except OSError:  # ledger build always writes it: no words would pass every copy (review-code-iawb)
-        raise target.Refuse("bad-ledger", "inputs/spec.md cannot be read")
+    spec, adr = prep.words, prep.sets.adr
+    files = {_norm(x) for x in adr + prep.sets.files + prep.sets.hidden_files}
 
     def with_records(pin, adr, said):
         # every listed record is in the pinned tree: the ledger lists an in-place run from it, not from HEAD (review-code-bbch)
@@ -765,9 +841,18 @@ def _spec_copy(run):
         asked = set().union(*map(_runs, said))
         found = held(asked)
 
-        def copied(s):
+        banned = files | {_norm(p) for p in adr}
+
+        def copied(s, cites=(), quote=False):  # quote: the string is a validated cite's quote, which a cite into a banned file exempts too (review-code-slwe)
             t = _runs(s)
-            return bool(t & found) if t <= asked else bool(held(t))
+            hit = t & found if t <= asked else held(t)
+            code = "\n".join("\n".join(rows) for path, rows in cites if quote or _norm(path) not in banned)
+            hit -= _runs(code) if hit and code else set()
+            w, got = _words(s), set()
+            for i in range(len(w) - SPEC_RUN + 1):
+                if tuple(w[i:i + SPEC_RUN]) in hit:
+                    got.update(range(i, i + SPEC_RUN))
+            return len(got)
         return copied
     return with_records
 
@@ -893,6 +978,10 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
         ledger.block(c["trigger"], nonce), json.dumps(os.path.join(run, "tree") if "shard" not in c else
                                                          os.path.join(run, "shards", str(c["shard"]), "tree"), ensure_ascii=False))
+    out += "".join("merged: %s at %s (folded into this finding; one verdict, for the id above)\n%s\n" % (
+        m["id"], json.dumps("%s:%d%s" % (c["path"], m["line"], "-%d" % m["end_line"] if m["end_line"] != m["line"] else ""),
+                            ensure_ascii=False), ledger.block(m["trigger"], nonce))
+        for m in c.get("merged_from", []))
     out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
@@ -1038,6 +1127,8 @@ def status(run):
             "repaired": repaired, "repaired_total": sum(repaired.values()),
             "no_verdict": _no_verdict(run, cand, ver), "ids": [c["id"] for c in queue if c["axis"] != "spec"],
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "verify_calls": calls, "lane_state": state,
+            "merged_from": {c["id"]: [dict(m, trigger=sanitize.escape_line(m["trigger"])) for m in c["merged_from"]]
+                            for c in cand["candidates"] if c.get("merged_from")},
             "missing_lanes": sorted(set(_planned(run)) - set(state)),
             "missing_batches": [] if "serial.txt" in have else [c["batch"] for c in calls if "%d.txt" % c["batch"] not in have],
             "confirmed": sorted(i for i, v in ver.items() if v.get("verdict") == "confirmed" and v.get("cites"))}
@@ -1062,6 +1153,15 @@ def _batches(queue, hand, prefix="review-code"):
     return out
 
 
+MERGED_TRIGGER = 160  # chars of a merged-away trigger kept on the survivor (gh#59); the full text stays in the lane's own candidate
+
+
+def _merged_rows(c, e):
+    """One printed row per candidate merged into c: its id, range and trigger, escaped and one line (untrusted lane text)."""
+    return ["    merged: [%s] %s:%s  %s" % (m["id"], e(c["path"]), m["line"] if m["end_line"] == m["line"] else "%d-%d" % (m["line"], m["end_line"]),
+                                           e(m["trigger"])) for m in c.get("merged_from", [])]
+
+
 def _dedupe(cands):
     """(survivors, merged count). Per axis, candidates on one path and category whose ranges lie within 2 lines merge;
     the more severe survives, then the longer trigger, then the smaller id. A wrong merge hides a finding and a missed
@@ -1083,7 +1183,9 @@ def _dedupe(cands):
             end, j = max(end, ordered[j]["end_line"]), j + 1
         group = ordered[i:j]
         win = min(group, key=lambda c: (SEVERITIES.index(c["severity"]), -len(c["trigger"]), c["id"]))
-        out.append(dict(win, also_found_by=sorted({c["source_lane"] for c in group} - {win["source_lane"]})))
+        out.append(dict(win, also_found_by=sorted({c["source_lane"] for c in group} - {win["source_lane"]}),
+                        merged_from=[{"id": c["id"], "line": c["line"], "end_line": c["end_line"], "trigger": c["trigger"][:MERGED_TRIGGER]}
+                                     for c in sorted(group, key=lambda c: (c["line"], c["id"])) if c is not win]))
         merged, i = merged + len(group) - 1, j
     return sorted(out, key=lambda c: c["id"]), merged
 
@@ -1153,8 +1255,8 @@ def _declined(o, ctx, copied):
             bad.append("declined-invalid:bad-entry")
         elif len(d["why"]) > 300:
             bad.append("declined-invalid:too-long")
-        elif copied(d["why"]):
-            bad.append("declined-invalid:copied-from-spec")
+        elif n := copied(d["why"]):
+            bad.append("declined-invalid:copied-from-spec:%d" % n)
         else:
             good.append({"spec_line": d["spec_line"], "why": _ws(d["why"])})
     return good, bad
@@ -1165,8 +1267,10 @@ def _read_lane(text, lane, run, shard=None):
     summary = None
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
-    spec_text = _spec_copy(run) if lane == "spec" else None  # before _spec_refs, which may write marks.json
-    adr = _spec_refs(run) if lane == "spec" else []
+    spec_lane = lane == "spec"  # CTX-03: a rejected row of this lane keeps no wire line
+    prep = _spec_prep(run, ctx) if lane == "spec" else None  # one ledger read and one hidden-name lookup for both guards (review-code-lfya)
+    spec_text = _spec_copy(run, prep) if prep else None
+    adr = _spec_refs(run, prep) if prep else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
     pl = _plan(run)
     nit_mode = ("only" if pl.get("tier") == "lean" else True) if pl.get("nit") else False  # --nit --lean reports nits only
@@ -1206,7 +1310,7 @@ def _read_lane(text, lane, run, shard=None):
             if "declined" in o and lane == "spec":
                 good, bad = _declined(o, ctx, copied)
                 declined, invalid = declined + good, invalid + len(bad)
-                rejected += [(b, ln) for b in bad]  # one row per invalid entry
+                rejected += [(b, ln, n, spec_lane) for b in bad]  # one row per invalid entry
                 if bad:
                     disp.append(_disp(n, None, "downgraded" if good else "rejected", bad[0]))
                     continue
@@ -1217,12 +1321,13 @@ def _read_lane(text, lane, run, shard=None):
         if fixed and o is not None and _hostile(pin, o.get("path")):  # dc5
             o = {k: v for k, v in o.items() if k not in CANDIDATE_OPTIONAL}
         c, check = _candidate(o, pin, lane, base, ctx, nit_mode) if o is not None else (None, "sota-invalid")
-        if c is not None and copied and any(copied(c[k]) for k in ("title", "trigger", "fix")):  # CTX-03
-            c, check = None, "copied-from-spec"
+        dup = max((copied(c[k], [(c["path"], _quote_rows(c["rows"], c["quote"]))]) for k in ("title", "trigger", "fix")), default=0) if c is not None and copied else 0
+        if dup:  # CTX-03: the count of the worst field, never its text
+            c, check = None, "copied-from-spec:%d" % dup
         if c is None or c["id"] in kept:
             if c is None:
                 invalid += 1
-                rejected.append((why or check, ln))
+                rejected.append((why or check, ln, n, spec_lane))
                 disp.append(_disp(n, _lost_id(ln, lane), "rejected", why or check))
             else:  # a duplicate loses nothing: no rejected row, so it is not counted invalid
                 disp.append(_disp(n, c["id"], "rejected", "duplicate"))
@@ -1241,12 +1346,15 @@ def _read_lane(text, lane, run, shard=None):
 
 def _reject(run, name, rows):
     """<run>/rejected/<name>.txt holds one `reason line` row per rejected wire line, replaced whole by a re-ingest of
-    the same lane or batch and removed when none is left."""
+    the same lane or batch and removed when none is left. Rows are (reason, line, n, red): n is the line's position among
+    the reply's wire lines (`dispositions[].index`, prose not counted). A red row (the spec axis: a line that may hold
+    spec text, CTX-03) keeps `index <n>` in place of the line, as does every row of a wire line that has a red row."""
     d, path = os.path.join(run, "rejected"), os.path.join(run, "rejected", name + ".txt")
     if rows:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why, ln)
-                                  for why, ln in rows))
+        hot = {n for _, _, n, red in rows if red}
+        _put(path, "".join("%s %s\n" % (why if why.startswith("invalid-json") or why == "retired-object-form" else "failed-validation:" + why,
+                                        "index %d" % n if n in hot else ln) for why, ln, n, _ in rows))
     elif os.path.exists(path):
         os.remove(path)
 
@@ -1375,7 +1483,7 @@ def _ingest(run, text, lane, shard):
     for c, t in zip(queue, texts):
         target.write_private(os.path.join(hand, c["id"] + ".md"), t)
     _reject(run, key, rejected)
-    lost = [(why, ln) for why, ln in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
+    lost = [(why, ln) for why, ln, _, _ in rejected if why not in nit.REFUSED]  # the rejected file and the disposition keep a refused nit
     _counts(run, key, len(lost), {key: repaired}, lambda n: n == key or n == "serial" or n.startswith("batch-"),
             [_lost_id(ln, lane) for _, ln in lost], {c["id"] for c in lanes[key]["candidates"]},
             lanes[key].get("complete") is True)
@@ -1388,7 +1496,7 @@ def _ingest(run, text, lane, shard):
             "spec_ids": [c["id"] for c in queue if c["axis"] == "spec"], "dropped": dropped, "handoff": hand,
             "capped": len(cut), "lanes": state, "merged": merged, "repaired": repaired, "dispositions": disp,
             "lane_dropped": lanes[key]["dropped"],
-            "rejected": [{"lane": key, "index": i, "check": why} for i, (why, _) in enumerate(rejected, 1)]}
+            "rejected": [{"lane": key, "index": i, "check": why} for i, (why, *_) in enumerate(rejected, 1)]}
 
 
 def verdicts(run, text, batch=None, agent=None):
@@ -1408,12 +1516,26 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
     the pinned tree `pin` in any file (the code elsewhere may already cover the claim) and that no other refuted id of the
     reply uses (review-code-8dt). A refuted that cannot stand is stored `unverifiable` with `downgraded` naming why."""
     foreign, mine, bad, fixed, disp, at = 0, [], [], 0, [], {}  # at: id -> index of its row in disp
+    reach = cand_ids if allowed is None else allowed
+
+    def _spec_line(o):  # CTX-03: may the rejected line hold spec text? A line naming no queued id counts when the reply reaches a spec id
+        i = o and o.get("id")
+        return bool(spec) and (i in spec if isinstance(i, str) and i in cand_ids else bool(spec & reach))
+
     for n, (ln, o, fix) in enumerate(parsed, 1):
         fixed += fix
-        o = o and {k: o.get(k) for k in VERDICT_KEYS}
+        if o is not None and set(o) == {"redacted"}:  # a stored marker of a line that held spec text: it judges as it did
+            why = o["redacted"] if isinstance(o["redacted"], str) and _MARKED.fullmatch(o["redacted"]) else "bad-type"
+            if why in _KEPT:  # these lines were never rejected rows: a disposition only
+                foreign += why == "other-batch"
+            else:
+                bad.append((why, ln, n, True))
+            disp.append(_disp(n, None, "rejected", why))
+            continue
+        raw, o = o, o and {k: o.get(k) for k in VERDICT_KEYS}  # raw: a line is stored as sent, so every string of it is checked
         if o is None or not isinstance(o.get("id"), str) or o.get("verdict") not in VERDICTS:
             why = _syntax(ln) if o is None else "bad-type"
-            bad.append((why, ln))
+            bad.append((why, ln, n, _spec_line(o)))
             disp.append(_disp(n, _did(o and o.get("id")), "rejected", why))
             continue
         if allowed is not None and o["id"] not in allowed:
@@ -1425,23 +1547,35 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
             continue
         ev = o.get("evidence")
         ev = [dict(e, quote=_esc(e["quote"])) if isinstance(e, dict) and "quote" in e else e for e in ev] if isinstance(ev, list) else ev
-        cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)
-                 and _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote")) is not None]
+        rows = {id(e): _cited(pin, e.get("path"), e.get("line"), e.get("line"), e.get("quote"))
+                for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict)}
+        cites = [e for e in (ev if isinstance(ev, list) else []) if isinstance(e, dict) and rows[id(e)] is not None]
         reason = o.get("reason")
-        if fix and any(_hostile(pin, p) for p in {paths[o["id"]]} | {e["path"] for e in cites}):
-            cites = []  # a repaired line may not carry evidence out of a file that holds wire tokens (dc5)
-        if o["id"] in spec and isinstance(reason, str) and copied(reason):  # CTX-03: the line is dropped
-            disp.append(_disp(n, o["id"], "rejected", "copied-from-spec"))
+        pairs = [(e["path"], rows[id(e)]) for e in cites]  # every validated cite exempts its own quote, dropped below or not (review-code-j959)
+        # dc5: a repaired line carries no cite out of its candidate's file, nor out of a cite file holding a verdict-key token
+        kept = [] if fix and _hostile(pin, paths[o["id"]], _VTOKEN) else [e for e in cites if not (fix and _hostile(pin, e["path"], _VTOKEN))]
+        dropped, cites = len(cites) - len(kept), kept  # out of a file holding a token of a key a verdict line carries
+        rev = raw.get("evidence")  # a validated cite is no copy by its path (review-code-rae6), and its quote is read escaped, as the rows hold it (review-code-6u3h)
+        ok_ev = [isinstance(r, dict) and rows.get(id(e)) is not None and isinstance(r.get("path"), str) for r, e in zip(rev, ev)] if isinstance(rev, list) else []
+        body = dict(raw, evidence=[{k: v for k, v in r.items() if k not in ("path", "quote")} if ok else r
+                                   for r, ok in zip(rev, ok_ev)]) if ok_ev else raw
+        dup = sum(copied(x, pairs) for x in _leaves(body, True)) + sum(copied(e["quote"], pairs, True) for e, ok in zip(ev, ok_ev) if ok) if o["id"] in spec else 0
+        if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
+            bad.append(("copied-from-spec:%d" % dup, ln, n, True))
+            disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))
             continue
-        kind, down = o["verdict"], None  # a downgrade is a refuted verdict that cannot stand, and says why
+        kind, down = o["verdict"], None  # a downgrade is a verdict that cannot stand as sent, and says why
         if kind == "refuted":
             if fix:  # a repaired line never refutes: text read from a quote must not drop a finding
                 kind, down = "unverifiable", "repaired"
             elif allowed is not None and not cites:
                 kind, down = "unverifiable", "quote-from-checkout" if any(isinstance(e, dict) and _from_checkout(
                     pin, e.get("path"), e.get("quote")) for e in (ev if isinstance(ev, list) else [])) else "no-cite"
+        elif dropped:  # a confirmed or unverifiable verdict keeps its kind; the reason shows why cites are missing
+            down = "cites-dropped-wire-token"
         got[o["id"]] = dict({"verdict": kind, "reason": reason if isinstance(reason, str) else "",
-                             "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]}, **({"downgraded": down} if down else {}))
+                             "cites": [{k: e[k] for k in CITE_KEYS} for e in cites]},
+                             **({"downgraded": down} if down else {}), **({"cites_dropped": dropped} if dropped else {}))
         mine.append(o["id"])
         at[o["id"]] = len(disp)
         disp.append(_disp(n, o["id"], "downgraded" if down else "accepted", down or ("repaired" if fix else None)))
@@ -1454,6 +1588,18 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
     return foreign, bad, fixed, disp
 
 
+def _stored(text, marks):
+    """The reply as kept in replies/verify (CTX-03): each wire line at a position of `marks` (position -> reason) becomes a
+    marker wire line that judges again as the same rejection, so the positions after it hold. Prose is dropped: no check
+    judges it and replay ignores it."""
+    n, out = 0, []
+    for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if _WIRE.match(ln):
+            n += 1
+            out.append(json.dumps([["redacted", marks[n]]]) if n in marks else ln)
+    return "\n".join(out)
+
+
 def _verdicts(run, text, batch, agent=None):
     """verdicts() without the lock."""
     cand = target.load_json(run, "candidates.json")
@@ -1462,8 +1608,9 @@ def _verdicts(run, text, batch, agent=None):
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
-    spec_text = _spec_copy(run) if spec else None  # before any write below, marks.json in _spec_refs included
-    adr = _spec_refs(run) if spec else []
+    prep = _spec_prep(run, _spec_lines(run)) if spec else None  # before any write below, marks.json included; one lookup for both guards
+    spec_text = _spec_copy(run, prep) if prep else None
+    adr = _spec_refs(run, prep) if prep else []
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
     if batch is None and calls and _plan(run).get("mode") == "parallel":  # it would replace every stored batch (review-code-3k5)
         raise target.Refuse("batch-required", "plan mode is parallel: pass --batch for each verify call")
@@ -1499,18 +1646,21 @@ def _verdicts(run, text, batch, agent=None):
                                    if o and isinstance(o.get("evidence"), list) for e in o["evidence"]
                                    if isinstance(e, dict) and isinstance(e.get("path"), str)}
     pin = _Pinned(run, cited | set(adr), cited, adr)
-    copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o))) if spec else None
+    copied = spec_text(pin, adr, (s for _, parsed in replies for _, o, _ in parsed for s in _leaves(o, True))) if spec else None
     if batch is None:
         shutil.rmtree(os.path.dirname(store), ignore_errors=True)
         for n in _rejected(run)[1]:
             if n != "serial":
                 os.remove(os.path.join(run, "rejected", "batch-" + n + ".txt"))
+    judged = [(k, _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)) for k, parsed in replies]
+    marks = {n: why for k, (_, bad, _, _) in judged if k == batch for why, _, n, red in bad if red}  # judged first: the store keeps no spec text
+    marks.update({d["index"]: d["reason"] for k, (_, _, _, rows) in judged if k == batch for d in rows if d["reason"] in _KEPT})
+    reach = ids if batch is None else calls[batch]
     os.makedirs(store, mode=0o700, exist_ok=True)
-    _put(os.path.join(store, new), text)
-    for k, parsed in replies:
-        f, bad, fixed, rows = _one(parsed, None if k is None else calls[k], ids, pin, spec, copied, got, paths)
+    _put(os.path.join(store, new), _stored(text, marks) if spec & reach else text)
+    for k, (f, bad, fixed, rows) in judged:
         if k == batch:
-            disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, _) in enumerate(bad, 1)]
+            disp, rej = rows, [{"batch": batch if k else "serial", "index": i, "check": why} for i, (why, *_) in enumerate(bad, 1)]
         _reject(run, "serial" if k is None else "batch-%d" % k, bad)
         fixes["serial" if k is None else "batch-%d" % k] = fixed
         lost += len(bad) if k == batch else 0
@@ -1618,8 +1768,11 @@ def _build(run):
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else "no-valid-cite" if kind == "confirmed" else (
+            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
+        # a partial drop still says so, whatever the class; a confirmed verdict left no cite already has the note as its reason (the recorded state, not a prefix of the verifier's text, review-code-lqf5)
+        if v.get("cites_dropped") and not (kind == "confirmed" and not cites and v.get("downgraded") == "cites-dropped-wire-token"):
+            reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
@@ -1769,7 +1922,7 @@ def _text(doc):
     def item(i):
         out = ["- [%s] %s:%d  %s (%s, score %d, %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
                                                       i["evidence_class"], i["score"], i["origin"]),
-               "    trigger: " + e(i["trigger"])]
+               "    trigger: " + e(i["trigger"])] + _merged_rows(i, e)
         out += ["    spec: inputs/spec.md:%d" % i["spec_line"]] if "spec_line" in i else []
         out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
         out += ["    impact: " + e(i["impact"])] if i["impact"] else []
@@ -1850,9 +2003,9 @@ def _text(doc):
             out += section(head, [x for i in fs if i["axis"] == ax and i["severity"] in pick for x in item(i)])
         nits = [i for i in fs if i["axis"] == ax and i["severity"] == "nit"]
         out += section("Nits", nit.rows(nits, e)) if nits else []
-        out += section("Unverifiable", ["- [%s] %s:%d  %s (%s): %s" % (i["id"], e(i["path"]), i["line"], e(i["title"]),
-                                                                       i["evidence_class"], e(i["reason"]))
-                                        + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "") for i in unv])
+        out += section("Unverifiable", [x for i in unv for x in ["- [%s] %s:%d  %s (%s): %s" % (
+            i["id"], e(i["path"]), i["line"], e(i["title"]), i["evidence_class"], e(i["reason"]))
+            + (" [inputs/spec.md:%d]" % i["spec_line"] if "spec_line" in i else "")] + _merged_rows(i, e)])
         if sota:
             out += section("SOTA (advisory)", [x for i in sota for x in (
                 ["- [%s] %s:%d  %s (%s: %s)" % (i["id"], e(i["path"]), i["line"], e(i["title"]), i["evidence_class"],

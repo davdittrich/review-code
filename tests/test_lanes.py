@@ -501,6 +501,18 @@ class SharedPhrases(unittest.TestCase):
         self.assertIn("Decision records under an `adr` or `decisions` directory are already included: do not name them.", self.text("spec-finder"))
         self.assertIn("Never open a handoff file that is not listed, candidates.json or verdicts.json.", self.text("spec-verifier"))
 
+    def test_finder_and_verifier_say_how_a_quote_is_checked(self):  # gh#59
+        for name in ("finder", "verifier"):
+            body = " ".join(self.text(name).split())
+            self.assertIn("exact substring match", body, name)
+            self.assertIn("single quote", body, name)
+            self.assertIn("without `$`", body, name)
+
+    def test_standards_keeps_report_when_evidence_and_verifier_reads_cites(self):  # review-code-h2xg: 22c2568 trimmed both to fit READER_BYTES
+        body = " ".join(self.text("standards").split())
+        self.assertIn("Look only at changed lines. Report a problem when the evidence is on the page.", body)
+        self.assertIn("or the comment's own words. The verifier confirms the claim by reading those cites.", body)
+
     def test_the_reader_prompts_do_not_grow(self):
         self.assertLessEqual(sum(os.path.getsize(os.path.join(ROOT, "agents", n + ".md")) for n in self.READERS), self.READER_BYTES)
 

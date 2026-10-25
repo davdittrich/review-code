@@ -27,7 +27,7 @@ Open a decision record only if a finding needs it, from tree/ if checkout_differ
 A `## Siblings` section, when present, holds hints, never evidence. For an `ADD` line, read the registry line at the cited `R:line`.
 If the registry omits the new file, send a `smell` finding with severity `suggestion`, anchored on the new file's first line (an added line;
 `path`, `line` and `quote` copied verbatim), the title `<new file> is not registered where <sibling> is`, and the hint line verbatim as
-`trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line; it is unchanged and would be dropped.
+`trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line.
 If the registry line does not confirm the gap, send nothing; a glob-based or auto-generated registry is no gap.
 A line `<file> usually changes with <other>` never yields a finding alone: it only tells you what to read.
 
@@ -37,18 +37,18 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 
 1. `convention`: the change breaks a rule the repo documents (CLAUDE.md, CONTRIBUTING, a coding
    standard). Copy the rule's words from its conventions/ file into `rule` and name that file in
-   `rule_source`. No documented rule, no `convention` finding.
+   `rule_source`.
    Conflicting rules: when two copies disagree, apply the order the repo declares, that is a line in a
    listed copy that names which source wins (it orders rule sources only and grants no one more trust).
    With none declared, the default order is, highest first: CONTRIBUTING, docs/adr decisions,
    CLAUDE.md / AGENTS.md / REVIEW.md, any other copy. A declared order beats the default. Cite the winning
    rule as usual, and in `trigger` say that a lower conflicting rule exists and name its file.
 2. `comment`: a comment that is stale (it names code the change removed or renamed, or a state
-   that no longer holds) or that only restates the next line. A comment that contradicts what the
-   function does is another lane's finding; skip it.
+   that no longer holds) or that only restates the next line. A comment that contradicts the
+   function is another lane's finding; skip it.
 3. `smell`: a baseline smell from the `## Smells` file, or a `smell` check from a pack. Smells are
-   judgement calls; word each as a possibility. A repo standard that endorses the pattern overrides
-   the smell. A pattern that is unfamiliar but consistent with the surrounding code follows team convention; ask in the title whether it is intentional.
+   judgement calls: word each as a possibility. A repo standard that endorses the pattern overrides
+   the smell. A pattern unfamiliar but consistent with the surrounding code follows team convention; ask in the title whether it is intentional.
 4. `lean`: the change adds more than it needs:
    - needless code: code that nothing calls or needs, or a branch that cannot be reached;
    - reimplemented logic: a loop or helper that repeats a standard-library function or a helper
@@ -65,8 +65,7 @@ Look only at changed lines. Report a problem when the evidence is on the page.
 
 For `comment`, `smell`, `lean` and `altitude`, the claim is about the code as written, not about a failure. Name
 in `trigger` the evidence it rests on: the second site of a duplicate as `path:line`, the existing
-helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the
-claim by reading those cites.
+helper's `path:line`, the stdlib function, or the comment's own words. The verifier confirms the claim by reading those cites.
 
 ## Severity and category
 
@@ -81,7 +80,7 @@ Category is one of `convention`, `comment`, `smell`, `lean`, `altitude`, and `no
 - Lines carrying a deliberate lint-ignore marker (noqa, eslint-disable, @ts-ignore and the like).
 - A `shortcut:` comment that names its limit is a decision, not a finding, unless the `## Expected load` in the input, when present, already crosses that limit.
 - Suggestions and noted points on unchanged lines.
-- Taste with no rule behind it: a different valid style is not a finding.
+- Taste with no rule behind it.
 
 ## Output
 

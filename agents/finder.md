@@ -25,7 +25,7 @@ The input may list domain packs under `## Domain packs`: read each one and apply
 ## What to check
 
 Trace every path the change touches, not only the one it was written for; regressions hide in
-paths the change never mentions. A diff that mirrors a plan step by step is a reason to check the
+paths it never mentions. A diff that mirrors a plan is a reason to check the
 unplanned paths, never a finding by itself.
 
 - Correctness: errors caught and dropped, promises never awaited, detached background work, misused
@@ -45,19 +45,17 @@ unplanned paths, never a finding by itself.
 - Cross-file and documentation integrity: construction sites of related types that set different
   defaults (search them all); docs, docstrings and comments that contradict the function body, its
   algorithm, constants, thresholds or symbols; compile-time guards described as runtime choices.
-  Search every doc surface (README, reference docs, vignettes) for the same claim.
-- Accessibility: images without alt text, inputs without labels, text with too little contrast.
+  Search every doc surface for the same claim.
+- Accessibility: images without alt text, inputs without labels, low-contrast text.
 - Scale, category `performance`, judged against the `## Expected load` section of the input (`script`,
   `service` or `unknown`, with the tracked files that justify it; never PR, MR or issue text). Check:
   check-then-write races; the same work done by every process or request; memory, caches or lists that only
   grow; a query or call per item; O(n^2) work on input that can be large; per-process state that must be
-  shared. State the assumed load in `trigger` (for example "service load: every request rebuilds the
-  index"). At `script` or `unknown` load a scale finding is at most `suggestion`; never `blocking`.
+  shared. State the assumed load in `trigger`. At `script` or `unknown` load a scale finding is at most `suggestion`; never `blocking`.
 - Efficiency, a `suggestion` in category `performance`: repeated I/O or recomputation of one value,
   independent operations run in sequence, blocking work on a startup or hot path, a closure that
-  keeps a large enclosing scope alive in a long-lived object. Name the repeated call sites or the hot
-  path in `trigger` and the cheaper form in `fix`. Skip a micro-optimisation with no such cite and
-  anything a domain pack already checks.
+  keeps a large enclosing scope alive in a long-lived object. Name the repeated call sites or the hot path in `trigger`, the cheaper form in `fix`. Skip a micro-optimisation with no such cite and
+  what a domain pack checks.
 - Fix-style diffs, when the change fixes something (the diff narrows or changes a condition or guard):
   - A guard was narrowed or changed: list each caller or branch that relied on the old behaviour, check that
     the code which ran after the old guard still runs where it should, and check the flags, caches and state the old path set or cleared.
@@ -94,7 +92,7 @@ One line per finding, plus the summary and inspected lines below, nothing else. 
 [["path", "src/calc.py"], ["line", 41], ["end_line", 42], ["severity", "required"], ["category", "bug"], ["title", "Average divides by zero on an empty list"], ["trigger", "mean([]) reaches len(xs) == 0"], ["quote", "return sum(xs) / len(xs)"], ["fix", "Return None when xs is empty"]]
 
 - path is repository-relative; line and end_line are 1-based; end_line and fix may be left out.
-- quote is copied verbatim from the cited lines.
+- quote is copied verbatim from the cited lines as a plain substring (a stretch without `$`: `${` is lost in transit); the skill checks it by exact substring match against the source line. In title, trigger and fix use single quotes.
 - trigger names the input or state that makes the line fail.
 - In every string value write each `{` as `\u007b` and each `"` as `\u0022`: the shell guard denies a brace followed by a quote and a backslash-escaped quote, and the skill decodes both. Also write each backslash that comes from the code or text you quote as `\\` (a regular expression `\d` becomes `\\d`, a Windows path `C:\dir` becomes `C:\\dir`): a single backslash starts no JSON escape. Never double the backslash inside `\u007b` or `\u0022`.
 - Never add an id, score, confidence, evidence class or origin: the skill derives them.
