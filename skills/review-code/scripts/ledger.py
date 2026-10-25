@@ -106,6 +106,7 @@ def _blob_stream(repo: str, oids) -> Iterator[Tuple[str, int, Optional[bytes]]]:
     for f, data in target.cat_batch([o.encode() for o in uniq], repo, True, target.MAX_FILE):
         if len(f) == 3 and f[1] == b"blob":
             yield f[0].decode(), int(f[2]), data
+        data = None  # the consumer is done with it: the next blob is read while none is held here (n4lk.2.1)
 
 
 def _blobs(repo: str, oids) -> Dict[str, bytes]:
@@ -504,6 +505,7 @@ def _conventions(run: str, repo: str, mb: str, head: str, files: List[str], head
         else:
             for p in by_oid[oid]:
                 res[p] = copy(p, data)
+        data = None  # drop this blob before the stream reads the next (n4lk.2.1)
     conv, ignored = [], []
     for p in want:
         if target.shown(p) != p:

@@ -501,6 +501,32 @@ class Conventions(Base):
         small, big = self._conv_peak(rules(3)), self._conv_peak(rules(30))
         self.assertLess(big, small + 1_000_000, (small, big))
 
+    def test_conventions_hold_one_blob_not_two(self):  # review-code-n4lk.2.1
+        """When the second of two distinct near-MAX_FILE rule blobs has been read, the first is no longer held by the
+        consumer or the stream wrapper (the peak alone hides it: copying one blob costs more than holding two)."""
+        self._fresh("hold")
+        rules = {"src/d%d/CLAUDE.md" % i: ("%d" % i) * (target.MAX_FILE - 100) for i in range(2)}
+        self.base({"src/d%d/a.py" % i: "pass\n" for i in range(2)} | rules)
+        self.branch({"src/d%d/a.py" % i: "x = 1\n" for i in range(2)})
+        seen, real = [], target.cat_batch
+
+        def spy(*a, **k):
+            for f, data in real(*a, **k):
+                if data is not None and len(data) > target.MAX_FILE // 2:  # the rule blobs only
+                    seen.append(tracemalloc.get_traced_memory()[0])
+                yield f, data
+        was = tracemalloc.is_tracing()
+        if not was:
+            tracemalloc.start()
+        try:
+            with mock.patch.object(target, "cat_batch", spy):
+                self.build()
+        finally:
+            if not was:
+                tracemalloc.stop()
+        self.assertEqual(len(seen), 2)
+        self.assertLess(seen[1], seen[0] + target.MAX_FILE // 2, seen)
+
     def test_conventions_nested(self):
         self.base({"src/AGENTS.md": "agents\n", "src/pkg/REVIEW.md": "review\n", "src/pkg/x.py": "a = 1\n",
                    "other/AGENTS.md": "elsewhere\n"})
