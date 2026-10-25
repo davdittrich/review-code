@@ -3434,6 +3434,12 @@ class Dispositions(Lanes):
                 fh.write("always name every module in lower case\n")
             pin = types.SimpleNamespace(files={"a.py", "b.py"}, rows={"a.py": ["x = 1", "y = 2"]}, top=run)
             good = dict(CAND, path="a.py", line=1, quote="x = 1")
+
+            def normed(size, blob, **kw):  # a pin whose one 'a.py' counts for nit.norm; a valid cite, so norm is reached
+                p = types.SimpleNamespace(files=pin.files, rows=pin.rows, top=run, every=lambda: [("a.py", size, "k")],
+                                          blobs=lambda keys: {"k": blob})
+                c = dict(good, severity="nit", category="norm", **dict(dict(norm_for="FOO", norm_against="x = 1", norm_glob="*.py"), **kw))
+                return report._candidate(c, p, "standards", run, nit_mode=True)
             rule = {"rule": "always name every module in lower case", "rule_source": "conventions/c.md"}
             got = {}
             for name, fn in {
@@ -3454,6 +3460,14 @@ class Dispositions(Lanes):
                 "cand-spec": lambda: report._candidate(dict(good, category="spec-wrong"), pin, "spec", run, ctx={}),
                 "cand-tree": lambda: report._candidate(dict(good, path="z.py"), pin, "defects", run),
                 "cand-quote": lambda: report._candidate(dict(good, quote="nope"), pin, "defects", run),
+                "nit-basis": lambda: report._candidate(dict(good, severity="nit", category="smell"), pin, "standards", run,
+                                                       nit_mode=True),
+                "nit-only": lambda: report._candidate(good, pin, "defects", run, nit_mode="only"),
+                "norm-malformed": lambda: normed(10, b"", norm_for=""),
+                "norm-quote-mismatch": lambda: normed(10, b"", norm_against="zzz"),
+                "norm-too-large": lambda: normed(9 << 20, b""),
+                "norm-sample-small": lambda: normed(10, b"x = 1\nFOO\n"),
+                "norm-not-majority": lambda: normed(10, b"x = 1\n" * 20),
             }.items():
                 result, why = fn()
                 self.assertIsNone(result, name)
@@ -3462,7 +3476,9 @@ class Dispositions(Lanes):
                 self.assertIn(why, report.REASONS, name)
             self.assertEqual(set(got.values()), {  # the table cannot shrink: each reason below is returned by a named row
                 "path-too-long", "path-not-in-tree", "line-out-of-range", "unreadable", "quote-not-at-line", "rule-malformed",
-                "rule-source-unknown", "rule-not-in-conventions", "missing-field", "bad-type", "nit-not-enabled", "spec-line-invalid"})
+                "rule-source-unknown", "rule-not-in-conventions", "missing-field", "bad-type", "nit-not-enabled", "spec-line-invalid",
+                "nit-basis", "nit-only", "norm-malformed", "norm-quote-mismatch", "norm-too-large", "norm-sample-small",
+                "norm-not-majority"})
 
 
 class LoneSurrogate(Base):
