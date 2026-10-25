@@ -139,7 +139,7 @@ class Phase4Procedure(unittest.TestCase):
             self.assertIn(s, self.text)
         block = re.search(r"<<'REVIEW_PLAN'\n(.*?)\n\s*REVIEW_PLAN", self.text, re.S).group(1)
         keys = ["default_tier", "finder_model", "finder_effort", "standards_model", "standards_effort", "verifier_model",
-                "verifier_effort", "max_verifier_calls", "max_shards", "max_packs", "agent_prefix", "nav_hint"]
+                "verifier_effort", "max_verifier_calls", "max_packs", "agent_prefix", "nav_hint"]
         self.assertEqual([ln.strip() for ln in block.splitlines()], ["%s=${user_config.%s}" % (k, k) for k in keys])
 
     def test_trust_flags_answer_the_question(self):  # issue 23
