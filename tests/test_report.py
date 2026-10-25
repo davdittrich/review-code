@@ -838,6 +838,28 @@ class StandardsLaneReadNothing(Base):  # review-code-lrrx, gh#69
         self.assertEqual((d["lanes"], d["lost_guarantees"]), ({"standards": "incomplete"}, []))
 
 
+class BlindStandardsUnit(unittest.TestCase):  # review-code-vx2q, kt4w: _blind_standards on its inputs
+    def run_dir(self, shards):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        for i, inc in shards.items():
+            os.makedirs(os.path.join(d, "shards", str(i)))
+            with open(os.path.join(d, "shards", str(i), "target.json"), "w") as fh:
+                json.dump({"included": inc}, fh)
+        return d
+
+    @staticmethod
+    def cand(**lanes):
+        return {"lanes": {n: {"complete": True, "inspected": v} for n, v in lanes.items()}}
+
+    def test_a_shard_lane_that_read_only_another_shards_file_is_blind(self):
+        d = self.run_dir({1: ["a.py"], 2: ["b.py"]})
+        tj = {"kind": "repo", "included": ["a.py", "b.py"]}
+        got = report._blind_standards(d, tj, self.cand(**{"standards@1": ["a.py"], "standards@2": ["a.py"]}))
+        self.assertEqual(len(got), 1)
+        self.assertIn("standards@2", got[0])
+
+
 class StandardsLaneReadNothingOnADiff(Base):
     def test_a_diff_standards_lane_naming_no_file_loses_nothing(self):
         rc, out = self.rep("ingest", lines({"inspected": []}), extra=["--lane", "standards"])

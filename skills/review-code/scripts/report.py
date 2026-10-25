@@ -1090,16 +1090,25 @@ def _counts(run, name=None, lost=0, repaired=None, drop=lambda n: False, ids=Non
     return c
 
 
-def _blind_standards(tj, cand):
-    """Lost guarantees for each complete standards lane of a repo or path target that inspected no included file: such a
-    lane has no diff to read, so an empty `inspected` means its axis found nothing because it looked at nothing (gh#69).
-    shortcut: compared with the run's included files, not the lane's own shard; upgrade when that hides a blind shard."""
+def _blind_standards(run, tj, cand):
+    """Lost guarantees for each complete standards lane of a repo or path target that inspected no file of its own
+    scope: such a lane has no diff to read, so an empty `inspected` means its axis found nothing because it looked at
+    nothing (gh#69). A shard lane is judged against its shard's `included`; an unreadable shard file leaves the run's."""
     if tj["kind"] not in ("repo", "path"):
         return []
-    inc = set(tj["included"])
-    return ["%s read no included file: its convention and norm findings are missing" % n
-            for n, v in sorted(cand.get("lanes", {}).items())
-            if n.split("@")[0] == "standards" and v.get("complete") is True and not inc & {_norm(a) for a in v["inspected"]}]
+    out = []
+    for n, v in sorted(cand.get("lanes", {}).items()):
+        if n.split("@")[0] != "standards" or v.get("complete") is not True:
+            continue
+        inc = tj["included"]
+        if "@" in n:
+            try:
+                inc = target.load_json(os.path.join(run, "shards", n.partition("@")[2]), "target.json")["included"]
+            except (target.Refuse, KeyError):
+                pass
+        if not set(inc) & {_norm(a) for a in v["inspected"]}:
+            out.append("%s read no included file: its convention and norm findings are missing" % n)
+    return out
 
 
 def _no_verdict(run, cand, ver):
@@ -1839,7 +1848,7 @@ def _build(run):
             "verdict": label, "findings": findings, "unverifiable": unverifiable, "dropped": dropped, "skipped": skipped, "declined": declined,
             "shards": shards, "mode": "serial" if serial else "parallel", "tier": plan["tier"] if isinstance(plan.get("tier"), str) else None,
             "lost_guarantees": ([x for x in plan["lost_guarantees"] if isinstance(x, str)]
-                                if isinstance(plan.get("lost_guarantees"), list) else []) + _blind_standards(tj, cand),
+                                if isinstance(plan.get("lost_guarantees"), list) else []) + _blind_standards(run, tj, cand),
             "basis": {"pinned_head": tj.get("pinned_head"), "pinned_tree": tj.get("pinned_tree"), "difference": tj.get("difference_count"),
                       "lost_capabilities": [x for x in plan.get("lost_capabilities", []) if isinstance(x, str)]
                       if isinstance(plan.get("lost_capabilities"), list) else []},
