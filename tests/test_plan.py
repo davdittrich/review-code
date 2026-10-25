@@ -271,6 +271,7 @@ class Tiers(Fixture):
     def test_lean_tier_runs_only_the_standards_lane_and_the_verifier(self):
         out, p = self.lanes("--tier", "lean")
         self.assertEqual((out["tier"], [c["lane"] for c in p["calls"]]), ("lean", ["standards"]))
+        self.assertNotIn("max_verifier_calls", p["caps"])  # gh#73
         self.assertEqual((p["calls"][0]["model"], p["calls"][0]["effort"]), ("haiku", "medium"))
         self.assertEqual((p["verifier"]["agent"], p["verifier"]["model"]), ("review-code:verifier", "sonnet"))
         self.assertEqual({s["what"]: s["why"] for s in p["skipped"]}, {"defects": "tier lean", "spec": "tier lean"})

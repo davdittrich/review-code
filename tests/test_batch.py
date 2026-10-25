@@ -37,12 +37,12 @@ class Locking(tr.Lanes):
             self.assertFalse([n for n in os.listdir(self.run_dir) if ".tmp" in n])
 
 
-BIG = "def f(a):\n" + "".join("    v%d = a - %d\n    pass\n    pass\n" % (i, i) for i in range(1, 61))
+BIG = "def f(a):\n" + "".join("    v%d = a - %d\n    pass\n    pass\n" % (i, i) for i in range(1, 62))
 OTHER = "def g(a):\n" + "".join("    w%d = a + %d\n" % (i, i) for i in range(1, 4))
 
 
 def big(n):
-    """Candidate n (1..60) of src/big.py: three lines apart, so none merge."""
+    """Candidate n (1..61) of src/big.py: three lines apart, so none merge."""
     return dict(tr.CAND, path="src/big.py", line=3 * n - 1, quote="v%d = a - %d" % (n, n), title="t%d" % n)
 
 
@@ -77,8 +77,8 @@ class Batches(BigRun):
     def test_every_candidate_is_verified_on_every_tier(self):  # gh#73: no cap cuts the queue, whatever the tier
         for tier, n in (("lean", 11), ("quick", 11), ("standard", 26), ("deep", 61)):
             tr.write_plan(self.run_dir, tier=tier)
-            out = self.ingest(*[big(i) for i in range(1, min(n, 60) + 1)])
-            self.assertEqual(len(out["ids"]), min(n, 60), tier)
+            out = self.ingest(*[big(i) for i in range(1, n + 1)])
+            self.assertEqual(len(out["ids"]), n, tier)
             self.assertNotIn("capped", out)
             calls = self.calls()
             self.assertEqual(sum(len(c["ids"]) for c in calls), len(out["ids"]), tier)
