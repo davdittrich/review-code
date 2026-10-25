@@ -1366,6 +1366,16 @@ class SpecAxis(Base):
         self.assertIn('spec: %s line %d\n' % (json.dumps(os.path.join(self.run_dir, "inputs", "spec.md")), inner), body)
         self.assertIn("check: spec", body)
 
+    def test_a_spec_ingest_and_a_spec_verdicts_call_scan_spec_md_once_each(self):  # review-code-le7m
+        rows, inner, _, _ = self.spec_rows()
+        (sid,) = self.lane(self.spec(inner), {"inspected": ["src/calc.py"]})["spec_ids"]
+        for sub, extra, reply in (("ingest", ["--lane", "spec"], lines(self.spec(inner), {"inspected": ["src/calc.py"]})),
+                                  ("verdicts", [], lines({"id": sid, "verdict": "confirmed", "evidence": [CITE], "reason": "r"}))):
+            with gitfix.isolated(self.tmp), mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(reply.encode()))), mock.patch("sys.stdout", io.StringIO()), \
+                    mock.patch.object(report, "_spec_lines", wraps=report._spec_lines) as spy:
+                self.assertEqual(report.main([sub, "--run", self.run_dir] + extra), 0)
+            self.assertEqual(spy.call_count, 1, sub)
+
     def test_markers_header_outside_and_past_end_are_invalid(self):
         rows, inner, opn, cls = self.spec_rows()
         bad = [1, opn, cls, len(rows) + 5, 0, -1, True, "7", None]

@@ -729,10 +729,9 @@ def _spec_sets(run):
     return (adr, files) + tuple(_hidden_refs(run, adr, files))
 
 
-def _spec_prep(run):
+def _spec_prep(run, inside):
     """(the words inside the UNTRUSTED blocks of inputs/spec.md, `_spec_sets`): spec.md is read first, so an unreadable one
     refuses before the lookup writes marks.json (review-code-iawb). A caller passes the result to `_spec_copy` and `_spec_refs`."""
-    inside = _spec_lines(run)
     try:
         with open(os.path.join(run, "inputs", "spec.md"), encoding="utf-8", errors="replace") as fh:
             spec = [x for n, row in enumerate(fh.read().split("\n"), 1) if n in inside for x in _words(row)]
@@ -743,7 +742,7 @@ def _spec_prep(run):
 
 def _spec_refs(run, prep=None):
     """The decision records indexed in the ledger, as the paths the pinned tree is asked for (see `_spec_sets`)."""
-    adr, _, hidden, _ = (prep or _spec_prep(run))[1]
+    adr, _, hidden, _ = (prep or _spec_prep(run, _spec_lines(run)))[1]
     return adr + hidden
 
 
@@ -796,7 +795,7 @@ def _spec_copy(run, prep=None):
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
-    spec, (adr, files, _, hidden_files) = prep or _spec_prep(run)
+    spec, (adr, files, _, hidden_files) = prep or _spec_prep(run, _spec_lines(run))
     files = {_norm(x) for x in adr + files + hidden_files}
 
     def with_records(pin, adr, said):
@@ -1253,7 +1252,7 @@ def _read_lane(text, lane, run, shard=None):
     disp = []
     ctx = _spec_lines(run) if lane == "spec" else _inventory(run) if lane == "sota" else None
     spec_lane = lane == "spec"  # CTX-03: a rejected row of this lane keeps no wire line
-    prep = _spec_prep(run) if lane == "spec" else None  # one ledger read and one hidden-name lookup for both guards (review-code-lfya)
+    prep = _spec_prep(run, ctx) if lane == "spec" else None  # one ledger read and one hidden-name lookup for both guards (review-code-lfya)
     spec_text = _spec_copy(run, prep) if prep else None
     adr = _spec_refs(run, prep) if prep else []
     base = run if shard is None else os.path.join(run, "shards", str(shard))  # conventions/ lives beside the tree
@@ -1593,7 +1592,7 @@ def _verdicts(run, text, batch, agent=None):
     queued = {c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ()))} - set(cand.get("capped_ids", []))  # what status owes
     paths = {c["id"]: c["path"] for c in cand["candidates"]}
     spec = {c["id"] for c in cand["candidates"] if c["axis"] == "spec"}
-    prep = _spec_prep(run) if spec else None  # before any write below, marks.json included; one lookup for both guards
+    prep = _spec_prep(run, _spec_lines(run)) if spec else None  # before any write below, marks.json included; one lookup for both guards
     spec_text = _spec_copy(run, prep) if prep else None
     adr = _spec_refs(run, prep) if prep else []
     calls = {c["batch"]: set(c["ids"]) for c in cand.get("verify_calls", []) if isinstance(c, dict)}
