@@ -71,7 +71,7 @@ unverifiable with reason verifier-cap.
 Spec lane: a line cites inputs/spec.md by `spec_line` only, kept when that line lies strictly inside an
 UNTRUSTED block. A spec-lane title, trigger, fix or declined why, or a spec verdict reason, that holds SPEC_RUN
 consecutive words of spec text counts invalid (verdicts: the line is dropped), unless the cited lines (never a decision
-record or spec file) hold the same run, a code quote; the check is `copied-from-spec:N`, N the count of words in such runs,
+record or spec file, except for a verdict cite's own quote) hold the same run, a code quote; the check is `copied-from-spec:N`, N the count of words in such runs,
 never the text, so no output carries such a run; a paraphrase passes, and the main thread relays the raw replies (untrusted-input.md Known limits). A `["declined", [[["spec_line", n], ["why", text]], ...]]` trailer (spec lane
 only) is validated the same way. Document keys: declined[{spec_line, why}]; items carry spec_line, shard (shard runs)
 and sources (SOTA). A SOTA line names a plan.json sota_inventory `item` number (its path and line come from there;
@@ -788,7 +788,8 @@ def _spec_copy(run, prep=None):
     SPEC_RUN consecutive words (case and punctuation ignored) of either text, and the predicate returns how many of the
     string's words sit in such runs (0: none; the count may leave, the text never, CTX-03). A run the string's `cites` (pairs of
     path and cited lines) also hold is ignored, a spec finding's quote being code (GitHub #62); a cite into a decision
-    record or a spec file earns no such exemption, or a line could cite the spec itself.
+    record or a spec file earns no such exemption, or a line could cite the spec itself, except for the quote of a verdict's
+    own validated cite, which the lane path never checks (`quote=True`, review-code-slwe).
     The guard keeps the reply's runs and the ones of them the texts hold (review-code-9uk7), found in one pass over the
     words SPEC_RUN at a time, so its memory follows the reply, not the number of records; a string outside `said` gets a
     pass of its own."""
@@ -824,10 +825,10 @@ def _spec_copy(run, prep=None):
 
         banned = files | {_norm(p) for p in adr}
 
-        def copied(s, cites=()):
+        def copied(s, cites=(), quote=False):  # quote: the string is a validated cite's quote, which a cite into a banned file exempts too (review-code-slwe)
             t = _runs(s)
             hit = t & found if t <= asked else held(t)
-            code = "\n".join("\n".join(rows) for path, rows in cites if _norm(path) not in banned)
+            code = "\n".join("\n".join(rows) for path, rows in cites if quote or _norm(path) not in banned)
             hit -= _runs(code) if hit and code else set()
             w, got = _words(s), set()
             for i in range(len(w) - SPEC_RUN + 1):
@@ -1540,7 +1541,7 @@ def _one(parsed, allowed, cand_ids, pin, spec, copied, got, paths):
         ok_ev = [isinstance(r, dict) and rows.get(id(e)) is not None and isinstance(r.get("path"), str) for r, e in zip(rev, ev)] if isinstance(rev, list) else []
         body = dict(raw, evidence=[{k: v for k, v in r.items() if k not in ("path", "quote")} if ok else r
                                    for r, ok in zip(rev, ok_ev)]) if ok_ev else raw
-        dup = sum(copied(x, pairs) for x in itertools.chain(_leaves(body), (e["quote"] for e, ok in zip(ev, ok_ev) if ok))) if o["id"] in spec else 0
+        dup = sum(copied(x, pairs) for x in _leaves(body)) + sum(copied(e["quote"], pairs, True) for e, ok in zip(ev, ok_ev) if ok) if o["id"] in spec else 0
         if dup:  # CTX-03: the line is dropped; the count of its words in a copied run, never the text
             bad.append(("copied-from-spec:%d" % dup, ln, n, True))
             disp.append(_disp(n, o["id"], "rejected", "copied-from-spec:%d" % dup))

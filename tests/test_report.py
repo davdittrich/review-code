@@ -1823,6 +1823,26 @@ class SpecVerdictHiddenQuote(Base):
                 self.assertEqual((out["confirmed"], [d["reason"] for d in out["dispositions"]]), ([sid], [None]))
 
 
+class SpecVerdictAdrQuote(Base):
+    """review-code-slwe (owner decision B): a verdict's validated cite of a decision-record line exempts that cite's quote,
+    as the lane path never checks the quote; reason and every other string get no exemption from a banned file."""
+    LINE = "Every adder call MUST-RETURN-INT values always"
+    ADR = SpecAdrCite.ADR
+    base_files = dict(BASE, **{ADR: "# Integers only\n\n" + LINE + "\n"})
+    lane = SpecAdrCite.lane
+
+    def test_a_validated_adr_quote_is_accepted_the_same_words_in_a_reason_are_not(self):
+        n = len(report._words(self.LINE))
+        (sid,) = self.lane(line=3, quote=self.LINE)["spec_ids"]
+        cite = {"path": self.ADR, "line": 3, "quote": self.LINE}
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [cite], "reason": "r"})
+        self.assertEqual((out["confirmed"], [d["reason"] for d in out["dispositions"]]), ([sid], [None]))
+        self.rep("discard")
+        (sid,) = self.lane(line=3, quote=self.LINE)["spec_ids"]
+        out = self.verdicts({"id": sid, "verdict": "confirmed", "evidence": [cite], "reason": self.LINE})
+        self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:%d" % n], [sid]))
+
+
 class SpecFileCite(Base):
     """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
     SPEC = "docs/specs/feat.md"
