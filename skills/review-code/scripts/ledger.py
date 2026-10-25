@@ -1037,7 +1037,7 @@ def listed(paths):
     return paths[:CAP_FIND]
 
 
-def _listed(paths):
+def _included_section(paths):
     """At most CAP_FIND included paths, one per line, and the count left out (a whole-tree run can hold thousands)."""
     out = "\n".join("- " + json.dumps(p) for p in listed(paths))
     return out + "\n(+%d more included files: see the included list of target.json beside change_diff)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
@@ -1142,7 +1142,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
            "# Defects input\n\n" + pin + hist + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
-               _listed(tj["included"])) +
+               _included_section(tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\ntree/ holds the pinned copy of each checkout-difference file (hidden text stripped from "
            "prose and markup files, hidden characters escaped in all); read every other file from the repository. A file under "
            "Skipped has no readable copy. Never read a path listed under Skipped, in the repository or anywhere else: it may be a link into the host.\n\n## Skipped\n\n%s\n" % (
@@ -1157,7 +1157,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
              "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files, \"unchanged lines\" none.\n\n%s\n" %
-             _listed(tj["included"])) if tj["kind"] in WHOLE else ""
+             _included_section(tj["included"])) if tj["kind"] in WHOLE else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
