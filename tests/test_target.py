@@ -1043,6 +1043,23 @@ class TestNestedWorktree(Local):
                 self.assertFalse([n for n in pinned if n == "wt" or n.startswith("wt/")], pinned)
 
 
+class TestTrackedSubmodule(Local):
+    def test_populated_submodule_is_excluded_not_a_traceback(self):
+        # review-code-blcf: --repo and a path target read the gitlink directory as a file (IsADirectoryError)
+        self.git("checkout", "-q", "main")
+        sub = gitfix.make_repo(os.path.join(self.tmp, "subsrc"))
+        gitfix.commit(sub, {"f": "1\n"}, "s")
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "subm")
+        self.git("commit", "-q", "-m", "add submodule")
+        for words in (["--repo"], ["."]):
+            with self.subTest(words=words):
+                rc, out = self.pin(*words)
+                self.assertEqual(rc, 0, out)
+                rec = load(out["run"])
+                self.assertEqual([e["reason"] for e in rec["excluded"] if e["path"] == "subm"], ["nested-repository"])
+                self.assertIn("a.txt", rec["included"])
+
+
 class TestUntrackedDefault(Local):
     def test_no_argument_sees_untracked_despite_status_config(self):
         # 6xl.68: status.showUntrackedFiles=no must not hide an untracked-only change from the default target

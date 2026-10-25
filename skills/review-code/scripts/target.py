@@ -908,7 +908,8 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
 
     for n in names:
         base = n.rsplit("/", 1)[-1]
-        if n in nested:
+        if n in nested or (kind in ("unstaged", "worktree", "path", "repo") and os.path.isdir(os.path.join(top, n))
+                           and not os.path.islink(os.path.join(top, n))):  # a tracked gitlink is a directory too
             drop(n, "nested-repository", "a directory with its own repository, never read")
         elif n in explicit:
             todo.append(n)  # only the size cap applies to a file the user named
