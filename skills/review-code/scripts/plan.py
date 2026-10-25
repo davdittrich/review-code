@@ -245,8 +245,9 @@ CHURN_COMMITS = 5000  # shortcut: only the last 5000 commits count, upgrade when
 
 def _groups(files, size):
     """Ordered file lists: top-level directory groups (root files form "."), a group above SHARD_BYTES split by its
-    second path component, small groups packed first-fit decreasing up to SHARD_BYTES (shards ordered by first path). shortcut: one level of
-    split only, so a single huge directory below that stays one shard; upgrade when one appears."""
+    second path component, a group over ledger.CAP_FIND paths cut into runs of at most that many in path order, small groups packed
+    first-fit decreasing up to SHARD_BYTES and CAP_FIND paths (shards ordered by first path), so no shard's input list is cut off.
+    shortcut: one level of byte split only, so a single huge directory below that stays one shard; upgrade when one appears."""
     by = {}
     for p in sorted(files):
         by.setdefault(p.split("/")[0] if "/" in p else ".", []).append(p)
@@ -260,10 +261,12 @@ def _groups(files, size):
             groups += [sub[k] for k in sorted(sub)]
         else:
             groups.append(by[top])
+    cap = ledger.CAP_FIND
+    groups = [g[i:i + cap] for g in groups for i in range(0, len(g), cap)]
     bins = []  # first-fit decreasing: a small group fills an earlier gap, so fewer shards (each pays a fixed start)
     for g in sorted(groups, key=lambda g: -sum(size[p] for p in g)):
         n = sum(size[p] for p in g)
-        b = next((b for b in bins if b[1] + n <= SHARD_BYTES), None)
+        b = next((b for b in bins if b[1] + n <= SHARD_BYTES and len(b[0]) + len(g) <= cap), None)
         if b:
             b[0], b[1] = b[0] + g, b[1] + n
         else:

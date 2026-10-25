@@ -696,6 +696,32 @@ class ShardPacking(unittest.TestCase):
     def test_one_small_group_is_one_shard(self):
         self.assertEqual(self.groups({"a/x": 10, "b/x": 10}), [["a/x", "b/x"]])
 
+    def capped(self, sizes, cap):
+        import ledger
+        with mock.patch.object(ledger, "CAP_FIND", cap):
+            return self.groups(sizes, limit=10 ** 9)
+
+    def test_a_flat_directory_over_the_file_cap_is_sliced_in_path_order(self):  # review-code-5jeu
+        sizes = {"d/f%02d" % i: 1 for i in range(7)}
+        out = self.capped(sizes, 3)
+        self.assertEqual(out, [["d/f00", "d/f01", "d/f02"], ["d/f03", "d/f04", "d/f05"], ["d/f06"]])
+
+    def test_small_directories_are_not_merged_past_the_file_cap(self):
+        sizes = dict({"a/f%d" % i: 1 for i in range(2)}, **{"b/f%d" % i: 1 for i in range(2)}, **{"c/f0": 1})
+        out = self.capped(sizes, 3)
+        self.assertTrue(all(len(g) <= 3 for g in out), out)
+        self.assertEqual(sorted(p for g in out for p in g), sorted(sizes))
+        self.assertEqual(out, sorted(out, key=lambda g: g[0]))
+        self.assertEqual(len(out), 2)
+
+    def test_root_files_and_second_level_groups_are_capped_too(self):
+        sizes = dict({"r%d" % i: 1 for i in range(5)}, **{"big/s/f%d" % i: 100 for i in range(5)})
+        import ledger, plan as mod
+        with mock.patch.object(ledger, "CAP_FIND", 2), mock.patch.object(mod, "SHARD_BYTES", 150):
+            out = mod._groups(sorted(sizes), sizes)
+        self.assertTrue(all(len(g) <= 2 for g in out), out)
+        self.assertEqual(sorted(p for g in out for p in g), sorted(sizes))
+
 
 class ShardMerge(ShardBase):
     base_files = {"big/a/x.py": BIG, "big/b/y.py": BIG, "small1/m.py": SMALL, "small2/n.py": SMALL}
