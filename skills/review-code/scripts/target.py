@@ -913,7 +913,7 @@ def filter_files(kind: str, plan: dict, names: List[str], top: str) -> tuple:
 
     def lists():  # review-code-mosd: the two tree passes are built on first need, not for a lockfile-only change
         if not memo:
-            # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger; mode 160000 in the index or head tree
+            # review-code-ea83: a tracked gitlink is "submodule" for every kind, as in ledger (a lockfile-named one is dropped as a lockfile first); mode 160000 in the index or head tree
             lst = index_listing(top) if kind == "staged" or working else tree_listing(plan["head"], top)
             # 6xl.88: what the diff compares against; unstaged compares against the index, so one listing serves both
             bl = lst if kind == "unstaged" else tree_listing(mb, top)
