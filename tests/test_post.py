@@ -1439,6 +1439,16 @@ class Nits(Base):
         body = self.payload()[1]["comments"][1]["body"]
         self.assertIn('**Basis:** norm "foo(" over "bar(" (22 of 25 lines)', body)
 
+    def test_a_defects_nit_states_its_category_as_the_evidence_basis(self):  # gh#76
+        ids = self.review(31, 34, 37)
+        doc = self.doc(ids)
+        next(f for f in doc["findings"] if f["id"] == ids[34]).update(category="bug", basis="evidence")
+        rc, out, _ = self.built(doc)
+        self.assertEqual(rc, 0, out)
+        body = self.payload()[1]["comments"][1]["body"]
+        self.assertTrue(body.startswith("nit: **Nit** (defects, bug) - title 34\n"), body)
+        self.assertIn("\n**Basis:** bug\n", body)
+
     def test_the_basis_text_is_redacted_and_kept_on_one_line(self):
         ids = self.review(31, 34, 37)
         rc, out, _ = self.built(self.doc(ids, "Use a key.\nNot AKIAIOSFODNN7EXAMPLE <b>here</b> @team"))
