@@ -906,12 +906,17 @@ class Tree(Base):
         line = "x" * 99 + "\n"
         self.base({"README.md": line * (target.MAX_FILE * 2 // len(line)), "src/a.py": "a = 1\n"})
         self.branch({"src/a.py": "a = 2\n"})
-        tracemalloc.start()
+        started = not tracemalloc.is_tracing()  # review-code-n4lk.2.6: PYTHONTRACEMALLOC already traces, and its peak spans the fixture
+        if started:
+            tracemalloc.start()
         try:
+            tracemalloc.reset_peak()
+            before = tracemalloc.get_traced_memory()[0]
             _, led = self.build(difference=["README.md"])
-            peak = tracemalloc.get_traced_memory()[1]
+            peak = tracemalloc.get_traced_memory()[1] - before
         finally:
-            tracemalloc.stop()
+            if started:
+                tracemalloc.stop()
         self.assertIn({"path": "README.md", "reason": "too-large"}, led["tree"]["skipped"])
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "README.md")))
         self.assertLess(peak, target.MAX_FILE)
