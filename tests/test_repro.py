@@ -91,6 +91,25 @@ class Tracer(Base):
                         self.repo, self.tmp, PASS_SRC.encode("utf-8")))
         self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-target"}))
 
+    def test_sigterm_during_cleanup_still_removes_the_worktree(self):
+        # review-code-6f3w: _term raising SystemExit inside run()'s finally aborted the cleanup loop
+        run = self.start()
+        real, hit = repro.target.git_bytes, []
+
+        def term_once(args, *a, **k):
+            if args[:2] == ["worktree", "remove"] and not hit:
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(args, *a, **k)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.target, "git_bytes", side_effect=term_once), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
+
     def test_sigterm_cleans_up_and_kills_the_test_group(self):
         run = self.start()
         marker = os.path.join(self.tmp, "pid")

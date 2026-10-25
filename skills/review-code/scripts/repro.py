@@ -123,12 +123,20 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
             raise
         result = {"outcome": "error", "exit": None}  # a git or OS failure after the gate
     finally:
-        for w in (wt, wth):
-            target.git_bytes(["worktree", "remove", "--force", w], repo, check=False)
-            shutil.rmtree(w, ignore_errors=True)
-        target.git_bytes(["worktree", "prune"], repo, check=False)
-        shutil.rmtree(home, ignore_errors=True)
-        shutil.rmtree(tmp, ignore_errors=True)
+        # review-code-6f3w: _term raises SystemExit; a signal inside this cleanup would abort it and leave wt-<id>.
+        # Block both until it is done: the pending one is delivered at the unmask, after the cleanup.
+        sigs = {getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)}
+        prev = signal.pthread_sigmask(signal.SIG_BLOCK, sigs) if hasattr(signal, "pthread_sigmask") else None
+        try:
+            for w in (wt, wth):
+                target.git_bytes(["worktree", "remove", "--force", w], repo, check=False)
+                shutil.rmtree(w, ignore_errors=True)
+            target.git_bytes(["worktree", "prune"], repo, check=False)
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(tmp, ignore_errors=True)
+        finally:
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, prev)
     out_dir = os.path.join(run_dir, "repro")
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
