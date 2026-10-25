@@ -2026,6 +2026,7 @@ def _text(doc):
         out.append(ax.capitalize())
         sota = [i for i in doc["unverifiable"] if i["category"] == "sota"] if ax == "standards" else []
         unv = [i for i in doc["unverifiable"] if i["axis"] == ax and i not in sota]
+        # narrower than _defects_skipped on purpose: a Defects lane that ran on the kept shards still prints its empty sections
         if (ax != "defects" or any(x.get("what") == "defects" for x in doc["skipped"])) and not unv and not sota and not any(i["axis"] == ax for i in fs) and not (ax == "spec" and doc["declined"]):
             why = [s.get("why") for s in doc["skipped"] if s.get("what") == ax]
             out += ["%s: skipped (%s)" % (ax.capitalize(), e(why[0])) if why else "none", ""]
