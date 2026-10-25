@@ -827,6 +827,10 @@ class StandardsLaneReadNothing(Base):  # review-code-lrrx, gh#69
         rc, out = self.rep("render")
         self.assertIn("lost guarantee: " + g, out)
 
+    def test_the_blind_lane_is_a_lost_guarantee_not_a_verdict_change(self):  # review-code-vw34: owner decision, Standards does not gate
+        self.assertEqual(len(self.standards([])), 1)
+        self.assertEqual(self.doc()["verdict"], "No blocking findings")
+
     def test_repo_standards_lane_naming_an_included_file_loses_nothing(self):
         self.assertEqual(self.standards(["src/calc.py"]), [])
 
