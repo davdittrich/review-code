@@ -1748,6 +1748,35 @@ class SpecCodeRun(Base):
         self.assertEqual(([d["reason"] for d in out["dispositions"]], out["no_verdict"]), (["copied-from-spec:%d" % self.n()], [sid]))
 
 
+class SpecVerdictCites(Base):
+    """A spec verdict's own cites: what the pinned tree validated is not a copy of the spec (rae6, j959, 6u3h, slwe)."""
+    DEEP = "src/alpha/beta/gamma/delta/epsilon/zeta.py"
+    DEEPCITE = {"path": DEEP, "line": 5, "quote": "return a - b"}
+    spec_text = "The adder must " + CANARY + " add its operands.\nsee " + DEEP + " for it\n"
+    feat_files = {"src/calc.py": FEAT, DEEP: FEAT}
+    pin, spec_rows, lane, spec = SpecAxis.pin, SpecAxis.spec_rows, SpecAxis.lane, SpecAxis.spec
+
+    def sid(self):
+        _, inner, _, _ = self.spec_rows()
+        return self.lane(self.spec(inner, title="paraphrase"), {"inspected": ["src/calc.py"]})["spec_ids"][0]
+
+    def judged(self, sid, **kw):
+        out = self.verdicts(dict({"id": sid, "verdict": "confirmed", "evidence": [self.DEEPCITE], "reason": "r"}, **kw))
+        return out["confirmed"] == [sid], [d["reason"] for d in out["dispositions"]]
+
+    def test_a_cites_path_naming_a_deep_spec_path_is_accepted_the_same_words_in_a_reason_are_not(self):  # review-code-rae6
+        sid = self.sid()
+        self.assertEqual(self.judged(sid), (True, [None]))
+        self.rep("discard")
+        sid = self.sid()
+        ok, why = self.judged(sid, reason="see " + self.DEEP + " for it")
+        self.assertEqual((ok, why), (False, ["copied-from-spec:11"]))
+        self.rep("discard")
+        sid = self.sid()
+        ok, why = self.judged(sid, evidence=[dict(self.DEEPCITE, quote="not in the file")])  # a cite that fails validation keeps its path checked
+        self.assertEqual((ok, why), (False, ["copied-from-spec:8"]))
+
+
 class SpecFileCite(Base):
     """GitHub #62: a cite into a spec file that spec.md holds earns no exemption, or a line could cite the spec itself."""
     SPEC = "docs/specs/feat.md"
