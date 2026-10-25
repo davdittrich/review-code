@@ -294,8 +294,7 @@ def run_claude(repo, plugin, case, lean):
     except ValueError:
         text, cost = out, None
     if p.returncode != 0 and not text:
-        e = RuntimeError("claude exited %d: %s" % (p.returncode, p.stderr.decode("utf-8", "replace")[-300:]))
-        raise e
+        raise RuntimeError("claude exited %d: %s" % (p.returncode, p.stderr.decode("utf-8", "replace")[-300:]))
     return text if isinstance(text, str) else json.dumps(text), cost if isinstance(cost, (int, float)) else None
 
 
