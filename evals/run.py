@@ -188,7 +188,7 @@ def gate(agg, case, base, lane=None):
     if agg["n_runs"] == 0:
         return "ERROR", None
     if not any(d for d in case.get("defects", []) if lane in (None, d["lane"])):
-        return ("RED" if agg["fp"] else "GREEN"), None  # no-defect case: zero findings in every run
+        return ("RED" if agg["fp"] else "AMBER" if lane else "GREEN"), None  # no-defect case: zero findings in every run; a cheap run is never above AMBER
     if not base:
         return "NEW", None
     if lane:  # compare only the lane's defects against the baseline's per-defect counts

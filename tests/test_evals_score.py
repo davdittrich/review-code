@@ -94,6 +94,13 @@ class Score(unittest.TestCase):
         agg = ev.aggregate([ev.score(doc(), case)] * 2)
         self.assertEqual(ev.gate(agg, case, None)[0], "GREEN")
 
+    def test_no_defect_case_in_lane_mode_is_never_above_amber(self):
+        case = dict(CASE, defects=[], decoys=[], accept=[])
+        clean = ev.aggregate([ev.score(doc(), case, "standards")] * 2)
+        self.assertEqual(ev.gate(clean, case, None, "standards")[0], "AMBER")
+        dirty = ev.aggregate([ev.score(doc(f(3)), case, "standards")])
+        self.assertEqual(ev.gate(dirty, case, None, "standards")[0], "RED")
+
     def test_aggregate_pools_and_flags_errors(self):
         a = ev.aggregate([ev.score(doc(f(10), f(39)), CASE), None, ev.score(doc(f(30)), CASE)])
         self.assertEqual((a["n_runs"], a["errors"], a["hits"], a["n"]), (2, 1, 2, 4))
