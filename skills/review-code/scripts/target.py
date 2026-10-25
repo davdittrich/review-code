@@ -1090,6 +1090,7 @@ def _write_diff(path: str, plan: dict, names: List[str], narrow: bool, kind: str
     return hidden, stripped
 
 
+WHOLE = ("path", "repo")  # targets that are a tree, not a change: no diff, no provenance, every line under review
 INPLACE = ("staged", "unstaged", "worktree", "path", "repo")
 REGULAR = ("100644", "100755")  # the modes of a regular file: never a link (120000) or a submodule (160000)
 _RAW_DIFF = ["--raw", "--no-abbrev", "-z", "--no-renames", "--no-relative", "--no-ext-diff", "--no-color", "--ignore-submodules=none"]
@@ -1324,7 +1325,7 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     elif kind == "worktree":
         head = _commit_id("HEAD", top)
         plan = _head_plan(top, "diff-index", [head], True, [head])
-    elif kind in ("path", "repo"):
+    elif kind in WHOLE:
         plan = _plan_files(candidate.get("paths", []), cwd, top)
     else:
         raise Refuse("bad-ref", "unknown target kind")
@@ -1336,8 +1337,8 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
         _gate("origin", None, top)
     names = sorted(set(plan["names"]) | set(plan["untracked"]))
     if not names:
-        raise Refuse("no-files" if kind in ("path", "repo") else "empty-diff",
-                     "the target has no files" if kind in ("path", "repo") else "the change has no differences")
+        raise Refuse("no-files" if kind in WHOLE else "empty-diff",
+                     "the target has no files" if kind in WHOLE else "the change has no differences")
     names, excluded, fnotes = filter_files(kind, plan, names + plan.get("nested", []), top)  # a nested repo is no change
     if not names:
         counts = {}
