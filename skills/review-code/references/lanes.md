@@ -65,7 +65,7 @@ Decision records: `docs/adr/0001-nit-mode.md`, `docs/adr/0002-nit-mode-all-lanes
   The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
 - A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
   rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
-  nit on an unchanged line; a repo target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
+  nit on an unchanged line; a repo or path target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
 
 ## Caps and turn ceilings
 
