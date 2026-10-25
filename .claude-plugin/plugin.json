@@ -61,13 +61,6 @@
       "min": 1,
       "max": 200
     },
-    "max_shards": {
-      "type": "number",
-      "title": "Max shards",
-      "description": "Cap on shards per run, 1 to 50. Leave empty for the tier's value.",
-      "min": 1,
-      "max": 50
-    },
     "max_packs": {
       "type": "number",
       "title": "Max packs",

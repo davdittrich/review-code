@@ -182,10 +182,10 @@ class Overrides(Fixture):
         self.assertEqual({c["model"] for c in p["calls"] if c["lane"] != "standards"}, {"opus"})  # finders untouched
 
     def test_unset_references_are_ignored(self):
-        rc, out = self.run_plan([("verifier_model", "${user_config.verifier_model}"), ("max_shards", ""),
+        rc, out = self.run_plan([("verifier_model", "${user_config.verifier_model}"),
                                  ("default_tier", "${user_config.default_tier}")])
         p = self.plan_json()
-        self.assertEqual((rc, out["tier"], p["effective_overrides"], p["caps"]["max_shards"]), (0, "standard", {}, 6))
+        self.assertEqual((rc, out["tier"], p["effective_overrides"], "max_shards" in p["caps"]), (0, "standard", {}, False))
 
     def test_flag_beats_default_tier(self):
         self.assertEqual(self.run_plan([("default_tier", "deep")])[1]["tier"], "deep")
@@ -207,17 +207,17 @@ class Overrides(Fixture):
     def test_caps(self):
         self.run_plan([("max_verifier_calls", "5"), ("max_packs", "9")])
         caps = self.plan_json()["caps"]
-        self.assertEqual((caps["max_verifier_calls"], caps["max_packs"], caps["max_shards"]), (5, 9, 6))
+        self.assertEqual((caps["max_verifier_calls"], caps["max_packs"]), (5, 9))
 
     def test_bad_config_refuses_and_never_echoes(self):
         bad = [("bogus", "1"), ("finder_effort", "turbo"), ("standards_effort", "turbo"), ("standards_model", "a b"), ("finder_model", "a b"), ("finder_model", "$(id)"),
-               ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "0"), ("max_verifier_calls", "2.5"),
+               ("verifier_model", "-x"), ("max_packs", "10"), ("max_shards", "6"), ("max_verifier_calls", "2.5"),
                ("max_verifier_calls", "201"), ("default_tier", "huge"), ("max_packs", "\u00b2")]
         for kv in bad:
             rc, out = self.run_plan([kv])
             self.assertEqual((rc, out["status"], out["reason"]), (1, "refuse", "bad-config"), kv)
             self.assertNotIn(kv[1], json.dumps(out), kv)
-            if kv[0] != "bogus":
+            if kv[0] not in ("bogus", "max_shards"):  # unknown keys are never named
                 self.assertIn(kv[0], out["detail"])
         rc, out = self.plan("plan", "--run", self.run_dir, stdin="no equals sign\n")
         self.assertEqual((rc, out["reason"]), (1, "bad-config"))
@@ -788,11 +788,11 @@ class ShardFileCap(ShardBase):  # review-code-5jeu: CAP_FIND patched to 3 instea
         self.assertEqual(sorted(called), sorted(inc))
         self.assertTrue(all(len(s["files"]) <= self.CAP for s in p["shards"]))
 
-    def test_skipped_shards_hold_exactly_the_files_not_shown(self):
-        p = self.cap_plan(cfg={"max_shards": 1})
+    def test_every_shard_is_built_and_none_skipped(self):
+        p = self.cap_plan()
         inc = self.read_json("target.json")["included"]
-        skipped = sum(x["files"] for x in p["skipped"] if x["what"].startswith("shard "))
-        self.assertEqual(len(p["shards"][0]["files"]) + skipped, len(inc))
+        self.assertEqual(sorted(f for s in p["shards"] for f in s["files"]), sorted(inc))
+        self.assertEqual([x for x in p["skipped"] if x["what"].startswith("shard ")], [])
         self.assertEqual([t for t in self.lane_inputs(p) if "more included files" in t], [])
 
     def assert_nothing_written(self):  # review-code-1117: the size guard runs before any pack or shard directory exists
@@ -842,12 +842,12 @@ class Shards(ShardBase):
     base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
     feat_files = {"auth/login.py": PAD + "other = 2\n"}
 
-    def test_cap_keeps_the_riskiest_and_lists_the_rest(self):
-        p = self.run_plan(cfg={"max_shards": 2})
+    def test_every_shard_is_built_in_risk_order(self):
+        p = self.run_plan()
         self.assertEqual([(s["id"], s["files"]) for s in p["shards"]],
-                         [(1, ["auth/login.py"]), (2, ["docs/guide.md"])])
+                         [(1, ["auth/login.py"]), (2, ["docs/guide.md"]), (3, ["util/helpers.py"])])
         self.assertGreater(p["shards"][0]["risk"], p["shards"][1]["risk"])
-        self.assertIn({"what": "shard 3", "why": "shard cap: 1 files", "files": 1}, p["skipped"])
+        self.assertEqual([x for x in p["skipped"] if x["what"].startswith("shard ")], [])
 
     def test_each_shard_has_its_own_run_tree_and_ledger(self):
         before = self.read_json("ledger.json")
@@ -875,18 +875,18 @@ class Shards(ShardBase):
                 if stored:
                     ledger.trust_set(self.run_dir, stored)
                 with mock.patch.object(ledger, "trust_set", wraps=ledger.trust_set) as spy:
-                    p = self.run_plan(cfg={"max_shards": 2})
-                self.assertEqual(len(p["shards"]), 2)
+                    p = self.run_plan()
+                self.assertEqual(len(p["shards"]), 3)
                 for s in p["shards"]:
                     led = self.read_json("shards", str(s["id"]), "ledger.json")
                     self.assertEqual((led["trust"], led["trust_asked"]), (stored or "unset", stored is not None))
                 self.assertNotIn(self.run_dir, [c.args[0] for c in spy.call_args_list])
-                self.assertEqual(len(spy.call_args_list), 2 if stored else 0)
+                self.assertEqual(len(spy.call_args_list), 3 if stored else 0)
 
     def test_calls_per_shard(self):
-        p = self.run_plan(cfg={"max_shards": 2}, tier="deep")
-        self.assertEqual(sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] != "spec"),
-                         [("defects", 1), ("defects", 2), ("standards", 1), ("standards", 2)])
+        p = self.run_plan(tier="deep")
+        self.assertEqual(sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] in ("defects", "standards")),
+                         [(l, i) for l in ("defects", "standards") for i in (1, 2, 3)])
         for c in p["calls"]:
             if c["lane"] == "spec":  # a repo target finds docs/guide.md as its spec; the spec lane is never sharded
                 continue
@@ -894,23 +894,24 @@ class Shards(ShardBase):
                                                       c["lane"] + ".md"))
 
     def test_packs_go_into_each_shard_input(self):
-        self.run_plan(cfg={"max_shards": 2})
+        self.run_plan()
         self.assertIn("packs/python.md", self.read_text("shards", "1", "inputs", "defects.md"))
         self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "shards", "1", "inputs", "packs", "python.md")))
         self.assertNotIn("packs/python.md", self.read_text("shards", "2", "inputs", "defects.md"))
 
     def test_rerun_rebuilds_the_shard_dirs(self):
-        self.run_plan(cfg={"max_shards": 3})
-        self.run_plan(cfg={"max_shards": 2})
-        self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "shards"))), ["1", "2"])
+        os.makedirs(os.path.join(self.run_dir, "shards", "9"))
+        self.run_plan()
+        self.assertEqual(sorted(os.listdir(os.path.join(self.run_dir, "shards"))), ["1", "2", "3"])
 
-    def test_end_to_end_ingest_and_render_list_the_skipped_shard(self):
-        self.run_plan(cfg={"max_shards": 2})
+    def test_end_to_end_ingest_and_render_report_shards_without_a_skipped_list(self):
+        self.run_plan()
         c = cand("value = 1", 1, path="auth/login.py", category="bug")
         rc, out = self.rep("ingest", tr.lines(c), extra=["--lane", "defects", "--shard", "1"])
         self.assertEqual(rc, 0, out)
         rc, out = self.rep("render")
-        self.assertIn("shard skipped: shard 3 (shard cap: 1 files) 1 files", out)
+        self.assertIn("shards reviewed: 1 (1 files)", out)
+        self.assertNotIn("shard skipped", out)
 
 
 class Inventory(Fixture):
@@ -1326,6 +1327,22 @@ class CeilingWarning(Fixture):
         self.assertEqual([x for x in pv if x.startswith("Warning:")], [])
 
 
+class EverythingReviewed(ShardBase):  # gh#71: no cap on the shards a repo target builds
+    base_files = {"d%d/a.py" % i: "x = %d\n" % i for i in range(8)}
+    feat_files = {"d0/a.py": "x = 9\n"}
+
+    def test_more_than_six_shards_all_build_on_every_tier(self):
+        for tier in ("lean", "quick", "standard", "deep"):
+            with self.subTest(tier=tier):
+                p = self.run_plan(tier=tier)
+                self.assertEqual(len(p["shards"]), 8)
+                self.assertEqual([x for x in p["skipped"] if x["what"].startswith("shard ")], [])
+                got = sorted((c["lane"], c["shard"]) for c in p["calls"] if c["lane"] in ("defects", "standards"))
+                want = sorted((lane, i) for i in range(1, 9) for lane in (("standards",) if tier == "lean" else ("defects", "standards")))
+                self.assertEqual(got, want)
+                self.assertNotIn("max_shards", p["caps"])
+
+
 class PreviewShards(ShardBase):
     base_files = {"auth/login.py": PAD, "docs/guide.md": PAD, "util/helpers.py": PAD}
     feat_files = {"auth/login.py": PAD + "other = 2\n"}
@@ -1333,10 +1350,10 @@ class PreviewShards(ShardBase):
     def test_repo_target_confirms_and_shows_shards_without_paths(self):
         import plan as mod
         with mock.patch.object(mod, "SHARD_BYTES", 1):
-            out = mod.plan(self.run_dir, "standard", {"max_shards": 2})
+            out = mod.plan(self.run_dir, "standard", {})
         self.assertTrue(out["confirm"])
         p = self.plan_json()
-        self.assertIn("Shards: 2 of 3 kept", p["preview"])
+        self.assertIn("Shards: 3", p["preview"])
         self.assertIn("Call defects, shard 2:", "\n".join(p["preview"]))
         tj = self.read_json("target.json")
         for line in p["preview"]:

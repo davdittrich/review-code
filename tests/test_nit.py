@@ -92,7 +92,7 @@ class Severity(NitBase):
 
 class RuleBasis(NitBase):
     def test_a_nit_that_quotes_a_rule_is_reported_with_its_basis_and_never_changes_the_verdict(self):
-        out = self.lane(self.rule_nit())
+        out = self.lane(self.rule_nit(), {"inspected": ["src/calc.py"]})  # finished: an unfinished lane gates the verdict (gh#71)
         self.assertEqual(out["dropped"]["invalid"], 0)
         self.confirm(out, [self.cite()])
         d = self.doc()
@@ -255,7 +255,7 @@ class UnchangedLineOnRepo(UnchangedFiles, NitBase):
 
 class Unverifiable(NitBase):
     def test_a_nit_without_a_valid_cite_is_unverifiable_and_never_blocks(self):
-        out = self.lane(self.rule_nit())
+        out = self.lane(self.rule_nit(), {"inspected": ["src/calc.py"]})  # finished: an unfinished lane gates the verdict (gh#71)
         self.confirm(out, [dict(self.cite(), quote="not on that line")])
         d = self.doc()
         self.assertEqual(d["findings"], [])

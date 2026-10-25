@@ -323,8 +323,14 @@ class CleanGate(tr.Lanes):  # review-code-0c4
     def test_complete_lanes_read_clean(self):
         self.plan("defects", "standards")
         self.lane("defects", {"inspected": ["src/calc.py"]})
-        self.lane("standards")  # an incomplete standards lane stays advisory
+        self.lane("standards", {"inspected": ["src/calc.py"]})
         self.assertEqual(self.verdict()[0], "No blocking findings")
+
+    def test_an_incomplete_standards_lane_no_longer_reads_clean(self):  # gh#71
+        self.plan("defects", "standards")
+        self.lane("defects", {"inspected": ["src/calc.py"]})
+        self.lane("standards")
+        self.assertEqual(self.verdict()[0], "Needs discussion")
 
 
 if __name__ == "__main__":

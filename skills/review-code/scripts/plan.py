@@ -9,7 +9,7 @@
     userConfig reference) are ignored; anything else invalid refuses `bad-config`, naming only the key.
 
 plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
-prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_shards, max_packs,
+prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_verifier_calls, max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
 confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads caps.max_verifier_calls and skipped.
 """
@@ -37,13 +37,13 @@ DEFAULT_TIER = "standard"
 # is opus so it differs from the sonnet finder: the verifier must not share the finder's model.
 TIERS = {
     "lean": {"lanes": ("standards",), "finder": ("opus", "medium"), "verifier": ("sonnet", "high"),
-             "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},  # cleanup only: no Defects or Spec lane
+             "max_verifier_calls": 10, "max_packs": 2},  # cleanup only: no Defects or Spec lane
     "quick": {"lanes": ("defects", "standards"), "finder": ("sonnet", "low"), "verifier": ("opus", "medium"),
-              "max_verifier_calls": 10, "max_shards": 3, "max_packs": 2},
+              "max_verifier_calls": 10, "max_packs": 2},
     "standard": {"lanes": ("defects", "standards", "spec"), "finder": ("opus", "medium"),
-                 "verifier": ("sonnet", "high"), "max_verifier_calls": 25, "max_shards": 6, "max_packs": 4},
+                 "verifier": ("sonnet", "high"), "max_verifier_calls": 25, "max_packs": 4},
     "deep": {"lanes": ("defects", "standards", "spec", "sota"), "finder": ("opus", "xhigh"),
-             "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_shards": 12, "max_packs": 9},
+             "verifier": ("sonnet", "high"), "max_verifier_calls": 60, "max_packs": 9},
 }
 SETTING_TIERS = tuple(t for t in TIERS if t != "lean")  # lean is flag-only: a setting may not hold it
 STANDARDS_DEFAULT = ("haiku", "medium")  # the Standards lane never reports Blocking and its findings are verified; every tier
@@ -56,7 +56,7 @@ MAX_TURNS = {"finder": 40, "standards": 60, "spec": 30, "sota": 20, "verifier": 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALIASES = ("opus", "sonnet", "haiku", "fable")  # the family aliases plugin.json offers
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
-CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_shards": (1, 50), "max_packs": (1, 9)}
+CAP_BOUNDS = {"max_verifier_calls": (1, 200), "max_packs": (1, 9)}
 CONFIG_KEYS = {"default_tier", "finder_model", "finder_effort", "standards_model", "standards_effort", "verifier_model",
                "verifier_effort", "agent_prefix", "nav_hint"} | set(CAP_BOUNDS)
 MAX_STDIN = 65536
@@ -439,9 +439,8 @@ def _preview(doc, sizes):
     agents = sum(1 for c in calls if c["agent"] != "main-thread")
     verifier_cap = caps["max_verifier_calls"] if doc["mode"] == "parallel" else 0
     out = ["Tier %s, mode %s" % (doc["tier"], doc["mode"])]
-    if doc["shards"] or any(x["what"].startswith("shard ") for x in doc["skipped"]):
-        out.append("Shards: %d of %d kept" % (len(doc["shards"]), len(doc["shards"]) + sum(
-            1 for x in doc["skipped"] if x["what"].startswith("shard "))))
+    if doc["shards"]:
+        out.append("Shards: %d" % len(doc["shards"]))
     warns = []
     for c in calls:
         name = "%s%s" % (c["lane"], ", shard %d" % c["shard"] if c["shard"] else "")
@@ -570,11 +569,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
             os.makedirs(os.path.join(run, "shards"), mode=0o700)
             for i, (risk, files) in enumerate(_rank_shards(tj, led, groups, stats), 1):
-                if i > caps["max_shards"]:
-                    skipped.append({"what": "shard %d" % i, "why": "shard cap: %d files" % len(files), "files": len(files)})
-                else:
-                    shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools),
-                                   "files": files, "risk": round(risk, 3)})
+                shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools),
+                               "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
             skipped.append({"what": "spec", "why": "no spec"})

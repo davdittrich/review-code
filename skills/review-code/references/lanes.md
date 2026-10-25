@@ -6,12 +6,12 @@ Load this when you need to know which lanes a run has, what a tier changes, what
 
 `--lean`, `--quick`, `--standard` and `--deep` choose the tier (default `standard`, or the `default_tier` setting). Every model and effort value is an unvalidated default: `evals/` holds a harness but no baseline has been recorded to tune it against. Override per user with the plugin settings; reopen them with `/plugin configure review-code@<marketplace>`.
 
-| Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Shards | Packs |
-|------|-------|---------------------|-----------------------|----------------|--------|-------|
-| lean | standards | none (no Defects or Spec lane) | sonnet/high | 10 | 3 | 2 |
-| quick | defects, standards | sonnet/low | opus/medium | 10 | 3 | 2 |
-| standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 6 | 4 |
-| deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 12 | 9 |
+| Tier | Lanes | Finder model/effort | Verifier model/effort | Verifier ids | Packs |
+|------|-------|---------------------|-----------------------|----------------|-------|
+| lean | standards | none (no Defects or Spec lane) | sonnet/high | 10 | 2 |
+| quick | defects, standards | sonnet/low | opus/medium | 10 | 2 |
+| standard | defects, standards, spec | opus/medium | sonnet/high | 25 | 4 |
+| deep | defects, standards, spec, sota | opus/xhigh | sonnet/high | 60 | 9 |
 
 `--lean` is the cleanup tier: it runs only the Standards lane and its verifier, so Defects and Spec never run, the plan lists both as skipped with the reason `tier lean`. Use it to tidy a change, alone or with `--fix`; fix mode keeps its own gates. `--sota` adds nothing to it.
 
@@ -70,7 +70,6 @@ When more packs match than the cap allows, packs rank by matched-file count, mos
 | Cap | Meaning | Bounds |
 |-----|---------|--------|
 | `max_verifier_calls` | Findings (ids) sent to verifier plus spec-verifier per run, up to 5 ids of one shard per call; in serial mode, where the preview shows 0 verifier ids, the candidates the main thread self-scores; cut candidates render as unverifiable with reason `verifier-cap` | 1 to 200 |
-| `max_shards` | Shards reviewed; the rest are listed as skipped | 1 to 50 |
 | `max_packs` | Packs loaded; the rest are listed as skipped | 1 to 9 |
 | `SIB_*` (`ledger.py`) | The `siblings` context category: for a new shipped file (at most 5 per run) with up to 3 unchanged siblings, `git grep` finds registries that name at least 2 siblings but not the file (a new file with fewer than 2 siblings finds none; at most 8 per file; a sibling token in more than 12 files is dropped as too common; 20 s wall clock, recorded as `capped`), plus files that changed together in at least 3 of the last 1000 commits of the past year (ratio 0.6 or more, 12 at most). Hits are listed as at most 19 hint lines in a `## Siblings` section of the Standards input, as hints a finding must cite, never evidence. The lane may send a `smell` finding at `suggestion` from a confirmed registry gap, anchored on the new file's first line (an added line, so it is not dropped as pre-existing) with the hint as `trigger` | fixed |
 | `wave_size` | Agent calls issued in one message: 8, the live limit on concurrent subagents (a 9th call is refused) | fixed |
@@ -109,4 +108,4 @@ When `python3` is missing or `target.py` prints `python-too-old` (python3 below 
 
 ## Shards
 
-Path and repo targets above 400000 bytes or 300 included files are grouped by top-level directory (a large one splits by its second path component; small neighbours merge), ranked by risk, and built as their own run directories under `<run>/shards/N`, each with its own ledger and inputs and the parent's trust answer. Risk adds one per file whose path holds a risk word (auth, token, payment and similar), one when no file of the shard is a test or has a test in the ledger, and recent churn over the shard's line count; the weights are unvalidated. Diff targets are not sharded. Defects and Standards run once per kept shard; Spec and SOTA run once over the whole run. Shards beyond `max_shards` are listed as skipped with their file counts and are not reviewed. Each shard copies the checkout difference into its own `tree/`; every other file is read from the repository.
+Path and repo targets above 400000 bytes or 300 included files are grouped by top-level directory (a large one splits by its second path component; small neighbours merge), ranked by risk, and built as their own run directories under `<run>/shards/N`, each with its own ledger and inputs and the parent's trust answer. Risk adds one per file whose path holds a risk word (auth, token, payment and similar), one when no file of the shard is a test or has a test in the ledger, and recent churn over the shard's line count; the weights are unvalidated. Diff targets are not sharded. Defects and Standards run once per shard, every shard, in risk order; Spec and SOTA run once over the whole run. Each shard copies the checkout difference into its own `tree/`; every other file is read from the repository.
