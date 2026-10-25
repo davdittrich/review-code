@@ -143,6 +143,15 @@ class Categories(Base):
             self.assertIn('\n- "src/a.py"\n- "tests/test_a.py"\n', text, kind)
             self.assertIn("every line of an included file is under review", text, kind)
 
+    def test_both_included_file_lists_are_capped(self):  # review-code-5jeu
+        names = ["src/f%03d.py" % i for i in range(ledger.CAP_FIND + 5)]
+        self.base({n: "x = 1\n" for n in names})
+        self.build(kind="repo", included=names)
+        for f in ("defects", "standards"):
+            sec = self.read("inputs/%s.md" % f).split("## Included files\n\n", 1)[1].split("\n## ", 1)[0]
+            self.assertEqual(sec.count('- "src/f'), ledger.CAP_FIND, f)
+            self.assertIn("(+5 more included files not listed)", sec, f)
+
     def test_a_diff_standards_input_has_no_included_files_section(self):
         self.base({"src/a.py": "x = 1\n"})
         self.branch({"src/a.py": "x = 2\n"})

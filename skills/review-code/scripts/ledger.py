@@ -61,7 +61,7 @@ _LOAD_FILE = re.compile(r"(?:Dockerfile(?:\.[\w-]+)?|docker-compose.*\.ya?ml|Pro
 _SPEC_DIRS = ("docs/", "specs/", ".scratch/")
 _PROSE_EXT = (".md", ".rst", ".adoc", ".txt")
 WHOLE = target.WHOLE
-CAP_FIND = 300  # lines per list in inputs/spec-find.md
+CAP_FIND = 300  # lines per list in inputs/spec-find.md, and included files listed in inputs/defects.md and standards.md
 _ADR_DIRS = frozenset(("adr", "adrs", "decisions", "architecture-decisions", "architecture-decision-records"))
 ADR_WIDTH = len(str(target.MAX_FILE))  # a record's size is printed at this width, or as ADR_OVER past MAX_FILE, so spec.md's length never follows it
 ADR_OVER = "over %dM" % (target.MAX_FILE // 10 ** 6)  # ADR_WIDTH characters: the size field of a record left unread, whose real size is not printed
@@ -1032,6 +1032,12 @@ def _commit_messages(repo: str, commits: List[str]) -> List[str]:
     return [sanitize.sanitize_prose(p.decode("utf-8", "surrogateescape") + "\n") for p in parts]  # +LF: the old per-commit tail
 
 
+def _listed(paths):
+    """At most CAP_FIND included paths, one per line, and the count left out (a whole-tree run can hold thousands)."""
+    out = "\n".join("- " + json.dumps(p) for p in paths[:CAP_FIND])
+    return out + "\n(+%d more included files not listed)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
+
+
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:
     # the run path goes into the lane inputs as UTF-8 text; a lone surrogate (a non-UTF-8 git dir name) cannot
     target.require_utf8([run], "non-utf8-name", "the run directory path is not valid UTF-8")
@@ -1125,7 +1131,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
            "# Defects input\n\n" + pin + hist + "label: %s\nchange_diff: %s\nledger: %s\nincluded_count: %d\n"
            "excluded_count: %d\n\n## Included files\n\n%s\n" % (
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
-               "\n".join("- " + json.dumps(p) for p in tj["included"])) +
+               _listed(tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\ntree/ holds the pinned copy of each checkout-difference file (hidden text stripped from "
            "prose and markup files, hidden characters escaped in all); read every other file from the repository. A file under "
            "Skipped has no readable copy. Never read a path listed under Skipped, in the repository or anywhere else: it may be a link into the host.\n\n## Skipped\n\n%s\n" % (
@@ -1140,7 +1146,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                                                     if k.startswith("CONTRIBUTING")), "absent at base")
     whole = ("\n## Included files\n\nThis target is a tree, not a change: change_diff is empty and every line of an included file is under "
              "review here. Read each file; \"changed lines\" in your prompt and in smells.md means the lines of these files.\n\n%s\n" %
-             "\n".join("- " + json.dumps(p) for p in tj["included"])) if tj["kind"] in WHOLE else ""
+             _listed(tj["included"])) if tj["kind"] in WHOLE else ""
     write(os.path.join(run, "inputs", "standards.md"),
            "# Standards input\n\n" + pin + hist + "label: %s\nchange_diff: %s\n\n## Convention copies (base ref)\n\n%s\n\n"
            "## Required sources\n\nCODING_STANDARDS.md: %s\nCONTRIBUTING.md: %s\n\n## Ignored\n\n%s\n%s" % (
