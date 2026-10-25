@@ -89,6 +89,11 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
         raise target.Refuse("no-merge-base")
     wt, home, tmp = (os.path.join(run_dir, p + fid) for p in ("wt-", "repro-home-", "repro-tmp-"))
     wth = os.path.join(run_dir, "wt-head-" + fid)  # base mode only: where the head's copy of the test is read
+    # review-code-6f3w/vb7w: _term raises SystemExit; a signal inside setup-to-cleanup would leak wt-<id>. Block both from
+    # here: they are delivered only around _execute, and the cleanup below runs masked. Git children started during
+    # setup inherit the blocked mask (harmless).
+    sigs = {getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)}
+    prev = signal.pthread_sigmask(signal.SIG_BLOCK, sigs) if hasattr(signal, "pthread_sigmask") else None
     try:
         target.git_bytes(["worktree", "add", "--detach", wth if base else wt, head], repo)
         if kind in target.INPLACE:  # HEAD plus the tracked diff; untracked files are not carried
@@ -117,16 +122,19 @@ def run(run_dir: str, fid: str, test: str, cmd: List[str], source: bytes, base: 
         os.mkdir(tmp, 0o700)
         env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
         env.update(HOME=home, TMPDIR=tmp)
-        result = _execute(cmd, wt, env, None if base else fid)
+        try:  # unmask before the call: the test's child process inherits the mask
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, prev)
+            result = _execute(cmd, wt, env, None if base else fid)
+        finally:
+            if prev is not None:
+                signal.pthread_sigmask(signal.SIG_BLOCK, sigs)
     except (target.Refuse, OSError) as e:
         if isinstance(e, target.Refuse) and e.reason in ("bad-test-path", "no-test-at-head"):
             raise
         result = {"outcome": "error", "exit": None}  # a git or OS failure after the gate
     finally:
-        # review-code-6f3w: _term raises SystemExit; a signal inside this cleanup would abort it and leave wt-<id>.
-        # Block both until it is done: the pending one is delivered at the unmask, after the cleanup.
-        sigs = {getattr(signal, n) for n in ("SIGTERM", "SIGHUP") if getattr(signal, n, None)}
-        prev = signal.pthread_sigmask(signal.SIG_BLOCK, sigs) if hasattr(signal, "pthread_sigmask") else None
+        # masked here (see above): a pending signal is delivered at the unmask, after the cleanup
         try:
             for w in (wt, wth):
                 target.git_bytes(["worktree", "remove", "--force", w], repo, check=False)

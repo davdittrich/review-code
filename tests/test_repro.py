@@ -109,6 +109,44 @@ class Tracer(Base):
                             stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
         self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
         self.assert_clean(run)
+        self.assertFalse(os.path.exists(os.path.join(run, "repro", FID + ".json")))
+
+    def test_sigterm_before_the_mask_leaves_no_worktree(self):
+        # review-code-vb7w: the mask used to start inside finally; a signal just before it aborted the cleanup
+        run = self.start()
+        real, hit = signal.pthread_sigmask, []
+
+        def term_before_block(how, mask):
+            if how == signal.SIG_BLOCK and not hit and os.path.isdir(os.path.join(run, "wt-" + FID)):
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(how, mask)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.signal, "pthread_sigmask", side_effect=term_before_block), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
+
+    def test_sigterm_during_setup_is_held_until_the_run_then_cleaned_up(self):
+        run = self.start()
+        real, hit = repro.target.git_bytes, []
+
+        def term_once(args, *a, **k):
+            if args[:2] == ["worktree", "add"] and not hit:
+                hit.append(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(args, *a, **k)
+
+        out = io.StringIO()
+        with mock.patch.object(repro, "_execute", return_value={"outcome": "reproduced", "exit": 1}), \
+                mock.patch.object(repro.target, "git_bytes", side_effect=term_once), redirect_stdout(out):
+            rc = repro.main(["run", "--run", run, "--id", FID, "--test", "t.py", "--", "true"],
+                            stdin=io.BytesIO(PASS_SRC.encode("utf-8")))
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]), (143, "interrupted"))
+        self.assert_clean(run)
 
     def test_sigterm_cleans_up_and_kills_the_test_group(self):
         run = self.start()
