@@ -238,15 +238,15 @@ class Paid(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def fake(self, fail_on=()):
+    def fake(self, fail_on=(), cost=1.0):
         calls = []
 
-        def run_claude(repo, plugin, case, lean, budget):
+        def run_claude(repo, plugin, case, lean):
             self.repos.append(repo)
             calls.append(repo)
             if len(calls) in fail_on:
                 raise RuntimeError("boom")
-            return "```json\n" + json.dumps(doc()) + "\n```", 1.0
+            return "```json\n" + json.dumps(doc()) + "\n```", cost
         ev.run_claude = run_claude
 
     def main(self, *args):
@@ -287,6 +287,18 @@ class Paid(unittest.TestCase):
         w = ev.meta_warnings({"meta": {"tiers_hash": "old"}, "cases": {"a": {}, "b": {"meta": {}}}})
         self.assertEqual(w, ["baseline a predates per-case meta: re-accept it", "baseline b predates per-case meta: re-accept it"])
         self.assertEqual(ev.meta_warnings({"meta": {}, "cases": {}}), [])
+
+    def test_run_cases_sums_the_reported_cost_per_case(self):
+        self.fake(cost=0.25)
+        _, costs = ev.run_cases(["clean-diff-negative"], ev.load_cases(), 3, False, "s")
+        self.assertEqual(costs, {"clean-diff-negative": 0.75})
+        self.assertEqual(len(self.repos), 3)
+
+    def test_an_errored_run_does_not_stop_the_sweep_and_makes_the_case_cost_unknown(self):
+        self.fake(fail_on=(2,), cost=0.1)
+        _, costs = ev.run_cases(["clean-diff-negative"], ev.load_cases(), 3, False, "s")
+        self.assertEqual(len(self.repos), 3)
+        self.assertIsNone(costs["clean-diff-negative"])
 
     def test_unknown_cost_is_stored_as_none_not_zero(self):
         self.fake(cost=None)
@@ -348,9 +360,9 @@ class MainFlags(unittest.TestCase):
         with open(ev.BASELINE, "w") as fh:
             json.dump({"version": 1, "meta": {}, "cases": {"nodef": {"cost": 2.0}}}, fh)
         with mock.patch.object(ev.shutil, "which", return_value="/bin/claude"), \
-                mock.patch.object(ev, "run_cases", return_value=None):
+                mock.patch.object(ev, "run_cases", return_value=({"nodef": []}, {"nodef": 0.0})):
             rc, out, _ = self.main("--cheap", "--yes")
-        self.assertEqual(rc, 2)
+        self.assertIn(rc, (0, 1))
         self.assertIn("(heuristic, no baseline cost)", out)
 
     def test_accept_with_rescore_is_rejected(self):

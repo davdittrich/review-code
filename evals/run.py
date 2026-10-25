@@ -276,7 +276,7 @@ def meta_warnings(base):
 
 # ---- ADAPTER: the only code that touches the live `claude` CLI (all of it UNVERIFIED, see README) --------
 
-def run_claude(repo, plugin, case, lean, budget):
+def run_claude(repo, plugin, case, lean):
     """Run one headless review in repo; returns (text, cost_usd or None). Raises on a failed or unparsable call."""
     flags = "--json --own" + (" --lean" if lean else "")
     prompt = ("%s Use the review-code skill on the last commit (HEAD~1..HEAD) with %s. "
@@ -285,8 +285,6 @@ def run_claude(repo, plugin, case, lean, budget):
     # and the lanes only need to read. UNVERIFIED against a live run: --allowedTools is variadic, so it goes last.
     cmd = ["claude", "-p", prompt, "--plugin-dir", plugin, "--output-format", "json", "--no-session-persistence",
            "--permission-mode", "dontAsk"]
-    if budget:
-        cmd += ["--max-budget-usd", "%.2f" % budget]
     cmd += ["--allowedTools", "Read", "Grep", "Glob", "Agent"]
     p = subprocess.run(cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1800)
     out = p.stdout.decode("utf-8", "replace")
@@ -296,7 +294,8 @@ def run_claude(repo, plugin, case, lean, budget):
     except ValueError:
         text, cost = out, None
     if p.returncode != 0 and not text:
-        raise RuntimeError("claude exited %d: %s" % (p.returncode, p.stderr.decode("utf-8", "replace")[-300:]))
+        e = RuntimeError("claude exited %d: %s" % (p.returncode, p.stderr.decode("utf-8", "replace")[-300:]))
+        raise e
     return text if isinstance(text, str) else json.dumps(text), cost if isinstance(cost, (int, float)) else None
 
 
@@ -378,9 +377,9 @@ def rescore(path, names, cases, lane):
     return out
 
 
-def run_cases(names, cases, runs, lane, max_cost, stamp):
-    """The paid loop: (scores_by, costs) per case, or None when --max-cost-usd was exceeded. Raw documents go to OUT/stamp."""
-    scores_by, costs, spent, k = {}, {}, 0.0, 0
+def run_cases(names, cases, runs, lane, stamp):
+    """The paid loop: (scores_by, costs) per case. Raw documents go to OUT/stamp."""
+    scores_by, costs, k = {}, {}, 0
     with tempfile.TemporaryDirectory() as tmp:
         plugin = os.path.join(tmp, "plugin")
         copy_plugin(plugin)
@@ -393,8 +392,7 @@ def run_cases(names, cases, runs, lane, max_cost, stamp):
                 build_repo(cases[n], repo)
                 raw = {"case": n, "run": i}
                 try:
-                    raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane),
-                                                          None if max_cost is None else max(max_cost - spent, 0.01))
+                    raw["text"], raw["cost"] = run_claude(repo, plugin, cases[n], bool(lane))
                 except Exception as e:  # an errored run is excluded from n and flagged
                     raw["text"], raw["cost"], raw["error"] = "", None, str(e)
                 d = os.path.join(OUT, stamp, n)
@@ -402,11 +400,7 @@ def run_cases(names, cases, runs, lane, max_cost, stamp):
                 with open(os.path.join(d, "run%d.json" % i), "w", encoding="utf-8") as fh:
                     json.dump(raw, fh, indent=1)
                 scores_by[n].append(score(extract_doc(raw["text"]), cases[n], lane))
-                spent += raw["cost"] or 0.0
                 costs[n] = None if costs[n] is None or raw["cost"] is None else costs[n] + raw["cost"]
-                if max_cost is not None and spent > max_cost:
-                    print("aborted: spent $%.2f over --max-cost-usd %.2f; raw documents in %s" % (spent, max_cost, os.path.join(OUT, stamp)), file=sys.stderr)
-                    return None
     return scores_by, costs
 
 
@@ -432,7 +426,6 @@ def main(argv=None):
     ap.add_argument("--case")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--yes", action="store_true", help="skip the cost question")
-    ap.add_argument("--max-cost-usd", type=float)
     ap.add_argument("--rescore", metavar="DIR", help="score saved documents again, free")
     ap.add_argument("--accept", action="store_true", help="write this run to evals/baseline.json")
     a = ap.parse_args(argv)
@@ -477,10 +470,7 @@ def main(argv=None):
             if input("Run? [y/N] ").strip().lower() != "y":
                 return 2
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        res = run_cases(names, cases, runs, lane, a.max_cost_usd, stamp)
-        if res is None:
-            return 2
-        scores_by, costs = res
+        scores_by, costs = run_cases(names, cases, runs, lane, stamp)
         print("raw documents: %s" % os.path.join(OUT, stamp))
     code = report(names, cases, scores_by, base, lane)
     if a.accept and not a.rescore:
