@@ -1035,7 +1035,7 @@ def _commit_messages(repo: str, commits: List[str]) -> List[str]:
 def _listed(paths):
     """At most CAP_FIND included paths, one per line, and the count left out (a whole-tree run can hold thousands)."""
     out = "\n".join("- " + json.dumps(p) for p in paths[:CAP_FIND])
-    return out + "\n(+%d more included files not listed)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
+    return out + "\n(+%d more included files: see the included list of target.json beside change_diff)" % (len(paths) - CAP_FIND) if len(paths) > CAP_FIND else out
 
 
 def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False) -> dict:

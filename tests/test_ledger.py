@@ -155,7 +155,7 @@ class Categories(Base):
         for f in ("defects", "standards"):
             sec = self.read("inputs/%s.md" % f).split("## Included files\n\n", 1)[1].split("\n## ", 1)[0]
             self.assertEqual(sec.count('- "src/f'), ledger.CAP_FIND, f)
-            self.assertIn("(+5 more included files not listed)", sec, f)
+            self.assertIn("(+5 more included files: see the included list of target.json beside change_diff)", sec, f)
 
     def test_a_diff_standards_input_has_no_included_files_section(self):
         self.base({"src/a.py": "x = 1\n"})
