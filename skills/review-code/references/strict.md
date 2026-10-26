@@ -16,6 +16,7 @@ and Standards inputs (an untraced concern with file:line, quote and trigger keep
 - At Blocking or Required an inferred finding makes the verdict not clean; a Suggestion does not. A nit never changes the verdict
   (ADR 0001), with or without `--strict`.
 - `--fix` and `--fix-tests` skip inferred findings (`why: inferred`). `--comment` labels them "inferred (source read)".
+- Known limit: the lift rests on the verifier's `re-derived:` reason prefix; the code does not check the re-derivation.
 - Serial mode (every candidate self-scored) ignores the flag and adds a lost guarantee saying so.
 - JSON adds `strict` (true) and `inferred` (the count) only under the flag; the text summary adds `strict: N inferred`; SARIF keeps the
   severity level and carries the class in `properties.evidenceClass`. Without the flag, none of these appear.
