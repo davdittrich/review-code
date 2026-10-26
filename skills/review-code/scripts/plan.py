@@ -1,6 +1,6 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
-    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit] [--strict]
+    plan.py plan --run DIR [--tier lean|quick|standard|deep] {FLAGS}
                                     stdout: one JSON line (status, reason, detail, tier, mode, calls (the entries
                                     {lane, agent, prompt, model, effort, shard[, input: serial mode only]}), skipped,
                                     lost_guarantees, lost_capabilities, confirm, preview, wave_size, verifier,
@@ -11,7 +11,7 @@
 plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
-confirm, effective_overrides{key: value}, ai, nit (only with --nit), strict (only with --strict). The orchestrator obeys it; report.py reads skipped.
+confirm, effective_overrides{key: value}, ai, nit (only with --nit), strict (only with --strict), sweep (only with --sweep). The orchestrator obeys it; report.py reads skipped.
 """
 import sys
 
@@ -206,14 +206,14 @@ def _put_sections(path, sections):
 NIT_MARK = "\n<!-- review-code:nit-mode -->\n"  # spec.md prose passes sanitize_prose, which removes every HTML comment: author text cannot hold this
 
 
-def _put_spec_nit(path, body, strict=None):
-    """The Spec lane's `## Nit mode` and `## Strict mode` sections, appended after NIT_MARK and removed from the last mark to the end,
+def _put_spec_modes(path, nit, strict):
+    """The Spec lane's `## Nit mode` and `## Strict mode` sections (section text or None), appended after NIT_MARK and removed from the last mark to the end,
     whatever wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     i = text.rfind(NIT_MARK)
     text = text[:i] if i >= 0 else text
-    tail = ("## Nit mode\n\n%s\n" % NIT_SPEC if body else "") + ("\n## Strict mode\n\n%s\n" % strict if strict else "")
+    tail = ("## Nit mode\n\n%s\n" % nit if nit else "") + ("\n## Strict mode\n\n%s\n" % strict if strict else "")
     target.write_private(path, text + (NIT_MARK + tail.lstrip("\n") if tail else ""))
 
 
@@ -243,21 +243,21 @@ with no trigger you can name is not sent. The verifier decides whether it stands
 NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."
 
 
-def _install_packs(run, packs, nit=None, strict=False):
+def _install_packs(run, packs, nit=None, strict=None):
     """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs;
-    nit is the Nit mode section text for the standards input (None drops a stale one)."""
-    inp, sm = os.path.join(run, "inputs"), STRICT_MODE if strict else None
+    nit and strict are the Nit mode and Strict mode section text for the standards input (None drops a stale one)."""
+    inp = os.path.join(run, "inputs")
     shutil.rmtree(os.path.join(inp, "packs"), ignore_errors=True)
     for name, _ in packs:
         ledger.write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
     ledger.write(os.path.join(inp, "smells.md"), _ref("smells.md"))
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
     _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed), ("Nit mode", NIT_DEFECTS if nit else None),
-                                                       ("Strict mode", sm)])
-    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None, sm)
+                                                       ("Strict mode", strict)])
+    _put_spec_modes(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None, strict)
     _put_sections(os.path.join(inp, "standards.md"), [
         ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md"))),
-        ("Nit mode", nit), ("Strict mode", sm)])
+        ("Nit mode", nit), ("Strict mode", strict)])
 
 
 # Module shards (path and repo targets). 400000 bytes is about 100k tokens at 4 bytes per token, which leaves room in
@@ -326,7 +326,7 @@ def _rank_shards(tj, led, groups, stats):
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
-def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=(), strict=False):
+def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=(), strict=None):
     """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
     and the global packs that match its files."""
     d = os.path.join(run, "shards", str(i))
@@ -477,6 +477,8 @@ def _preview(doc, sizes):
         if fc and fc[0] * 2 > fc[1]:  # gh#36: over one file per two turns the lane may hit its ceiling before its report
             warns.append("Warning: call %s has %d files against a %d-turn ceiling; it may stop before its report "
                          "and the skill then resumes it once" % (name, fc[0], fc[1]))
+    if serial and doc.get("strict"):  # gh#82: serial self-scores, so report.py never lifts a concern
+        warns.append("Warning: --strict has no effect in serial mode: the main thread self-scores, so no concern is lifted into a finding")
     out += warns
     model = "%s/%s" % (ver["model"], ver["effort"]) if ver["model"] else "main thread"
     if serial:
@@ -490,7 +492,8 @@ def _preview(doc, sizes):
 
 
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
-              "--ai": ("ai", True), "--nit": ("nit", True), "--strict": ("strict", True)}
+              "--ai": ("ai", True), "--nit": ("nit", True), "--strict": ("strict", True),
+              "--sweep": ("sweep", True)}
 # Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
 SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing is Blocking",
                "no lane isolation: the main thread reads target code while holding Bash",
@@ -531,7 +534,7 @@ def _env_lost():
     return lost
 
 
-def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=(), strict=False):
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=(), strict=False, sweep=False):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
     tools = [t for t in tools if ledger.stored_trust(led) == "own" or not TOOLS[t]["runs"]]  # external code runs nothing of its own
@@ -589,14 +592,15 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         for lane in ("defects", "standards"):
             if lane in lanes and big > ledger.CAP_FIND:
                 raise target.Refuse("internal-error", "a %s call would list %d included files, above the cap of %d" % (lane, big, ledger.CAP_FIND))
-    _install_packs(run, packs, nit_text, strict)
+    strict_text = STRICT_MODE if strict else None
+    _install_packs(run, packs, nit_text, strict_text)
     shards = []
     if groups is not None:
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
             os.makedirs(os.path.join(run, "shards"), mode=0o700)
             for i, (risk, files) in enumerate(_rank_shards(tj, led, groups, stats), 1):
-                shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools, strict),
+                shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools, strict_text),
                                "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
@@ -633,6 +637,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         doc["nit"] = True
     if strict:  # gh#82: report.py lifts a verifier-re-derived inferred concern into a finding; serial mode ignores it there
         doc["strict"] = True
+    if sweep:  # absent otherwise, so existing plan.json files stay byte-identical; report.py sweeps only when true
+        doc["sweep"] = True
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc, {p: size for p, (size, _) in blobs.items()})
@@ -646,9 +652,13 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
             "preview": doc["preview"]}
 
 
+FLAGS = "[--sota|--no-sota] [--serial] [--ai] [--nit] [--strict] [--sweep]"  # the one flag list: _usage and the module docstring
+__doc__ = __doc__.replace("{FLAGS}", FLAGS)
+
+
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--strict] [--tool %s ...]" % "|".join(_selectable()))
+                                  "%s [--tool %s ...]" % (FLAGS, "|".join(_selectable())))
 
 
 def _parse(argv):
@@ -677,7 +687,7 @@ def main(argv):
         cfg = _read_config()
         tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
         out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
-                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ()), opts.get("strict", False)), 0
+                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ()), opts.get("strict", False), opts.get("sweep", False)), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # one JSON line, never a traceback
