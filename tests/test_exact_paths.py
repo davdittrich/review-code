@@ -90,6 +90,11 @@ class SeparateGitDir(gitfix.FeatureRepo):
 class CoChange(unittest.TestCase):
     """review-code-75w5: _cochange reads --name-only with -z, so a non-ASCII or non-UTF-8 name is its exact self."""
 
+    def setUp(self):
+        p = mock.patch.object(ledger, "SIB_DAYS", 3650)  # fixture commits carry a fixed 2026 date
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_a_file_that_changes_with_the_edited_one_is_hinted_by_its_exact_name(self):  # ledger._cochange
         for other in (os.fsdecode(b"\xc3\xa9.py"), NAME, "\nx.py"):  # the last sorts first: git's LF after the header is one LF
             with self.subTest(other=other), tempfile.TemporaryDirectory() as tmp:
