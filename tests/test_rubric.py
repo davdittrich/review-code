@@ -111,6 +111,19 @@ class Ledger(tl.Base):
         self.assertEqual([c["sha256"] for c in e], [hashlib.sha256(RUBRIC.encode()).hexdigest()])
         self.assertTrue(os.path.isfile(os.path.join(d, e[0]["copy"])))
 
+    def test_copy_rubrics_gives_another_run_the_copies_and_is_a_noop_without_any(self):
+        path = write_rubric(self.tmp)
+        self.prep()
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        ledger.copy_rubrics(self.run_dir, other)
+        self.assertEqual(os.listdir(other), [])
+        ledger.build(self.run_dir, rubrics=[path])
+        ledger.copy_rubrics(self.run_dir, other)
+        e = self.entry(self.load())
+        self.assertTrue(os.path.isfile(os.path.join(other, e["copy"])))
+        self.assertTrue(os.path.isfile(os.path.join(other, "rubrics.json")))
+
 
 class RuleCheck(tr.Lanes):
     base_files, feat_files = tr.BASE, {"src/calc.py": tr.FEAT}
