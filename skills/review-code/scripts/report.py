@@ -60,7 +60,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output). A file name that holds a hidden character stays raw in findings[].path and evidence[].path (a machine key); the text report and hidden_content show it escaped.
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
-A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm for Standards, evidence for Defects and Spec: its category); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. Under --strict (plan.json strict, not serial) it also carries strict (true) and inferred (the count of class-inferred findings). skipped[] lists what plan.json left out.
+A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm for Standards, evidence for Defects and Spec: its category); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. A finding whose first quoted line (8 characters or more) also occurs in the pinned tree outside the diff carries same_class [{path, line, text}] (5 at most, sorted) and same_class_omitted (the rest), found by git grep -F at report time; no verdict reads them. Under --strict (plan.json strict, not serial) it also carries strict (true) and inferred (the count of class-inferred findings). skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
 every non-SOTA candidate; spec_ids holds the Spec candidates for review-code:spec-verifier; SOTA candidates are in
@@ -1022,6 +1022,37 @@ def _added_lines(run):
     return tj["kind"] in WHOLE, added
 
 
+SWEEP_CAP, SWEEP_MIN = 5, 8  # gh#86: hits listed per finding, and the shortest quoted line worth searching
+
+
+def _sweep(tj, findings, added):
+    """gh#86: add same_class (at most SWEEP_CAP {path, line, text} outside the diff, sorted) and same_class_omitted to each
+    finding whose first quoted line occurs elsewhere in the pinned tree. Deterministic git grep, no LLM; verdict untouched."""
+    seen = {}
+    for f in findings:
+        q = next((x.strip() for x in f["quote"].split("\n") if x.strip()), "")
+        if len(q) < SWEEP_MIN or _ESCAPED.search(q) or f["category"] == "sota":
+            continue
+        if q not in seen:  # the tree is pinned, so one search serves every finding that quotes the same line
+            raw = target.git_bytes(["--literal-pathspecs", "grep", "-z", "-a", "-n", "-F", "--no-color", "-e", q, tj["pinned_tree"], "--"],
+                                   tj["repo"], check=False)
+            seen[q], pre, i = [], len(tj["pinned_tree"]) + 1, 0
+            while i < len(raw):  # tree:path NUL line NUL text NL
+                a = raw.find(b"\0", i)
+                b = raw.find(b"\0", a + 1) if a >= 0 else -1
+                if b < 0:
+                    break
+                c = raw.find(b"\n", b + 1)
+                seen[q].append((raw[i + pre:a].decode("utf-8", "surrogateescape"), int(raw[a + 1:b]),
+                                (raw[b + 1:] if c < 0 else raw[b + 1:c]).decode("utf-8", "surrogateescape")))
+                i = len(raw) if c < 0 else c + 1
+        hits = sorted(h for h in seen[q] if h[1] not in added.get(h[0], ()) and not (
+            h[0] == f["path"] and f["line"] <= h[1] <= f["end_line"]))
+        if hits:
+            f["same_class"] = [{"path": p, "line": n, "text": t[:200]} for p, n, t in hits[:SWEEP_CAP]]
+            f["same_class_omitted"] = len(hits) - len(f["same_class"])
+
+
 def _doomed(run, cands):
     """Ids render always drops (VERI-05): a suggestion or noted candidate wholly on unchanged lines of a change. A verdict can
     only worsen a severity, and the drop does not read the verdict, so no verifier call can change the outcome."""
@@ -1822,6 +1853,8 @@ def _build(run):
     for i in findings:
         i["impact"] = i["reason"]  # the verifier names the production impact in its reason (verifier.md)
     unverifiable = [i for i in items if not i["verified"]]
+    if not whole:  # a whole-file target has no diff to be outside of
+        _sweep(tj, findings, added)
     rank = {i["severity"] for i in findings}
     # Defects: any unverifiable item but a nit needs discussion (no nit changes the verdict, ADR 0002). Standards and Spec: only an item at required does, so
     # unverifiable smell, lean and comment suggestions never flip the verdict; SOTA never counts (its ceiling is suggestion).
@@ -1961,6 +1994,8 @@ def _text(doc):
                                                       i["evidence_class"], i["score"], i["origin"]),
                "    trigger: " + e(i["trigger"])] + _merged_rows(i, e)
         out += ["    spec: inputs/spec.md:%d" % i["spec_line"]] if "spec_line" in i else []
+        out += ["    same class elsewhere (outside the diff): %s:%d  %s" % (e(h["path"]), h["line"], e(h["text"])) for h in i.get("same_class", [])]
+        out += ["    same class elsewhere: +%d more" % i["same_class_omitted"]] if i.get("same_class_omitted") else []
         out += ["    evidence: %s:%d  %s" % (e(c["path"]), c["line"], e(c["quote"])) for c in i["evidence"]]
         out += ["    impact: " + e(i["impact"])] if i["impact"] else []
         return out + (["    fix: " + e(i["fix"])] if i["fix"] else [])
