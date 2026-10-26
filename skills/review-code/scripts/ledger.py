@@ -297,7 +297,8 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
 
 BUILD_USAGE = "usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH]"
-__doc__ = __doc__.replace("{BUILD_USAGE}", BUILD_USAGE)  # one usage string
+if __doc__:  # python -OO strips docstrings
+    __doc__ = __doc__.replace("{BUILD_USAGE}", BUILD_USAGE)  # one usage string
 SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
 SIB_LINES, SIB_DAYS, SIB_COCH_PER_FILE, SIB_COCH_MAX = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
 SIB_SHARED, SIB_BULK = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
@@ -420,9 +421,8 @@ def _siblings(repo: str, rev: Optional[str], mb_ls: dict, files: List[str], incl
             break
         capped = capped or len(got) > SIB_GAPS
         entries += got[:SIB_GAPS]
-    if mb:
-        entries += _cochange(repo, mb, mb_ls, set(files), included)
-    return entries[:SIB_LINES], capped
+    coch = _cochange(repo, mb, mb_ls, set(files), included) if mb else []
+    return entries[:SIB_LINES - len(coch)] + coch, capped  # co-change hints are not cut away by a full gap budget
 
 
 def _load(names: List[str]) -> dict:
@@ -493,7 +493,7 @@ def copy_rubrics(src: str, dest: str) -> None:
         shutil.copy(os.path.join(src, RUBRIC_RECORD), os.path.join(dest, RUBRIC_RECORD))
 
 
-def _rubrics(run: str, paths) -> list:
+def _rubrics(run: str, paths, repo: str) -> list:
     """gh#83: conventions entries for the user-named rubric files. Each is copied (hidden text stripped like a base rule)
     to conventions/rubric/ with its path and sha256 recorded. A bad path refuses as bad-rubric. User-named only: the files
     are read, never fetched."""
@@ -501,6 +501,9 @@ def _rubrics(run: str, paths) -> list:
     out = []
     for i, p in enumerate(paths, 1):
         full = os.path.abspath(os.path.expanduser(p))  # not realpath: read_working refuses a link
+        root = os.path.realpath(repo)
+        if os.path.commonpath([os.path.realpath(full), root]) == root:  # a rubric from the reviewed repository is the change's own text
+            raise target.Refuse("bad-rubric", "the --rubric file is inside the reviewed repository")
         try:
             status, data = target.read_working(full, target.MAX_FILE)
         except OSError:  # a directory: open succeeds, fdopen refuses
@@ -509,8 +512,12 @@ def _rubrics(run: str, paths) -> list:
         if text is None:
             raise target.Refuse("bad-rubric", "the --rubric file is %s" % {
                 "too-large": "over %d bytes" % target.MAX_FILE, "ok": "binary"}.get(status, "not a readable regular file"))
-        rel = "%s/%d-%s" % (os.path.basename(RUBRIC_DIR), i, re.sub(r"[^\w.-]", "_", os.path.basename(full))[:60])
-        _put(os.path.join(run, "conventions"), rel, _scan(rel, text)[0].encode("utf-8"))
+        name = re.sub(r"[^\w.-]", "_", os.path.basename(full))
+        stem, ext = os.path.splitext(name)
+        ext = ext[:59]  # the whole name is at most 60 characters and keeps its extension
+        rel = "%s/%d-%s" % (os.path.basename(RUBRIC_DIR), i, stem[:60 - len(ext)] + ext)
+        if not _put(os.path.join(run, "conventions"), rel, _scan(rel, text)[0].encode("utf-8")):
+            raise target.Refuse("bad-rubric", "the --rubric copy could not be written")
         out.append({"file": rel, "source": "rubric", "copy": "conventions/" + rel, "path": target.shown(full),
                     "sha256": hashlib.sha256(data).hexdigest(), "differs_on_head": False, "how": "user-named rubric"})
     _write_json(rec, out)
@@ -1138,7 +1145,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
 
     mb_ls = target.tree_listing(mb, repo)
     conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit, mb_ls)
-    rubric_entries = _rubrics(run, rubrics) if rubrics else _recorded_rubrics(run)
+    rubric_entries = _rubrics(run, rubrics, repo) if rubrics else _recorded_rubrics(run)
     conventions = conventions + rubric_entries
 
     messages = _commit_messages(repo, tj["commits"])

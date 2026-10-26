@@ -575,6 +575,15 @@ class Packs(Fixture):
         self.assertIs(self.run_plan("--strict")["strict"], True)
         self.assertNotIn("strict", self.run_plan())
 
+    def test_strict_in_serial_mode_installs_no_strict_section(self):  # review-code-cp5i.35
+        lanes = ("standards", "defects", "spec")
+        self.run_plan("--serial", "--strict")
+        for lane in lanes:
+            self.assertNotIn("## Strict mode", self.read("inputs/%s.md" % lane), lane)
+        self.run_plan("--strict")
+        for lane in lanes:
+            self.assertEqual(self.read("inputs/%s.md" % lane).count("## Strict mode"), 1, lane)
+
     def test_sweep_flag_sets_plan_json_only_when_given(self):  # review-code-cp5i.29
         self.assertNotIn("sweep", self.run_plan())
         self.assertIs(self.run_plan("--sweep")["sweep"], True)

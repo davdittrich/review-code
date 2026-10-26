@@ -6,7 +6,8 @@ import paths  # noqa: F401
 import report  # noqa: E402
 from test_report import BASE2, FEAT2, Q_ADD, Q_MUL, Base, cand, verdict, write_plan  # noqa: E402
 
-OTHER = "def sub(a, b):\n    return a - b\n" + "".join("\ndef s%d(a, b):\n    return a - b\n" % i for i in range(8))
+LONG = "    return a - b  # " + "x" * 250
+OTHER = "def sub(a, b):\n" + LONG + "\n" + "".join("\ndef s%d(a, b):\n    return a - b\n" % i for i in range(8))
 # an added copy of the finding's line, inside the diff: never a same-class hit
 FEAT = FEAT2 + "\ndef sub2(a, b):\n    return a - b\n"
 
@@ -25,12 +26,18 @@ class Sweep(Base):
         add = next(f for f in d["findings"] if f["quote"] == Q_ADD)
         hits = add["same_class"]
         self.assertEqual(len(hits), report.SWEEP_CAP)
-        self.assertTrue(all(h["path"] == "src/other.py" and h["text"].strip() == Q_ADD for h in hits), hits)
+        self.assertTrue(all(h["path"] == "src/other.py" and h["text"].strip().startswith(Q_ADD) for h in hits), hits)
         self.assertEqual(add["same_class_omitted"], 9 - report.SWEEP_CAP)  # 9 copies in other.py; the added copy in calc.py is in the diff
         mul = next(f for f in d["findings"] if f["quote"] == Q_MUL)
         self.assertNotIn("same_class", mul)  # its line occurs nowhere else
         rc, out = self.rep("render")
         self.assertIn("same class elsewhere (outside the diff): src/other.py:", out)
+
+    def test_hit_text_longer_than_the_limit_is_cut(self):  # review-code-cp5i.44
+        d = self.verdict_of(sweep=True)
+        add = next(f for f in d["findings"] if f["quote"] == Q_ADD)
+        self.assertTrue(add["same_class"], add)
+        self.assertEqual(max(len(h["text"]) for h in add["same_class"]), report.SWEEP_TEXT)
 
     def test_the_sweep_is_off_unless_the_plan_asks(self):  # review-code-cp5i.29
         d = self.verdict_of()

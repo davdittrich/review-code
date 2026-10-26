@@ -8,7 +8,7 @@ and Standards inputs (an untraced concern with file:line, quote and trigger keep
 
 - `report.py` adds a `strict:` line to each verify handoff. A verifier that re-derives the trigger from the cited source but cannot
   trace every path answers `unverifiable` with the cite and a reason that starts `re-derived:`.
-- `report.py` lifts exactly those concerns into findings of class `inferred`, severity kept (`STRICT_CLASS` is the one constant
+- `report.py` lifts exactly those concerns into findings of class `inferred`, severity kept but never past the cap a traced finding of its category gets (`STRICT_CLASS` is the one constant
   `fix.py` and `post.py` also read). Any other `unverifiable` verdict stays Unverifiable; a `refuted` one also stays Unverifiable, reason prefixed `refuted: `, not dropped
   (`dropped.refuted` stays 0; default and serial runs still drop it); `speculative` stays a question; web-sourced `sota` findings never lift.
 - Because a refuted concern is kept, a non-nit Defects concern the verifier refuted makes the verdict Needs discussion under `--strict`

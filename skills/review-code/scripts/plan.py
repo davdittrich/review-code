@@ -592,7 +592,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         for lane in ("defects", "standards"):
             if lane in lanes and big > ledger.CAP_FIND:
                 raise target.Refuse("internal-error", "a %s call would list %d included files, above the cap of %d" % (lane, big, ledger.CAP_FIND))
-    strict_text = STRICT_MODE if strict else None
+    strict_text = STRICT_MODE if strict and not serial else None
     _install_packs(run, packs, nit_text, strict_text)
     shards = []
     if groups is not None:
@@ -653,7 +653,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
 
 
 FLAGS = "[--sota|--no-sota] [--serial] [--ai] [--nit] [--strict] [--sweep]"  # the one flag list: _usage and the module docstring
-__doc__ = __doc__.replace("{FLAGS}", FLAGS)
+if __doc__:  # python -OO strips docstrings
+    __doc__ = __doc__.replace("{FLAGS}", FLAGS)
 
 
 def _usage():

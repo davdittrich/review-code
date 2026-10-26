@@ -1,4 +1,4 @@
-"""review-code-cp5i.30: a --strict lift keeps the candidate's severity but never past the category ceiling."""
+"""review-code-cp5i.30 .43: a --strict lift keeps the candidate's severity but never past the cap a traced finding of its category gets."""
 import json
 import unittest
 
@@ -25,6 +25,16 @@ class LiftCap(Base):
         d = self.lifted("smell", "blocking", "standards")
         (f,) = d["findings"]
         self.assertEqual((f["severity"], d["verdict"]), ("suggestion", "No blocking findings"))
+
+    def test_a_lifted_bug_at_blocking_reports_required(self):  # review-code-cp5i.43
+        d = self.lifted("bug", "blocking", "defects")
+        (f,) = d["findings"]
+        self.assertEqual((f["severity"], d["verdict"]), ("required", "Needs discussion"))
+
+    def test_a_lifted_security_finding_stays_blocking(self):
+        d = self.lifted("security", "blocking", "defects")
+        (f,) = d["findings"]
+        self.assertEqual((f["severity"], d["verdict"]), ("blocking", "Needs changes"))
 
 
 if __name__ == "__main__":

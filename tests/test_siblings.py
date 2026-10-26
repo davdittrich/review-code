@@ -18,6 +18,8 @@ import test_lanes as lanes  # noqa: E402
 import test_nit as tn  # noqa: E402
 import test_plan as tp  # noqa: E402
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 OPENER = "Hints, not evidence. A finding needs a trigger citing the hit list. Severity suggestion at most."
 MKT = ".claude-plugin/marketplace.json"
 SHIPPED_DAYS = ledger.SIB_DAYS
@@ -210,6 +212,26 @@ class CoChange(Sib):
                          [("o.py", "cochange", "c.py changed with o.py (3 of 5 commits)")])
         self.assertIn(OPENER + "\n" + "c.py changed with o.py (3 of 5 commits)", self.standards())
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))  # gh#52: read from the repository
+
+    def test_standards_prompt_names_the_hint_the_ledger_writes(self):  # review-code-cp5i.39
+        history(self.repo, 3, 2)
+        _, led = self.edit()
+        self.assertIn("c.py changed with o.py", led["siblings"][0]["how"])
+        with open(os.path.join(ROOT, "agents", "standards.md"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        self.assertIn("`<file> changed with <other>`", prompt)
+        self.assertNotIn("usually changes with", prompt)
+
+    def test_cochange_entries_survive_a_full_gap_budget(self):  # review-code-cp5i.42
+        history(self.repo, 3, 2)
+        gitfix.commit(self.repo, SKILLS, "skills")
+        self.g("checkout", "-q", "-b", "feat")
+        gitfix.commit(self.repo, dict({"c.py": "v = 'edit'\n"}, **{"skills/%s/SKILL.md" % n: "# n\n" for n in "xyz"}), "edit")
+        with mock.patch.object(ledger, "_gaps", lambda *a: [{"file": "reg.txt", "kind": "gap", "how": "g%d" % i} for i in range(8)]):
+            _, led = self.build()
+        got = led["siblings"]
+        self.assertIn("o.py", [e["file"] for e in got])
+        self.assertLessEqual(len(got), ledger.SIB_LINES)
 
     def test_a_commit_touching_more_than_fifty_files_is_skipped(self):  # gh#85
         big = {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(50)} for i in range(3, 6)}  # c + 50 fillers = 51 files

@@ -29,7 +29,7 @@ If the registry omits the new file, send a `smell` finding with severity `sugges
 `path`, `line` and `quote` copied verbatim), the title `<new file> is not registered where <sibling> is`, and the hint line verbatim as
 `trigger`: it names the registry and its line, which the verifier reads. Never anchor on the registry line.
 If the registry line does not confirm the gap, send nothing; a glob-based or auto-generated registry is no gap.
-A line `<file> usually changes with <other>` never yields a finding alone: it only tells you what to read.
+A line `<file> changed with <other>` never yields a finding alone: it only tells you what to read.
 
 ## What to check
 

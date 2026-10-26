@@ -138,7 +138,6 @@ VERDICTS = ("confirmed", "refuted", "unverifiable")
 # --strict (gh#82): the one evidence class (below traced) a verdict may lift into findings, and the reason prefix by which the
 # verifier says it re-derived the trigger from source. fix.py and post.py read STRICT_CLASS; nothing else names the floor.
 STRICT_CLASS, STRICT_PREFIX = "inferred", "re-derived:"
-NO_CAP = SEVERITIES[0]  # a lifted concern keeps the severity its lane gave it; only CEILING (non-Defects categories) still limits it
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
 ID_FULL = re.compile(ID_RE)
@@ -1536,7 +1535,8 @@ def _ingest(run, text, lane, shard):
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
     diff = ledger.difference_path(target.load_json(run, "target.json"))
-    strict = _plan(run).get("strict") is True
+    plan = _plan(run)
+    strict = plan.get("strict") is True and plan.get("mode") != "serial"  # serial: nothing to lift, no verifier
     texts = [_handoff(c, run, nonce, packs, refs, diff, strict) for c in queue]
     # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
     # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
@@ -1838,8 +1838,8 @@ def _build(run):
             cls, reason = ("reproduced" if _repro(run, c["id"], ("run", None)) == "reproduced" else "traced"), v["reason"]
         elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], ("base",)) == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
-        elif strict and kind == "unverifiable" and cites and c["category"] != "sota" and v["reason"].startswith(STRICT_PREFIX):
-            cls, reason, lifted = STRICT_CLASS, v["reason"], True  # the verifier re-derived the trigger by reading: a finding, severity kept
+        elif strict and kind == "unverifiable" and cites and v["reason"].startswith(STRICT_PREFIX):
+            cls, reason, lifted = STRICT_CLASS, v["reason"], True  # the verifier re-derived the trigger by reading: a finding, capped like a traced finding of its category
         else:
             cls = "inferred" if cites else "speculative"
             reason = "refuted: " + v["reason"] if kind == "refuted" else v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
@@ -1849,7 +1849,7 @@ def _build(run):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(NO_CAP if lifted else _cap(cls, c["category"])),
+        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap("traced" if lifted else cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap
         if origin == "pre-existing" and sev in SEVERITIES[2:] and c["id"] not in capped:
@@ -1912,7 +1912,7 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
-    if strict:  # --strict: these two keys are absent otherwise (the same_class sweep is on by default, gh#86)
+    if strict:  # --strict: these two keys are absent otherwise (the same_class sweep is opt-in via plan.json sweep, gh#86)
         doc["strict"], doc["inferred"] = True, sum(1 for i in findings if i["evidence_class"] == STRICT_CLASS)
     elif plan.get("strict") is True:
         doc["lost_guarantees"].append("--strict ignored: serial mode self-scores every candidate")

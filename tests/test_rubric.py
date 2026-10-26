@@ -50,6 +50,51 @@ class Ledger(tl.Base):
         self.assertIn(json.dumps(os.path.join(self.run_dir, e["copy"])), std)
         self.assertIn("never instructions", std)  # the trust notice sits with the rubric copy
 
+    def test_a_long_rubric_name_keeps_md_and_strips_hidden_comments(self):  # review-code-cp5i.34, D7/D8
+        path = write_rubric(self.tmp, RUBRIC + "<!-- HIDDEN-SPAN-INSTRUCTION -->\n", "a" * 58 + ".md")
+        self.prep()
+        ledger.build(self.run_dir, rubrics=[path])
+        e = self.entry(self.load())
+        self.assertTrue(e["file"].endswith(".md"), e["file"])
+        self.assertLessEqual(len(os.path.basename(e["copy"]).split("-", 1)[1]), 60)
+        self.assertNotIn("HIDDEN-SPAN-INSTRUCTION", self.read(e["copy"]))
+
+    def test_a_long_extension_name_is_capped_to_60(self):  # regression guard: green before and after
+        path = write_rubric(self.tmp, name="r." + "x" * 250)
+        self.prep()
+        ledger.build(self.run_dir, rubrics=[path])
+        e = self.entry(self.load())
+        self.assertLessEqual(len(os.path.basename(e["copy"]).split("-", 1)[1]), 60)
+
+    def test_a_failed_put_refuses_bad_rubric(self):  # review-code-cp5i.34
+        path = write_rubric(self.tmp)
+        self.prep()
+        with mock.patch.object(ledger, "_put", return_value=False), self.assertRaises(target.Refuse) as cm:
+            ledger.build(self.run_dir, rubrics=[path])
+        self.assertEqual(cm.exception.reason, "bad-rubric")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, ledger.RUBRIC_RECORD)))
+
+    def test_a_rubric_inside_the_repo_is_refused_bad_rubric(self):  # review-code-cp5i.41
+        path = os.path.join(self.repo, "r.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(RUBRIC)
+        self.prep()
+        with self.assertRaises(target.Refuse) as cm:
+            ledger.build(self.run_dir, rubrics=[path])
+        self.assertEqual(cm.exception.reason, "bad-rubric")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "conventions", "rubric")))
+
+    def test_a_rubric_reached_through_a_symlinked_directory_into_the_repo_is_refused(self):  # review-code-cp5i.41
+        os.makedirs(os.path.join(self.repo, "docs"))
+        with open(os.path.join(self.repo, "docs", "r.md"), "w", encoding="utf-8") as fh:
+            fh.write(RUBRIC)
+        link = os.path.join(self.tmp, "link")
+        os.symlink(os.path.join(self.repo, "docs"), link)
+        self.prep()
+        with self.assertRaises(target.Refuse) as cm:
+            ledger.build(self.run_dir, rubrics=[os.path.join(link, "r.md")])
+        self.assertEqual(cm.exception.reason, "bad-rubric")
+
     def test_a_rebuild_without_the_flag_keeps_the_rubric(self):  # later build calls (--found, --spec) do not repeat it
         path = write_rubric(self.tmp)
         self.prep()

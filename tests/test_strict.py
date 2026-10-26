@@ -78,6 +78,10 @@ class Strict(StrictBase):
         self.assertIn("answer unverifiable with the cite and start the reason with " + report.STRICT_PREFIX, self.handoff(strict=True))
         self.assertNotIn(report.STRICT_PREFIX, self.handoff())
 
+    def test_serial_handoff_has_no_strict_line(self):  # review-code-cp5i.35
+        self.assertNotIn(report.STRICT_PREFIX, self.handoff(strict=True, mode="serial"))
+        self.assertIn(report.STRICT_PREFIX, self.handoff(strict=True))
+
     def test_the_verifier_agents_are_told_what_a_strict_line_means(self):
         for name in ("verifier.md", "spec-verifier.md"):
             with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
