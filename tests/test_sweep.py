@@ -4,7 +4,7 @@ import unittest
 import paths  # noqa: F401
 
 import report  # noqa: E402
-from test_report import BASE2, FEAT2, Q_ADD, Q_MUL, Base, cand, verdict  # noqa: E402
+from test_report import BASE2, FEAT2, Q_ADD, Q_MUL, Base, cand, verdict, write_plan  # noqa: E402
 
 OTHER = "def sub(a, b):\n    return a - b\n" + "".join("\ndef s%d(a, b):\n    return a - b\n" % i for i in range(8))
 # an added copy of the finding's line, inside the diff: never a same-class hit
@@ -14,13 +14,14 @@ FEAT = FEAT2 + "\ndef sub2(a, b):\n    return a - b\n"
 class Sweep(Base):
     base_files, feat_files = dict(BASE2, **{"src/other.py": OTHER}), {"src/calc.py": FEAT}
 
-    def verdict_of(self, kind="confirmed"):
+    def verdict_of(self, kind="confirmed", **plan):
+        write_plan(self.run_dir, **plan)
         self.ingest(cand(Q_ADD, 8), cand(Q_MUL, 11), {"inspected": ["src/calc.py"]})
         self.verdicts(verdict((Q_ADD, 8), kind), verdict((Q_MUL, 11)))
         return self.doc()
 
     def test_hits_outside_the_diff_ride_under_the_finding_capped_and_labelled(self):
-        d = self.verdict_of()
+        d = self.verdict_of(sweep=True)
         add = next(f for f in d["findings"] if f["quote"] == Q_ADD)
         hits = add["same_class"]
         self.assertEqual(len(hits), report.SWEEP_CAP)
@@ -31,12 +32,22 @@ class Sweep(Base):
         rc, out = self.rep("render")
         self.assertIn("same class elsewhere (outside the diff): src/other.py:", out)
 
-    def test_the_sweep_changes_no_verdict_or_count(self):
+    def test_the_sweep_is_off_unless_the_plan_asks(self):  # review-code-cp5i.29
         d = self.verdict_of()
+        self.assertFalse(any("same_class" in f or "same_class_omitted" in f for f in d["findings"]))
+        rc, out = self.rep("render")
+        self.assertNotIn("same class elsewhere", out)
+
+    def test_sweep_false_is_off_too(self):
+        d = self.verdict_of(sweep=False)
+        self.assertFalse(any("same_class" in f for f in d["findings"]))
+
+    def test_the_sweep_changes_no_verdict_or_count(self):
+        d = self.verdict_of(sweep=True)
         self.assertEqual((len(d["findings"]), d["verdict"], d["unverifiable"]), (2, "Needs discussion", []))
 
     def test_an_unverifiable_item_is_not_swept(self):
-        d = self.verdict_of("unverifiable")
+        d = self.verdict_of("unverifiable", sweep=True)
         (u,) = d["unverifiable"]
         self.assertNotIn("same_class", u)
 
