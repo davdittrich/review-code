@@ -212,9 +212,26 @@ class Phase4Procedure(unittest.TestCase):
     def test_cost_gate_and_serial(self):
         flat = self.flat + " " + " ".join(ref("lanes.md").split())  # serial mode's procedure lives in lanes.md
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
-                  "nesting-depth or concurrent-limit"):
+                  "nesting-depth error"):
             self.assertIn(s, flat)
         self.assertIn("references/lanes.md", self.flat)  # the SKILL pointer into Serial mode
+
+    def test_a_failed_call_is_retried_and_only_nesting_depth_discards(self):  # gh#74
+        lanes = " ".join(ref("lanes.md").split())
+        serial = lanes[lanes.index("## Serial mode"):]
+        serial = serial[:serial.index("Evidence rule")]
+        for t in (self.flat, serial):
+            self.assertIn("nesting-depth error", t)
+            self.assertNotIn("concurrent-limit error): follow", t)
+        self.assertNotIn("nesting-depth or concurrent-limit", self.flat + lanes)
+        self.assertIn("discard", serial)
+        self.assertNotIn("concurrent", serial.split("nesting-depth")[1])  # the discard clause names no retryable failure
+        i = self.flat.index("Retry a failed or refused call once")
+        rule = self.flat[i:i + 400]
+        for t in ("concurrent-limit", "halve", "no discard", "`missing_lanes`", "tell the user which lane was lost"):
+            self.assertIn(t, rule)
+        self.assertNotIn("discard", rule.split("no discard")[0])  # retry is never routed to discard
+        self.assertIn("same fan-out and retry rules", self.flat)  # verifier waves recover the same way
 
     def test_shape(self):
         self.assertLess(len(self.text.splitlines()), 500)
