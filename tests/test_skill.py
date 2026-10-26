@@ -188,6 +188,13 @@ class Phase4Procedure(unittest.TestCase):
         for t in ("capped lane", "resumes it once", "files exceed half the ceiling"):
             self.assertIn(t, lanes)
 
+    def test_wave_size_row_is_a_starting_width_that_halves(self):  # review-code-xlwe
+        lanes = " ".join(ref("lanes.md").split())
+        row = lanes[lanes.index("| `wave_size` |"):].split(" | ")
+        self.assertIn("starting width", row[1])
+        self.assertIn("halves", row[1])
+        self.assertTrue(row[2].startswith("starting"))
+
     def test_fix_tests_flag_is_parsed_confirmed_and_documented(self):  # review-code#26
         fix = " ".join(ref("fix.md").split())
         for t in ("`--fix-tests`", "without `--fix`: stop and say so"):
