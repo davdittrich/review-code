@@ -688,10 +688,14 @@ class PostingDocs(unittest.TestCase):
         line = next(ln for ln in self.read(self.REFS, "lanes.md").splitlines() if ln.lstrip().startswith("Refusals:"))
         self.assertEqual(set(re.findall(r"`([a-z-]+)`", line)), set(nit.REFUSED))
 
+    def test_step_8_says_what_a_verifier_call_that_failed_its_retry_leaves(self):  # review-code-xe1y
+        flat = " ".join(self.read(SKILL).split())
+        self.assertIn("are empty, or a call failed its retry (it stays in `missing_batches`): say its ids are unverified; go on (Needs discussion).", flat)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22437)  # owner raised 22347 -> 22437 (gh#74) to restore two clauses; lanes.md stays 15067
+        self.assertLessEqual(os.path.getsize(SKILL), 22547)  # owner raised 22347 -> 22437 (gh#74) to restore two clauses, then -> 22547 (review-code-xe1y) for the failed-retry outcome; lanes.md stays 15067
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
