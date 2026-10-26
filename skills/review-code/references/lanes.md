@@ -64,7 +64,7 @@ Decision records: `docs/adr/0001-nit-mode.md`, `docs/adr/0002-nit-mode-all-lanes
   PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/**/*.md|.mdc`, `.okf/**/*.md`.
   The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
 - `--rubric <path>` (repeatable): user-named files outside the repo, copied to `conventions/rubric/` with `path` and `sha256` in the ledger. Untrusted data; `rule` check unchanged; bad path `bad-rubric`.
-- `--strict`: floor `inferred`, verdict and counts in `references/strict.md`. Same-class sweep, on by default: `same_class` rows under a finding, same file.
+- `--strict`: floor `inferred`, verdict and counts in `references/strict.md`. Same-class sweep, on by default for diff targets: `same_class` rows under a finding (`references/strict.md`).
 - A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule, norm or category and lists 15
   groups at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
   nit on an unchanged line; a repo or path target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
