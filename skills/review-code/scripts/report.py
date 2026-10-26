@@ -60,7 +60,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output). A file name that holds a hidden character stays raw in findings[].path and evidence[].path (a machine key); the text report and hidden_content show it escaped.
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
-A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm for Standards, evidence for Defects and Spec: its category); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
+A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm for Standards, evidence for Defects and Spec: its category); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. Under --strict (plan.json strict, not serial) it also carries strict (true) and inferred (the count of class-inferred findings). skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
 every non-SOTA candidate; spec_ids holds the Spec candidates for review-code:spec-verifier; SOTA candidates are in
@@ -135,6 +135,9 @@ CEILING = {"convention": "required", "comment": "required", "smell": "suggestion
            "scope-creep": "required", "norm": "nit"}  # strongest severity a non-Defects category may reach
 LANE_OPTIONAL = {"defects": (), "standards": ("rule", "rule_source", "norm_for", "norm_against", "norm_glob"), "sota": ("sources",), "spec": ("spec_line",)}
 VERDICTS = ("confirmed", "refuted", "unverifiable")
+# --strict (gh#82): the one evidence class (below traced) a verdict may lift into findings, and the reason prefix by which the
+# verifier says it re-derived the trigger from source. fix.py and post.py read STRICT_CLASS; nothing else names the floor.
+STRICT_CLASS, STRICT_PREFIX = "inferred", "re-derived:"
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
 ID_FULL = re.compile(ID_RE)
@@ -978,7 +981,7 @@ def _refs(run, shard=None):
         return {}
 
 
-def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
+def _handoff(c, run, nonce, packs=(), refs=None, diff=None, strict=False):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
@@ -992,6 +995,9 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
+    if strict:  # --strict: the reply may lift a source-read claim into a finding, only on this sentence
+        out += ("strict: when you can re-derive the trigger from the cited source but cannot trace every path, answer unverifiable "
+                "with the cite and start the reason with %s; otherwise answer as above.\n" % STRICT_PREFIX)
     if c["axis"] == "defects":  # a Defects nit gets the same failure check as any Defects finding (review-code-hnai.2)
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
@@ -1491,7 +1497,7 @@ def _ingest(run, text, lane, shard):
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
     diff = ledger.difference_path(target.load_json(run, "target.json"))
-    texts = [_handoff(c, run, nonce, packs, refs, diff) for c in queue]
+    texts = [_handoff(c, run, nonce, packs, refs, diff, _plan(run).get("strict") is True) for c in queue]
     # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
     # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
     target.require_utf8(texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)],
@@ -1775,6 +1781,7 @@ def _build(run):
     capped = set(cand.get("capped_ids", []))
     plan = _plan(run)
     serial = plan.get("mode") == "serial"
+    strict = plan.get("strict") is True and not serial  # serial candidates are all self-scored: strict has nothing to lift
     items, dropped = [], dict(cand["dropped"], refuted=0)
     for c in cand["candidates"]:
         v = {} if c["category"] == "sota" else ver.get(c["id"], {})
@@ -1790,6 +1797,8 @@ def _build(run):
             cls, reason = ("reproduced" if _repro(run, c["id"], ("run", None)) == "reproduced" else "traced"), v["reason"]
         elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], ("base",)) == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
+        elif strict and kind == "unverifiable" and cites and c["category"] != "sota" and v["reason"].startswith(STRICT_PREFIX):
+            cls, reason = STRICT_CLASS, v["reason"]  # the verifier re-derived the trigger by reading: a finding, severity kept
         else:
             cls = "inferred" if cites else "speculative"
             reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
@@ -1799,14 +1808,15 @@ def _build(run):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(_cap(cls, c["category"])),
+        lifted = strict and kind == "unverifiable" and reason.startswith(STRICT_PREFIX) and cls == STRICT_CLASS
+        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index("blocking" if lifted else _cap(cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap
         if origin == "pre-existing" and sev in SEVERITIES[2:] and c["id"] not in capped:
             dropped["do_not_flag"] += 1
             continue
         items.append(dict({k: x for k, x in c.items() if k != "downgraded"}, severity=sev, evidence=cites, evidence_class=cls, score=SCORE[cls],
-                          verified=cls in ("reproduced", "traced"), origin=origin, reason=reason))
+                          verified=lifted or cls in ("reproduced", "traced"), origin=origin, reason=reason))
     items.sort(key=lambda i: (AXES.index(i["axis"]), SEVERITIES.index(i["severity"]), i["path"], i["line"], i["id"]))
     findings = [i for i in items if i["verified"]]
     for i in findings:
@@ -1860,6 +1870,10 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
+    if strict:  # --strict: absent otherwise, so default output stays byte-identical
+        doc["strict"], doc["inferred"] = True, sum(1 for i in findings if i["evidence_class"] == STRICT_CLASS)
+    elif plan.get("strict") is True:
+        doc["lost_guarantees"].append("--strict ignored: serial mode self-scores every candidate")
     cut = _history_cut(led)
     if cut:  # what history.build's caps left out of the files lanes were told to read
         doc["history_cut"] = cut
@@ -1980,6 +1994,7 @@ def _text(doc):
             "dropped: refuted %d, do-not-flag %d, invalid %d" % (d["refuted"], d["do_not_flag"], d["invalid"]),
             "trust: " + doc["trust"]]
     out += ["nits: %d" % doc["nit"]] if "nit" in doc else []
+    out += ["strict: %d inferred" % doc["inferred"]] if "inferred" in doc else []
     for ax in AXES:
         mine = [i for i in fs if i["axis"] == ax]
         out.append("%s: %d finding%s, worst %s" % (ax, len(mine), "" if len(mine) == 1 else "s", min(

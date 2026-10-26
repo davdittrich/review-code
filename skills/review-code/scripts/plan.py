@@ -1,6 +1,6 @@
 """Choose lanes, models and caps for one run and write <run>/plan.json (mode 0600). Stdlib only, Python 3.9 grammar.
 
-    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit]
+    plan.py plan --run DIR [--tier lean|quick|standard|deep] [--sota|--no-sota] [--serial] [--ai] [--nit] [--strict]
                                     stdout: one JSON line (status, reason, detail, tier, mode, calls (the entries
                                     {lane, agent, prompt, model, effort, shard[, input: serial mode only]}), skipped,
                                     lost_guarantees, lost_capabilities, confirm, preview, wave_size, verifier,
@@ -11,7 +11,7 @@
 plan.json (sort_keys): version, agent_prefix, tier, mode (parallel|serial), calls[{lane, axis, agent, model, effort, input, shard,
 prompt}], verifier{agent, model, effort}, spec_verifier{...}, caps{max_packs,
 wave_size}, max_turns{name: n}, packs, shards, skipped[{what, why}], lost_guarantees, tools, lost_capabilities, sota_inventory, preview,
-confirm, effective_overrides{key: value}, ai, nit (only with --nit). The orchestrator obeys it; report.py reads skipped.
+confirm, effective_overrides{key: value}, ai, nit (only with --nit), strict (only with --strict). The orchestrator obeys it; report.py reads skipped.
 """
 import sys
 
@@ -484,7 +484,7 @@ def _preview(doc, sizes):
 
 
 BOOL_FLAGS = {"--sota": ("sota", True), "--no-sota": ("sota", False), "--serial": ("serial", True),
-              "--ai": ("ai", True), "--nit": ("nit", True)}
+              "--ai": ("ai", True), "--nit": ("nit", True), "--strict": ("strict", True)}
 # Lost-guarantee sentences are fixed text plus a validated model name; never repository text (T-04-19).
 SERIAL_LOST = ["no independent verifier: candidates are self-scored and nothing is Blocking",
                "no lane isolation: the main thread reads target code while holding Bash",
@@ -525,7 +525,7 @@ def _env_lost():
     return lost
 
 
-def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=()):
+def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit=False, tools=(), strict=False):
     tj = target.load_target(run)
     led = target.load_json(run, "ledger.json")
     tools = [t for t in tools if ledger.stored_trust(led) == "own" or not TOOLS[t]["runs"]]  # external code runs nothing of its own
@@ -625,6 +625,8 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
                                    if k != "default_tier" or not (flag_tier or v == DEFAULT_TIER)}}
     if nit:  # absent otherwise, so existing plan.json files stay byte-identical
         doc["nit"] = True
+    if strict:  # gh#82: report.py lifts a verifier-re-derived inferred concern into a finding; serial mode ignores it there
+        doc["strict"] = True
     if serial:
         doc["verifier"] = doc["spec_verifier"] = {"agent": "main-thread", "model": None, "effort": None}
     doc["preview"] = _preview(doc, {p: size for p, (size, _) in blobs.items()})
@@ -640,7 +642,7 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
 
 def _usage():
     return target.Refuse("usage", "usage: plan.py plan --run DIR [--tier lean|quick|standard|deep] "
-                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--tool %s ...]" % "|".join(_selectable()))
+                                  "[--sota|--no-sota] [--serial] [--ai] [--nit] [--strict] [--tool %s ...]" % "|".join(_selectable()))
 
 
 def _parse(argv):
@@ -669,7 +671,7 @@ def main(argv):
         cfg = _read_config()
         tier = opts.get("tier") or cfg.get("default_tier", DEFAULT_TIER)
         out, rc = plan(run, tier, cfg, "tier" in opts, opts.get("sota"), opts.get("serial", False),
-                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ())), 0
+                       opts.get("ai", False), opts.get("nit", False), opts.get("tools", ()), opts.get("strict", False)), 0
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1
     except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:  # one JSON line, never a traceback

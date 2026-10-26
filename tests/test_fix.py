@@ -415,6 +415,25 @@ class NitsAreNeverFixed(Base):
         self.assertEqual((cm.exception.reason, cm.exception.detail), ("nothing-to-fix", "skipped: nit 1"))
 
 
+class InferredAreNeverFixed(Base):
+    """--strict findings (evidence class inferred, source read) are report-only: --fix and --fix-tests skip them (gh#82)."""
+    def nitted(self, run, fid, real=True):
+        doc = fix.report.build(run)
+        base = doc["findings"][0]
+        inf = dict(base, id="F-inf0000001", evidence_class="inferred", score=50)
+        doc["findings"] = ([base] if real else []) + [inf]
+        return mock.patch.object(fix.report, "build", return_value=doc)
+
+    def test_plan_skips_the_inferred_finding_and_keeps_the_other(self):
+        run, fid = self.ready()
+        with self.nitted(run, fid), gitfix.isolated(self.tmp):
+            j = fix.plan(run, self.cmd())
+        self.assertEqual((j["apply"], j["skipped"]), (1, 1), j)
+        with open(os.path.join(run, "fix", "plan.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(doc["skipped"], [{"id": "F-inf0000001", "path": "src/calc.py", "why": "inferred"}])
+
+
 class DerivedFixes(Base):
     """review-code#33: a verified finding with no fix text is planned, marked, and handed to the fixer to derive."""
     feat_files = {"src/calc.py": FEAT}

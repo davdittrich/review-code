@@ -554,6 +554,11 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
+    def test_strict_flag_sets_plan_json_only_when_given(self):  # gh#82
+        self.assertNotIn("strict", self.run_plan())
+        self.assertIs(self.run_plan("--strict")["strict"], True)
+        self.assertNotIn("strict", self.run_plan())
+
     def test_nit_flag_sets_plan_json_and_a_section_in_the_defects_standards_and_spec_inputs(self):
         self.assertNotIn("nit", self.run_plan())
         for lane in ("standards", "defects", "spec"):

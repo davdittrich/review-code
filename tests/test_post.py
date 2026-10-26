@@ -1449,6 +1449,16 @@ class Nits(Base):
         self.assertTrue(body.startswith("nit: **Nit** (defects, bug) - title 34\n"), body)
         self.assertIn("\n**Basis:** bug\n", body)
 
+    def test_an_inferred_finding_is_labelled_source_read(self):  # gh#82
+        ids = self.review(31, 34, 37)
+        doc = self.doc(ids)
+        next(f for f in doc["findings"] if f["id"] == ids[34]).update(evidence_class="inferred", score=50)
+        rc, out, _ = self.built(doc)
+        self.assertEqual(rc, 0, out)
+        bodies = [c["body"] for c in self.payload()[1]["comments"]]
+        self.assertIn("**Evidence:** inferred (source read), score 50,", bodies[1])
+        self.assertNotIn("source read", bodies[0])
+
     def test_the_basis_text_is_redacted_and_kept_on_one_line(self):
         ids = self.review(31, 34, 37)
         rc, out, _ = self.built(self.doc(ids, "Use a key.\nNot AKIAIOSFODNN7EXAMPLE <b>here</b> @team"))
