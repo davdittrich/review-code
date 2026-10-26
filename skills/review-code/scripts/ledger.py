@@ -3,7 +3,7 @@
 Stdlib only, Python 3.9 grammar. Stdout carries fixed keys only; commit text goes to
 inputs/spec.md alone, inside a per-run random UNTRUSTED block.
 
-usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH]
+{BUILD_USAGE}
        ledger.py context --run DIR | trust set|get|gate ... (--rubric PATH names a user-owned rule file, repeatable)
 """
 import sys
@@ -297,6 +297,7 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
 
 BUILD_USAGE = "usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH]"
+__doc__ = __doc__.replace("{BUILD_USAGE}", BUILD_USAGE)  # one usage string
 SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
 SIB_LINES, SIB_DAYS, SIB_COCH_PER_FILE, SIB_COCH_MAX = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
 SIB_SHARED, SIB_BULK = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
@@ -472,10 +473,14 @@ def _put(root: str, rel: str, data: bytes) -> bool:
     return True
 
 
+RUBRIC_DIR = os.path.join("conventions", "rubric")  # where _rubrics copies the files, relative to the run
+RUBRIC_RECORD = "rubrics.json"  # their path and hash record
+
+
 def _recorded_rubrics(run: str) -> list:
     """The rubric entries an earlier build of this run recorded (a later build call does not repeat --rubric)."""
     try:
-        with open(os.path.join(run, "rubrics.json"), encoding="utf-8") as fh:
+        with open(os.path.join(run, RUBRIC_RECORD), encoding="utf-8") as fh:
             return [e for e in json.load(fh) if os.path.isfile(os.path.join(run, e["copy"]))]
     except (OSError, ValueError, KeyError, TypeError):
         return []
@@ -483,16 +488,16 @@ def _recorded_rubrics(run: str) -> list:
 
 def copy_rubrics(src: str, dest: str) -> None:
     """Give the run at dest the rubric copies and hashes recorded in src (a shard's rule check finds them there); no-op without any."""
-    if os.path.isfile(os.path.join(src, "rubrics.json")):
-        shutil.copytree(os.path.join(src, "conventions", "rubric"), os.path.join(dest, "conventions", "rubric"))
-        shutil.copy(os.path.join(src, "rubrics.json"), os.path.join(dest, "rubrics.json"))
+    if os.path.isfile(os.path.join(src, RUBRIC_RECORD)):
+        shutil.copytree(os.path.join(src, RUBRIC_DIR), os.path.join(dest, RUBRIC_DIR))
+        shutil.copy(os.path.join(src, RUBRIC_RECORD), os.path.join(dest, RUBRIC_RECORD))
 
 
 def _rubrics(run: str, paths) -> list:
     """gh#83: conventions entries for the user-named rubric files. Each is copied (hidden text stripped like a base rule)
     to conventions/rubric/ with its path and sha256 recorded. A bad path refuses as bad-rubric. User-named only: the files
     are read, never fetched."""
-    rec = os.path.join(run, "rubrics.json")
+    rec = os.path.join(run, RUBRIC_RECORD)
     out = []
     for i, p in enumerate(paths, 1):
         full = os.path.abspath(os.path.expanduser(p))  # not realpath: read_working refuses a link
@@ -504,7 +509,7 @@ def _rubrics(run: str, paths) -> list:
         if text is None:
             raise target.Refuse("bad-rubric", "the --rubric file is %s" % {
                 "too-large": "over %d bytes" % target.MAX_FILE, "ok": "binary"}.get(status, "not a readable regular file"))
-        rel = "rubric/%d-%s" % (i, re.sub(r"[^\w.-]", "_", os.path.basename(full))[:60])
+        rel = "%s/%d-%s" % (os.path.basename(RUBRIC_DIR), i, re.sub(r"[^\w.-]", "_", os.path.basename(full))[:60])
         _put(os.path.join(run, "conventions"), rel, _scan(rel, text)[0].encode("utf-8"))
         out.append({"file": rel, "source": "rubric", "copy": "conventions/" + rel, "path": target.shown(full),
                     "sha256": hashlib.sha256(data).hexdigest(), "differs_on_head": False, "how": "user-named rubric"})
