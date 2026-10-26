@@ -40,6 +40,7 @@ Try to refute the claim. Answer each question by reading, not names or comments:
   deliberate lint-ignore marker, suggestions on unchanged lines, input-dependent maybes with no
   reaching input. Apply any do-not-flag block in the handoff the same way.
 - `unverifiable` when the needed code is absent or the spec line is too unclear to decide.
+- A `strict:` line in the handoff (only under `--strict`): when you can re-derive the claim from the spec line and cited code but cannot trace every path, answer `unverifiable` with the cite and a reason that starts `re-derived:`.
 - When unsure, the verdict is `unverifiable`.
 
 ## Output

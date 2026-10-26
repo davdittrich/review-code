@@ -9,6 +9,7 @@ import report  # noqa: E402
 from gitfix import fid  # noqa: E402
 from test_report import BASE2, FEAT2, Q_ADD, Q_MUL, Q_NEG, Base, cand, verdict, write_plan  # noqa: E402
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RE = "re-derived: mul reads b before the caller sets it"
 
 
@@ -66,6 +67,23 @@ class Strict(StrictBase):
         (f,) = d["findings"]
         self.assertEqual((f["id"], f["evidence_class"], f["severity"], d["inferred"]), (m, "inferred", "blocking", 1))
         self.assertTrue(f["reason"].startswith("cites-dropped-wire-token; " + report.STRICT_PREFIX), f["reason"])
+
+    def handoff(self, **plan):
+        write_plan(self.run_dir, **plan)
+        out = self.ingest(cand(Q_MUL, 11, severity="blocking", category="security"), {"inspected": ["src/calc.py"]})
+        with open(os.path.join(out["handoff"], out["ids"][0] + ".md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_verify_handoff_tells_the_verifier_the_prefix_only_under_strict(self):  # review-code-cp5i.7
+        self.assertIn("answer unverifiable with the cite and start the reason with " + report.STRICT_PREFIX, self.handoff(strict=True))
+        self.assertNotIn(report.STRICT_PREFIX, self.handoff())
+
+    def test_the_verifier_agents_are_told_what_a_strict_line_means(self):
+        for name in ("verifier.md", "spec-verifier.md"):
+            with open(os.path.join(ROOT, "agents", name), encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("`strict:`", text, name)
+            self.assertIn(report.STRICT_PREFIX, text, name)
 
     def test_a_verdict_that_did_not_re_derive_the_trigger_stays_unverifiable(self):
         d, m = self.run_strict(reason="could not trace it", strict=True)
