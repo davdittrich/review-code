@@ -575,6 +575,19 @@ class Packs(Fixture):
         self.assertIs(self.run_plan("--strict")["strict"], True)
         self.assertNotIn("strict", self.run_plan())
 
+    def test_sweep_flag_sets_plan_json_only_when_given(self):  # review-code-cp5i.29
+        self.assertNotIn("sweep", self.run_plan())
+        self.assertIs(self.run_plan("--sweep")["sweep"], True)
+        self.assertNotIn("sweep", self.run_plan())
+
+    def test_strict_in_serial_mode_warns_at_plan_time(self):  # review-code-cp5i.28
+        rc, out = self.plan("plan", "--run", self.run_dir, "--serial", "--strict")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([l for l in out["preview"] if "--strict" in l],
+                         ["Warning: --strict has no effect in serial mode: the main thread self-scores, so no concern is lifted into a finding"])
+        rc, out = self.plan("plan", "--run", self.run_dir, "--strict")
+        self.assertFalse([l for l in out["preview"] if "--strict" in l])
+
     def test_nit_flag_sets_plan_json_and_a_section_in_the_defects_standards_and_spec_inputs(self):
         self.assertNotIn("nit", self.run_plan())
         for lane in ("standards", "defects", "spec"):
