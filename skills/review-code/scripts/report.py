@@ -1024,7 +1024,22 @@ def _added_lines(run):
 
 
 # shortcut: git grep output is read whole before the cap, so a very common line costs one full match list; add -m when a monorepo needs it
-SWEEP_CAP, SWEEP_MIN = 5, 8  # gh#86: hits listed per finding, and the shortest quoted line worth searching
+SWEEP_CAP, SWEEP_MIN, SWEEP_TEXT = 5, 8, 200  # gh#86: hits listed per finding, the shortest quoted line worth searching, and the longest hit text kept
+
+
+def _grep_hits(raw, pre):
+    """[(path, line, text)] from `git grep -z -n` output over a tree: `tree:path NUL line NUL text NL` per hit; pre is len(tree:)."""
+    hits, i = [], 0
+    while i < len(raw):
+        a = raw.find(b"\0", i)
+        b = raw.find(b"\0", a + 1) if a >= 0 else -1
+        if b < 0:
+            break
+        c = raw.find(b"\n", b + 1)
+        hits.append((raw[i + pre:a].decode("utf-8", "surrogateescape"), int(raw[a + 1:b]),
+                     (raw[b + 1:] if c < 0 else raw[b + 1:c]).decode("utf-8", "surrogateescape")))
+        i = len(raw) if c < 0 else c + 1
+    return hits
 
 
 def _sweep(tj, findings, added):
@@ -1038,20 +1053,11 @@ def _sweep(tj, findings, added):
         if q not in seen:  # the tree is pinned, so one search serves every finding that quotes the same line
             raw = target.git_bytes(["--literal-pathspecs", "grep", "-z", "-a", "-n", "-F", "--no-color", "-e", q, tj["pinned_tree"], "--"],
                                    tj["repo"], check=False)
-            seen[q], pre, i = [], len(tj["pinned_tree"]) + 1, 0
-            while i < len(raw):  # tree:path NUL line NUL text NL
-                a = raw.find(b"\0", i)
-                b = raw.find(b"\0", a + 1) if a >= 0 else -1
-                if b < 0:
-                    break
-                c = raw.find(b"\n", b + 1)
-                seen[q].append((raw[i + pre:a].decode("utf-8", "surrogateescape"), int(raw[a + 1:b]),
-                                (raw[b + 1:] if c < 0 else raw[b + 1:c]).decode("utf-8", "surrogateescape")))
-                i = len(raw) if c < 0 else c + 1
+            seen[q] = _grep_hits(raw, len(tj["pinned_tree"]) + 1)
         hits = sorted(h for h in seen[q] if h[1] not in added.get(h[0], ()) and not (
             h[0] == f["path"] and f["line"] <= h[1] <= f["end_line"]))
         if hits:
-            f["same_class"] = [{"path": p, "line": n, "text": _esc(t[:200])} for p, n, t in hits[:SWEEP_CAP]]
+            f["same_class"] = [{"path": p, "line": n, "text": _esc(t[:SWEEP_TEXT])} for p, n, t in hits[:SWEEP_CAP]]
             f["same_class_omitted"] = len(hits) - len(f["same_class"])
 
 

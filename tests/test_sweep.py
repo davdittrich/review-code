@@ -41,5 +41,15 @@ class Sweep(Base):
         self.assertNotIn("same_class", u)
 
 
+class GrepHits(unittest.TestCase):
+    def test_parses_nul_output_and_stops_at_a_torn_record(self):  # review-code-cp5i.25
+        raw = b"T:a.py\x003\x00x = 1\nT:b/c.py\x0012\x00y\nT:torn\x00"
+        self.assertEqual(report._grep_hits(raw, 2), [("a.py", 3, "x = 1"), ("b/c.py", 12, "y")])
+        self.assertEqual(report._grep_hits(b"", 2), [])
+
+    def test_hit_text_is_cut_at_the_named_length(self):  # review-code-cp5i.27
+        self.assertEqual(report.SWEEP_TEXT, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
