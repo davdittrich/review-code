@@ -3,8 +3,8 @@
 ## Strict mode
 
 `--strict` (separate from `--nit`) lowers the floor of the verification gate from `traced` to `inferred`, for Defects, Standards and
-Spec concerns only. It reaches `plan.py plan --strict`, which writes `"strict": true` to plan.json; the lanes get no new input and no
-new field.
+Spec concerns only. It reaches `plan.py plan --strict`, which writes `"strict": true` to plan.json; it also adds a `## Strict mode` section to the Defects, Spec
+and Standards inputs (an untraced concern with file:line, quote and trigger keeps its real severity). No new lane field.
 
 - `report.py` adds a `strict:` line to each verify handoff. A verifier that re-derives the trigger from the cited source but cannot
   trace every path answers `unverifiable` with the cite and a reason that starts `re-derived:`.

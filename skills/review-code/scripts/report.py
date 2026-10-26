@@ -1022,6 +1022,7 @@ def _added_lines(run):
     return tj["kind"] in WHOLE, added
 
 
+# shortcut: git grep output is read whole before the cap, so a very common line costs one full match list; add -m when a monorepo needs it
 SWEEP_CAP, SWEEP_MIN = 5, 8  # gh#86: hits listed per finding, and the shortest quoted line worth searching
 
 
@@ -1049,7 +1050,7 @@ def _sweep(tj, findings, added):
         hits = sorted(h for h in seen[q] if h[1] not in added.get(h[0], ()) and not (
             h[0] == f["path"] and f["line"] <= h[1] <= f["end_line"]))
         if hits:
-            f["same_class"] = [{"path": p, "line": n, "text": t[:200]} for p, n, t in hits[:SWEEP_CAP]]
+            f["same_class"] = [{"path": p, "line": n, "text": _esc(t[:200])} for p, n, t in hits[:SWEEP_CAP]]
             f["same_class_omitted"] = len(hits) - len(f["same_class"])
 
 

@@ -206,14 +206,15 @@ def _put_sections(path, sections):
 NIT_MARK = "\n<!-- review-code:nit-mode -->\n"  # spec.md prose passes sanitize_prose, which removes every HTML comment: author text cannot hold this
 
 
-def _put_spec_nit(path, body):
-    """The Spec lane's `## Nit mode` section, appended after NIT_MARK and removed from the last mark to the end, whatever
-    wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
+def _put_spec_nit(path, body, strict=False):
+    """The Spec lane's `## Nit mode` and `## Strict mode` sections, appended after NIT_MARK and removed from the last mark to the end,
+    whatever wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     i = text.rfind(NIT_MARK)
     text = text[:i] if i >= 0 else text
-    target.write_private(path, text + (NIT_MARK + "## Nit mode\n\n%s\n" % NIT_SPEC if body else ""))
+    tail = ("## Nit mode\n\n%s\n" % NIT_SPEC if body else "") + ("\n## Strict mode\n\n%s\n" % STRICT_MODE if strict else "")
+    target.write_private(path, text + (NIT_MARK + tail.lstrip("\n") if tail else ""))
 
 
 def _put_nav(path, hint):
@@ -236,10 +237,13 @@ dead code, a branch nothing reaches, an unchecked edge that a reachable input tr
 (file:line, quote, concrete trigger, evidence). A concern you could not trace is not a nit. Changed lines only (a repo or path target: the files under review)."""
 NIT_SPEC = """Severity `nit` is allowed here, beside the severities above: a minor deviation from a quoted spec line, with its `spec_line`
 and a `spec-*` category as for any Spec finding. Changed lines only (a repo or path target: the files under review)."""
+STRICT_MODE = """Under `--strict` a concern you read from the source but did not trace end to end keeps its real severity: send it at that
+severity, never lowered to `suggestion` for lack of a full trace. It still needs `file:line`, the quote and a concrete trigger; a concern
+with no trigger you can name is not sent. The verifier decides whether it stands. Changed lines only."""
 NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."
 
 
-def _install_packs(run, packs, nit=None):
+def _install_packs(run, packs, nit=None, strict=False):
     """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs;
     nit is the Nit mode section text for the standards input (None drops a stale one)."""
     inp = os.path.join(run, "inputs")
@@ -248,11 +252,12 @@ def _install_packs(run, packs, nit=None):
         ledger.write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
     ledger.write(os.path.join(inp, "smells.md"), _ref("smells.md"))
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
-    _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed), ("Nit mode", NIT_DEFECTS if nit else None)])
-    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None)
+    _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed), ("Nit mode", NIT_DEFECTS if nit else None),
+                                                       ("Strict mode", STRICT_MODE if strict else None)])
+    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None, strict)
     _put_sections(os.path.join(inp, "standards.md"), [
         ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md"))),
-        ("Nit mode", nit)])
+        ("Nit mode", nit), ("Strict mode", STRICT_MODE if strict else None)])
 
 
 # Module shards (path and repo targets). 400000 bytes is about 100k tokens at 4 bytes per token, which leaves room in
@@ -321,7 +326,7 @@ def _rank_shards(tj, led, groups, stats):
     return sorted(ranked, key=lambda r: (-r[0], r[1][0]))
 
 
-def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=()):
+def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=(), strict=False):
     """<run>/shards/<i>/: target.json for its files, empty change.diff, own ledger and tree, the run's trust answer,
     and the global packs that match its files."""
     d = os.path.join(run, "shards", str(i))
@@ -333,7 +338,7 @@ def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=()):
         ledger.trust_set(d, trust)
     ledger.tools_set(d, tools)
     mine = set(files)
-    _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)], nit)
+    _install_packs(d, [(n, [f for f in fs if f in mine]) for n, fs in packs if mine & set(fs)], nit, strict)
     return d
 
 
@@ -583,14 +588,14 @@ def plan(run, tier, cfg, flag_tier=False, sota=None, serial=False, ai=False, nit
         for lane in ("defects", "standards"):
             if lane in lanes and big > ledger.CAP_FIND:
                 raise target.Refuse("internal-error", "a %s call would list %d included files, above the cap of %d" % (lane, big, ledger.CAP_FIND))
-    _install_packs(run, packs, nit_text)
+    _install_packs(run, packs, nit_text, strict)
     shards = []
     if groups is not None:
         if len(groups) > 1:  # one group is the parent run itself
             shutil.rmtree(os.path.join(run, "shards"), ignore_errors=True)
             os.makedirs(os.path.join(run, "shards"), mode=0o700)
             for i, (risk, files) in enumerate(_rank_shards(tj, led, groups, stats), 1):
-                shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools),
+                shards.append({"id": i, "run": _build_shard(run, tj, i, files, ledger.stored_trust(led), packs, nit_text, tools, strict),
                                "files": files, "risk": round(risk, 3)})
     for lane in lanes:
         if lane == "spec" and spec_none:
