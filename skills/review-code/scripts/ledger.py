@@ -422,7 +422,7 @@ def _siblings(repo: str, rev: Optional[str], mb_ls: dict, files: List[str], incl
         capped = capped or len(got) > SIB_GAPS
         entries += got[:SIB_GAPS]
     coch = _cochange(repo, mb, mb_ls, set(files), included) if mb else []
-    return entries[:SIB_LINES - len(coch)] + coch, capped  # co-change hints are not cut away by a full gap budget
+    return entries[:SIB_LINES - len(coch)] + coch, capped or len(entries) > SIB_LINES - len(coch)  # co-change hints are not cut away by a full gap budget
 
 
 def _load(names: List[str]) -> dict:

@@ -233,6 +233,15 @@ class CoChange(Sib):
         self.assertIn("o.py", [e["file"] for e in got])
         self.assertLessEqual(len(got), ledger.SIB_LINES)
 
+    def test_the_siblings_cap_flag_is_set_when_the_line_budget_drops_gap_hints(self):  # review-code-cp5i.45
+        history(self.repo, 3, 2)
+        gitfix.commit(self.repo, SKILLS, "skills")
+        self.g("checkout", "-q", "-b", "feat")
+        gitfix.commit(self.repo, dict({"c.py": "v = 'edit'\n"}, **{"skills/%s/SKILL.md" % n: "# n\n" for n in "xyz"}), "edit")
+        with mock.patch.object(ledger, "_gaps", lambda *a: [{"file": "reg.txt", "kind": "gap", "how": "g%d" % i} for i in range(8)]):
+            _, led = self.build()
+        self.assertTrue(led["capped"]["siblings"])
+
     def test_a_commit_touching_more_than_fifty_files_is_skipped(self):  # gh#85
         big = {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(50)} for i in range(3, 6)}  # c + 50 fillers = 51 files
         history(self.repo, 3, 3, big)
