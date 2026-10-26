@@ -1818,9 +1818,10 @@ def _build(run):
     for c in cand["candidates"]:
         v = {} if c["category"] == "sota" else ver.get(c["id"], {})
         cites, kind = v.get("cites", []), v.get("verdict")
-        if kind == "refuted":
+        if kind == "refuted" and not strict:  # --strict keeps it as a question (gh#82); serial has no verifier verdicts
             dropped["refuted"] += 1
             continue
+        lifted = False
         if c["category"] == "sota":
             cls, reason = "inferred", "web-sourced"
         elif kind == "confirmed" and cites and serial:  # a self-score is not independent verification (VERI-03)
@@ -1830,17 +1831,16 @@ def _build(run):
         elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], ("base",)) == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         elif strict and kind == "unverifiable" and cites and c["category"] != "sota" and v["reason"].startswith(STRICT_PREFIX):
-            cls, reason = STRICT_CLASS, v["reason"]  # the verifier re-derived the trigger by reading: a finding, severity kept
+            cls, reason, lifted = STRICT_CLASS, v["reason"], True  # the verifier re-derived the trigger by reading: a finding, severity kept
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
+            reason = "refuted: " + v["reason"] if kind == "refuted" else v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
         # a partial drop still says so, whatever the class; a confirmed verdict left no cite already has the note as its reason (the recorded state, not a prefix of the verifier's text, review-code-lqf5)
         if v.get("cites_dropped") and not (kind == "confirmed" and not cites and v.get("downgraded") == "cites-dropped-wire-token"):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        lifted = strict and kind == "unverifiable" and reason.startswith(STRICT_PREFIX) and cls == STRICT_CLASS
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index("blocking" if lifted else _cap(cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap
@@ -1904,7 +1904,7 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
-    if strict:  # --strict: absent otherwise, so default output stays byte-identical
+    if strict:  # --strict: these two keys are absent otherwise (the same_class sweep is on by default, gh#86)
         doc["strict"], doc["inferred"] = True, sum(1 for i in findings if i["evidence_class"] == STRICT_CLASS)
     elif plan.get("strict") is True:
         doc["lost_guarantees"].append("--strict ignored: serial mode self-scores every candidate")

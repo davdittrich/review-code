@@ -47,7 +47,7 @@ A finding is reportable only with all four of:
 4. An evidence class of `reproduced` or `traced` (see below).
 
 A concern below `traced` is never stated as a finding: it goes to the report's Unverifiable list, at
-`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question. `--strict` lowers the floor to `inferred`: `references/strict.md`.
+`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question. `--strict` lowers the floor to `inferred`: `references/strict.md`. On a diff target a finding also lists other uses of its quoted line outside the diff (same-class sweep, default on).
 
 ## Severity and evidence
 
@@ -66,7 +66,8 @@ Style findings are Required or Suggestions at most, and only when a linter would
 
 `--nit` adds a Nit severity between Suggestions and Noted. It never changes the verdict. A nit is a
 `convention` finding that quotes a repo rule, or a `norm` finding the skill counts itself in the
-pinned tree (at least 20 lines, the other idiom the majority); Defects and Spec may send a trivial finding as a nit. The text report lists at most 15 groups under Nits
+pinned tree (at least 20 lines, the other idiom the majority); Defects and Spec may send a trivial finding as a nit. Diff targets report changed lines only;
+a `--repo` or path target also reports pre-existing nits. The text report lists at most 15 groups under Nits
 (JSON and SARIF keep every nit). `--fix` and `--fix-tests` ignore nits. `--nit --lean` is the
 nits-only pass. Detail: `references/lanes.md`.
 
