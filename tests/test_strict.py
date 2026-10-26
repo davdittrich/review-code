@@ -1,0 +1,77 @@
+"""--strict (gh#82): a verifier-re-derived inferred concern is a finding that counts; same-class sweep (gh#86)."""
+import json
+import unittest
+
+import paths  # noqa: F401
+
+import report  # noqa: E402
+from gitfix import fid  # noqa: E402
+from test_report import BASE2, FEAT2, Q_ADD, Q_MUL, Q_NEG, Base, cand, verdict, write_plan  # noqa: E402
+
+RE = "re-derived: mul reads b before the caller sets it"
+
+
+class StrictBase(Base):
+    base_files, feat_files = BASE2, {"src/calc.py": FEAT2}
+
+    def run_strict(self, reason=RE, kind="unverifiable", **plan):
+        """ADD: traced suggestion. MUL: a blocking security concern the verifier could read but not trace end to end."""
+        write_plan(self.run_dir, **plan)
+        self.ingest(cand(Q_ADD, 8, severity="suggestion"), cand(Q_MUL, 11, severity="blocking", category="security"),
+                    {"inspected": ["src/calc.py"]})
+        m = fid("src/calc.py", "security", Q_MUL)
+        self.verdicts(verdict((Q_ADD, 8)), dict(verdict((Q_MUL, 11), kind, reason=reason), id=m))
+        return self.doc(), m
+
+
+class Strict(StrictBase):
+    def test_default_keeps_the_inferred_concern_unverifiable(self):
+        d, m = self.run_strict()
+        self.assertEqual([i["id"] for i in d["unverifiable"]], [m])
+        self.assertEqual((len(d["findings"]), d["verdict"]), (1, "Needs discussion"))
+        self.assertNotIn("strict", d)
+        self.assertNotIn("inferred", d)
+
+    def test_strict_reports_it_as_a_finding_and_the_verdict_follows_its_severity(self):
+        d, m = self.run_strict(strict=True)
+        got = {i["id"]: i for i in d["findings"]}
+        self.assertEqual((got[m]["evidence_class"], got[m]["severity"], got[m]["verified"]), ("inferred", "blocking", True))
+        self.assertEqual((d["unverifiable"], d["verdict"], d["strict"], d["inferred"]), ([], "Needs changes", True, 1))
+        rc, out = self.rep("render")
+        self.assertIn("strict: 1 inferred", out)
+        rc, out = self.rep("render", extra=["--format", "sarif"])
+        (r,) = [x for x in json.loads(out)["runs"][0]["results"] if x["partialFingerprints"]["reviewCodeId/v1"] == m]
+        self.assertEqual((r["level"], r["properties"]["evidenceClass"]), ("error", "inferred"))
+
+    def test_a_suggestion_level_inferred_finding_does_not_change_the_verdict(self):
+        write_plan(self.run_dir, strict=True)
+        self.ingest(cand(Q_MUL, 11, severity="suggestion"), {"inspected": ["src/calc.py"]})
+        self.verdicts(verdict((Q_MUL, 11), "unverifiable", reason=RE))
+        d = self.doc()
+        self.assertEqual((len(d["findings"]), d["verdict"], d["inferred"]), (1, "No blocking findings", 1))
+
+    def test_a_verdict_that_did_not_re_derive_the_trigger_stays_unverifiable(self):
+        d, m = self.run_strict(reason="could not trace it", strict=True)
+        self.assertEqual(([i["id"] for i in d["unverifiable"]], d["inferred"], d["verdict"]), ([m], 0, "Needs discussion"))
+
+    def test_a_refuted_inferred_concern_is_dropped_not_reported(self):
+        d, m = self.run_strict(kind="refuted", strict=True)
+        self.assertEqual((m in [i["id"] for i in d["findings"] + d["unverifiable"]], d["dropped"]["refuted"]), (False, 1))
+
+    def test_serial_mode_warns_and_counts_nothing_extra(self):
+        d, m = self.run_strict(mode="serial", strict=True)
+        self.assertEqual((d["findings"], [i["id"] for i in d["unverifiable"]].count(m)), ([], 1))
+        self.assertNotIn("inferred", d)
+        self.assertTrue(any("--strict" in g for g in d["lost_guarantees"]), d["lost_guarantees"])
+
+    def test_nit_does_not_change_the_verdict_under_strict(self):
+        write_plan(self.run_dir, strict=True, nit=True)
+        self.ingest(cand(Q_ADD, 8, severity="suggestion"), cand(Q_MUL, 11, severity="suggestion"),
+                    cand(Q_NEG, 14, severity="nit"), {"inspected": ["src/calc.py"]})
+        self.verdicts(verdict((Q_ADD, 8)), verdict((Q_MUL, 11), "unverifiable", reason=RE), dict(verdict((Q_NEG, 14)), id=report._fid("defects", "src/calc.py", "bug", Q_NEG, "nit")))
+        d = self.doc()
+        self.assertEqual((d["verdict"], d["nit"], d["inferred"]), ("No blocking findings", 1, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

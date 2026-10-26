@@ -554,6 +554,27 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
+    def test_strict_section_is_in_the_lane_inputs_only_with_the_flag_and_composes_with_nit(self):  # gh#82
+        lanes = ("standards", "defects", "spec")
+        self.run_plan()
+        before = {lane: self.read("inputs/%s.md" % lane) for lane in lanes}
+        self.run_plan("--strict")
+        for lane in lanes:
+            self.assertEqual(self.read("inputs/%s.md" % lane).count("## Strict mode"), 1, lane)
+        self.run_plan("--strict", "--nit")
+        for lane in lanes:
+            self.assertEqual((self.read("inputs/%s.md" % lane).count("## Strict mode"), self.read("inputs/%s.md" % lane).count("## Nit mode")), (1, 1), lane)
+        self.run_plan("--nit")  # the spec mark takes both sections away together
+        self.assertEqual(self.read("inputs/spec.md").count("## Strict mode"), 0)
+        self.run_plan()
+        for lane in lanes:
+            self.assertEqual(self.read("inputs/%s.md" % lane), before[lane], lane)
+
+    def test_strict_flag_sets_plan_json_only_when_given(self):  # gh#82
+        self.assertNotIn("strict", self.run_plan())
+        self.assertIs(self.run_plan("--strict")["strict"], True)
+        self.assertNotIn("strict", self.run_plan())
+
     def test_nit_flag_sets_plan_json_and_a_section_in_the_defects_standards_and_spec_inputs(self):
         self.assertNotIn("nit", self.run_plan())
         for lane in ("standards", "defects", "spec"):

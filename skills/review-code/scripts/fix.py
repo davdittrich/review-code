@@ -424,6 +424,9 @@ def plan(run: str, words: List[str], fix_tests: bool = False) -> dict:
         if f["severity"] == "nit":  # report-only: never located, never briefed
             skipped.append({"id": f["id"], "path": f["path"], "why": "nit"})
             continue
+        if f.get("evidence_class") == report.STRICT_CLASS:  # --strict source-read finding: report-only (gh#82)
+            skipped.append({"id": f["id"], "path": f["path"], "why": "inferred"})
+            continue
         judges = _judges(f["path"], cmd_files)
         if judges and not (fix_tests and _editable_test(f["path"]) and f["path"] not in cmd_files):  # a named file may be the script itself
             why = "test-path"  # a fix there could weaken the tests that judge it; --fix-tests opts in for test files only

@@ -47,7 +47,7 @@ A finding is reportable only with all four of:
 4. An evidence class of `reproduced` or `traced` (see below).
 
 A concern below `traced` is never stated as a finding: it goes to the report's Unverifiable list, at
-`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question.
+`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question. `--strict` lowers the floor to `inferred`: `references/strict.md`.
 
 ## Severity and evidence
 
@@ -66,8 +66,7 @@ Style findings are Required or Suggestions at most, and only when a linter would
 
 `--nit` adds a Nit severity between Suggestions and Noted. It never changes the verdict. A nit is a
 `convention` finding that quotes a repo rule, or a `norm` finding the skill counts itself in the
-pinned tree (at least 20 lines, the other idiom the majority); Defects and Spec may send a trivial finding as a nit. Diff targets report changed lines only;
-a `--repo` or path target also reports pre-existing nits. The text report lists at most 15 groups under Nits
+pinned tree (at least 20 lines, the other idiom the majority); Defects and Spec may send a trivial finding as a nit. The text report lists at most 15 groups under Nits
 (JSON and SARIF keep every nit). `--fix` and `--fix-tests` ignore nits. `--nit --lean` is the
 nits-only pass. Detail: `references/lanes.md`.
 
@@ -83,7 +82,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
 
 1. Target. Remove these words from the user's words and remember them: `--json` and `--sarif` (step 10),
    `--comment` (step 11), `--fix` and `--fix-tests` (step 12; `--fix-tests` without `--fix`: stop and say so), and `--lean`, `--quick`, `--standard`, `--deep`, `--sota`, `--no-sota`,
-   `--serial`, `--ai`, `--nit` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
+   `--serial`, `--ai`, `--nit`, `--strict` (steps 2 and 5; two different tier flags: stop and say so), and `--own` or `--external` (step 3;
    `--own` with `--external`: stop and say so), and `--since-last` (a PR already reviewed by you is reviewed from your last review's head, else in full; state the `since_last` line). Target forms in words: for one
    commit, append the caret and exclamation mark to the commit id; a PR or MR is its
    number or URL; a range is `A..B` or `A...B`. Run the remaining words through the stdin rule:
@@ -146,7 +145,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    (`assistant`, `encoded`, `url`, `markup`, `long`); `provenance` (`added` by the change, `touched` for a changed file with no diff) is kept apart and does not list a span singly. All three list changed files only.
 5. Plan. If the Agent tool is unavailable, plan in serial mode: add `--serial` below. Run `plan.py` with
    only fixed literals as arguments: `--tier lean|quick|standard|deep` for a tier flag, `--sota` or
-   `--no-sota`, `--serial`, `--ai`, `--nit`, each only when step 1 removed that flag, and `--tool codegraph` and `--tool serena` for each such MCP tool the session has. The plugin settings go on
+   `--no-sota`, `--serial`, `--ai`, `--nit`, `--strict`, each only when step 1 removed that flag, and `--tool codegraph` and `--tool serena` for each such MCP tool the session has. The plugin settings go on
    stdin, one `key=value` line each:
 
    ```
