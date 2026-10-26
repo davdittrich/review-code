@@ -39,8 +39,7 @@ The handoff may carry more blocks:
   those uses, else `unverifiable`; `references: unknown` makes it `unverifiable`. For any other `lean`
   property (a duplicate, an existing helper, a restating comment), judge the quoted code
   directly, with no reference count needed.
-- `strict:` (only under `--strict`): when you can re-derive the trigger from the cited source but cannot trace every path, answer
-  `unverifiable` with the cite and a reason that starts `re-derived:`; any other claim is answered as above.
+- `strict:`: a trigger you re-derive from the cited source but cannot trace end to end is `unverifiable`, with the cite and a reason starting `re-derived:`.
 - `do-not-flag:` blocks: each item is a kind of claim to refute. Treat them like the list below.
 
 ## Verdict
