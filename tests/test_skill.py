@@ -695,8 +695,8 @@ class PostingDocs(unittest.TestCase):
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22915)  # gh#83 --rubric line 22547 -> 22915; owner raised 22347 -> 22437 (gh#74) to restore two clauses, then -> 22547 (review-code-xe1y) for the failed-retry outcome; lanes.md stays 15067
-        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 16210)  # gh#83/#85 15067 -> 16210 (Rubric files section, co-change clause)
+        self.assertLessEqual(os.path.getsize(SKILL), 22547)  # owner raised 22347 -> 22437 (gh#74) to restore two clauses, then -> 22547 (review-code-xe1y) for the failed-retry outcome; lanes.md stays 15067
+        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
         """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""

@@ -481,7 +481,7 @@ def _rubrics(run: str, paths) -> list:
             return []
     out = []
     for i, p in enumerate(paths, 1):
-        full = os.path.abspath(p)  # not realpath: read_working refuses a link
+        full = os.path.abspath(os.path.expanduser(p))  # a quoted here-document never expands ~; not realpath: read_working refuses a link
         try:
             status, data = target.read_working(full, target.MAX_FILE)
         except OSError:  # a directory: open succeeds, fdopen refuses

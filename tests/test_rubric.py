@@ -72,6 +72,14 @@ class Ledger(tl.Base):
         self.assertEqual((rc, json.loads(out)["status"]), (0, "ok"), out)
         self.assertEqual(self.entry(self.load())["path"], a)
 
+    def test_a_home_relative_path_is_expanded(self):
+        write_rubric(self.tmp, "A rule one two three.\n", "home.md")
+        self.prep()
+        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", self.run_dir, "--rubric", "-"], self.repo, self.tmp,
+                                "~/elsewhere/home.md\n", extra={"HOME": self.tmp})
+        self.assertEqual((rc, json.loads(out)["status"]), (0, "ok"), out)
+        self.assertEqual(self.entry(self.load())["path"], os.path.join(self.tmp, "elsewhere", "home.md"))
+
     def test_a_bad_rubric_is_refused_as_bad_rubric(self):
         real = write_rubric(self.tmp)
         link = os.path.join(self.tmp, "elsewhere", "link.md")
