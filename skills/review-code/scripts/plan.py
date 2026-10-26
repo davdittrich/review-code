@@ -206,14 +206,14 @@ def _put_sections(path, sections):
 NIT_MARK = "\n<!-- review-code:nit-mode -->\n"  # spec.md prose passes sanitize_prose, which removes every HTML comment: author text cannot hold this
 
 
-def _put_spec_nit(path, body, strict=False):
+def _put_spec_nit(path, body, strict=None):
     """The Spec lane's `## Nit mode` and `## Strict mode` sections, appended after NIT_MARK and removed from the last mark to the end,
     whatever wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     i = text.rfind(NIT_MARK)
     text = text[:i] if i >= 0 else text
-    tail = ("## Nit mode\n\n%s\n" % NIT_SPEC if body else "") + ("\n## Strict mode\n\n%s\n" % STRICT_MODE if strict else "")
+    tail = ("## Nit mode\n\n%s\n" % NIT_SPEC if body else "") + ("\n## Strict mode\n\n%s\n" % strict if strict else "")
     target.write_private(path, text + (NIT_MARK + tail.lstrip("\n") if tail else ""))
 
 
@@ -246,18 +246,18 @@ NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` a
 def _install_packs(run, packs, nit=None, strict=False):
     """Copy packs [(name, files)] and smells.md under run/inputs and list them in the defects and standards inputs;
     nit is the Nit mode section text for the standards input (None drops a stale one)."""
-    inp = os.path.join(run, "inputs")
+    inp, sm = os.path.join(run, "inputs"), STRICT_MODE if strict else None
     shutil.rmtree(os.path.join(inp, "packs"), ignore_errors=True)
     for name, _ in packs:
         ledger.write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
     ledger.write(os.path.join(inp, "smells.md"), _ref("smells.md"))
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
     _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed), ("Nit mode", NIT_DEFECTS if nit else None),
-                                                       ("Strict mode", STRICT_MODE if strict else None)])
-    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None, strict)
+                                                       ("Strict mode", sm)])
+    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None, sm)
     _put_sections(os.path.join(inp, "standards.md"), [
         ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md"))),
-        ("Nit mode", nit), ("Strict mode", STRICT_MODE if strict else None)])
+        ("Nit mode", nit), ("Strict mode", sm)])
 
 
 # Module shards (path and repo targets). 400000 bytes is about 100k tokens at 4 bytes per token, which leaves room in
