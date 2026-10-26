@@ -3115,6 +3115,19 @@ class Gate(Base):
         with open(os.path.join(self.run_dir, "rejected", "batch-1.txt"), encoding="utf-8") as fh:
             self.assertTrue(fh.read().startswith("invalid-json "))
 
+    def test_a_verify_batch_that_never_stored_a_verdict_is_not_no_blocking_findings(self):  # review-code-foap
+        rc, out = self.rep("ingest", lines(dict(self.GOOD, category="lean", severity="suggestion"), {"inspected": ["src/calc.py"]}),
+                           extra=["--lane", "standards"])
+        self.assertEqual(rc, 0, out)
+        (i,) = json.loads(out)["ids"]
+        st = self.status()
+        self.assertEqual((st["missing_batches"], st["no_verdict"]), ([1], []))  # the failed call stored nothing: not "no_verdict" to status
+        d = self.doc()
+        self.assertEqual(d["verdict"], "Needs discussion")
+        self.assertEqual(d.get("no_verdict"), [i])
+        self.assertEqual([x["reason"] for x in d["unverifiable"]], ["no-verdict"])
+        self.assertIn(i, self.rep("render")[1])  # the Warning block lists the unverified id
+
     def test_a_verdict_line_with_a_bad_value_is_rejected_with_one_prefix(self):
         (i,) = self.ingest(self.GOOD, {"inspected": ["src/calc.py"]})["ids"]
         rc, out = self.rep("verdicts", lines({"id": i, "verdict": "maybe"}), extra=["--batch", "1"])
