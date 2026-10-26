@@ -1904,7 +1904,7 @@ def _build(run):
                           "ledger_counts": {k: len(led[k]) for k in ledger.CATEGORIES}}}
     if plan.get("nit"):  # --nit: the count rides in the summary; it never changes the verdict
         doc["nit"] = sum(1 for i in findings if i["severity"] == "nit")
-    if strict:  # --strict: absent otherwise, so default output stays byte-identical
+    if strict:  # --strict: these two keys are absent otherwise (the same_class sweep is on by default, gh#86)
         doc["strict"], doc["inferred"] = True, sum(1 for i in findings if i["evidence_class"] == STRICT_CLASS)
     elif plan.get("strict") is True:
         doc["lost_guarantees"].append("--strict ignored: serial mode self-scores every candidate")
