@@ -9,8 +9,10 @@ and Standards inputs (an untraced concern with file:line, quote and trigger keep
 - `report.py` adds a `strict:` line to each verify handoff. A verifier that re-derives the trigger from the cited source but cannot
   trace every path answers `unverifiable` with the cite and a reason that starts `re-derived:`.
 - `report.py` lifts exactly those concerns into findings of class `inferred`, severity kept (`STRICT_CLASS` is the one constant
-  `fix.py` and `post.py` also read). Any other `unverifiable` verdict stays Unverifiable; a `refuted` one is dropped; `speculative`
-  stays a question; web-sourced `sota` findings never lift.
+  `fix.py` and `post.py` also read). Any other `unverifiable` verdict stays Unverifiable; a `refuted` one also stays Unverifiable, reason prefixed `refuted: `, not dropped
+  (`dropped.refuted` stays 0; default and serial runs still drop it); `speculative` stays a question; web-sourced `sota` findings never lift.
+- Because a refuted concern is kept, a non-nit Defects concern the verifier refuted makes the verdict Needs discussion under `--strict`
+  (Standards and Spec: only at Required); read its `refuted:` reason before acting. `--comment` counts these in "Not posted: N unverifiable".
 - At Blocking or Required an inferred finding makes the verdict not clean; a Suggestion does not. A nit never changes the verdict
   (ADR 0001), with or without `--strict`.
 - `--fix` and `--fix-tests` skip inferred findings (`why: inferred`). `--comment` labels them "inferred (source read)".

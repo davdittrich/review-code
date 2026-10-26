@@ -71,8 +71,18 @@ class Strict(StrictBase):
         d, m = self.run_strict(reason="could not trace it", strict=True)
         self.assertEqual(([i["id"] for i in d["unverifiable"]], d["inferred"], d["verdict"]), ([m], 0, "Needs discussion"))
 
-    def test_a_refuted_inferred_concern_is_dropped_not_reported(self):
-        d, m = self.run_strict(kind="refuted", strict=True)
+    def test_a_refuted_concern_stays_unverifiable_under_strict(self):  # review-code-cp5i.6: gh#82 spec, not dropped
+        d, m = self.run_strict(kind="refuted", reason="the guard on line 9 stops it", strict=True)
+        self.assertEqual(([i["id"] for i in d["unverifiable"]], d["dropped"]["refuted"], d["inferred"]), ([m], 0, 0))
+        self.assertTrue(d["unverifiable"][0]["reason"].startswith("refuted: "), d["unverifiable"][0]["reason"])
+        self.assertEqual(d["verdict"], "Needs discussion")  # a blocking Defects concern left open is a question, not a pass
+
+    def test_a_refuted_concern_is_still_dropped_without_strict(self):
+        d, m = self.run_strict(kind="refuted")
+        self.assertEqual((m in [i["id"] for i in d["findings"] + d["unverifiable"]], d["dropped"]["refuted"]), (False, 1))
+
+    def test_a_refuted_serial_concern_is_still_dropped_under_strict(self):
+        d, m = self.run_strict(kind="refuted", mode="serial", strict=True)
         self.assertEqual((m in [i["id"] for i in d["findings"] + d["unverifiable"]], d["dropped"]["refuted"]), (False, 1))
 
     def test_serial_mode_warns_and_counts_nothing_extra(self):

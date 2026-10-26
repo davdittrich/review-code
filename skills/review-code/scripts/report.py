@@ -1818,7 +1818,7 @@ def _build(run):
     for c in cand["candidates"]:
         v = {} if c["category"] == "sota" else ver.get(c["id"], {})
         cites, kind = v.get("cites", []), v.get("verdict")
-        if kind == "refuted":
+        if kind == "refuted" and not strict:  # --strict keeps it as a question (gh#82); serial has no verifier verdicts
             dropped["refuted"] += 1
             continue
         lifted = False
@@ -1834,7 +1834,7 @@ def _build(run):
             cls, reason, lifted = STRICT_CLASS, v["reason"], True  # the verifier re-derived the trigger by reading: a finding, severity kept
         else:
             cls = "inferred" if cites else "speculative"
-            reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
+            reason = "refuted: " + v["reason"] if kind == "refuted" else v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
                 "verifier-cap" if c["id"] in capped else c.get("downgraded", "no-verdict"))
         # a partial drop still says so, whatever the class; a confirmed verdict left no cite already has the note as its reason (the recorded state, not a prefix of the verifier's text, review-code-lqf5)
         if v.get("cites_dropped") and not (kind == "confirmed" and not cites and v.get("downgraded") == "cites-dropped-wire-token"):
