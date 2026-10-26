@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import unittest
+from unittest import mock
 
 import paths  # noqa: F401
 
@@ -65,20 +66,17 @@ class Ledger(tl.Base):
         self.assertEqual([c["path"] for c in got], [a, b])
         self.assertEqual(len({c["file"] for c in got}), 2)
 
-    def test_the_cli_reads_rubric_paths_from_stdin_one_per_line(self):
-        a = write_rubric(self.tmp, "A rule one two three.\n", "my rubric;$(x).md")
-        self.prep()
-        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", self.run_dir, "--rubric", "-"], self.repo, self.tmp, a + "\n")
-        self.assertEqual((rc, json.loads(out)["status"]), (0, "ok"), out)
-        self.assertEqual(self.entry(self.load())["path"], a)
-
     def test_a_home_relative_path_is_expanded(self):
         write_rubric(self.tmp, "A rule one two three.\n", "home.md")
         self.prep()
-        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", self.run_dir, "--rubric", "-"], self.repo, self.tmp,
-                                "~/elsewhere/home.md\n", extra={"HOME": self.tmp})
-        self.assertEqual((rc, json.loads(out)["status"]), (0, "ok"), out)
+        with mock.patch.dict(os.environ, {"HOME": self.tmp}):
+            ledger.build(self.run_dir, rubrics=["~/elsewhere/home.md"])
         self.assertEqual(self.entry(self.load())["path"], os.path.join(self.tmp, "elsewhere", "home.md"))
+
+    def test_a_literal_dash_rubric_is_refused_as_bad_rubric(self):
+        self.prep()
+        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", self.run_dir, "--rubric", "-"], self.repo, self.tmp, "")
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "bad-rubric"}), out)
 
     def test_a_bad_rubric_is_refused_as_bad_rubric(self):
         real = write_rubric(self.tmp)
@@ -133,7 +131,7 @@ class RuleCheck(tr.Lanes):
         rc, out, _ = gitfix.cli("target.py", args, self.repo, self.tmp)
         self.assertEqual(rc, 0, out)
         run = json.loads(out)["run"]
-        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", run, "--rubric", "-"], self.repo, self.tmp, self.rubric + "\n")
+        rc, out, _ = gitfix.cli("ledger.py", ["build", "--run", run, "--rubric", self.rubric], self.repo, self.tmp)
         self.assertEqual(rc, 0, out)
         return run
 

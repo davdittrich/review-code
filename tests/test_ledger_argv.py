@@ -41,12 +41,10 @@ class Argv(unittest.TestCase):
         self.ok(["--spec", "-"], ("s.md", (), False, ()), "s.md\n")
         self.ok(["--rubric", "a.md", "--rubric", "b.md"], (None, (), False, ["a.md", "b.md"]))
         self.ok(["--nit", "--rubric", "a.md", "--spec", "p.md"], ("p.md", (), True, ["a.md"]))
-        self.ok(["--rubric", "-"], (None, (), False, ["x", "y"]), "x\n\ny\n")
 
     def test_invalid_forms_are_usage(self):
         for extra in (["--nit", "--nit"], ["--spec"], ["--spec", "a", "--spec", "b"], ["--found", "x"], ["--found"],
-                      ["--rubric"], ["--bogus", "v"], ["--spec", "--nit"], ["stray"], ["--spec", "a", "stray"],
-                      ["--rubric", "-", "--spec", "-"], ["--rubric", "-", "--found", "-"]):
+                      ["--rubric"], ["--bogus", "v"], ["--spec", "--nit"], ["stray"], ["--spec", "a", "stray"]):
             with self.subTest(extra=extra):
                 self.usage(extra)
         rc, out, _ = run_main(["build", "--run"])

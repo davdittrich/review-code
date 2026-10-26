@@ -3,7 +3,7 @@
 Stdlib only, Python 3.9 grammar. Stdout carries fixed keys only; commit text goes to
 inputs/spec.md alone, inside a per-run random UNTRUSTED block.
 
-usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH|-]
+usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH]
        ledger.py context --run DIR | trust set|get|gate ... (--rubric PATH names a user-owned rule file, repeatable)
 """
 import sys
@@ -296,7 +296,7 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     return found, capped
 
 
-BUILD_USAGE = "usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH|-]"
+BUILD_USAGE = "usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH]"
 SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
 SIB_LINES, SIB_DAYS, SIB_COCH_PER_FILE, SIB_COCH_MAX = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
 SIB_SHARED, SIB_BULK = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
@@ -495,7 +495,7 @@ def _rubrics(run: str, paths) -> list:
     rec = os.path.join(run, "rubrics.json")
     out = []
     for i, p in enumerate(paths, 1):
-        full = os.path.abspath(os.path.expanduser(p))  # a quoted here-document never expands ~; not realpath: read_working refuses a link
+        full = os.path.abspath(os.path.expanduser(p))  # not realpath: read_working refuses a link
         try:
             status, data = target.read_working(full, target.MAX_FILE)
         except OSError:  # a directory: open succeeds, fdopen refuses
@@ -1394,14 +1394,10 @@ def main(argv: List[str], cwd: Optional[str] = None) -> int:
             spec, found = opts.get("--spec"), ()
             if opts.get("--found") not in (None, "-"):
                 raise target.Refuse("usage", BUILD_USAGE)
-            if "-" in rubrics and (spec == "-" or "--found" in opts):  # gh#83: stdin has one reader per call
-                raise target.Refuse("usage", "usage: --rubric - cannot share stdin with --spec - or --found -")
             if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
                 spec = sys.stdin.readline().rstrip("\n")
             if "--found" in opts:  # the spec finder's paths, one per stdin line; a bad one is dropped, not refused
                 found = [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
-            if "-" in rubrics:  # gh#83: the paths as stdin lines
-                rubrics = [r for r in rubrics if r != "-"] + [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
             out = build(argv[2], spec, found, nit, rubrics)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason}, 1

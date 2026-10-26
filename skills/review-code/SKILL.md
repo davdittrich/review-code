@@ -116,7 +116,7 @@ Follow the steps in order. Ask each question at most once per run. Edit files on
    Remove each `--rubric <path>` pair too; step 2 takes the paths.
 2. Ledger. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py build --run <run>`, adding `--nit` to this and every later build call when step 1 removed it. State the `label` and
    counts from its stdout. For `triage`, print "Triage only: no repository context found".
-   Rubrics: `--rubric -`, paths on stdin one per line (not with `--spec -` or `--found -`).
+   Rubrics: repeat `--rubric <path>`.
 3. Questions, before reading any run-dir file. When step 2's
    stdout has `asked` true, skip to step 4. When `--own` or `--external` was removed in step 1, run
    `python3 ${CLAUDE_SKILL_DIR}/scripts/ledger.py trust set own --run <run>` without asking (`external` for `--external`), appending `--flag` so the answer is recorded as flag-supplied (`source` "flag" in later stdout), and go to step 4. Otherwise make one AskUserQuestion call holding the trust question ("Is this your own code,
