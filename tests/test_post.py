@@ -41,6 +41,17 @@ def source(changed, extra, inject=None):
     return "\n".join(rows) + "\n"
 
 
+
+def _only_cli(cli, exc):
+    """A subprocess.run stand-in that fails only the forge CLI call; git (the report's same-class sweep) runs for real."""
+    real = subprocess.run
+
+    def run(args, *a, **k):
+        if args and args[0] == cli:
+            raise exc
+        return real(args, *a, **k)
+    return mock.Mock(side_effect=run)
+
 class FakeGitHub:
     """Callable as post._cli(tool, args, cwd, stdin=None); records (method, endpoint without query, parsed body)."""
 
@@ -649,11 +660,11 @@ class Safety(Base):
         self.assertEqual(self.fake.calls, [])
 
     def test_gh_missing(self):
-        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", _only_cli("gh", FileNotFoundError)):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
 
     def test_a_hung_tool_times_out(self):
-        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
+        hung = _only_cli("gh", subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
         with mock.patch.object(target.subprocess, "run", hung):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
         self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
@@ -1703,7 +1714,7 @@ class GitLabSafety(GitLabBase):
                 self.assertEqual(self.fake.writes(), [])
 
     def test_glab_missing(self):
-        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", _only_cli("glab", FileNotFoundError)):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "glab-missing")
 
     def test_head_or_base_moved_at_a_before_the_diff(self):
