@@ -1821,6 +1821,7 @@ def _build(run):
         if kind == "refuted":
             dropped["refuted"] += 1
             continue
+        lifted = False
         if c["category"] == "sota":
             cls, reason = "inferred", "web-sourced"
         elif kind == "confirmed" and cites and serial:  # a self-score is not independent verification (VERI-03)
@@ -1830,7 +1831,7 @@ def _build(run):
         elif kind == "unverifiable" and cites and not serial and c["category"] == "test" and _repro(run, c["id"], ("base",)) == "reproduced":
             cls, reason = "reproduced", v["reason"]  # "passes on the merge base" is observed by repro.py --base, not by reading
         elif strict and kind == "unverifiable" and cites and c["category"] != "sota" and v["reason"].startswith(STRICT_PREFIX):
-            cls, reason = STRICT_CLASS, v["reason"]  # the verifier re-derived the trigger by reading: a finding, severity kept
+            cls, reason, lifted = STRICT_CLASS, v["reason"], True  # the verifier re-derived the trigger by reading: a finding, severity kept
         else:
             cls = "inferred" if cites else "speculative"
             reason = v["reason"] if kind == "unverifiable" else v.get("downgraded") or "no-valid-cite" if kind == "confirmed" else (
@@ -1840,7 +1841,6 @@ def _build(run):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        lifted = strict and kind == "unverifiable" and reason.startswith(STRICT_PREFIX) and cls == STRICT_CLASS
         sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index("blocking" if lifted else _cap(cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap

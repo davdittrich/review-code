@@ -1,5 +1,6 @@
 """--strict (gh#82): a verifier-re-derived inferred concern is a finding that counts; same-class sweep (gh#86)."""
 import json
+import os
 import unittest
 
 import paths  # noqa: F401
@@ -49,6 +50,22 @@ class Strict(StrictBase):
         self.verdicts(verdict((Q_MUL, 11), "unverifiable", reason=RE))
         d = self.doc()
         self.assertEqual((len(d["findings"]), d["verdict"], d["inferred"]), (1, "No blocking findings", 1))
+
+    def test_a_partial_cite_drop_does_not_stop_the_lift(self):  # review-code-cp5i.11: the lift is set where it is decided
+        write_plan(self.run_dir, strict=True)
+        self.ingest(cand(Q_MUL, 11, severity="blocking", category="security"), {"inspected": ["src/calc.py"]})
+        m = fid("src/calc.py", "security", Q_MUL)
+        self.verdicts(dict(verdict((Q_MUL, 11), "unverifiable", reason=RE), id=m))
+        path = os.path.join(self.run_dir, "verdicts.json")
+        with open(path, encoding="utf-8") as fh:
+            v = json.load(fh)
+        v[m]["cites_dropped"] = 1
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(v, fh)
+        d = self.doc()
+        (f,) = d["findings"]
+        self.assertEqual((f["id"], f["evidence_class"], f["severity"], d["inferred"]), (m, "inferred", "blocking", 1))
+        self.assertTrue(f["reason"].startswith("cites-dropped-wire-token; " + report.STRICT_PREFIX), f["reason"])
 
     def test_a_verdict_that_did_not_re_derive_the_trigger_stays_unverifiable(self):
         d, m = self.run_strict(reason="could not trace it", strict=True)
