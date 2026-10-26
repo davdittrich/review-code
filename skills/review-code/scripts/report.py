@@ -138,6 +138,7 @@ VERDICTS = ("confirmed", "refuted", "unverifiable")
 # --strict (gh#82): the one evidence class (below traced) a verdict may lift into findings, and the reason prefix by which the
 # verifier says it re-derived the trigger from source. fix.py and post.py read STRICT_CLASS; nothing else names the floor.
 STRICT_CLASS, STRICT_PREFIX = "inferred", "re-derived:"
+NO_CAP = SEVERITIES[0]  # a lifted concern keeps the severity its lane gave it; only CEILING (non-Defects categories) still limits it
 SCORE = {"reproduced": 100, "traced": 75, "inferred": 50, "speculative": 25}
 ID_RE = r"F-[0-9a-f]{10}"
 ID_FULL = re.compile(ID_RE)
@@ -1841,7 +1842,7 @@ def _build(run):
             reason = "cites-dropped-wire-token; " + reason
         origin = "existing" if whole else "introduced" if any(
             n in added.get(c["path"], ()) for n in range(c["line"], c["end_line"] + 1)) else "pre-existing"
-        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index("blocking" if lifted else _cap(cls, c["category"])),
+        sev = SEVERITIES[max(SEVERITIES.index(c["severity"]), SEVERITIES.index(NO_CAP if lifted else _cap(cls, c["category"])),
                              SEVERITIES.index(CEILING.get(c["category"], SEVERITIES[0])))]
         # VERI-05; Blocking and Required stay (VERI-06); a cut id never got a verdict, so it shows as verifier-cap
         if origin == "pre-existing" and sev in SEVERITIES[2:] and c["id"] not in capped:
