@@ -60,7 +60,7 @@ Document (json output; no run path, no timestamps, so it is byte-reproducible):
   quote, evidence[{path, line, quote}], evidence_class, score, verified, origin (introduced|pre-existing|
   existing), fix, reason, axis (defects|standards|spec), source_lane (the --lane of the ingest, never model output). A file name that holds a hidden character stays raw in findings[].path and evidence[].path (a machine key); the text report and hidden_content show it escaped.
 Document also: not_run[] (closed words: a lane name with optional @shard, `shard N`, `repro`, `serial`; from plan skipped[] entries, lanes not complete, serial mode, and repro when trust is not own or a finding has no repro outcome while the ledger lists tests or config).
-A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
+A Standards `convention` item also carries rule and rule_source. A `nit` item (only under --nit; plan.json nit) also carries basis (rule|norm for Standards, evidence for Defects and Spec: its category); a norm item carries norm_for, norm_against, norm_glob and norm{for, against, total}, counted by the skill over the pinned tree. The document carries nit (the nit count) only under --nit. skipped[] lists what plan.json left out.
 Document also: summary[{lane, text}] (model-written change summary, sorted by shard, untrusted), lean_lines (sum of end_line - line + 1 over verified lean findings, an estimate), lanes{lane: complete|incomplete|not-ingested} (incomplete = the reply had no `inspected` line; not-ingested = plan.json called it, no reply was ingested), merged (candidates
 folded into a same-axis neighbour), lost{lane: n} and recovered{lane: n}, each only when non-empty (a recovered line is a lost line whose finding a later ingest of the lane carried), skipped[]. Items carry also_found_by[] and merged_from[{id, line, end_line, trigger}] (the candidates merged into it, trigger cut to MERGED_TRIGGER chars; status stdout carries merged_from{id: [...]} with the triggers escaped, the handoff lists them, the text report prints a `merged:` row each). Ingest stdout: status, ids (queue order,
 every non-SOTA candidate; spec_ids holds the Spec candidates for review-code:spec-verifier; SOTA candidates are in
@@ -170,7 +170,7 @@ REASONS = {
     "rule-not-in-conventions": "quote the rule as the conventions file words it",
     "nit-not-enabled": "the run was not planned with --nit: drop every line with severity nit or category norm",
     "nit-only": "this run reports nits only (--nit --lean): send only lines with severity nit, for example category convention with a rule",
-    "nit-basis": "a nit has severity nit and category convention (with rule and rule_source) or norm; a norm is never above nit, and only the Standards lane sends either",
+    "nit-basis": "a Standards nit has severity nit and category convention (with rule and rule_source) or norm; a norm is never above nit and only Standards sends one",
     "norm-malformed": "send norm_for, norm_against and norm_glob as non-empty strings of at most 200 characters, for example \"= []\", \"= list()\", \"*.py\"; the idioms are at least 3 characters, neither holds the other, and the quote holds norm_against but not norm_for",
     "norm-quote-mismatch": "quote the deviating line itself: it must contain the exact text of norm_against",
     "norm-sample-small": "the two idioms occur on fewer than 20 lines of the reviewed files norm_glob matches: widen norm_glob (for example \"*.py\") or drop the finding",
@@ -992,7 +992,7 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None):
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
     out += "".join("do-not-flag:\n%s\n" % ledger.block(text, nonce) for files, text in packs if c["path"] in files)
-    if c["axis"] == "defects":
+    if c["axis"] == "defects":  # a Defects nit gets the same failure check as any Defects finding (review-code-hnai.2)
         return out
     out += "check: %s\n" % ("rule" if c["category"] == "convention" else
                             "spec" if c["axis"] == "spec" else "property")
@@ -1812,11 +1812,11 @@ def _build(run):
         i["impact"] = i["reason"]  # the verifier names the production impact in its reason (verifier.md)
     unverifiable = [i for i in items if not i["verified"]]
     rank = {i["severity"] for i in findings}
-    # Defects: any unverifiable item needs discussion. Standards and Spec: only an item at required does, so
+    # Defects: any unverifiable item but a nit needs discussion (no nit changes the verdict, ADR 0002). Standards and Spec: only an item at required does, so
     # unverifiable smell, lean and comment suggestions never flip the verdict; SOTA never counts (its ceiling is suggestion).
     label = ("Needs changes" if "blocking" in rank else
              "Needs discussion" if any(i["severity"] == "required" for i in items if i["axis"] != "defects")
-             or "required" in rank or any(i["axis"] == "defects" for i in unverifiable) else "No blocking findings")
+             or "required" in rank or any(i["axis"] == "defects" and i["severity"] != "nit" for i in unverifiable) else "No blocking findings")
     lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
     if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] != "sota"):
         label = "Needs discussion"  # a planned lane, sota aside, that was never ingested or never finished proves nothing (review-code-0c4, gh#71)

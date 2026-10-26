@@ -1,6 +1,6 @@
 # 0001: `--nit` mode reports rule-cited nits, never gates
 
-Status: accepted (2026-10-22). Ticket: review-code-ilzp. Amended by [0002](0002-nit-mode-all-lanes.md): nits will come from every lane that reads repository evidence, not only the Standards lane, once issue #76 is implemented (see 0002; implemented by #76).
+Status: accepted (2026-10-22). Ticket: review-code-ilzp. Amended by [0002](0002-nit-mode-all-lanes.md): nits come from every lane that reads repository evidence, not only the Standards lane (see 0002; implemented by #76).
 
 ## Context
 
@@ -28,7 +28,7 @@ would not catch them. No flag lowers the floor.
 - Diff targets: changed lines only (the pre-existing drop applies). Repo targets: pre-existing
   violations are reported.
 - Report only: the verdict is unchanged, the summary shows the nit count, `--fix` ignores nits.
-  The rendered Nits section shows at most 15 rules, each once with its count.
+  The rendered Nits section shows at most 15 groups (0002: a Defects or Spec nit's group is its category), each once with its count.
 - The Standards lane ceiling rises from 40 to 60 turns (frontmatter only, so it applies to all tiers).
 - codegraph and serena stay optional locators with a Grep fallback. Nothing is required.
 

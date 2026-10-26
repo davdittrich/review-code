@@ -49,8 +49,8 @@ When more packs match than the cap allows, packs rank by matched-file count, mos
 
 `--nit` is one boolean flag, orthogonal to the tier flags; `--nit --lean` is the nits-only pass. It reaches
 `ledger.py build --nit` (every build call) and `plan.py plan --nit`, which writes `"nit": true` to plan.json and a
-`## Nit mode` section to the Standards input. Only the Standards lane may send a `nit`. Decision record:
-`docs/adr/0001-nit-mode.md`.
+`## Nit mode` section to the Defects, Spec and Standards inputs. Those lanes may send a `nit`, SOTA never.
+Decision records: `docs/adr/0001-nit-mode.md`, `docs/adr/0002-nit-mode-all-lanes.md`.
 
 - Two bases, both checked by the scripts, not the model. A rule nit is category `convention`, severity `nit`; its rule
   must occur in a `conventions/` copy, exactly as for any convention. A norm nit is category `norm`: the lane names
@@ -58,12 +58,14 @@ When more packs match than the cap allows, packs rank by matched-file count, mos
   the pinned tree's files matching the glob that hold each idiom. The finding stands with at least 20 such lines, `norm_for` on
   more lines than `norm_against`, and `norm_against` inside the quote. The counts are the script's, shown in the report.
   Refusals: `nit-not-enabled`, `nit-basis`, `norm-malformed`, `norm-quote-mismatch`, `norm-too-large`, `norm-sample-small`, `norm-not-majority`.
+- A Defects or Spec nit keeps its category and its lane's gate (Defects: file:line, quote, trigger, evidence `traced` or better;
+  Spec: `spec_line`), reaches its axis verifier, and is grouped by category; below `traced` it is Unverifiable, no nit.
 - Extra rule files with `--nit`, read from the merge base only, kept in this order (path order within a group) up to 40:
   PR templates, `GLOSSARY.md`, `docs/adr/*.md`, `.gemini/styleguide.md`, `.cursor/rules/**/*.md|.mdc`, `.okf/**/*.md`.
   The rest are `ignored` as `nit-cap`, so human-written sources win over an agent-written `.okf/` bundle.
-- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule and lists 15
-  rules at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule` or `norm`). Diff targets drop a
-  nit on an unchanged line; a repo target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
+- A nit never changes the verdict. The summary shows `nits: N`. The text report groups nits by rule, norm or category and lists 15
+  groups at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
+  nit on an unchanged line; a repo or path target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
 
 ## Caps and turn ceilings
 

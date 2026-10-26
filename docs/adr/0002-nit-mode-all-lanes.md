@@ -20,7 +20,7 @@ The lane keeps its gate; only the severity drops.
   of at least 20 lines.
 - Defects: a finding that passes the verification gate in full (file:line, quoted code, a concrete trigger, evidence
   `traced` or better) and has trivial impact. Examples: a misleading name, dead code, a branch nothing reaches, an
-  unchecked edge with no realistic trigger. A concern below `traced` is not a nit; it follows the existing rule
+  unchecked edge that a reachable input trips. A concern below `traced` is not a nit; it follows the existing rule
   (Unverifiable).
 - Spec: a minor deviation from a quoted spec line, with that line cited as for any Spec finding.
 - SOTA: not a source of nits. It is advisory web research with no repository line to hang a nit on, and it never

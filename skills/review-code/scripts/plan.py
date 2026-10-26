@@ -203,6 +203,19 @@ def _put_sections(path, sections):
     target.write_private(path, text.rstrip("\n") + "".join("\n\n## %s\n\n%s\n" % hb for hb in sections if hb[1] is not None))
 
 
+NIT_MARK = "\n<!-- review-code:nit-mode -->\n"  # spec.md prose passes sanitize_prose, which removes every HTML comment: author text cannot hold this
+
+
+def _put_spec_nit(path, body):
+    """The Spec lane's `## Nit mode` section, appended after NIT_MARK and removed from the last mark to the end, whatever
+    wording an earlier run wrote: spec.md holds change-author text, which a heading-based strip could eat."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    i = text.rfind(NIT_MARK)
+    text = text[:i] if i >= 0 else text
+    target.write_private(path, text + (NIT_MARK + "## Nit mode\n\n%s\n" % NIT_SPEC if body else ""))
+
+
 def _put_nav(path, hint):
     """One `Navigation preference:` line at the end of a lane input file; a rerun replaces it, or clears it when hint is None."""
     with open(path, encoding="utf-8") as fh:
@@ -218,6 +231,11 @@ NIT_MODE = """The lane may also report `nit` findings, of two kinds.
   strings, never patterns. The skill counts lines in the pinned tree and the finding stands only with at least 20 lines naming
   either idiom and `norm_for` the majority, so do not send a norm you did not see on many lines.
 Changed lines only (a repo or path target: the files under review). Never report what a linter, formatter or CI of the repo enforces. No rule and no counted norm means no finding."""
+NIT_DEFECTS = """Severity `nit` is allowed here, in addition to the severities in your prompt. A nit is a defect of trivial impact that you traced: a misleading name,
+dead code, a branch nothing reaches, an unchecked edge that a reachable input trips. It keeps its own category and the whole gate
+(file:line, quote, concrete trigger, evidence). A concern you could not trace is not a nit. Changed lines only (a repo or path target: the files under review)."""
+NIT_SPEC = """Severity `nit` is allowed here, beside the severities above: a minor deviation from a quoted spec line, with its `spec_line`
+and a `spec-*` category as for any Spec finding. Changed lines only (a repo or path target: the files under review)."""
 NIT_ONLY = "\nThis run reports nits only (`--nit --lean`): send severity `nit` and no other severity."
 
 
@@ -230,7 +248,8 @@ def _install_packs(run, packs, nit=None):
         ledger.write(os.path.join(inp, "packs", name + ".md"), _ref("packs", name + ".md"))
     ledger.write(os.path.join(inp, "smells.md"), _ref("smells.md"))
     listed = "\n".join("- " + json.dumps(os.path.join(inp, "packs", n + ".md")) for n, _ in packs) or "none"
-    _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed)])
+    _put_sections(os.path.join(inp, "defects.md"), [("Domain packs", listed), ("Nit mode", NIT_DEFECTS if nit else None)])
+    _put_spec_nit(os.path.join(inp, "spec.md"), NIT_SPEC if nit else None)
     _put_sections(os.path.join(inp, "standards.md"), [
         ("Domain packs", listed), ("Smells", "- " + json.dumps(os.path.join(inp, "smells.md"))),
         ("Nit mode", nit)])

@@ -554,24 +554,62 @@ class Packs(Fixture):
         std_text = self.read("inputs/standards.md")
         self.assertEqual((std_text.count("## Domain packs"), std_text.count("## Smells")), (1, 1))
 
-    def test_nit_flag_sets_plan_json_and_the_standards_section_only(self):
+    def test_nit_flag_sets_plan_json_and_a_section_in_the_defects_standards_and_spec_inputs(self):
         self.assertNotIn("nit", self.run_plan())
-        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+        for lane in ("standards", "defects", "spec"):
+            self.assertNotIn("## Nit mode", self.read("inputs/%s.md" % lane))
+        before = {lane: self.read("inputs/%s.md" % lane) for lane in ("standards", "defects", "spec")}
         p = self.run_plan("--nit")
         self.assertIs(p["nit"], True)
         std = self.read("inputs/standards.md")
         for want in ("## Nit mode", "norm_for", "norm_against", "norm_glob", "20 lines"):
             self.assertIn(want, std)
-        self.assertNotIn("## Nit mode", self.read("inputs/defects.md"))
+        for lane in ("defects", "spec"):
+            text = self.read("inputs/%s.md" % lane)
+            self.assertEqual(text.count("## Nit mode"), 1, lane)
+            self.assertIn("Severity `nit`", text)
+            self.assertNotIn("norm_for", text)
+        self.assertIn("`spec_line`", self.read("inputs/spec.md"))
         self.run_plan("--nit")
-        self.assertEqual(self.read("inputs/standards.md").count("## Nit mode"), 1)
-        self.assertNotIn("nit", self.run_plan())  # a rerun without the flag drops the section
-        self.assertNotIn("## Nit mode", self.read("inputs/standards.md"))
+        for lane in ("standards", "defects", "spec"):
+            self.assertEqual(self.read("inputs/%s.md" % lane).count("## Nit mode"), 1, lane)
+        self.assertNotIn("nit", self.run_plan())  # a rerun without the flag drops every section, byte for byte
+        for lane, text in before.items():
+            self.assertEqual(self.read("inputs/%s.md" % lane), text, lane)
+
+    def test_a_spec_text_holding_a_nit_mode_heading_survives_a_plan_with_or_without_the_flag(self):
+        path = os.path.join(self.run_dir, "inputs", "spec.md")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n## Nit mode\nauthor text\n")
+        before = self.read("inputs/spec.md")
+        self.run_plan()
+        self.assertEqual(self.read("inputs/spec.md"), before)
+        self.run_plan("--nit")
+        self.assertTrue(self.read("inputs/spec.md").startswith(before))
+
+    def test_a_rerun_after_the_spec_nit_wording_changed_leaves_exactly_one_section_and_the_author_text(self):  # review-code-hnai.7
+        path = os.path.join(self.run_dir, "inputs", "spec.md")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n## Nit mode\nauthor text\n")
+        before = self.read("inputs/spec.md")
+        self.run_plan("--nit")
+        text = self.read("inputs/spec.md")
+        old = text.replace("Severity `nit` is allowed here", "Old wording of the section")  # what an earlier release wrote
+        self.assertNotEqual(old, text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(old)
+        self.run_plan("--nit")
+        again = self.read("inputs/spec.md")
+        self.assertEqual((again.count("Severity `nit` is allowed here"), again.count("Old wording"), again.count("author text")), (1, 0, 1))
+        self.assertEqual(again, text)
+        self.run_plan()
+        self.assertEqual(self.read("inputs/spec.md"), before)
 
     def test_nit_combines_with_lean(self):
         p = self.run_plan("--tier", "lean", "--nit")
         self.assertEqual((p["tier"], p["nit"]), ("lean", True))
         self.assertIn("## Nit mode", self.read("inputs/standards.md"))
+        self.assertNotIn("reports nits only", self.read("inputs/defects.md"))  # lean runs no Defects lane
 
     def test_only_a_lean_nit_run_tells_the_lane_it_reports_nits_only(self):
         self.run_plan("--tier", "lean", "--nit")
@@ -1326,6 +1364,13 @@ class CeilingWarning(Fixture):
         with mock.patch.object(mod, "MAX_TURNS", dict(mod.MAX_TURNS, finder=50, standards=50, spec=50)):
             pv = mod.plan(self.run_dir, "standard", {})["preview"]
         self.assertEqual([x for x in pv if x.startswith("Warning:")], [])
+
+
+class NitGuidance(unittest.TestCase):  # review-code-71v9: no example may contradict the gate it sits beside
+    def test_the_defects_nit_examples_all_have_a_trigger(self):
+        import plan as mod
+        self.assertNotIn("no realistic trigger", mod.NIT_DEFECTS)
+        self.assertIn("concrete trigger", mod.NIT_DEFECTS)
 
 
 class EverythingReviewed(ShardBase):  # gh#71: no cap on the shards a repo target builds

@@ -1,5 +1,5 @@
-"""--nit: the one owner of nit logic. A nit is severity nit with a basis: a quoted rule (category convention) or a counted
-norm (category norm). Candidate checks, the norm counter, the wording of a basis and the text-report rows live here.
+"""--nit: the one owner of nit logic. A nit is severity nit with a basis: a quoted rule (category convention), a counted
+norm (category norm), or, from Defects and Spec, its own evidence (any other category). Candidate checks, the norm counter, the wording of a basis and the text-report rows live here.
 Stdlib only; imports nothing from report.py or post.py, which both call in."""
 import fnmatch
 import json
@@ -16,13 +16,14 @@ REFUSED = frozenset(("nit-not-enabled", "nit-basis", "norm-malformed", "norm-quo
 
 def check(c, lane, mode):
     """The failing check of a candidate c (severity, category) sent by lane under nit mode (False, True or "only"), else None.
+    Defects, Spec and Standards may send a nit, only Standards a norm; Standards also needs a rule or norm basis.
     Order is part of the wire contract: bad-type, nit-not-enabled, nit-basis, nit-only."""
     if c["severity"] == "nit" or c["category"] == "norm":
-        if lane != "standards":
+        if lane == "sota" or (c["category"] == "norm" and lane != "standards"):
             return "bad-type"
         if not mode:
             return "nit-not-enabled"
-        if not (c["severity"] == "nit" and c["category"] in ("convention", "norm")):
+        if lane == "standards" and not (c["severity"] == "nit" and c["category"] in ("convention", "norm")):
             return "nit-basis"
     if mode == "only" and c["severity"] != "nit":
         return "nit-only"
@@ -30,8 +31,8 @@ def check(c, lane, mode):
 
 
 def basis(c):
-    """The basis a candidate carries: "norm" or "rule" for a nit, None for any other severity."""
-    return None if c["severity"] != "nit" else "norm" if c["category"] == "norm" else "rule"
+    """The basis a candidate carries: "norm" or "rule" for a Standards nit, "evidence" for a Defects or Spec nit, None for any other severity."""
+    return None if c["severity"] != "nit" else "norm" if c["category"] == "norm" else "rule" if c["category"] == "convention" else "evidence"
 
 
 def norm(o, files, read, quote):
@@ -72,13 +73,13 @@ def norm(o, files, read, quote):
 
 
 def basis_text(f):
-    """What a nit enforces: the quoted rule, or the counted norm. "" for any other finding. The single place this is worded."""
+    """What a nit enforces: the quoted rule, the counted norm, or (Defects, Spec) its category. "" for any other finding. The single place this is worded."""
     if f.get("basis") == "rule":
         return f["rule"]
     if f.get("basis") == "norm":
         return "norm %s over %s (%d of %d lines)" % (json.dumps(f["norm_for"]), json.dumps(f["norm_against"]),
                                                       f["norm"]["for"], f["norm"]["total"])
-    return ""
+    return f["category"] if f.get("basis") == "evidence" else ""
 
 
 def rows(nits, e):
