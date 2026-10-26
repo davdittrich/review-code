@@ -228,8 +228,9 @@ class Phase4Procedure(unittest.TestCase):
         self.assertNotIn("concurrent", serial.split("nesting-depth")[1])  # the discard clause names no retryable failure
         i = self.flat.index("Retry a failed or refused call once")
         rule = self.flat[i:i + 400]
-        for t in ("concurrent-limit", "halve", "no discard", "`missing_lanes`", "tell the user which lane was lost"):
+        for t in ("concurrent-limit", "halve", "no discard"):
             self.assertIn(t, rule)
+        self.assertIn("capped again or a retry failed, leave the lane in `missing_lanes` and tell the user which lane was lost", self.flat)
         self.assertNotIn("discard", rule.split("no discard")[0])  # retry is never routed to discard
         self.assertIn("same fan-out and retry rules", self.flat)  # verifier waves recover the same way
 
