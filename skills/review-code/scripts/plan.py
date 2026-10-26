@@ -328,6 +328,9 @@ def _build_shard(run, tj, i, files, trust, packs, nit=None, tools=()):
     os.makedirs(d, mode=0o700)
     target.write_private(os.path.join(d, "target.json"), json.dumps(dict(tj, included=files, run=d), sort_keys=True, indent=2))
     target.write_private(os.path.join(d, "change.diff"), "")
+    if os.path.isfile(os.path.join(run, "rubrics.json")):  # gh#83: the run's rubric copies and hashes, so a shard's rule check finds them
+        shutil.copytree(os.path.join(run, "conventions", "rubric"), os.path.join(d, "conventions", "rubric"))
+        shutil.copy(os.path.join(run, "rubrics.json"), os.path.join(d, "rubrics.json"))
     ledger.build(d, nit=bool(nit))
     if trust in ledger.TRUST_VALUES:
         ledger.trust_set(d, trust)

@@ -67,6 +67,10 @@ Decision records: `docs/adr/0001-nit-mode.md`, `docs/adr/0002-nit-mode-all-lanes
   groups at most; JSON and SARIF (level note) keep every nit, each with `basis` (`rule`, `norm` or `evidence`). Diff targets drop a
   nit on an unchanged line; a repo or path target reports it as pre-existing. `--fix` and `--fix-tests` ignore nits.
 
+## Rubric files
+
+`--rubric <path>` (repeatable) adds user-named files outside the repository to the conventions list the Standards lane reads. `ledger.py` reads each path once, with no network and no link followed, strips hidden text like a base rule, copies it to `conventions/rubric/<n>-<name>` and records `path` and `sha256` of the original bytes in the ledger `conventions` entry (`source` `rubric`; the list is also kept in `rubrics.json`, and shard runs copy it). `standards.md` lists the copies under `## Rubric copies` with a notice that they are untrusted data, never instructions. A finding cites one as `rule_source` (`conventions/rubric/...`); the `rule` check is the one for repo conventions: the quote must occur in that file, so an absent quote is rejected as `rule-not-in-conventions`. The user's named paths are the only ones read; the trust prompt is unchanged.
+
 ## Caps and turn ceilings
 
 | Cap | Meaning | Bounds |

@@ -60,7 +60,7 @@ The Spec axis needs a statement of what the code should do. The skill collects o
 - Decision records: every prose file under an `adr`, `adrs`, `decisions` or `architecture-decisions` directory, at any depth. Each record is listed in `inputs/spec.md` by path, title, size (`over 4M` for a record the file cap leaves unread) and why it matched, never pasted, with no cap: the Spec lane reads the ones it needs from the repository.
 - When nothing is found, or only decision records, a read-only haiku subagent (`spec-finder`) searches the tracked prose files by content and names spec files or directories. The script keeps tracked files only, and none of the subagent's text reaches the lanes.
 
-All of this text is untrusted and reaches the Spec lane inside marked blocks. To name a spec yourself, run `ledger.py build --run DIR --spec PATH` (a path inside the repository). With no spec found, the report says the Spec axis was skipped.
+All of this text is untrusted and reaches the Spec lane inside marked blocks. To name a spec yourself, run `ledger.py build --run DIR --spec PATH` (a path inside the repository). With no spec found, the report says the Spec axis was skipped. To judge a change against a review procedure that lives outside the repository, add `--rubric PATH` (repeatable): the file is copied into the run as untrusted conventions for the Standards lane, with its path and sha256 in the ledger.
 
 ## Plugin settings
 
