@@ -692,6 +692,15 @@ class PostingDocs(unittest.TestCase):
         flat = " ".join(self.read(SKILL).split())
         self.assertIn("are empty, or a call failed its retry (it stays in `missing_batches`): say its ids are unverified; go on (Needs discussion).", flat)
 
+    def test_sweep_and_rubric_are_removed_in_step_1_and_sweep_forwarded_in_step_5(self):  # review-code-cp5i.33 .40
+        with open(SKILL, encoding="utf-8") as fh:
+            text = fh.read()
+        step1 = text.split("\n1. Target.", 1)[1].split("\n2. Ledger", 1)[0]
+        step5 = text.split("\n5. Plan.", 1)[1].split("\n6. ", 1)[0]
+        self.assertIn("`--sweep`", step1)
+        self.assertIn("`--sweep`", step5)
+        self.assertIn("`--rubric <path>`", step1.split("Run the remaining words", 1)[0])
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
