@@ -188,6 +188,13 @@ class Phase4Procedure(unittest.TestCase):
         for t in ("capped lane", "resumes it once", "files exceed half the ceiling"):
             self.assertIn(t, lanes)
 
+    def test_wave_size_row_is_a_starting_width_that_halves(self):  # review-code-xlwe
+        lanes = " ".join(ref("lanes.md").split())
+        row = lanes[lanes.index("| `wave_size` |"):].split(" | ")
+        self.assertIn("starting width", row[1])
+        self.assertIn("halves", row[1])
+        self.assertTrue(row[2].startswith("starting"))
+
     def test_fix_tests_flag_is_parsed_confirmed_and_documented(self):  # review-code#26
         fix = " ".join(ref("fix.md").split())
         for t in ("`--fix-tests`", "without `--fix`: stop and say so"):
@@ -212,9 +219,33 @@ class Phase4Procedure(unittest.TestCase):
     def test_cost_gate_and_serial(self):
         flat = self.flat + " " + " ".join(ref("lanes.md").split())  # serial mode's procedure lives in lanes.md
         for s in ("`confirm` is true", "\"Run\"", "\"Stop\"", "--serial", "self-score", "mode: serial", "wave_size",
-                  "nesting-depth or concurrent-limit"):
+                  "nesting-depth error"):
             self.assertIn(s, flat)
         self.assertIn("references/lanes.md", self.flat)  # the SKILL pointer into Serial mode
+
+    def test_a_failed_call_is_retried_and_only_nesting_depth_discards(self):  # gh#74
+        t = self.text
+        step7 = t[t.index("7. Lanes."):t.index("\n8. Verify.")]
+        step8 = t[t.index("\n8. Verify."):t.index("\n9. ")]
+        s7 = " ".join(step7.split())
+        i = s7.index("Retry once")
+        rule = s7[i:i + 200]
+        for e in ("Retry once, alone", "the harness failed or refused", "user denial", "concurrent-limit error",
+                  "halve the wave", "(min 1)"):
+            self.assertIn(e, rule)
+        serial = s7[:s7.index("Parallel mode")]
+        self.assertIn("nesting-depth error", serial)
+        self.assertNotIn("concurrent-limit", serial)
+        self.assertIn("retry rules", " ".join(step8.split()))
+        lanes = " ".join(ref("lanes.md").split())
+        sm = lanes[lanes.index("## Serial mode"):]
+        sentences = re.split(r"(?<=\.)\s+(?=[A-Z])", sm[:sm.index("Evidence rule")])
+        disc = [x for x in sentences if "discard" in x]
+        self.assertTrue(disc)
+        for x in disc:
+            self.assertIn("nesting-depth", x)
+            self.assertNotIn("concurrent", x)
+        self.assertIn("the cost question is not asked again", sm)
 
     def test_shape(self):
         self.assertLess(len(self.text.splitlines()), 500)
@@ -657,10 +688,14 @@ class PostingDocs(unittest.TestCase):
         line = next(ln for ln in self.read(self.REFS, "lanes.md").splitlines() if ln.lstrip().startswith("Refusals:"))
         self.assertEqual(set(re.findall(r"`([a-z-]+)`", line)), set(nit.REFUSED))
 
+    def test_step_8_says_what_a_verifier_call_that_failed_its_retry_leaves(self):  # review-code-xe1y
+        flat = " ".join(self.read(SKILL).split())
+        self.assertIn("are empty, or a call failed its retry (it stays in `missing_batches`): say its ids are unverified; go on (Needs discussion).", flat)
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22347)  # gh#52 shrank both; never raise these caps
+        self.assertLessEqual(os.path.getsize(SKILL), 22547)  # owner raised 22347 -> 22437 (gh#74) to restore two clauses, then -> 22547 (review-code-xe1y) for the failed-retry outcome; lanes.md stays 15067
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):

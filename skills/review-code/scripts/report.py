@@ -1119,14 +1119,15 @@ def _blind_standards(run, tj, cand):
     return out
 
 
-def _no_verdict(run, cand, ver):
-    """Sorted ids of a stored verify batch (or of a serial reply: every queued id) that have no verdict line."""
+def _no_verdict(run, cand, ver, owed=False):
+    """Sorted ids of a stored verify batch (or of a serial reply: every queued id) that have no verdict line; owed
+    also counts a call that stored no batch at all (the report: that verifier never answered, review-code-foap)."""
     store = _replies(run)
     have = set(os.listdir(store)) if os.path.isdir(store) else set()
     cut = set(cand.get("capped_ids", []))
     queue = [c["id"] for c in _queue(cand["candidates"], cand.get("doomed_ids", ())) if c["id"] not in cut]
     asked = set(queue) if "serial.txt" in have else {i for c in cand.get("verify_calls", []) if isinstance(c, dict)
-                                                       and "%d.txt" % c["batch"] in have for i in c["ids"]}
+                                                       and (owed or "%d.txt" % c["batch"] in have) for i in c["ids"]}
     return sorted(asked - set(ver))
 
 
@@ -1820,7 +1821,7 @@ def _build(run):
     lanes = dict(dict.fromkeys(_planned(run), "not-ingested"), **cand.get("lane_state", {}))
     if label == "No blocking findings" and any(v != "complete" for n, v in lanes.items() if n.split("@")[0] != "sota"):
         label = "Needs discussion"  # a planned lane, sota aside, that was never ingested or never finished proves nothing (review-code-0c4, gh#71)
-    (rej, rejb), lost = _rejected(run), _no_verdict(run, cand, ver)
+    (rej, rejb), lost = _rejected(run), _no_verdict(run, cand, ver, owed=True)
     cnt = _counts(run)
     repaired, gone = ({n: k for n, k in cnt[w].items() if k} for w in ("repaired", "lost"))
     if label == "No blocking findings" and (rej or rejb or lost or gone):
