@@ -2,6 +2,9 @@
 
 Stdlib only, Python 3.9 grammar. Stdout carries fixed keys only; commit text goes to
 inputs/spec.md alone, inside a per-run random UNTRUSTED block.
+
+usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH|-]
+       ledger.py context --run DIR | trust set|get|gate ... (--rubric PATH names a user-owned rule file, repeatable)
 """
 import sys
 
@@ -293,6 +296,7 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
     return found, capped
 
 
+BUILD_USAGE = "usage: ledger.py build --run DIR [--spec PATH|-] [--found -] [--nit] [--rubric PATH|-]"
 SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
 SIB_LINES, SIB_DAYS, SIB_COCH_PER_FILE, SIB_COCH_MAX = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
 SIB_SHARED, SIB_BULK = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
@@ -468,17 +472,27 @@ def _put(root: str, rel: str, data: bytes) -> bool:
     return True
 
 
+def _recorded_rubrics(run: str) -> list:
+    """The rubric entries an earlier build of this run recorded (a later build call does not repeat --rubric)."""
+    try:
+        with open(os.path.join(run, "rubrics.json"), encoding="utf-8") as fh:
+            return [e for e in json.load(fh) if os.path.isfile(os.path.join(run, e["copy"]))]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def copy_rubrics(src: str, dest: str) -> None:
+    """Give the run at dest the rubric copies and hashes recorded in src (a shard's rule check finds them there); no-op without any."""
+    if os.path.isfile(os.path.join(src, "rubrics.json")):
+        shutil.copytree(os.path.join(src, "conventions", "rubric"), os.path.join(dest, "conventions", "rubric"))
+        shutil.copy(os.path.join(src, "rubrics.json"), os.path.join(dest, "rubrics.json"))
+
+
 def _rubrics(run: str, paths) -> list:
     """gh#83: conventions entries for the user-named rubric files. Each is copied (hidden text stripped like a base rule)
-    to conventions/rubric/ with its path and sha256 recorded; no path given keeps the ones recorded by an earlier build of
-    this run. A bad path refuses as bad-rubric. User-named only: the files are read, never fetched."""
+    to conventions/rubric/ with its path and sha256 recorded. A bad path refuses as bad-rubric. User-named only: the files
+    are read, never fetched."""
     rec = os.path.join(run, "rubrics.json")
-    if not paths:
-        try:
-            with open(rec, encoding="utf-8") as fh:
-                return [e for e in json.load(fh) if os.path.isfile(os.path.join(run, e["copy"]))]
-        except (OSError, ValueError, KeyError, TypeError):
-            return []
     out = []
     for i, p in enumerate(paths, 1):
         full = os.path.abspath(os.path.expanduser(p))  # a quoted here-document never expands ~; not realpath: read_working refuses a link
@@ -1119,7 +1133,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
 
     mb_ls = target.tree_listing(mb, repo)
     conventions, ignored, conv_notes = _conventions(run, repo, mb, head, files, head_ls, included, nit, mb_ls)
-    rubric_entries = _rubrics(run, rubrics)
+    rubric_entries = _rubrics(run, rubrics) if rubrics else _recorded_rubrics(run)
     conventions = conventions + rubric_entries
 
     messages = _commit_messages(repo, tj["commits"])
@@ -1348,47 +1362,45 @@ def _trust_cli(argv: List[str]) -> dict:
                                  "gate --run DIR -- CMD [ARG ...]")
 
 
-def _split_rubric(argv: List[str]) -> Tuple[List[str], List[str]]:
-    """(the --rubric values, argv without those pairs) of a build call; a --rubric with no value stays, so the usage check refuses it."""
-    if argv[:2] != ["build", "--run"]:
-        return [], argv
-    rest, vals, i = list(argv[:3]), [], 3
+def _build_argv(argv: List[str]) -> Tuple[dict, bool, List[str]]:
+    """(the --spec and --found values, --nit, the --rubric values) of `build --run DIR ...`; anything else refuses as usage."""
+    if argv[:2] != ["build", "--run"] or len(argv) < 3:
+        raise target.Refuse("usage", BUILD_USAGE)
+    opts, rubrics, nit, i = {}, [], False, 3
     while i < len(argv):
-        if argv[i] == "--rubric" and i + 1 < len(argv):
-            vals.append(argv[i + 1])
+        a = argv[i]
+        if a == "--nit" and not nit:
+            nit, i = True, i + 1
+        elif a in ("--spec", "--found", "--rubric") and i + 1 < len(argv) and argv[i + 1] != "--nit" and (
+                a == "--rubric" or a not in opts):  # a value is never --nit; --spec and --found appear once
+            if a == "--rubric":
+                rubrics.append(argv[i + 1])
+            else:
+                opts[a] = argv[i + 1]
             i += 2
         else:
-            rest.append(argv[i])
-            i += 1
-    return vals, rest
+            raise target.Refuse("usage", BUILD_USAGE)
+    return opts, nit, rubrics
 
 
 def main(argv: List[str], cwd: Optional[str] = None) -> int:
     try:
-        rubrics, argv = _split_rubric(argv)
         if argv[:1] == ["trust"] and len(argv) >= 2:
             out = _trust_cli(argv[1:])
         elif argv[:2] == ["context", "--run"] and len(argv) == 3:
             out = context(argv[2])
-        elif argv[:2] != ["build", "--run"] or len(argv) < 3 or argv.count("--nit") > 1 or (
-                len(argv) - ("--nit" in argv)) % 2 != 1 or (
-                [a for a in argv[3:] if a != "--nit"][::2] not in ([], ["--spec"], ["--found"], ["--spec", "--found"],
-                                                                    ["--found", "--spec"])):
-            raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit] [--rubric PATH|-]")
         else:
-            nit = "--nit" in argv
-            rest = [a for a in argv[3:] if a != "--nit"]
-            opts = dict(zip(rest[::2], rest[1::2]))
+            opts, nit, rubrics = _build_argv(argv)
             spec, found = opts.get("--spec"), ()
             if opts.get("--found") not in (None, "-"):
-                raise target.Refuse("usage", "usage: ledger.py build --run DIR [--spec PATH] [--found -] [--nit] [--rubric PATH|-]")
+                raise target.Refuse("usage", BUILD_USAGE)
+            if "-" in rubrics and (spec == "-" or "--found" in opts):  # gh#83: stdin has one reader per call
+                raise target.Refuse("usage", "usage: --rubric - cannot share stdin with --spec - or --found -")
             if spec == "-":  # WR-08: the path as one stdin line, so no shell layer parses it
                 spec = sys.stdin.readline().rstrip("\n")
             if "--found" in opts:  # the spec finder's paths, one per stdin line; a bad one is dropped, not refused
                 found = [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
-            if "-" in rubrics:  # gh#83: the paths as stdin lines; stdin has one reader per call
-                if spec == "-" or "--found" in opts:
-                    raise target.Refuse("usage", "usage: --rubric - cannot share stdin with --spec - or --found -")
+            if "-" in rubrics:  # gh#83: the paths as stdin lines
                 rubrics = [r for r in rubrics if r != "-"] + [ln.rstrip("\n") for ln in sys.stdin.read().splitlines() if ln.strip()]
             out = build(argv[2], spec, found, nit, rubrics)
     except target.Refuse as r:
