@@ -122,7 +122,7 @@ class CoChange(unittest.TestCase):
                 buf.truncate(0), buf.seek(0)
                 self.assertEqual(ledger.main(["build", "--run", run]), 0, buf.getvalue())
             with open(os.path.join(run, "inputs", "standards.md"), encoding="utf-8") as fh:
-                self.assertIn("usually changes with", fh.read())
+                self.assertIn("changed with", fh.read())
 
 
 class NonUtf8Refusal(unittest.TestCase):

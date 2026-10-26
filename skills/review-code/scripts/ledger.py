@@ -294,10 +294,10 @@ def _discover(repo: str, files: List[str], included: List[str], rev: Optional[st
 
 
 SIB_NEW, SIB_GAPS, SIB_COMMON, SIB_WALL = 5, 8, 12, 20  # new files probed; gaps per new file; gap files per token; seconds
-SIB_LINES, SIB_DAYS, SIB_COCH, SIB_COCH_ALL = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
-SIB_COMMITS, SIB_BIG = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
+SIB_LINES, SIB_DAYS, SIB_COCH_PER_FILE, SIB_COCH_MAX = 19, 90, 5, 12  # hint lines in standards.md; history window; co-change caps
+SIB_SHARED, SIB_BULK = 2, 50  # shared commits a partner needs; a commit over this many files is a bulk change, skipped
 SIB_OPENER = "Hints, not evidence. A finding needs a trigger citing the hit list. Severity suggestion at most."
-COCH_OPENER = "Hints, not evidence. Files that usually changed together in recent history; a finding still needs your own evidence."
+COCH_OPENER = "Hints, not evidence. Files that changed together in recent history; a finding still needs your own evidence."
 _SKIP_DIRS = frozenset(("vendor", "dist", "build", "node_modules"))
 _HISTORY = re.compile(r"(?:CHANGELOG|CHANGES|HISTORY|NEWS|RELEASES?|RELEASE[-_ ]?NOTES)(?:[-_.]|\Z)", re.I)
 
@@ -359,7 +359,7 @@ def _gaps(repo: str, rev: Optional[str], new: str, sibs: List[str], by_dir: bool
 
 
 def _cochange(repo: str, mb: str, mb_ls: dict, files: set, included: List[str]) -> List[dict]:
-    """Hints from one bounded git log: a changed file that usually changes with another unchanged file at head."""
+    """Hints from one bounded git log: a changed file that shared at least SIB_SHARED recent commits with another unchanged file at head."""
     raw = target.git_bytes(["log", "--no-merges", "--no-renames", "--name-only", "-z", "--format=@@%H", "-n", "1000",
                             "--since=%d.days" % SIB_DAYS, mb, "--"], repo, check=False)
     commits, cur = [], None
@@ -374,27 +374,27 @@ def _cochange(repo: str, mb: str, mb_ls: dict, files: set, included: List[str]) 
         after_header = False
         if rec and cur is not None:
             cur.add(rec)
-    commits = [c for c in commits if len(c) <= SIB_BIG]
+    commits = [c for c in commits if len(c) <= SIB_BULK]
     inc, out = set(included), []
     for c in sorted(p for p in inc if p in mb_ls):
         mine = [k for k in commits if c in k]
-        if len(mine) < SIB_COMMITS:
+        if len(mine) < SIB_SHARED:
             continue
         count = {}
         for k in mine:
             for o in k - {c}:
                 count[o] = count.get(o, 0) + 1
-        keep = sorted((o for o, n in count.items() if n >= SIB_COMMITS and o in files and o not in inc and not _noise(o)),
-                      key=lambda o: (-count[o], o))[:SIB_COCH]
-        out += [{"file": o, "kind": "cochange", "how": "%s usually changes with %s (%d of %d commits)" % (
+        keep = sorted((o for o, n in count.items() if n >= SIB_SHARED and o in files and o not in inc and not _noise(o)),
+                      key=lambda o: (-count[o], o))[:SIB_COCH_PER_FILE]
+        out += [{"file": o, "kind": "cochange", "how": "%s changed with %s (%d of %d commits)" % (
             target.shown(c), target.shown(o), count[o], len(mine))} for o in keep]
-    return out[:SIB_COCH_ALL]
+    return out[:SIB_COCH_MAX]
 
 
 def _siblings(repo: str, rev: Optional[str], mb_ls: dict, files: List[str], included: List[str],
               mb: Optional[str] = None) -> Tuple[List[dict], bool]:
     """([{file, how, kind}], capped): registries that name a new shipped file's siblings but not the file (kind gap), and
-    files that usually change with a changed file (kind cochange). Hints for a lane, never evidence; bounded by
+    files that shared recent commits with a changed file (kind cochange). Hints for a lane, never evidence; bounded by
     SIB_* and, for the greps, a wall clock. git or grep trouble yields fewer hints, never an error."""
     inc, t0 = set(included), time.monotonic()
     unchanged = {p for p in files if p in mb_ls and p not in inc and not _noise(p) and target.shown(p) == p}

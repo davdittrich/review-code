@@ -201,21 +201,21 @@ class CoChange(Sib):
         history(self.repo, 2, 6)
         _, led = self.edit()
         self.assertEqual([(e["file"], e["kind"], e["how"]) for e in led["siblings"]],
-                         [("o.py", "cochange", "c.py usually changes with o.py (2 of 8 commits)")])
+                         [("o.py", "cochange", "c.py changed with o.py (2 of 8 commits)")])
 
     def test_three_commits_with_the_partner_absent_from_the_diff_is_a_hint_with_its_count(self):
         history(self.repo, 3, 2)
         _, led = self.edit()
         self.assertEqual([(e["file"], e["kind"], e["how"]) for e in led["siblings"]],
-                         [("o.py", "cochange", "c.py usually changes with o.py (3 of 5 commits)")])
-        self.assertIn(OPENER + "\n" + "c.py usually changes with o.py (3 of 5 commits)", self.standards())
+                         [("o.py", "cochange", "c.py changed with o.py (3 of 5 commits)")])
+        self.assertIn(OPENER + "\n" + "c.py changed with o.py (3 of 5 commits)", self.standards())
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "tree", "o.py")))  # gh#52: read from the repository
 
     def test_a_commit_touching_more_than_fifty_files_is_skipped(self):  # gh#85
         big = {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(50)} for i in range(3, 6)}  # c + 50 fillers = 51 files
         history(self.repo, 3, 3, big)
         _, led = self.edit()
-        self.assertEqual([e["how"] for e in led["siblings"]], ["c.py usually changes with o.py (3 of 3 commits)"])
+        self.assertEqual([e["how"] for e in led["siblings"]], ["c.py changed with o.py (3 of 3 commits)"])
 
     def test_a_commit_touching_exactly_fifty_files_counts(self):
         history(self.repo, 3, 0, {i: {"fill/f%d_%d.txt" % (i, j): "x\n" for j in range(48)} for i in range(3)})  # c + o + 48 = 50
@@ -228,7 +228,7 @@ class CoChange(Sib):
     def test_defects_and_spec_inputs_carry_the_cochange_hint_standards_the_gap_lines_too(self):  # gh#85
         history(self.repo, 3, 2)
         _, led = self.edit()
-        hint = "c.py usually changes with o.py (3 of 5 commits)"
+        hint = "c.py changed with o.py (3 of 5 commits)"
         for name in ("defects", "spec"):
             text = self.read("inputs/%s.md" % name)
             self.assertIn("## Co-change hints\n", text, name)
