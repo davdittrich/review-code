@@ -1,4 +1,4 @@
-# Strict mode and same-class sweep
+# Strict mode and same-class sweep (`--sweep`, opt-in)
 
 ## Strict mode
 
@@ -22,8 +22,8 @@ and Standards inputs (an untraced concern with file:line, quote and trigger keep
 
 ## Same-class sweep
 
-After verification, `report.py` searches the pinned tree for the first quoted line of each finding (8 characters or more, SOTA never)
+Only under `--sweep`: after verification, `report.py` searches the pinned tree for the first quoted line of each finding (8 characters or more, SOTA never)
 with `git grep -F`: deterministic, no LLM, no new lane field. Hits on lines the diff adds, and the finding's own lines, are dropped.
 The rest ride under the finding as `same_class` (`path`, `line`, `text`; at most 5, sorted) with `same_class_omitted` for the surplus, and
 as "same class elsewhere (outside the diff)" rows in the text report. Generated files are searched too. The sweep reads no verdict and
-changes none. It is on by default (gh#86), so default output carries `same_class` rows; only `--strict`'s own keys are absent without the flag. Whole-file targets (`--repo`, path) have no diff and skip it.
+changes none. It is opt-in (`--sweep`, plan.json `sweep`): without the flag, default output carries no `same_class` rows. Whole-file targets (`--repo`, path) have no diff and skip it.

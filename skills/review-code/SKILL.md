@@ -47,7 +47,7 @@ A finding is reportable only with all four of:
 4. An evidence class of `reproduced` or `traced` (see below).
 
 A concern below `traced` is never stated as a finding: it goes to the report's Unverifiable list, at
-`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question. `--strict` lowers the floor to `inferred`: `references/strict.md`. On a diff target a finding also lists other uses of its quoted line outside the diff (same-class sweep, default on).
+`inferred` as a Suggestion (accessibility as Required) and at `speculative` as a question. `--strict` lowers the floor to `inferred`; `--sweep` lists same-class uses outside the diff: `references/strict.md`.
 
 ## Severity and evidence
 
