@@ -707,6 +707,11 @@ class PostingDocs(unittest.TestCase):
         self.assertLessEqual(os.path.getsize(SKILL), 22792)  # 22347 -> 22437 (gh#74), -> 22547 (review-code-xe1y), -> 22698 (gh#82 #83 #85 #86: --rubric, co-change, strict docs), -> 22913 (review-code-cp5i.5 .8 .16); lanes.md 15067 -> 15413 (#82/#83/#85/#86) -> 15601 (same steps). Raised for #82/#83/#85/#86, trimmed again in review-code-cp5i.18 (SKILL.md 22792, lanes.md 15585)
         self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15585)
 
+    def test_agents_resolve_relative_paths_against_the_named_root(self):  # gh#89
+        for name in ("finder", "standards", "spec", "verifier", "spec-verifier", "spec-finder"):
+            flat = " ".join(self.read(ROOT, "agents", name + ".md").split())
+            self.assertIn("repository at `root:` (relative paths resolve against it)", flat, name)
+
     def test_plan_step_passes_the_session_code_navigation_tools(self):
         """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""
         flat = " ".join(self.read(SKILL).split())

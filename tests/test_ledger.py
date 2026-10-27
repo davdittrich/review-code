@@ -36,7 +36,7 @@ def write_target(run, repo, kind, base_sha, head_sha, merge_base, included, untr
         diff = gitfix.run(["git", "diff"] + DIFF + [merge_base, head_sha, "--"], repo)
     with open(os.path.join(run, "change.diff"), "w", encoding="utf-8") as fh:
         fh.write(diff)
-    rec = {"version": 1, "kind": kind, "repo": repo, "run": run, "arg": "", "number": number, "url": url,
+    rec = {"version": 1, "kind": kind, "repo": repo, "root": repo, "run": run, "arg": "", "number": number, "url": url,
            "base_sha": base_sha, "head_sha": head_sha, "merge_base": merge_base, "dirty": kind in INPLACE,
            "diff_cmd": ["git", "diff"] if kind not in ("path", "repo") else None,
            "commits": commits if commits is not None else ([] if kind in INPLACE else [head_sha]), "included": list(included), "excluded": [],
@@ -591,6 +591,14 @@ class Conventions(Base):
 
 
 class Tree(Base):
+    def test_every_lane_input_names_the_repository_root(self):  # gh#89
+        self.base({"a.txt": "x\n"})
+        self.branch({"src/cfg.py": "y = 1\n"})
+        self.build(difference=["src/cfg.py"])
+        want = "\nroot: " + json.dumps(self.repo) + "\n"
+        for f in ("defects", "standards", "spec-find"):
+            self.assertIn(want, self.read("inputs/%s.md" % f), f)
+
     def tree_files(self):
         out = []
         root = os.path.join(self.run_dir, "tree")

@@ -44,7 +44,7 @@ class RequireUtf8(unittest.TestCase):  # 87o1.6
 
 
 class DifferencePath(unittest.TestCase):  # 87o1.5
-    PIN = {"pinned_tree": "t", "pinned_head": "h", "difference_count": 2}
+    PIN = {"repo": "/r", "pinned_tree": "t", "pinned_head": "h", "difference_count": 2}
 
     def basis(self, **keys):
         return ledger._basis(dict(self.PIN, **keys))
@@ -58,6 +58,6 @@ class DifferencePath(unittest.TestCase):  # 87o1.5
         self.assertEqual(ledger.difference_path(both), "/r/l.txt")
         self.assertIn("checkout_difference: /r/l.txt (2 paths)", self.basis(**both))
 
-    def test_a_run_pinned_before_the_difference_shows_nothing(self):
+    def test_a_run_pinned_before_the_difference_shows_only_the_root(self):  # gh#89
         self.assertIsNone(ledger.difference_path({}))
-        self.assertEqual(ledger._basis({}), "")
+        self.assertEqual(ledger._basis({"repo": "/r"}), 'root: "/r"\n')

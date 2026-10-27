@@ -171,5 +171,54 @@ class NonAsciiRun(tt.Base):
         self.assertNotIn("\\u", body)
 
 
+class RootNamed(tt.Base):
+    """gh#89: the session runs in the main checkout while the head sits in a linked worktree; lanes read relative paths
+    from the root target.json records, so handoff and lane input must name that key, never repo."""
+
+    def test_the_handoff_and_defects_input_name_the_recorded_root_not_repo(self):
+        import report
+        import ledger
+        main = gitfix.make_repo(os.path.join(self.tmp, "main"))
+        gitfix.commit(main, {"a.py": "a = 1\n"}, "base")
+        wt = os.path.join(self.tmp, "wt")
+        gitfix.run(["git", "worktree", "add", "-q", "-b", "feat", wt], main)
+        gitfix.commit(wt, {"a.py": "a = 2\n"}, "change")
+        rc, out = tt.call(["main..feat"], wt, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tj = tp.load(out["run"])
+        self.assertEqual((tj["repo"], tj["root"]), (os.path.realpath(wt),) * 2)
+        tj["root"] = os.path.realpath(main)  # a checkout other than repo holds the head (target._checkout_root)
+        with open(os.path.join(out["run"], "target.json"), "w", encoding="utf-8") as fh:
+            json.dump(tj, fh)
+        ledger.build(out["run"], None, ())
+        want = "\nroot: " + json.dumps(tj["root"], ensure_ascii=False) + "\n"
+        with open(os.path.join(out["run"], "inputs", "defects.md"), encoding="utf-8") as fh:
+            self.assertIn(want, fh.read())
+        c = dict(tr.CAND, path="a.py", line=1, id="d1", title="t", trigger="g", axis="defects", end_line=1)
+        self.assertIn(want, report._handoff(c, out["run"], "nonce", (), {}, None))
+
+
+class PinnedAtRoot(tt.Base):
+    """gh#89 (CodeRabbit, PR 90): the snapshots a run pins describe the checkout that holds the head, the one the
+    root line names, not the session checkout."""
+
+    def test_the_difference_and_the_dirty_flag_describe_the_worktree_that_holds_the_head(self):
+        main = gitfix.make_repo(os.path.join(self.tmp, "main"))
+        gitfix.commit(main, {"a.py": "a = 1\n"}, "base")
+        gitfix.run(["git", "remote", "add", "origin", main], main)  # a synced upstream: its default tip is this main
+        gitfix.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], main)
+        wt = os.path.join(self.tmp, "wt")
+        gitfix.run(["git", "worktree", "add", "-q", "-b", "feat", wt], main)
+        gitfix.commit(wt, {"a.py": "a = 2\n"}, "change")
+        tp.write(wt, "a.py", "a = 3\n")  # an edit in the checkout that holds the head
+        tp.write(main, "stray.txt", "x\n")  # in the session checkout only: not what the lanes read
+        rc, out = tt.call(["main..feat"], main, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tj = tp.load(out["run"])
+        self.assertEqual((tj["repo"], tj["root"]), (os.path.realpath(main), os.path.realpath(wt)))
+        self.assertEqual(tp.difference(out["run"]), {"a.py": "modified"})
+        self.assertTrue(tj["dirty"])
+
+
 if __name__ == "__main__":
     unittest.main()

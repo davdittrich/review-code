@@ -1222,7 +1222,7 @@ def build(run: str, spec: Optional[str] = None, spec_paths=(), nit: bool = False
                led["label"], diff, os.path.join(run, "ledger.json"), len(tj["included"]), len(tj["excluded"]),
                _included_section(tj["included"])) +
            "\n## Files\n\ntree: %s\nsource: %s\ntree/ holds the pinned copy of each checkout-difference file (hidden text stripped from "
-           "prose and markup files, hidden characters escaped in all); read every other file from the repository. A file under "
+           "prose and markup files, hidden characters escaped in all); read every other file from the repository at root. A file under "
            "Skipped has no readable copy. Never read a path listed under Skipped, in the repository or anywhere else: it may be a link into the host.\n\n## Skipped\n\n%s\n" % (
                json.dumps(led["tree"]["path"]), led["tree"]["source"],
                "\n".join("- %s: %s" % (json.dumps(k["path"]), k["reason"]) for k in led["tree"]["skipped"]) or "none") +
@@ -1336,12 +1336,13 @@ def difference_path(tj: dict) -> Optional[str]:
 
 
 def _basis(tj: dict) -> str:
-    """The pin lines every lane input carries: the pinned tree and head, and the difference file by path, never its
-    paths (gh#48). Empty for a run pinned before the difference existed."""
+    """The pin lines every lane input carries: the root the reviewed head is checked out in (gh#89), then the pinned tree and head,
+    and the difference file by path, never its paths (gh#48). Only the root line for a run pinned before the difference existed."""
+    root = "root: %s\n" % json.dumps(target.root_of(tj), ensure_ascii=False)
     if "difference" not in tj:
-        return ""
+        return root
     n = tj["difference_count"]
-    return "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
+    return root + "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
         tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", difference_path(tj), n, "" if n == 1 else "s")
 
 
