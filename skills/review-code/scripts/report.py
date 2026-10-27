@@ -981,7 +981,7 @@ def _refs(run, shard=None):
         return {}
 
 
-def _handoff(c, run, nonce, packs=(), refs=None, diff=None, strict=False):
+def _handoff(c, run, nonce, packs=(), refs=None, diff=None, strict=False, root=None):
     loc = "%s:%d%s" % (c["path"], c["line"], "-%d" % c["end_line"] if c["end_line"] != c["line"] else "")
     out = "# Verify finding %s\n\nid: %s\nclaim:\n%s\nlocation: %s\ntrigger:\n%s\ntree: %s\n" % (
         c["id"], c["id"], ledger.block(c["title"], nonce), json.dumps(loc, ensure_ascii=False),
@@ -991,8 +991,7 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None, strict=False):
         m["id"], json.dumps("%s:%d%s" % (c["path"], m["line"], "-%d" % m["end_line"] if m["end_line"] != m["line"] else ""),
                             ensure_ascii=False), ledger.block(m["trigger"], nonce))
         for m in c.get("merged_from", []))
-    root = target.load_json(run, "target.json")
-    out += "root: %s\n" % json.dumps(root.get("root", root["repo"]), ensure_ascii=False)  # gh#89: relative reads resolve against it, not the session's cwd
+    out += "root: %s\n" % json.dumps(root or target.root_of(target.load_json(run, "target.json")), ensure_ascii=False)  # gh#89: relative reads resolve against it, not the session's cwd
     out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
@@ -1536,10 +1535,11 @@ def _ingest(run, text, lane, shard):
     dropped = {k: sum(v["dropped"][k] for v in lanes.values()) for k in ("invalid", "do_not_flag")}
     packs = _packs(run)
     refs = {sh: _refs(run, sh) for sh in {c.get("shard") for c in queue}}
-    diff = ledger.difference_path(target.load_json(run, "target.json"))
+    tj = target.load_json(run, "target.json")
+    diff, root = ledger.difference_path(tj), target.root_of(tj)
     plan = _plan(run)
     strict = plan.get("strict") is True and plan.get("mode") != "serial"  # serial: nothing to lift, no verifier
-    texts = [_handoff(c, run, nonce, packs, refs, diff, strict) for c in queue]
+    texts = [_handoff(c, run, nonce, packs, refs, diff, strict, root) for c in queue]
     # a lone surrogate (JSON \udcff in a path or text, or a non-UTF-8 run path) cannot be written; refuse before the run changes
     # every stored candidate (a downgraded one included) and every lane's inspected paths: candidates.json would escape them into render
     target.require_utf8(texts + [json.dumps([every, [v["inspected"] for v in lanes.values()]], ensure_ascii=False)],

@@ -225,6 +225,11 @@ def load_target(run: str) -> dict:
     raise Refuse("no-target", "the run directory has no usable target.json")
 
 
+def root_of(tj: dict) -> str:
+    """The checkout holding the reviewed head: where fix mode tests and edits, and what lanes read. Runs from before the key fall back to repo."""
+    return tj.get("root") or tj["repo"]
+
+
 def load_json(run: str, name: str) -> dict:
     """<run>/<name>, read fresh; a missing file refuses no-<stem>, anything but a JSON object bad-<stem>."""
     try:

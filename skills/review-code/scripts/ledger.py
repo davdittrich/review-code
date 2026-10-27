@@ -1336,13 +1336,14 @@ def difference_path(tj: dict) -> Optional[str]:
 
 
 def _basis(tj: dict) -> str:
-    """The pin lines every lane input carries: the root the reviewed head is checked out in (gh#89), the pinned tree and head, and the difference file by path, never its
-    paths (gh#48). Empty for a run pinned before the difference existed."""
+    """The pin lines every lane input carries: the root the reviewed head is checked out in (gh#89), then the pinned tree and head,
+    and the difference file by path, never its paths (gh#48). Only the root line for a run pinned before the difference existed."""
+    root = "root: %s\n" % json.dumps(target.root_of(tj), ensure_ascii=False)
     if "difference" not in tj:
-        return ""
+        return root
     n = tj["difference_count"]
-    return "root: %s\npinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
-        json.dumps(tj.get("root", tj["repo"]), ensure_ascii=False), tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", difference_path(tj), n, "" if n == 1 else "s")
+    return root + "pinned_tree: %s\npinned_head: %s\ncheckout_difference: %s (%d path%s)\n" % (
+        tj["pinned_tree"], tj["pinned_head"] or "none (in-place target)", difference_path(tj), n, "" if n == 1 else "s")
 
 
 def context(run: str) -> dict:

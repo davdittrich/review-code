@@ -464,7 +464,7 @@ class SharedPhrases(unittest.TestCase):
     # slack would let a clause in unpaid.
     # The standards decision-record clause (review-code-kizp, review-code-edon) was paid for by trimming duplicated meaning (review-code-w815).
     # The `strict:` handoff line (gh#82, review-code-cp5i.7) is named in both verifier prompts: 34814 -> 35145 (+331), the only clause that pays nothing back.
-    # The `root:` sentence (gh#89, review-code-d1vb) is in all six reader prompts: 35145 -> 35419 (+274), owner-approved, pays nothing back.
+    # The `root:` sentence (gh#89, review-code-d1vb) is in all six reader prompts: 35137 -> 35419 (+282; the cap was 35145 over a 35137 total), owner-approved, pays nothing back.
     READER_BYTES = 35419
 
     def text(self, name):
