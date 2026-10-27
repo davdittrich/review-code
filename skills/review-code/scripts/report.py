@@ -2122,7 +2122,7 @@ def _integrity(run, tj):
     run has no snapshot or the comparison fails. It reports only: never a refusal, the verdict or a finding."""
     try:
         snap = target.load_json(run, "integrity.json")
-        return target.integrity_changes(tj["repo"], snap)
+        return target.integrity_changes(target.root_of(tj), snap)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, target.Refuse):
         return None
 

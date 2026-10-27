@@ -1318,9 +1318,10 @@ def integrity_changes(top: str, snap: dict) -> dict:
 def _checkout_root(top: str, head: str) -> str:
     """top when it has head checked out, else the first other worktree that does, else top (fix mode then refuses)."""
     held = []
+    common = os.path.realpath(os.path.join(top, _rev_path("--git-common-dir", top)))  # a separate git dir is listed as the main worktree
     for blk in git_bytes(["worktree", "list", "--porcelain"], top, check=False).decode("utf-8", "surrogateescape").split("\n\n"):
         f = {k: v for k, _, v in (ln.partition(" ") for ln in blk.split("\n"))}
-        if f.get("HEAD") == head and "bare" not in f and "prunable" not in f and os.path.isdir(f.get("worktree", "")):
+        if f.get("HEAD") == head and "bare" not in f and "prunable" not in f and os.path.isdir(f.get("worktree", "")) and os.path.realpath(f["worktree"]) != common:
             held.append(os.path.realpath(f["worktree"]))
     return os.path.realpath(top) if os.path.realpath(top) in held or not held else held[0]
 
@@ -1373,10 +1374,11 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
             "%d %s" % (n, r) + (" (%s bytes, over %d)" % (", ".join(sizes), MAX_FILE) if r == "too-large" else "")
             for r, n in sorted(counts.items())))
     run = new_run_dir(cwd)
+    root = _checkout_root(top, plan["head"])  # the checkout lanes read: snapshots describe it, not the session's (gh#89)
     integ = os.path.join(run, "integrity.json")  # gh#51: compared by report.py render, after the verifiers
-    snap = integrity(top)
+    snap = integrity(root)
     write_private(integ, json.dumps(snap, sort_keys=True))
-    pt = pin_tree(kind, plan, run, top)  # first: change.diff shows the untracked bytes the tree pins, read once
+    pt = pin_tree(kind, plan, run, root)  # first: change.diff shows the untracked bytes the tree pins, read once
     hidden, stripped = _write_diff(os.path.join(run, "change.diff"), plan, names, bool(excluded), kind, top, pt["blobs"])
     # 6xl.51: names reach target.json escaped; a name that hides characters is itself a finding
     marks = [(sanitize.escape_for_code(n), n) for n in names + [e["path"] for e in excluded]]
@@ -1392,12 +1394,12 @@ def pin(candidate: dict, cwd: str, since_last: bool = False) -> dict:
     rec = {
         "difference_list": list_path, "pinned_tree": pt["pinned_tree"], "pinned_head": pt["pinned_head"], "checkout_head": pt["checkout_head"],
         "difference": diff_path, "difference_count": len(pt["paths"]), "integrity": integ,
-        "version": 1, "kind": kind, "repo": top, "root": _checkout_root(top, plan["head"]), "run": run, "arg": shown(candidate.get("arg", "")),
+        "version": 1, "kind": kind, "repo": top, "root": root, "run": run, "arg": shown(candidate.get("arg", "")),
         "number": plan.get("number"), "since_last": plan.get("since_last"), "url": shown(plan["url"]) if plan.get("url") else plan.get("url"),  # 6xl.85
         "base_sha": plan["base"], "head_sha": plan["head"], "merge_base": plan["mb"],
         "diff_base": plan.get("diff_base"),
         # a tracked entry in the snapshot's status, itemised or capped (87o1.9), is dirty already; only a clean one needs --ignore-submodules=none
-        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or "tracked" in snap or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], top).strip()),
+        "dirty": plan.get("dirty") or any(v[0] != "?" for v in snap["dirty"].values()) or "tracked" in snap or bool(git(["status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"], root).strip()),
         "diff_cmd": plan["diff_cmd"], "commits": plan["commits"],
         "included": [shown(n) for n in names], "excluded": [dict(e, path=shown(e["path"])) for e in excluded],
         "untracked": sorted(shown(n) for n in plan["untracked"]),

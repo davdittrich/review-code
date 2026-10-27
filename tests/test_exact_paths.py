@@ -87,6 +87,13 @@ class SeparateGitDir(gitfix.FeatureRepo):
         self.assertTrue(os.path.exists(files[0]), files)
 
 
+    def test_checkout_root_is_the_working_tree_not_the_git_dir(self):  # review-code-qkn9: worktree list names the git dir as main
+        gd = os.path.join(self.tmp, os.fsdecode(b"gd\xff"))
+        gitfix.run(["git", "init", "-q", "--separate-git-dir", gd, self.repo], self.repo)
+        head = gitfix.run(["git", "rev-parse", "HEAD"], self.repo).strip()
+        self.assertEqual(target._checkout_root(self.repo, head), os.path.realpath(self.repo))
+
+
 class CoChange(unittest.TestCase):
     """review-code-75w5: _cochange reads --name-only with -z, so a non-ASCII or non-UTF-8 name is its exact self."""
 

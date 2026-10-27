@@ -198,5 +198,27 @@ class RootNamed(tt.Base):
         self.assertIn(want, report._handoff(c, out["run"], "nonce", (), {}, None))
 
 
+class PinnedAtRoot(tt.Base):
+    """gh#89 (CodeRabbit, PR 90): the snapshots a run pins describe the checkout that holds the head, the one the
+    root line names, not the session checkout."""
+
+    def test_the_difference_and_the_dirty_flag_describe_the_worktree_that_holds_the_head(self):
+        main = gitfix.make_repo(os.path.join(self.tmp, "main"))
+        gitfix.commit(main, {"a.py": "a = 1\n"}, "base")
+        gitfix.run(["git", "remote", "add", "origin", main], main)  # a synced upstream: its default tip is this main
+        gitfix.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], main)
+        wt = os.path.join(self.tmp, "wt")
+        gitfix.run(["git", "worktree", "add", "-q", "-b", "feat", wt], main)
+        gitfix.commit(wt, {"a.py": "a = 2\n"}, "change")
+        tp.write(wt, "a.py", "a = 3\n")  # an edit in the checkout that holds the head
+        tp.write(main, "stray.txt", "x\n")  # in the session checkout only: not what the lanes read
+        rc, out = tt.call(["main..feat"], main, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        tj = tp.load(out["run"])
+        self.assertEqual((tj["repo"], tj["root"]), (os.path.realpath(main), os.path.realpath(wt)))
+        self.assertEqual(tp.difference(out["run"]), {"a.py": "modified"})
+        self.assertTrue(tj["dirty"])
+
+
 if __name__ == "__main__":
     unittest.main()
