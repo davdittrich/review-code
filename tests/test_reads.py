@@ -171,5 +171,26 @@ class NonAsciiRun(tt.Base):
         self.assertNotIn("\\u", body)
 
 
+class RootNamed(tt.Base):
+    """gh#89: a linked worktree holds the reviewed head while the session runs in the main checkout, so a relative read
+    lands in the wrong tree; the handoff names the root target.json records."""
+
+    def test_the_handoff_names_the_worktree_that_holds_the_reviewed_head(self):
+        import report
+        main = gitfix.make_repo(os.path.join(self.tmp, "main"))
+        gitfix.commit(main, {"a.py": "a = 1\n"}, "base")
+        wt = os.path.join(self.tmp, "wt")
+        gitfix.run(["git", "worktree", "add", "-q", "-b", "feat", wt], main)
+        tp.write(wt, "a.py", "a = 2\n")
+        tp.raw(wt, "add", "a.py")
+        rc, out = tt.call(["--staged"], wt, self.tmp)
+        self.assertEqual((rc, out["status"]), (0, "ok"), out)
+        root = tp.load(out["run"])["root"]
+        self.assertEqual(root, os.path.realpath(wt))
+        c = dict(tr.CAND, path="a.py", line=1, id="d1", title="t", trigger="g", axis="defects", end_line=1)
+        body = report._handoff(c, out["run"], "nonce", (), {}, None)
+        self.assertIn("\nroot: " + json.dumps(root, ensure_ascii=False) + "\n", body)
+
+
 if __name__ == "__main__":
     unittest.main()

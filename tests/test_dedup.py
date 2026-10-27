@@ -44,7 +44,7 @@ class RequireUtf8(unittest.TestCase):  # 87o1.6
 
 
 class DifferencePath(unittest.TestCase):  # 87o1.5
-    PIN = {"pinned_tree": "t", "pinned_head": "h", "difference_count": 2}
+    PIN = {"repo": "/r", "pinned_tree": "t", "pinned_head": "h", "difference_count": 2}
 
     def basis(self, **keys):
         return ledger._basis(dict(self.PIN, **keys))

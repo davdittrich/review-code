@@ -991,6 +991,8 @@ def _handoff(c, run, nonce, packs=(), refs=None, diff=None, strict=False):
         m["id"], json.dumps("%s:%d%s" % (c["path"], m["line"], "-%d" % m["end_line"] if m["end_line"] != m["line"] else ""),
                             ensure_ascii=False), ledger.block(m["trigger"], nonce))
         for m in c.get("merged_from", []))
+    root = target.load_json(run, "target.json")
+    out += "root: %s\n" % json.dumps(root.get("root", root["repo"]), ensure_ascii=False)  # gh#89: relative reads resolve against it, not the session's cwd
     out += "checkout_difference: %s\n" % json.dumps(diff, ensure_ascii=False) if diff else ""  # the verifiers' evidence rule greps it (gh#52)
     hist = os.path.join(run, "history", c["path"] + ".txt")  # gh#53: named, never pasted; the file labels itself untrusted
     out += "history: %s\n" % json.dumps(hist, ensure_ascii=False) if os.path.isfile(hist) else ""
