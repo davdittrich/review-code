@@ -499,6 +499,7 @@ def _rubrics(run: str, paths, repo: str) -> list:
     are read, never fetched."""
     rec = os.path.join(run, RUBRIC_RECORD)
     out, root = [], os.path.realpath(repo)
+    shutil.rmtree(os.path.join(run, RUBRIC_DIR), ignore_errors=True)  # a new list replaces the old copies, which report.py would still accept
     for i, p in enumerate(paths, 1):
         full = os.path.abspath(os.path.expanduser(p))  # not realpath: read_working refuses a link
         if os.path.commonpath([os.path.realpath(full), root]) == root:  # a rubric from the reviewed repository is the change's own text

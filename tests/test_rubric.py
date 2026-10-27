@@ -103,6 +103,14 @@ class Ledger(tl.Base):
         ledger.build(self.run_dir, nit=False)
         self.assertEqual(self.entry(self.load()), first)
 
+    def test_a_rebuild_with_a_different_rubric_list_drops_the_old_copies(self):  # review-code-cp5i.48
+        a, b = write_rubric(self.tmp, "A rule one two three.\n", "a.md"), write_rubric(self.tmp, "B rule four five six.\n", "b.md")
+        self.prep()
+        ledger.build(self.run_dir, rubrics=[a, b])
+        ledger.build(self.run_dir, rubrics=[b])
+        (e,) = [c for c in self.load()["conventions"] if c.get("source") == "rubric"]
+        self.assertEqual(os.listdir(os.path.join(self.run_dir, ledger.RUBRIC_DIR)), [os.path.basename(e["copy"])])
+
     def test_two_rubrics_are_two_entries(self):
         a, b = write_rubric(self.tmp, "A rule one two three.\n", "a.md"), write_rubric(self.tmp, "B rule four five six.\n", "b.md")
         self.prep()
