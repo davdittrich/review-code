@@ -463,7 +463,8 @@ class SharedPhrases(unittest.TestCase):
     # them): the rule is paid for by the tree/ wording it replaced, so the total never grows. The cap is the real total:
     # slack would let a clause in unpaid.
     # The standards decision-record clause (review-code-kizp, review-code-edon) was paid for by trimming duplicated meaning (review-code-w815).
-    READER_BYTES = 34814
+    # The `strict:` handoff line (gh#82, review-code-cp5i.7) is named in both verifier prompts: 34814 -> 35145 (+331), the only clause that pays nothing back.
+    READER_BYTES = 35145
 
     def text(self, name):
         return "\n".join(parts(name)[1])

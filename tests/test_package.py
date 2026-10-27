@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -156,6 +157,16 @@ class GateMutations(unittest.TestCase):
         self.assertEqual(p.returncode, 1, out)
         self.assertNotIn("ok - hygiene-tracked", out)
         self.assertIn("FAIL - hygiene-tracked", out)
+
+
+class OptimizedImport(unittest.TestCase):
+    def test_modules_import_under_oo(self):  # review-code-cp5i.36: -OO strips docstrings, so __doc__ is None
+        scripts = os.path.join(ROOT, "skills", "review-code", "scripts")
+        for mod in ("ledger", "plan"):
+            with self.subTest(mod=mod):
+                r = subprocess.run([sys.executable, "-OO", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import " + mod, scripts],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
 
 
 if __name__ == "__main__":

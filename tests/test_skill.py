@@ -692,11 +692,20 @@ class PostingDocs(unittest.TestCase):
         flat = " ".join(self.read(SKILL).split())
         self.assertIn("are empty, or a call failed its retry (it stays in `missing_batches`): say its ids are unverified; go on (Needs discussion).", flat)
 
+    def test_sweep_and_rubric_are_removed_in_step_1_and_sweep_forwarded_in_step_5(self):  # review-code-cp5i.33 .40
+        with open(SKILL, encoding="utf-8") as fh:
+            text = fh.read()
+        step1 = text.split("\n1. Target.", 1)[1].split("\n2. Ledger", 1)[0]
+        step5 = text.split("\n5. Plan.", 1)[1].split("\n6. ", 1)[0]
+        self.assertIn("`--sweep`", step1)
+        self.assertIn("`--sweep`", step5)
+        self.assertIn("`--rubric <path>`", step1.split("Run the remaining words", 1)[0])
+
     def test_skill_shape(self):
         self.assertLess(len(self.read(SKILL).splitlines()), 500)
         # gh#48: byte ceilings pinned at the current sizes, which are below the 0.8.0 sizes; a new clause pays for itself with a trim elsewhere
-        self.assertLessEqual(os.path.getsize(SKILL), 22547)  # owner raised 22347 -> 22437 (gh#74) to restore two clauses, then -> 22547 (review-code-xe1y) for the failed-retry outcome; lanes.md stays 15067
-        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15067)
+        self.assertLessEqual(os.path.getsize(SKILL), 22792)  # 22347 -> 22437 (gh#74), -> 22547 (review-code-xe1y), -> 22698 (gh#82 #83 #85 #86: --rubric, co-change, strict docs), -> 22913 (review-code-cp5i.5 .8 .16); lanes.md 15067 -> 15413 (#82/#83/#85/#86) -> 15601 (same steps). Raised for #82/#83/#85/#86, trimmed again in review-code-cp5i.18 (SKILL.md 22792, lanes.md 15585)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.REFS, "lanes.md")), 15585)
 
     def test_plan_step_passes_the_session_code_navigation_tools(self):
         """gh#48: the main thread's MCP tool list is the basis; a tool not passed is a lost capability."""

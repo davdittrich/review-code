@@ -689,7 +689,8 @@ def _render(f: dict, rows=None, where: Optional[str] = None, keyed: bool = False
     span = "%d" % f["line"] if f["end_line"] == f["line"] else "%d-%d" % (f["line"], f["end_line"])
     out += ["**Lines:** %s (quoted without line numbers)" % span] if at is None else []
     out += ["**Trigger:** " + _prose(raw["trigger"]),
-            "**Evidence:** %s, score %d, %s" % (_prose(f["evidence_class"]), f["score"], _prose(f["origin"])),
+            "**Evidence:** %s, score %d, %s" % (_prose(f["evidence_class"] + (" (source read)" if f["evidence_class"] == report.STRICT_CLASS else "")),
+                                                 f["score"], _prose(f["origin"])),
             fence + "text"] + quote + [fence]
     out += ["**Fix:** " + _prose(raw["fix"])] if raw["fix"] else []
     return "\n".join(out + [MARK % f["id"]]), rules

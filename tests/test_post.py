@@ -41,6 +41,17 @@ def source(changed, extra, inject=None):
     return "\n".join(rows) + "\n"
 
 
+
+def _only_cli(cli, exc):
+    """A subprocess.run stand-in that fails only the forge CLI call; git (the report's same-class sweep) runs for real."""
+    real = subprocess.run
+
+    def run(args, *a, **k):
+        if args and args[0] == cli:
+            raise exc
+        return real(args, *a, **k)
+    return mock.Mock(side_effect=run)
+
 class FakeGitHub:
     """Callable as post._cli(tool, args, cwd, stdin=None); records (method, endpoint without query, parsed body)."""
 
@@ -649,11 +660,11 @@ class Safety(Base):
         self.assertEqual(self.fake.calls, [])
 
     def test_gh_missing(self):
-        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", _only_cli("gh", FileNotFoundError)):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-missing")
 
     def test_a_hung_tool_times_out(self):
-        hung = mock.Mock(side_effect=subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
+        hung = _only_cli("gh", subprocess.TimeoutExpired(["gh"], target.CLI_TIMEOUT))
         with mock.patch.object(target.subprocess, "run", hung):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "gh-failed", "timeout")
         self.assertEqual(hung.call_args.kwargs["timeout"], target.CLI_TIMEOUT)
@@ -1449,6 +1460,16 @@ class Nits(Base):
         self.assertTrue(body.startswith("nit: **Nit** (defects, bug) - title 34\n"), body)
         self.assertIn("\n**Basis:** bug\n", body)
 
+    def test_an_inferred_finding_is_labelled_source_read(self):  # gh#82
+        ids = self.review(31, 34, 37)
+        doc = self.doc(ids)
+        next(f for f in doc["findings"] if f["id"] == ids[34]).update(evidence_class="inferred", score=50)
+        rc, out, _ = self.built(doc)
+        self.assertEqual(rc, 0, out)
+        bodies = [c["body"] for c in self.payload()[1]["comments"]]
+        self.assertIn("**Evidence:** inferred (source read), score 50,", bodies[1])
+        self.assertNotIn("source read", bodies[0])
+
     def test_the_basis_text_is_redacted_and_kept_on_one_line(self):
         ids = self.review(31, 34, 37)
         rc, out, _ = self.built(self.doc(ids, "Use a key.\nNot AKIAIOSFODNN7EXAMPLE <b>here</b> @team"))
@@ -1693,7 +1714,7 @@ class GitLabSafety(GitLabBase):
                 self.assertEqual(self.fake.writes(), [])
 
     def test_glab_missing(self):
-        with mock.patch.object(target.subprocess, "run", side_effect=FileNotFoundError):
+        with mock.patch.object(target.subprocess, "run", _only_cli("glab", FileNotFoundError)):
             self.refused(self.call("build", "--run", self.run_dir, cli=False), "glab-missing")
 
     def test_head_or_base_moved_at_a_before_the_diff(self):
