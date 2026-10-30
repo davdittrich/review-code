@@ -284,7 +284,7 @@ def write_atomic(path: str, data: bytes, mode: int = 0o600) -> None:
     _touch_run(path)
 
 
-RETENTION_DAYS = 14
+RETENTION_DAYS = capture.RETENTION_DAYS
 
 
 def _prune(base: str) -> None:
@@ -300,18 +300,7 @@ def _prune(base: str) -> None:
                 shutil.rmtree(path, ignore_errors=True)
         except OSError:
             pass
-    caps = capture.captures_dir()
-    try:
-        names = os.listdir(caps)
-    except OSError:
-        return
-    for f in names:
-        try:
-            fst = os.lstat(os.path.join(caps, f))
-            if stat.S_ISREG(fst.st_mode) and fst.st_mtime < cutoff:
-                os.remove(os.path.join(caps, f))
-        except OSError:
-            pass
+    capture.prune()
 
 
 def new_run_dir(cwd: str) -> str:

@@ -13,21 +13,50 @@ is not captured (the hook cannot read it: an unset option fails a hook), so thos
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
+import time
 
 ID = re.compile(r"[A-Za-z0-9]{1,64}")
 KINDS = ("handback", "stop")  # preference order: the handback is the whole report, the stop text only its closing words
 AGENTS = frozenset("review-code:" + n for n in ("finder", "standards", "spec", "sota", "verifier", "spec-verifier"))
+RETENTION_DAYS = 14  # run directories (target._prune) and capture files (prune) older than this are removed
 
 
 def captures_dir():
-    """$XDG_STATE_HOME/review-code/captures (~/.local/state when unset or relative): the one place the hook writes and
-    report.py and target.py read, the same in the hook process and in the Bash tool process."""
-    state = os.environ.get("XDG_STATE_HOME", "")
-    if not os.path.isabs(state):  # the XDG spec: a relative path is invalid and ignored
-        state = os.path.join(os.path.expanduser("~"), ".local", "state")
+    """<home>/.local/state/review-code/captures: the one place the hook writes and report.py and target.py read. The home
+    comes from the account database, not $HOME, because a SessionStart hook can change the Bash tool's environment
+    (CLAUDE_ENV_FILE) but not a hook's; expanduser only where there is no pwd module (Windows). REVIEW_CODE_STATE_HOME,
+    when set, replaces <home>/.local/state: it is the only environment input, for tests."""
+    state = os.environ.get("REVIEW_CODE_STATE_HOME")
+    if not state:
+        try:
+            import pwd
+            home = pwd.getpwuid(os.getuid()).pw_dir
+        except (ImportError, KeyError):
+            home = os.path.expanduser("~")
+        state = os.path.join(home, ".local", "state")
     return os.path.join(state, "review-code", "captures")
+
+
+def prune():
+    """Remove capture files not touched for RETENTION_DAYS (a capture kept after a refusal, or one a sandboxed report.py
+    could not delete). Called by the hook after each write, which runs outside the Bash sandbox, and by target._prune;
+    links and other entries are left alone and a removal that fails is skipped."""
+    caps = captures_dir()
+    cutoff = time.time() - RETENTION_DAYS * 86400
+    try:
+        names = os.listdir(caps)
+    except OSError:
+        return
+    for f in names:
+        try:
+            st = os.lstat(os.path.join(caps, f))
+            if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                os.remove(os.path.join(caps, f))
+        except OSError:
+            pass
 
 
 def path(agent_id, kind):
@@ -62,6 +91,7 @@ def keep(ev):
         except OSError:
             pass
         raise
+    prune()
 
 
 def main():

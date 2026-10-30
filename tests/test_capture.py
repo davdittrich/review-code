@@ -3,17 +3,20 @@ import contextlib
 import io
 import json
 import os
+import pwd
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 import paths  # noqa: F401
 
+import capture  # noqa: E402
 import gitfix  # noqa: E402
 
 ROOT = os.path.dirname(paths.HERE)
@@ -81,7 +84,7 @@ class Capture(unittest.TestCase):
         shutil.copy(os.path.join(paths.SCRIPTS, "capture.py"), alone)
         with open(os.path.join(alone, "target.py"), "w") as fh:  # a sibling that would print and exit at import
             fh.write('print("x")\nraise SystemExit(1)\n')
-        e = dict(gitfix.env(), XDG_STATE_HOME=gitfix.state(self.tmp))
+        e = dict(gitfix.env(), REVIEW_CODE_STATE_HOME=gitfix.state(self.tmp))
         p = subprocess.run([sys.executable, os.path.join(alone, "capture.py")], cwd=self.repo, env=e,
                            input=json.dumps(stop()).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"", b""))
@@ -142,13 +145,25 @@ class Capture(unittest.TestCase):
         self.assertEqual(self.names(), [AID + ".handback.json"])
         self.assertEqual(os.listdir(outside), [])
 
-    def test_a_relative_xdg_state_home_falls_back_to_the_home_directory(self):  # the XDG spec ignores a relative path
-        home = os.path.join(self.tmp, "home")
-        rc, out, err = gitfix.cli("capture.py", [], self.repo, self.tmp, json.dumps(stop()),
-                                  extra={"HOME": home, "XDG_STATE_HOME": "rel"})
-        self.assertEqual((rc, out, err), (0, "", ""))
-        self.assertEqual(os.listdir(os.path.join(home, ".local", "state", "review-code", "captures")), [AID + ".stop.json"])
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "rel")))
+    def test_the_hook_ages_out_stale_captures_and_keeps_fresh_ones(self):  # it runs outside the Bash sandbox
+        os.makedirs(self.caps)
+        for name, age in (("old.stop.json", capture.RETENTION_DAYS + 1), ("new.stop.json", capture.RETENTION_DAYS - 1)):
+            p = os.path.join(self.caps, name)
+            with open(p, "w") as fh:
+                fh.write("{}")
+            os.utime(p, (time.time() - age * 86400,) * 2)
+        self.fire(stop())
+        self.assertEqual(self.names(), [AID + ".stop.json", "new.stop.json"])
+
+    def test_writer_and_reader_agree_when_home_differs(self):  # a SessionStart hook can change the Bash env only
+        e = gitfix.env()
+        e.pop("REVIEW_CODE_STATE_HOME", None)
+        got = set()
+        for home in ("/nonexistent/a", "/nonexistent/b"):  # only the path is computed: nothing is written
+            p = subprocess.run([sys.executable, "-c", "import capture; print(capture.captures_dir())"], cwd=paths.SCRIPTS,
+                               env=dict(e, HOME=home), stdout=subprocess.PIPE, check=True)
+            got.add(p.stdout.decode().strip())
+        self.assertEqual(got, {os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".local", "state", "review-code", "captures")})
 
     def test_a_lone_surrogate_survives_the_round_trip(self):
         self.fire(None, raw='{"hook_event_name":"SubagentStop","agent_id":"%s","agent_type":"review-code:spec",'
@@ -161,7 +176,7 @@ class Location(unittest.TestCase):  # review-code-27u8: the hook's cwd and the r
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
         self.tmp = os.path.realpath(self._td.name)
-        self.env = {"HOME": os.path.join(self.tmp, "home"), "XDG_STATE_HOME": os.path.join(self.tmp, "state")}
+        self.env = {"HOME": os.path.join(self.tmp, "home"), "REVIEW_CODE_STATE_HOME": os.path.join(self.tmp, "state")}
         self.main = gitfix.make_repo(os.path.join(self.tmp, "main"))
         gitfix.commit(self.main, {"a.py": "a = 1\n"}, "base")
         gitfix.commit(self.main, {"a.py": "a = 2\n"}, "main")
