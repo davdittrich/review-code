@@ -2,18 +2,14 @@
 
 Runs on SubagentStop (the agent's last message) and on PostToolUse of SubagentHandback (the report an agent hands
 back, where the harness runs it in auto mode). The hook input is JSON on stdin. A reply is kept only for this
-plugin's lane and verifier agents, only under a strict agent_id, and only when the repository's review-code state
-directory (`git rev-parse --git-path review-code`, as target.py names it) already exists: this script never makes it.
-It imports target only for its git seam (target._run: the fixed -c options and env of every git call): it calls none of
-target's run-directory code, which makes directories, because the hook must never create the state directory, and it
-stays fail-silent (it imports target inside keep, and a failed import keeps nothing). The seam adds one git config read per firing.
-It writes <state>/captures/<agent_id>.<handback|stop>.json = {agent_type, message}, mode 0600, through a temp file and
-os.replace, and always exits 0 and prints nothing, so it can never block the agent. Stdlib only; keep the syntax
-Python 3.9 safe. A custom agent_prefix plugin setting is not captured (the hook cannot read it: an unset option
-fails a hook), so those runs use stdin.
+plugin's lane and verifier agents and only under a strict agent_id. It writes captures_dir()/<agent_id>.<handback|stop>.json
+= {agent_type, message}, mode 0600, through a temp file and os.replace, and always exits 0 and prints nothing, so it can
+never block the agent. The directory is per user, not per repository (review-code-27u8): the hook input names no run,
+and its cwd is the session's, which may be another worktree, another repository or none, so only a place that both
+this hook and report.py derive from the same environment links an agent id to its reply; the agent id is unique, so
+no repository key is needed. Stdlib only, no git; keep the syntax Python 3.9 safe. A custom agent_prefix plugin setting
+is not captured (the hook cannot read it: an unset option fails a hook), so those runs use stdin.
 """
-import contextlib
-import io
 import json
 import os
 import re
@@ -25,8 +21,17 @@ KINDS = ("handback", "stop")  # preference order: the handback is the whole repo
 AGENTS = frozenset("review-code:" + n for n in ("finder", "standards", "spec", "sota", "verifier", "spec-verifier"))
 
 
-def path(base, agent_id, kind):
-    return os.path.join(base, "captures", "%s.%s.json" % (agent_id, kind))
+def captures_dir():
+    """$XDG_STATE_HOME/review-code/captures (~/.local/state when unset or relative): the one place the hook writes and
+    report.py and target.py read, the same in the hook process and in the Bash tool process."""
+    state = os.environ.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(state):  # the XDG spec: a relative path is invalid and ignored
+        state = os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state, "review-code", "captures")
+
+
+def path(agent_id, kind):
+    return os.path.join(captures_dir(), "%s.%s.json" % (agent_id, kind))
 
 
 def _message(ev):
@@ -45,27 +50,12 @@ def keep(ev):
     aid, typ = ev.get("agent_id"), ev.get("agent_type")
     if kind is None or not isinstance(text, str) or typ not in AGENTS or not (isinstance(aid, str) and ID.fullmatch(aid)):
         return
-    try:  # here, not at the top: a missing or broken sibling must keep the hook silent; target's Python-too-old guard prints
-        with contextlib.redirect_stdout(io.StringIO()):  # to stdout, then raises SystemExit
-            import target
-    except BaseException:
-        return
-    try:
-        rel = target._rev_path("--git-path", os.getcwd(), "review-code")  # lossless: a git dir may hold any byte
-    except target.Refuse:
-        return
-    if not rel:
-        return
-    base = os.path.join(os.getcwd(), rel)
-    try:
-        os.mkdir(os.path.join(base, "captures"), 0o700)  # not makedirs: a missing state directory stays missing
-    except FileExistsError:
-        pass
-    fd, tmp = tempfile.mkstemp(dir=os.path.join(base, "captures"), prefix=".tmp-")  # mode 0600
+    os.makedirs(captures_dir(), 0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=captures_dir(), prefix=".tmp-")  # mode 0600
     try:
         with os.fdopen(fd, "w", encoding="ascii") as fh:  # ensure_ascii escapes everything, a lone surrogate included
             json.dump({"agent_type": typ, "message": text}, fh)
-        os.replace(tmp, path(base, aid, kind))
+        os.replace(tmp, path(aid, kind))
     except BaseException:
         try:
             os.unlink(tmp)

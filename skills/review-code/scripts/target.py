@@ -24,6 +24,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Iterator, List, Optional, Tuple
 
+import capture
 import prior
 import sanitize
 
@@ -287,9 +288,9 @@ RETENTION_DAYS = 14
 
 
 def _prune(base: str) -> None:
-    """IN-01: remove run directories, and the hook's captures directory, not touched for RETENTION_DAYS, and from a
-    fresher captures directory the files older than that (a capture kept after a refusal). Runs before the new one is
-    made, so the current run is never a candidate; links and other names are left alone; a removal that fails is skipped."""
+    """IN-01: remove run directories not touched for RETENTION_DAYS (and a `captures` directory the hook kept here before
+    review-code-27u8), and the hook's capture files older than that (a capture kept after a refusal). Runs before the new
+    one is made, so the current run is never a candidate; links and other names are left alone; a removal that fails is skipped."""
     cutoff = time.time() - RETENTION_DAYS * 86400
     for name in os.listdir(base):
         path = os.path.join(base, name)
@@ -297,11 +298,18 @@ def _prune(base: str) -> None:
             st = os.lstat(path)
             if (name.startswith("review-code.") or name == "captures") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
-            elif name == "captures" and stat.S_ISDIR(st.st_mode):
-                for f in os.listdir(path):
-                    fst = os.lstat(os.path.join(path, f))
-                    if stat.S_ISREG(fst.st_mode) and fst.st_mtime < cutoff:
-                        os.remove(os.path.join(path, f))
+        except OSError:
+            pass
+    caps = capture.captures_dir()
+    try:
+        names = os.listdir(caps)
+    except OSError:
+        return
+    for f in names:
+        try:
+            fst = os.lstat(os.path.join(caps, f))
+            if stat.S_ISREG(fst.st_mode) and fst.st_mtime < cutoff:
+                os.remove(os.path.join(caps, f))
         except OSError:
             pass
 

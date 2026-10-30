@@ -71,14 +71,24 @@ class FeatureRepo(unittest.TestCase):
         return run(["git"] + list(a), self.repo).strip()
 
 
+def state(tmp):
+    """The XDG_STATE_HOME every fixture process gets, so the capture hook never writes the real ~/.local/state."""
+    return os.path.join(tmp, "xdg-state")
+
+
+def captures(tmp):
+    return os.path.join(state(tmp), "review-code", "captures")
+
+
 @contextlib.contextmanager
 def isolated(tmpdir):
-    keys = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "TMPDIR")
+    keys = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "TMPDIR", "XDG_STATE_HOME")
     saved = {k: os.environ.get(k) for k in keys}
     old_tempdir = tempfile.tempdir
     os.environ["GIT_CONFIG_GLOBAL"] = "/dev/null"
     os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
     os.environ["TMPDIR"] = tmpdir
+    os.environ["XDG_STATE_HOME"] = state(tmpdir)
     tempfile.tempdir = tmpdir  # tempfile caches its directory; TMPDIR alone does not move mkdtemp
     try:
         yield
@@ -95,6 +105,7 @@ def cli(script, args, cwd, tmp, stdin=b"", extra=None):
     """Run a skill script in an isolated env; stdin may be str or bytes. Returns (rc, stdout, stderr)."""
     e = env()
     e["TMPDIR"] = tmp
+    e["XDG_STATE_HOME"] = state(tmp)
     e.update(extra or {})
     if isinstance(stdin, str):
         stdin = stdin.encode("utf-8")

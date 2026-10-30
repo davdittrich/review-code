@@ -2129,7 +2129,7 @@ class Captured:
         self.assertEqual((rc, out, err), (0, "", ""))
 
     def held(self):
-        caps = os.path.join(os.path.dirname(self.run_dir), "captures")
+        caps = gitfix.captures(self.tmp)
         return sorted(os.listdir(caps)) if os.path.isdir(caps) else []
 
 
@@ -3265,7 +3265,7 @@ class AgentReply(Captured, Base):
             rc, out = self.capped(argv, stdin, len(reply) - 1)
             self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"), argv)
         self.capture(self.REPLY)
-        size = os.path.getsize(os.path.join(os.path.dirname(self.run_dir), "captures", AID + ".handback.json"))
+        size = os.path.getsize(os.path.join(gitfix.captures(self.tmp), AID + ".handback.json"))
         rc, out = self.capped(["ingest", "--run", self.run_dir, "--agent", AID], b"", size - 1)
         self.assertEqual((rc, out.get("reason")), (1, "reply-too-large"))
         self.assertEqual(self.held(), [AID + ".handback.json"])  # kept, as every refused capture is
@@ -3395,7 +3395,7 @@ class AgentReply(Captured, Base):
             self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
 
     def test_a_planted_deeply_nested_capture_is_a_clean_refusal(self):
-        caps = os.path.join(os.path.dirname(self.run_dir), "captures")
+        caps = gitfix.captures(self.tmp)
         os.makedirs(caps, mode=0o700)
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
@@ -3403,7 +3403,7 @@ class AgentReply(Captured, Base):
         self.assertEqual((rc, refusal(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
-    def test_discard_leaves_the_captures_alone(self):  # they belong to the repository, not to this run
+    def test_discard_leaves_the_captures_alone(self):  # they are not this run's files
         self.capture(self.REPLY)
         self.capture(self.REPLY, kind="stop", aid="c" * 17)
         self.rep("discard")
@@ -3424,7 +3424,7 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.agent_ingest(aid="e" * 17, rc=1)["reason"], "no-capture")
         self.capture("Done. I reviewed the change.", kind="stop", aid="e" * 17)
         self.assertEqual(self.agent_ingest(aid="e" * 17, rc=1)["reason"], "capture-incomplete")
-        with self.assertRaises(report.target.Refuse) as cm:
+        with self.assertRaises(report.target.Refuse) as cm, gitfix.isolated(self.tmp):
             report._take(self.run_dir, "e" * 17, "review-code:finder", True)
         self.assertIn("completion notification", cm.exception.detail)
         self.assertIn("stdin", cm.exception.detail)
@@ -3445,7 +3445,7 @@ class AgentReply(Captured, Base):
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
     def test_no_capture_detail_says_to_rerun_on_stdin(self):
-        with self.assertRaises(report.target.Refuse) as cm:
+        with self.assertRaises(report.target.Refuse) as cm, gitfix.isolated(self.tmp):
             report._take(self.run_dir, AID, "review-code:finder", True)
         self.assertEqual((cm.exception.reason, cm.exception.detail),
                          ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
