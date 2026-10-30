@@ -298,6 +298,8 @@ def _prune(base: str) -> None:
             st = os.lstat(path)
             if (name.startswith("review-code.") or name == "captures") and stat.S_ISDIR(st.st_mode) and st.st_mtime < cutoff:
                 shutil.rmtree(path, ignore_errors=True)
+            elif name == "captures" and stat.S_ISDIR(st.st_mode):
+                capture.prune(path)
         except OSError:
             pass
     capture.prune()

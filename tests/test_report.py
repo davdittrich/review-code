@@ -3249,6 +3249,14 @@ class AgentReply(Captured, Base):
         self.assertEqual(r, rc, out)
         return json.loads(out)
 
+    def test_a_capture_the_previous_hook_kept_in_the_repository_is_read_and_dropped(self):  # PR #92 review
+        legacy = os.path.join(os.path.dirname(self.run_dir), "captures")  # the hook's place before review-code-27u8
+        os.makedirs(legacy, mode=0o700)
+        with open(os.path.join(legacy, AID + ".handback.json"), "w", encoding="utf-8") as fh:
+            json.dump({"agent_type": "review-code:finder", "message": self.REPLY}, fh)
+        self.assertEqual(self.agent_ingest()["status"], "ok")
+        self.assertEqual(os.listdir(legacy), [])
+
     def capped(self, argv, stdin, cap):
         """report.main in-process with REPLY_MAX at `cap`: (rc, its JSON line)."""
         out = io.StringIO()
