@@ -543,7 +543,7 @@ class TestRunDirPruning(Local):
         for p in (fresh, other, keep, link, out["run"]):
             self.assertTrue(os.path.exists(p), p)
 
-    def test_an_old_captures_directory_is_pruned_and_a_fresh_one_kept(self):  # gh#8
+    def test_an_old_captures_directory_is_pruned_and_a_fresh_one_kept(self):  # gh#8: where the hook wrote before review-code-27u8
         caps = os.path.join(self.repo, ".git", "review-code", "captures")
         for age, kept in ((target.RETENTION_DAYS + 1, False), (0, True)):
             os.makedirs(caps, exist_ok=True)
@@ -553,8 +553,8 @@ class TestRunDirPruning(Local):
             self.assertEqual(self.pin("feat~1..feat")[0], 0)
             self.assertEqual(os.path.exists(caps), kept)
 
-    def test_an_old_capture_file_is_pruned_from_a_fresh_captures_directory(self):  # a kept capture must not live for ever
-        caps = os.path.join(self.repo, ".git", "review-code", "captures")
+    def test_an_old_capture_file_is_pruned_from_the_hook_directory(self):  # a kept capture must not live for ever
+        caps = gitfix.captures(self.tmp)  # per user (review-code-27u8): any repository's pin prunes it
         os.makedirs(caps)
         for name, age in (("old.stop.json", target.RETENTION_DAYS + 1), ("new.stop.json", target.RETENTION_DAYS - 1)):
             path = os.path.join(caps, name)
@@ -569,7 +569,8 @@ class TestRunDirPruning(Local):
             run = self.mk("review-code.TOUCH1", target.RETENTION_DAYS + 1)
             os.makedirs(os.path.join(run, "post"))
             write(os.path.join(run, "post", "result.json"), "{}")
-            target._prune(os.path.dirname(run))
+            with gitfix.isolated(self.tmp):  # _prune also sweeps the per-user captures directory
+                target._prune(os.path.dirname(run))
             self.assertTrue(os.path.exists(run))
             shutil.rmtree(run)
 
