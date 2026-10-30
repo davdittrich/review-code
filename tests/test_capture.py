@@ -3,7 +3,6 @@ import contextlib
 import io
 import json
 import os
-import pwd
 import re
 import shutil
 import stat
@@ -13,6 +12,11 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+
+try:
+    import pwd
+except ImportError:  # Windows: capture.py falls back to expanduser there
+    pwd = None
 
 import paths  # noqa: F401
 
@@ -155,6 +159,7 @@ class Capture(unittest.TestCase):
         self.fire(stop())
         self.assertEqual(self.names(), [AID + ".stop.json", "new.stop.json"])
 
+    @unittest.skipIf(pwd is None, "no account database (pwd) on this platform")
     def test_writer_and_reader_agree_when_home_differs(self):  # a SessionStart hook can change the Bash env only
         e = gitfix.env()
         e.pop("REVIEW_CODE_STATE_HOME", None)
@@ -212,6 +217,13 @@ class Location(unittest.TestCase):  # review-code-27u8: the hook's cwd and the r
                 self.assertEqual(self.take(run, aid), MSG, (cwd, where))
         for repo in (self.main, self.other, self.plain):  # nothing lands in a repository the hook happens to run in
             self.assertFalse(os.path.exists(os.path.join(repo, ".git", "review-code", "captures")), repo)
+
+
+class Portable(unittest.TestCase):
+    def test_the_module_imports_without_pwd(self):  # PR #92 review: discovery must not fail on Windows
+        code = "import sys; sys.modules['pwd'] = None; import test_capture; print(test_capture.pwd)"
+        p = subprocess.run([sys.executable, "-c", code], cwd=paths.HERE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"None\n", b""))
 
 
 class Hooks(unittest.TestCase):

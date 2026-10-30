@@ -40,11 +40,11 @@ def captures_dir():
     return os.path.join(state, "review-code", "captures")
 
 
-def prune():
-    """Remove capture files not touched for RETENTION_DAYS (a capture kept after a refusal, or one a sandboxed report.py
-    could not delete). Called by the hook after each write, which runs outside the Bash sandbox, and by target._prune;
-    links and other entries are left alone and a removal that fails is skipped."""
-    caps = captures_dir()
+def prune(caps=None):
+    """Remove capture files not touched for RETENTION_DAYS from `caps` (default captures_dir()): a capture kept after a
+    refusal, or one a sandboxed report.py could not delete. Called by the hook after each write, which runs outside the
+    Bash sandbox, and by target._prune; links and other entries are left alone and a removal that fails is skipped."""
+    caps = caps or captures_dir()
     cutoff = time.time() - RETENTION_DAYS * 86400
     try:
         names = os.listdir(caps)
@@ -59,8 +59,8 @@ def prune():
             pass
 
 
-def path(agent_id, kind):
-    return os.path.join(captures_dir(), "%s.%s.json" % (agent_id, kind))
+def path(agent_id, kind, caps=None):
+    return os.path.join(caps or captures_dir(), "%s.%s.json" % (agent_id, kind))
 
 
 def _message(ev):

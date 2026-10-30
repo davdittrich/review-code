@@ -1474,9 +1474,9 @@ def _take(run, agent, want, needs_inspected):
     empty-capture (a handback without it) or capture-incomplete (a stop capture without it: the handback is not captured
     yet), so closing words alone never stand in for a reply."""
     target.load_json(run, "target.json")
-    for kind in capture.KINDS:
+    for kind, caps in ((k, c) for k in capture.KINDS for c in _capture_dirs(run)):
         try:
-            with open(capture.path(agent, kind), "rb") as fh:
+            with open(capture.path(agent, kind, caps), "rb") as fh:
                 got = json.loads(_capped(fh).decode("utf-8"))
         except (OSError, ValueError, RecursionError):
             continue
@@ -1492,14 +1492,21 @@ def _take(run, agent, want, needs_inspected):
 def _consume(run, agent, key):
     """After a successful --agent call: bind the agent id to its call and drop the capture."""
     _bind(run, agent, key, True)
-    _drop(agent)
+    _drop(run, agent)
 
 
-def _drop(agent):
-    """Remove both capture files of `agent`."""
+def _capture_dirs(run):
+    """Where a capture of this run may be: the hook's directory, then the run's own state directory, where the hook of a
+    plugin version before review-code-27u8 kept it (target._prune ages that one out)."""
+    return None, os.path.join(os.path.dirname(os.path.abspath(run)), "captures")
+
+
+def _drop(run, agent):
+    """Remove every capture file of `agent`; a removal that fails (a sandboxed Bash) is left to capture.prune."""
     for kind in capture.KINDS:
-        with contextlib.suppress(OSError):
-            os.remove(capture.path(agent, kind))
+        for caps in _capture_dirs(run):
+            with contextlib.suppress(OSError):
+                os.remove(capture.path(agent, kind, caps))
 
 
 def _ingest(run, text, lane, shard):
