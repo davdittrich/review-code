@@ -3309,6 +3309,12 @@ class AgentReply(Captured, Base):
         with gitfix.isolated(self.tmp):
             self.assertEqual(report._take(self.run_dir, AID, "review-code:finder", True), zero)
 
+    def test_a_finding_line_led_by_an_inspected_pair_that_lost_its_last_closer_stays_invalid(self):  # PR #95 review
+        ln = json.dumps(wire(dict({"inspected": ["src/calc.py"]}, **QCAND)))[:-1]  # a claim, though it opens like an attestation
+        self.capture(ln + "\n" + lines({"inspected": ["src/calc.py"]}))
+        out = self.agent_ingest()
+        self.assertEqual((out["ids"], [r["check"] for r in out["rejected"]]), ([], ["invalid-json"]))
+
     def test_a_finding_line_that_lost_its_last_closer_stays_invalid(self):  # review-code-6nla
         # not closed on purpose: a line short of closers cannot be told from a truncated one, and a truncated claim is lost
         self.capture(lines(QCAND)[:-2] + "\n" + lines({"inspected": ["src/calc.py"]}))

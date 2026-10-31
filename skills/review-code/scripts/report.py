@@ -645,7 +645,7 @@ def _parse(ln, load):
         try:
             o = load(cand)
             o = _wire(o) if isinstance(o, list) else None
-            if isinstance(o, dict):
+            if isinstance(o, dict) and "path" not in o:  # a `path` makes it a finding line: a claim, never closed
                 return False, o
         except (ValueError, RecursionError):  # JSONDecodeError included
             pass
