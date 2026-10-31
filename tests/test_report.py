@@ -2639,6 +2639,13 @@ class Repair(Base):
         items = self.doc()["unverifiable"] + self.doc()["findings"]
         self.assertTrue(all(i["severity"] != "blocking" for i in items))
 
+    def test_only_an_inspected_line_short_of_closers_outside_strings_is_closed_and_flagged(self):  # review-code-6nla
+        ((_, o, fixed),) = report._objects('[["inspected", ["a.py", "b[.py"]]')  # the bracket in a string is not counted
+        self.assertEqual((o, fixed), ({"inspected": ["a.py", "b[.py"]}, True))  # repaired: it can never refute
+        for ln in ('[["inspected", ["a.py"]]]]', '[["inspected", ["a.py"}', '[["inspected", ["a.py]',
+                   '[["inspected", ["a.py" "b.py"]'):  # extra or wrong closers, an open string, damage a closer cannot mend
+            self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln)
+
     def test_a_line_the_repair_cannot_fix_stays_invalid(self):
         for ln in ('[["path", "src/calc.py"], ["line", 5], ["quote", "x', '[["a", "b"c"]', '[["a", "' + 'q"' * 30000 + '"]]'):
             self.assertEqual([o for _, o, _ in report._objects(ln)], [None], ln[:60])
@@ -3295,6 +3302,18 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.status()["rejected_total"], 0)
         self.assertEqual(self.held(), [])
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")  # consumed: it cannot be replayed
+
+    def test_an_inspected_line_that_lost_its_last_closer_is_taken(self):  # review-code-6nla
+        zero = "No defects.\n" + json.dumps(wire({"inspected": ["src/calc.py", "src/other.py"]}))[:-1] + "\n"
+        self.capture(zero)
+        with gitfix.isolated(self.tmp):
+            self.assertEqual(report._take(self.run_dir, AID, "review-code:finder", True), zero)
+
+    def test_a_finding_line_that_lost_its_last_closer_stays_invalid(self):  # review-code-6nla
+        # not closed on purpose: a line short of closers cannot be told from a truncated one, and a truncated claim is lost
+        self.capture(lines(QCAND)[:-2] + "\n" + lines({"inspected": ["src/calc.py"]}))
+        out = self.agent_ingest()
+        self.assertEqual((out["ids"], [r["check"] for r in out["rejected"]]), ([], ["invalid-json"]))
 
     def test_the_handback_text_wins_over_the_stop_text(self):
         self.capture("closing words only", kind="stop")
