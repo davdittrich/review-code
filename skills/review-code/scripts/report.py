@@ -604,11 +604,31 @@ def _hostile(pin, path, token=_TOKEN):
     return rows is not None and token.search("\n".join(rows)) is not None
 
 
+def _closed(ln):
+    """`ln` with the closers it lacks at its end appended (seen live: a lane line short of its final `]`), counting brackets
+    outside JSON strings only; None when it lacks none, ends inside a string, or has a closer with no matching opener."""
+    stack, in_str, esc = [], False, False
+    for c in ln:
+        if in_str:
+            esc, in_str = (False, True) if esc else (c == "\\", c != '"')
+        elif c == '"':
+            in_str = True
+        elif c in "[{":
+            stack.append("]" if c == "[" else "}")
+        elif c in "]}":
+            if not stack or stack.pop() != c:
+                return None
+    return None if in_str or not stack else ln + "".join(reversed(stack))
+
+
 def _parse(ln, load):
     """(read, dict or None) of a wire line under `load`; the second candidate is the line with its outer bracket restored.
     read is False only when no candidate is JSON syntax: a line that reads but is no pair array (repeated key, raw object,
     wrong shape) is final and never repaired, except a `["` line that loads flat: `["k", v]` is never a pair array, so it
-    is the one-pair line with its outer bracket dropped and the restored candidate is tried."""
+    is the one-pair line with its outer bracket dropped and the restored candidate is tried. An `inspected` line that
+    neither candidate reads gets its missing final closers (_closed) and, when that is a pair array, comes back as
+    (False, dict), so _objects flags it repaired. Only an attestation is closed: a line short of closers cannot be told from
+    a truncated one, and a truncated finding or verdict must stay lost, while a shortened inspected list claims less."""
     for cand in (ln, "[" + ln + "]"):
         try:
             o = load(cand)
@@ -620,9 +640,19 @@ def _parse(ln, load):
             pass
         except (ValueError, RecursionError):
             return True, None
+    cand = _closed(ln) if _INSPECTED.match(ln) else None
+    if cand is not None:
+        try:
+            o = load(cand)
+            o = _wire(o) if isinstance(o, list) else None
+            if isinstance(o, dict) and "path" not in o:  # a `path` makes it a finding line: a claim, never closed
+                return False, o
+        except (ValueError, RecursionError):  # JSONDecodeError included
+            pass
     return False, None
 
 
+_INSPECTED = re.compile(r'\s*\[\s*\[\s*"inspected"')  # a lane's attestation line: the only line _parse closes
 _WIRE = re.compile(r'\s*(\{|\[\s*[\["])')  # the start of a wire line; any other line of a reply is prose
 _MARKED = re.compile(r"copied-from-spec:\d+|bad-type|invalid-json(?::bad-escape)?|retired-object-form|other-batch|unknown-id|duplicate")  # reasons a stored marker may carry
 
@@ -633,14 +663,14 @@ _KEPT = ("other-batch", "unknown-id", "duplicate")  # verdict lines dropped befo
 def _objects(text, total=None):
     """(line, dict or None, repaired) of every wire line of the stream (`[[`, `["` or, for the retired object form, `{`):
     the dict is None when it is not a valid pair array. Prose is skipped. A `["` line whose outer bracket is missing is read
-    as if it had one. The strict parse comes first; only a line it could not parse at all goes to _repair, which draws
+    as if it had one, and an `inspected` line short of its final closers as if it had them (flagged repaired). The strict parse comes first; only a line it could not parse at all goes to _repair, which draws
     on `total` (a one-item list, INGEST_STEPS by default) shared by every line of the caller's call."""
     total = [INGEST_STEPS] if total is None else total
     for ln in text.split("\n"):
         if _WIRE.match(ln):
-            # shortcut: only the dropped-outer-bracket slip and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
+            # shortcut: only the dropped outer bracket, an inspected line's missing final closers and raw quotes are repaired (seen live); other damage stays invalid, upgrade when a lane shows a new slip
             parsed, o = _parse(ln, _loads)
-            if not parsed:
+            if not parsed and o is None:
                 line = [REPAIR_STEPS]
                 _, o = _parse(ln, lambda c: _repair(c, total, line))
             yield ln, o, not parsed and o is not None
