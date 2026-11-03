@@ -3333,7 +3333,7 @@ class AgentReply(Captured, Base):
 
     def test_no_capture_refuses_and_stores_nothing(self):
         out = self.agent_ingest(rc=1)
-        out.pop("searched")  # the directories are pinned in test_no_capture_refusal_lists_the_searched_directories
+        out.pop("searched", None)  # the directories are pinned in test_no_capture_refusal_lists_the_searched_directories
         self.assertEqual(refusal(out), {"reason": "no-capture", "status": "refuse"})
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
@@ -3435,8 +3435,9 @@ class AgentReply(Captured, Base):
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
-        self.assertEqual((rc, err), (1, ""))
-        self.assertEqual(json.loads(out)["reason"], "no-capture")
+        got = json.loads(out)
+        got.pop("searched", None)  # pinned in test_no_capture_refusal_lists_the_searched_directories
+        self.assertEqual((rc, refusal(got), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
     def test_discard_leaves_the_captures_alone(self):  # they are not this run's files
