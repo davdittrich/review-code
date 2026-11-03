@@ -34,7 +34,7 @@ prints the report):
                                    applies only ids of that batch (others count as foreign) and needs a cite to refute;
                                    verdicts.json is rebuilt from all stored batches. Without it one reply replaces them all.
     --agent ID (ingest and verdicts; the agentId of the Agent launch result) reads the reply from the capture hook
-                                   (capture.py) instead of stdin: handback capture before stop capture. Refusals: no-capture,
+                                   (capture.py) instead of stdin: handback capture before stop capture. Refusals: no-capture (its JSON also lists the directories read, `searched`),
                                    capture-incomplete (only a stop capture, and it lacks that line), agent-mismatch (the stored
                                    agent type is not the plan's for the lane or batch, or a verdicts reply names none of the
                                    batch's ids), agent-reused (the id served another call of this run), empty-capture (no
@@ -190,7 +190,8 @@ REASONS = {
     "unknown-id": "the id is no candidate of this run",
     "empty-capture": "the capture holds no wire line of the expected kind",
     "capture-incomplete": "only the agent's closing message is captured: wait for its completion notification, or pass the reply on stdin",
-    "no-capture": "no capture for this agent id: re-run without --agent and pass the reply on stdin",
+    "no-capture": "no capture for this agent id (directories in searched): relaunch the lane from a session whose capture hook is registered; "
+                  "re-run without --agent and pass the reply on stdin only if the caller accepts a hand-ingested reply",
     "agent-mismatch": "the capture is of another agent type than the plan's, or names none of the batch's ids",
     "no-ledger": "the run has no ledger.json: run ledger.py build for it, or review again",
     "record-unreadable": "a decision record the ledger lists is over the size cap or not text (a NUL byte), so the spec copy guard cannot check a reply against it: shrink it, save it as plain text (UTF-8) or move it out of the record directory, then review again",
@@ -1527,8 +1528,8 @@ def _consume(run, agent, key):
 
 def _capture_dirs(run):
     """Where a capture of this run may be: the hook's directory, then the run's own state directory, where the hook of a
-    plugin version before review-code-27u8 kept it (target._prune ages that one out)."""
-    return None, os.path.join(os.path.dirname(os.path.abspath(run)), "captures")
+    plugin version before review-code-27u8 kept it (target._prune ages that one out). A no-capture refusal reports this list."""
+    return capture.captures_dir(), os.path.join(os.path.dirname(os.path.abspath(run)), "captures")
 
 
 def _drop(run, agent):
@@ -2212,6 +2213,8 @@ def main(argv):
         out = ingest(run, text, lane, shard, agent) if sub == "ingest" else verdicts(run, text, batch, agent)
     except target.Refuse as r:
         out, rc = {"status": "refuse", "reason": r.reason, "detail": r.detail}, 1  # as plan.py; json.dumps escapes it
+        if r.reason == "no-capture":
+            out["searched"] = list(_capture_dirs(run))  # gh#97: the directories _take read, in order
     except (OSError, KeyError, ValueError, TypeError) as e:  # the skill reads one JSON line; never a traceback
         out, rc = {"status": "refuse", "reason": "internal-error", "detail": type(e).__name__}, 1
     else:

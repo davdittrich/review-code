@@ -3332,7 +3332,9 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.agent_ingest()["ids"], [QID])
 
     def test_no_capture_refuses_and_stores_nothing(self):
-        self.assertEqual(refusal(self.agent_ingest(rc=1)), {"reason": "no-capture", "status": "refuse"})
+        out = self.agent_ingest(rc=1)
+        out.pop("searched")  # the directories are pinned in test_no_capture_refusal_lists_the_searched_directories
+        self.assertEqual(refusal(out), {"reason": "no-capture", "status": "refuse"})
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "candidates.json")))
         self.capture(self.REPLY, aid="b" * 17)  # another agent's capture is not this one's
         self.assertEqual(self.agent_ingest(rc=1)["reason"], "no-capture")
@@ -3433,7 +3435,8 @@ class AgentReply(Captured, Base):
         with open(os.path.join(caps, AID + ".handback.json"), "w", encoding="utf-8") as fh:
             fh.write("[" * 200000)
         rc, out, err = cli("report.py", ["ingest", "--run", self.run_dir, "--agent", AID], self.repo, self.tmp)
-        self.assertEqual((rc, refusal(out), err), (1, {"reason": "no-capture", "status": "refuse"}, ""))
+        self.assertEqual((rc, err), (1, ""))
+        self.assertEqual(json.loads(out)["reason"], "no-capture")
         self.assertEqual(self.held(), [AID + ".handback.json"])
 
     def test_discard_leaves_the_captures_alone(self):  # they are not this run's files
@@ -3477,15 +3480,37 @@ class AgentReply(Captured, Base):
         self.assertEqual(self.held(), [AID + ".handback.json"])
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "verdicts.json")))
 
-    def test_no_capture_detail_says_to_rerun_on_stdin(self):
+    def test_no_capture_detail_names_relaunch_and_stdin_only_for_hand_ingest(self):
         with self.assertRaises(report.target.Refuse) as cm, gitfix.isolated(self.tmp):
             report._take(self.run_dir, AID, "review-code:finder", True)
-        self.assertEqual((cm.exception.reason, cm.exception.detail),
-                         ("no-capture", "no capture for this agent id: re-run without --agent and pass the reply on stdin"))
+        self.assertEqual(cm.exception.reason, "no-capture")
+        self.assertEqual(cm.exception.detail, report.REASONS["no-capture"])
+        self.assertIn("relaunch the lane", cm.exception.detail)
+        self.assertIn("only if the caller accepts a hand-ingested reply", cm.exception.detail)
+
+    def test_no_capture_refusal_lists_the_searched_directories(self):  # gh#97
+        want = [gitfix.captures(self.tmp), os.path.join(os.path.dirname(self.run_dir), "captures")]
+        self.assertEqual(self.agent_ingest(rc=1)["searched"], want)
+        self.ingest(QCAND, {"inspected": ["src/calc.py"]})
+        r, out = self.rep("verdicts", extra=["--batch", "1", "--agent", AID])
+        self.assertEqual((r, json.loads(out)["reason"], json.loads(out)["searched"]), (1, "no-capture", want))
+
+    def test_other_agent_refusals_carry_no_searched_field(self):  # gh#97: HOLDS-ON-BASE guard
+        self.capture(self.REPLY, agent_type="review-code:standards")
+        self.assertNotIn("searched", self.agent_ingest(rc=1))  # agent-mismatch
+        self.capture("I found nothing to report.", aid="e" * 17)
+        out = self.agent_ingest(aid="e" * 17, rc=1)  # empty-capture
+        self.assertEqual(out["reason"], "empty-capture")
+        self.assertNotIn("searched", out)
+        self.capture("Done.", kind="stop", aid="d" * 17)
+        out = self.agent_ingest(aid="d" * 17, rc=1)  # capture-incomplete
+        self.assertEqual(out["reason"], "capture-incomplete")
+        self.assertNotIn("searched", out)
 
     def test_the_cli_prints_the_refusal_detail_with_its_retry_hint(self):  # review-code-2i1e
         rc, out = self.rep("ingest", extra=["--agent", AID])
-        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-capture", "detail": report.REASONS["no-capture"]}))
+        self.assertEqual((rc, json.loads(out)), (1, {"status": "refuse", "reason": "no-capture", "detail": report.REASONS["no-capture"],
+                                                      "searched": [gitfix.captures(self.tmp), os.path.join(os.path.dirname(self.run_dir), "captures")]}))
         rc, out = self.rep("ingest", extra=["--shard", "x"])
         self.assertEqual(json.loads(out)["detail"], "--shard is not a positive integer")
 
